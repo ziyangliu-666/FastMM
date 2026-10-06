@@ -2041,3 +2041,38 @@ TEST_CASE("binance_usdm.venue: a failed balance fetch does not hold up the order
   CHECK(h.account_requests.load() >= 2);
   CHECK(last_snapshot(s.oc).size() == 1);
 }
+
+TEST_CASE("binance_usdm.venue: a fill audit reads userTrades and books nothing") {
+  DmsFixture f(0);
+  REQUIRE(f.pump([&] { return live_states(f.oc) >= 2 && reconcile_ends(f.oc) == 1; }));
+  const std::size_t asked = f.h.srv.frames("userTrades").size();
+  const std::size_t fills = f.oc.count(EventType::OrderFill);
+  f.h.set_user_trades("[" + user_trade(950, "70000.10", "0.002", "0.05600000") + "]");
+  const std::int64_t now = wall_now().ns / 1'000'000;
+  bool done = false;
+  bool complete = false;
+  std::vector<AuditFill> rows;
+  REQUIRE(f.venue->can_audit_executions());
+  REQUIRE(f.venue->audit_executions(
+      now - 60'000, now + 60'000, [&](bool c, std::vector<AuditFill> got) {
+        done = true;
+        complete = c;
+        rows = std::move(got);
+      }));
+  REQUIRE(f.pump([&] { return done; }));
+  CHECK(complete);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].exec_id == "950");
+  CHECK(rows[0].symbol == "BTCUSDT");
+  CHECK(rows[0].order_id == "4293153");
+  CHECK(rows[0].side == Side::Buy);
+  CHECK(rows[0].price_raw == Price::from_decimal("70000.1").value().raw);
+  CHECK(rows[0].qty_raw == Qty::from_decimal("0.002").value().raw);
+  CHECK(rows[0].fee_raw == Qty::from_decimal("0.056").value().raw);
+  CHECK(rows[0].fee_asset == "USDT");
+  const auto q = f.h.srv.frames("userTrades");
+  REQUIRE(q.size() == asked + 1);
+  CHECK(q.back().find("startTime=" + std::to_string(now - 60'000)) != std::string::npos);
+  static_cast<void>(f.pump([] { return false; }, 100));
+  CHECK(f.oc.count(EventType::OrderFill) == fills);
+}

@@ -305,7 +305,7 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   CHECK(frame.find("fallback=5") != std::string::npos);
 
   const std::string json = format_status_json(s);
-  CHECK(json.find(R"({"kind": "engine", "version": 16,)") == 0);
+  CHECK(json.find(R"({"kind": "engine", "version": 17,)") == 0);
   CHECK(json.find(R"("engine": "binance-demo")") != std::string::npos);
   CHECK(json.find(R"("tick_to_trade": {"count": 10, "p50_ns": 106495, "p99_ns": 216053, )"
                   R"("p999_ns": 250000, "max_ns": 300000})") != std::string::npos);
@@ -322,6 +322,17 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   CHECK(frame.find("9.0 us") != std::string::npos);
   CHECK(format_status_json(s).find(R"("wire_tick_to_trade_1m": {"count": 5, "p50_ns": 1000, )") !=
         std::string::npos);
+  // The fill audit: a line once a venue has run one.
+  CHECK(frame.find("fill audit") == std::string::npos);
+  s.venues[0].fill_audits = 12;
+  s.venues[0].fill_audit_failures = 1;
+  s.venues[0].fill_audit_missing = 2;
+  s.venues[0].fill_audit_mismatched = 3;
+  frame = format_status(s, s.updated_ns, false);
+  CHECK(frame.find("fill audit") != std::string::npos);
+  CHECK(format_status_json(s).find(
+            R"("fill_audit": {"audits": 12, "failures": 1, "missing": 2, "phantom": 0, )"
+            R"("mismatched": 3, "duplicates": 0})") != std::string::npos);
   CHECK(json.back() == '\n');
   set_status_name(s.engine_name, "a\"b");
   CHECK(format_status_json(s).find(R"("engine": "a\"b")") != std::string::npos);
@@ -453,7 +464,7 @@ TEST_CASE("core.status_segment: a gateway's snapshot round trips and shows its a
 
   const std::string json = format_status_json(got);
   INFO(json);
-  CHECK(json.find(R"({"kind": "gateway", "version": 16,)") == 0);
+  CHECK(json.find(R"({"kind": "gateway", "version": 17,)") == 0);
   CHECK(json.find(R"("gateway": "gw")") != std::string::npos);
   CHECK(json.find(R"("net_pnl": -0.25, "realized": 1.5)") != std::string::npos);
   CHECK(json.find(R"("engine": "mm-a", "pid": 1001)") != std::string::npos);

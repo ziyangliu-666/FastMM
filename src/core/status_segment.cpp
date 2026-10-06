@@ -527,6 +527,38 @@ void append_venues(std::string& out, const StatusSnapshot& s, bool color) {
                    fmt_ns(v.wire_tick_to_trade_1h.p99_ns),
                    venue_kill);
   }
+  // Fill audits: one line per venue that ran one.
+  bool audit_header = false;
+  for (std::size_t i = 0; i < n; ++i) {
+    const StatusVenue& v = s.venues[i];
+    if (v.fill_audits == 0 && v.fill_audit_failures == 0) continue;
+    if (!audit_header) {
+      audit_header = true;
+      fmt::format_to(std::back_inserter(out),
+                     "\n{:<14} {:>7} {:>8} {:>8} {:>8} {:>8} {:>8}\n",
+                     "fill audit",
+                     "audits",
+                     "failed",
+                     "missing",
+                     "phantom",
+                     "differ",
+                     "twice");
+    }
+    const bool bad = v.fill_audit_missing + v.fill_audit_phantom + v.fill_audit_mismatched +
+                         v.fill_audit_duplicates !=
+                     0;
+    fmt::format_to(std::back_inserter(out),
+                   "{}{:<14} {:>7} {:>8} {:>8} {:>8} {:>8} {:>8}{}\n",
+                   bad && color ? "\x1b[31m" : "",
+                   name_of(v.name, sizeof v.name),
+                   v.fill_audits,
+                   v.fill_audit_failures,
+                   v.fill_audit_missing,
+                   v.fill_audit_phantom,
+                   v.fill_audit_mismatched,
+                   v.fill_audit_duplicates,
+                   bad ? reset(color) : "");
+  }
   // Multicast feeds: one line per venue that has one.
   bool feed_header = false;
   for (std::size_t i = 0; i < n; ++i) {
@@ -1013,6 +1045,15 @@ void json_venues(std::string& out, const StatusSnapshot& s) {
                    v.orders_sent,
                    v.cancels_sent,
                    v.order_events);
+    fmt::format_to(it,
+                   "\"fill_audit\": {{\"audits\": {}, \"failures\": {}, \"missing\": {}, "
+                   "\"phantom\": {}, \"mismatched\": {}, \"duplicates\": {}}}, ",
+                   v.fill_audits,
+                   v.fill_audit_failures,
+                   v.fill_audit_missing,
+                   v.fill_audit_phantom,
+                   v.fill_audit_mismatched,
+                   v.fill_audit_duplicates);
     json_latency(out, "wire_tick_to_trade", v.wire_tick_to_trade);
     out += ", ";
     json_latency(out, "wire_tick_to_trade_1m", v.wire_tick_to_trade_1m);

@@ -88,6 +88,9 @@ One table per venue; `<name>` is how instruments refer to it.
 | `public_only` | boolean |  | market data only: no keys, no private sessions, no orders on this venue (default false) |
 | `pool_of` | string |  | name of another [venues.<name>] of the same kind whose instruments this account takes orders for, with its own keys, balances and order-count windows; no instruments or market data of its own (default none) |
 | `recv_window_ms` | integer |  | validity window of signed requests, ms (default 3000) |
+| `fill_audit_interval_s` | integer |  | fastmm-live compares the venue's trade history with the stored fills this often, s; 0 = off (default 0, at least 10) |
+| `fill_audit_lag_s` | integer |  | a fill audit reads up to this long ago, s, so the execution replay has booked what it will (default 180) |
+| `fill_audit_mode` | string |  | "report" logs and counts what differs; "book" also books the executions the engine missed (default "report") |
 | `fees` | table |  | [venues.<name>.fees] table: maker_bps and taker_bps, used for PnL |
 <!-- END config-keys -->
 
@@ -120,6 +123,24 @@ api_secret = "${S2}"
 A member's `kind` is the primary's; a member is nobody's primary, lists no `[[instruments]]` of its own and is not `public_only`; a pool holds at most 8 accounts, the primary included; the connector must run as a pool member (Binance Spot and USDⓈ-M do). The engine routes each new order to one account and the order stays there ([Account pools](strategy-api.md#account-pools)); in a backtest, `[venues.<member>] kind = "sim"` with `[backtest.venues.<member>.balances]` gives the member its own simulated account ([`[backtest.venues.<name>]`](#backtestvenues)).
 
 Binance counts request weight per IP, so a pool's accounts share the IP's window (6000 a minute on Spot, 2400 on USDⓈ-M): each request of any account counts against it, and a 429 or 418 answered to one account pauses or stops them all. Order counts stay each account's.
+
+### Fill audit
+
+`fill_audit_interval_s` makes fastmm-live compare, every so many seconds, the account's executions as the venue reports them with the fills the store holds for that venue (every session of the engine), one by one by the venue's trade id: quantity, price, commission, side and order.
+
+```toml
+[venues.binance]
+kind = "binance_spot"
+fill_audit_interval_s = 600   # 0: off (default)
+fill_audit_lag_s = 180        # read up to 3 minutes ago
+fill_audit_mode = "report"    # or "book"
+```
+
+Each audit reads the window from where the last one ended to `fill_audit_lag_s` ago, the first from the session's start; a window that could not be read is read again with the next. The lag leaves the execution replay (once a minute) and the store time to book what they will. The venue's side is the same trade history the execution replay reads (`myTrades`, `userTrades`), read apart from it on the venue's network thread: one request per subscribed symbol and page, within the bulk share of the request weight and after the orders; nothing it reads reaches the engine. A difference is logged (`fill audit: missing execution ...`, `phantom`, `differs in qty,fee`, `booked more than once`, then an ERROR summary) and counted in the status file and the metrics (`fastmm_venue_fill_audit_*`), once per execution.
+
+`fill_audit_mode = "book"` also books what the engine missed: the execution replay reads again from the first missing execution, the OMS keeps the executions it has not seen, and the next audit reads again from there to confirm. An execution is asked for once.
+
+The audit needs the store (`[storage]`) and the venue in this process (not behind fastmm-gateway, where the key is ignored with a warning); a connector without it refuses to start. Binance Spot and USDⓈ-M have it. To audit after the fact, against a file the venue exported, use `fastmm-pnl audit` ([Query what you traded](../how-to/operations/query-trading-records.md#check-the-stored-fills-against-the-venue)).
 
 ### Connectors
 

@@ -1461,3 +1461,98 @@ TEST_CASE("binance.venue: a REST order queued behind a slow replay past recvWind
   }
   h.srv.stop();
 }
+
+TEST_CASE("binance.venue: a fill audit reads myTrades apart from the replay and emits nothing") {
+  Harness h;
+  const long long now = wall_now().ns / 1'000'000;
+  {
+    Resumed r(h, now - 60'000, {});
+    const int before = h.my_trades.load();
+    const std::size_t fills = r.oc.count(EventType::OrderFill);
+    {
+      const std::lock_guard lock(h.trades_mu);
+      h.trades_replies = {{200,
+                           "[" + my_trade(9001, now - 50'000) + "," + my_trade(9002, now - 20'000) +
+                               "," + my_trade(9003, now - 1'000, 555) + "]"}};
+    }
+    bool done = false;
+    bool complete = false;
+    std::vector<AuditFill> rows;
+    REQUIRE(r.venue->can_audit_executions());
+    REQUIRE(
+        r.venue->audit_executions(now - 30'000, now - 500, [&](bool c, std::vector<AuditFill> got) {
+          done = true;
+          complete = c;
+          rows = std::move(got);
+        }));
+    // One at a time.
+    CHECK_FALSE(r.venue->audit_executions(now - 30'000, now, [](bool, std::vector<AuditFill>) {}));
+    REQUIRE(pump_until(r.reactor, [&] { return done; }));
+    CHECK(complete);
+    REQUIRE(rows.size() == 2);  // 9001 is before the window
+    CHECK(rows[0].exec_id == "9002");
+    CHECK(rows[0].venue == "fake-binance");
+    CHECK(rows[0].symbol == "BTCUSDT");
+    CHECK(rows[0].order_id == "4293153");
+    CHECK(rows[0].side == Side::Buy);
+    CHECK(rows[0].price_raw == Price::from_decimal("70000").value().raw);
+    CHECK(rows[0].qty_raw == Qty::from_decimal("0.0001").value().raw);
+    CHECK(rows[0].fee_raw == 10);
+    CHECK(rows[0].fee_asset == "BTC");
+    CHECK(rows[0].time_ms == now - 20'000);
+    CHECK(rows[1].order_id == "555");
+    const auto q = h.srv.frames("myTrades");
+    REQUIRE(q.size() == static_cast<std::size_t>(before) + 1);
+    CHECK(query_param(q.back(), "startTime") == std::to_string(now - 30'000));
+    // Nothing reached the engine, and no order was looked up for the audit's rows.
+    static_cast<void>(pump_until(r.reactor, [] { return false; }, 100));
+    r.oc.take(r.orders);
+    CHECK(r.oc.count(EventType::OrderFill) == fills);
+    CHECK(h.srv.frames("order").empty());
+
+    // A query that fails ends the audit incomplete; the next one starts afresh.
+    {
+      const std::lock_guard lock(h.trades_mu);
+      h.trades_replies = {{500, R"({"code":-1001,"msg":"Internal error."})"}};
+    }
+    done = false;
+    REQUIRE(r.venue->audit_executions(now - 30'000, now, [&](bool c, std::vector<AuditFill> got) {
+      done = true;
+      complete = c;
+      rows = std::move(got);
+    }));
+    REQUIRE(pump_until(r.reactor, [&] { return done; }));
+    CHECK_FALSE(complete);
+    done = false;
+    REQUIRE(r.venue->audit_executions(now - 30'000, now, [&](bool c, std::vector<AuditFill>) {
+      done = true;
+      complete = c;
+    }));
+    REQUIRE(pump_until(r.reactor, [&] { return done; }));
+    CHECK(complete);
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("binance.venue: a disconnect ends a fill audit incomplete") {
+  Harness h;
+  const long long now = wall_now().ns / 1'000'000;
+  {
+    Resumed r(h, now - 60'000, {});
+    h.hold_trades = true;
+    bool done = false;
+    bool complete = true;
+    const int before = h.my_trades.load();
+    REQUIRE(r.venue->audit_executions(now - 30'000, now, [&](bool c, std::vector<AuditFill>) {
+      done = true;
+      complete = c;
+    }));
+    REQUIRE(pump_until(r.reactor, [&] { return h.my_trades.load() > before; }));
+    r.venue->disconnect();
+    CHECK(done);
+    CHECK_FALSE(complete);
+    CHECK_FALSE(r.venue->audit_executions(now - 30'000, now, [](bool, std::vector<AuditFill>) {}));
+    h.hold_trades = false;
+  }
+  h.srv.stop();
+}

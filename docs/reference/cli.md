@@ -291,6 +291,11 @@ OPTIONS:
   --day <day>                 shorthand for --since <day> --until <day>
   --limit <n>                 at most n rows
   --csv                       comma-separated output instead of an aligned table
+  --exchange <file>           audit: the venue's executions, a JSON array (Binance myTrades
+                              / userTrades) or CSV
+  --venue <name>              audit: the [venues.<name>] the file is from
+  --from-ms <ms>              audit: window start, Unix ms (default: the file's first)
+  --to-ms <ms>                audit: window end, Unix ms (default: the file's last)
 
 SUBCOMMANDS:
   sessions                    one row per session: when it ran, what it made, how it ended
@@ -303,6 +308,8 @@ SUBCOMMANDS:
   duplicates                  executions and funding payments stored more than once (booked
                               twice)
   recover                     what the newest session left behind
+  audit                       the stored fills against a file of the venue's executions
+                              (--exchange)
 ```
 <!-- END cli-help -->
 

@@ -717,3 +717,42 @@ TEST_CASE("core.pool_plan: at most eight accounts, each venue in one pool") {
   CHECK(small.members(VenueId{0}).contains(VenueId{1}));
   CHECK_FALSE(small.members(VenueId{0}).contains(VenueId{2}));
 }
+
+// ---- fill audit ([venues.<x>] fill_audit_*, live/fill_auditor.hpp) ------------------------------
+
+namespace {
+std::string audit_toml(const char* keys) {
+  return std::string("[venues.binance]\nkind = \"sim\"\n") + keys +
+         "[[instruments]]\nvenue = \"binance\"\nsymbol = \"BTCUSDT\"\ntick = \"0.01\"\n"
+         "lot = \"0.001\"\n";
+}
+}  // namespace
+
+TEST_CASE("core.config: the fill audit is off by default and checked when set") {
+  const Config off = Config::parse(audit_toml(""));
+  CHECK(off.venues[0].fill_audit_interval_s == 0);
+  CHECK(off.venues[0].fill_audit_lag_s == 180);
+  CHECK(off.venues[0].fill_audit_mode == "report");
+  // Off, the effective configuration does not name it.
+  CHECK(off.effective_toml().find("fill_audit") == std::string::npos);
+
+  const Config on = Config::parse(audit_toml(
+      "fill_audit_interval_s = 600\nfill_audit_lag_s = 120\nfill_audit_mode = \"book\"\n"));
+  CHECK(on.venues[0].fill_audit_interval_s == 600);
+  CHECK(on.venues[0].fill_audit_lag_s == 120);
+  CHECK(on.venues[0].fill_audit_mode == "book");
+  const Config back = Config::parse(on.effective_toml());
+  CHECK(back.venues[0].fill_audit_interval_s == 600);
+  CHECK(back.venues[0].fill_audit_mode == "book");
+  CHECK(on.redacted().find("fill_audit_interval_s = 600") != std::string::npos);
+
+  CHECK_THROWS_WITH_AS(Config::parse(audit_toml("fill_audit_interval_s = 5\n")),
+                       doctest::Contains("fill_audit_interval_s must be 0 (off) or at least 10"),
+                       ConfigError);
+  CHECK_THROWS_WITH_AS(Config::parse(audit_toml("fill_audit_lag_s = -1\n")),
+                       doctest::Contains("fill_audit_lag_s must be >= 0"),
+                       ConfigError);
+  CHECK_THROWS_WITH_AS(Config::parse(audit_toml("fill_audit_mode = \"fix\"\n")),
+                       doctest::Contains(R"(fill_audit_mode must be "report" or "book")"),
+                       ConfigError);
+}

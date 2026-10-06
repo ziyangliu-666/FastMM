@@ -38,7 +38,8 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 14: the venues' mark, index and funding per derivative.
 // 15: balance_withheld.
 // 16: each venue's wire tick-to-trade over the last minute and the last hour.
-inline constexpr std::uint32_t kStatusVersion = 16;
+// 17: each venue's fill audit counters.
+inline constexpr std::uint32_t kStatusVersion = 17;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 inline constexpr std::size_t kStatusMaxUnderlyings = 8;    // kMaxUnderlyings
@@ -118,6 +119,14 @@ struct StatusVenue {
   std::uint64_t rest_errors = 0;
   std::uint64_t rate_limit_cooldowns = 0;
   std::int64_t clock_offset_ms = 0;
+  // The fill audit ([venues.<name>] fill_audit_interval_s, live/fill_auditor.hpp): audits done and
+  // not done, and the executions found missing, phantom, differing and booked twice.
+  std::uint64_t fill_audits = 0;
+  std::uint64_t fill_audit_failures = 0;
+  std::uint64_t fill_audit_missing = 0;
+  std::uint64_t fill_audit_phantom = 0;
+  std::uint64_t fill_audit_mismatched = 0;
+  std::uint64_t fill_audit_duplicates = 0;
   StatusLatency wire_tick_to_trade;     // the session's
   StatusLatency wire_tick_to_trade_1m;  // the last minute's (60-70 s)
   StatusLatency wire_tick_to_trade_1h;  // the last hour's (60-70 min)

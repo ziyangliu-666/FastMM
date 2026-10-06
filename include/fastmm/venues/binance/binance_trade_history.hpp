@@ -3,6 +3,7 @@
 // GET /fapi/v1/userTrades) as a replayed fill: the trade id is the execution id, and the
 // commission is an amount of commissionAsset - quote units are a Notional, base units a Qty the
 // engine converts at the fill price, anything else (BNB) it cannot value.
+#include "fastmm/core/fill_audit.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/venues/binance/binance_order_encoder.hpp"
 #include "fastmm/venues/connector_common.hpp"
@@ -50,6 +51,31 @@ inline bool emit_trade_history_fill(EventSink& sink,
                      t.is_maker ? Liquidity::Maker : Liquidity::Taker,
                      t.time_ms,
                      extra_flags);
+  return true;
+}
+
+// The same trade as an execution of a fill audit (Venue::audit_executions), named by the
+// instrument's symbol. False when its price or quantity does not parse.
+inline bool audit_fill_of(std::string_view venue,
+                          const Instrument& inst,
+                          const MyTradeRecord& t,
+                          AuditFill& out) {
+  const auto px = parse_price(t.price);
+  const auto qty = parse_qty(t.qty);
+  if (!px || !qty) return false;
+  out.venue = venue;
+  out.symbol = inst.symbol.view();
+  out.exec_id = IdText(t.id).view();
+  out.order_id = t.order_id > 0 ? std::string(IdText(t.order_id).view()) : std::string{};
+  out.side = t.is_buyer ? Side::Buy : Side::Sell;
+  out.price_raw = px->raw;
+  out.qty_raw = qty->raw;
+  if (const auto fee = parse_qty(t.commission)) {
+    out.fee_raw = fee->raw;
+    out.has_fee = true;
+  }
+  out.fee_asset = t.commission_asset;
+  out.time_ms = t.time_ms;
   return true;
 }
 

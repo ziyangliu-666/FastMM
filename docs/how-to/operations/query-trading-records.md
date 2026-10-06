@@ -92,6 +92,45 @@ build/release/bin/fastmm-pnl duplicates --engine mm1
 
 One row per venue execution or funding payment that more than one session stored (same venue, symbol and venue id): a restart booked it again. The columns are the kind (`fill` or `funding`), engine, venue, symbol, id, the number of copies, side, quantity (the amount of a funding payment), the time of the first copy and the sessions holding it, oldest first. Exit code 0 with no row, 4 with some. Every other command prints a warning on stderr when the rows it read from hold one: the positions, fees and PnL of those sessions count it twice. Nothing is rewritten; correct the figures from the listed rows. `store.duplicates()` returns the same rows in Python.
 
+## Check the stored fills against the venue
+
+Export the account's executions from the venue and compare them with what the store holds:
+
+```bash
+build/release/bin/fastmm-pnl audit --engine mm1 --venue binance --exchange trades.json
+```
+
+```text
+kind     time_ms        symbol   exec_id   side  venue_qty  venue_price  venue_fee       booked_qty  booked_price  booked_fee       order_id  fields  session_id
+missing  1709543642118  BTCUSDT  88213977  Buy   0.002      61248.3      0.0000012 BTC                                                    40012                     
+differs  1709543700402  BTCUSDT  88214102  Sell  0.002      61251.2      0.06125 USDT    0.001       61251.2       0.03062 quote    40019     qty,fee 1709510400123456789
+2 row(s)
+```
+
+`missing`: the venue has the execution and no session booked it. `phantom`: a session booked it and the venue does not have it. `differs`: both have it and `fields` names what differs (`qty`, `price`, `fee`, `side`, `order`; the fee and the order only where both sides report one). `twice`: stored by more than one session. Rows are matched by symbol (case and separators ignored: `BTC-USDT` is `BTCUSDT`), the venue's trade id and side. A summary goes to stderr; the exit code is 0 when everything agrees and 5 otherwise.
+
+The window is the file's span unless `--from-ms`/`--to-ms` (Unix ms) or `--since`/`--until` (UTC days) say otherwise; the store is read a minute past both ends, so a fill the two sides stamp a little differently is compared rather than reported twice. `--venue` selects the store's fills of one `[venues.<name>]` (and the file's rows naming another are skipped); `--instrument` one symbol.
+
+The file is either:
+
+- a JSON array as Binance returns `GET /api/v3/myTrades` or `GET /fapi/v1/userTrades` (several replies can be joined into one array), or of objects with the generic names below;
+- CSV with a header row naming the columns, in any order.
+
+| Column | Aliases | |
+|---|---|---|
+| `symbol` | | required |
+| `exec_id` | `id`, `trade_id`, `tradeId` | the venue's trade id, required |
+| `side` | `isBuyer`, `buyer` (true: Buy) | `buy` or `sell`, any case, required |
+| `price`, `qty` | `quantity` | decimals, required |
+| `time_ms` | `time` | Unix ms or a UTC time `2024-03-04 09:14:02.118`, required |
+| `order_id` | `orderId` | the venue's order id |
+| `cl_ord_id` | `clientOrderId` | the client order id |
+| `fee` | `commission` | as charged, in `fee_asset` |
+| `fee_asset` | `commissionAsset` | |
+| `venue` | | the `[venues.<name>]` |
+
+fastmm-live can run the same comparison against the venue's trade history while it trades ([Fill audit](../../reference/configuration.md#fill-audit)).
+
 ## From Python
 
 ```python

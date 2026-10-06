@@ -11,6 +11,7 @@
 //   * cancel_all() must be callable from ANY thread, including when the reactor thread is
 //     wedged: implementations use an independent blocking REST connection (6.7 kill switch).
 #include "fastmm/core/fees.hpp"
+#include "fastmm/core/fill_audit.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/core/order_budget.hpp"
@@ -24,6 +25,7 @@
 #include "fastmm/venues/wire_latency.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -288,6 +290,21 @@ class Venue {
   // resume_trade_ids(); the replay skips them.
   virtual void resume_known_trade_ids(
       const std::vector<std::pair<InstrumentId, std::vector<std::int64_t>>>& /*known*/) {}
+  // Fill audit (live/fill_auditor.hpp): the account's executions with the venue's time in
+  // [start_ms, end_ms] on every subscribed instrument, read from the same trade history as
+  // request_executions() but apart from it (venues/execution_audit.hpp): nothing is emitted into
+  // the order sink, and the replay's watermark does not move. AuditFill::symbol is the instrument's
+  // symbol. `done` runs once on the reactor thread, complete = false when a query failed or the
+  // connection went down. Returns false, and never calls `done`, when the connector has no such
+  // read, is not connected, or one is running. Reactor thread. By value: a connector keeps it.
+  virtual bool audit_executions(std::int64_t /*start_ms*/,
+                                std::int64_t /*end_ms*/,
+                                // NOLINTNEXTLINE(performance-unnecessary-value-param)
+                                std::function<void(bool, std::vector<AuditFill>)> /*done*/) {
+    return false;
+  }
+  // Whether audit_executions() is implemented. Any thread.
+  [[nodiscard]] virtual bool can_audit_executions() const noexcept { return false; }
   // Kill switch: cancel every open order on every subscribed symbol via an independent
   // REST connection. Blocking; safe from any thread. Returns false if the venue refused.
   virtual bool cancel_all() = 0;

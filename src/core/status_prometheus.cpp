@@ -420,6 +420,30 @@ void venue_metrics(Exposition& e, const StatusSnapshot& s) {
             "counter",
             "rate-limit cooldowns",
             [](const StatusVenue& v) { return v.rate_limit_cooldowns; });
+  per_venue("fastmm_venue_fill_audits_total",
+            "counter",
+            "fill audits that compared the venue's executions with the store's",
+            [](const StatusVenue& v) { return v.fill_audits; });
+  per_venue("fastmm_venue_fill_audit_failures_total",
+            "counter",
+            "fill audits that could not read the venue or the store",
+            [](const StatusVenue& v) { return v.fill_audit_failures; });
+  per_venue("fastmm_venue_fill_audit_missing_total",
+            "counter",
+            "executions the venue reports and the engine never booked",
+            [](const StatusVenue& v) { return v.fill_audit_missing; });
+  per_venue("fastmm_venue_fill_audit_phantom_total",
+            "counter",
+            "executions the engine booked and the venue does not report",
+            [](const StatusVenue& v) { return v.fill_audit_phantom; });
+  per_venue("fastmm_venue_fill_audit_mismatched_total",
+            "counter",
+            "executions whose quantity, price, fee, side or order differ",
+            [](const StatusVenue& v) { return v.fill_audit_mismatched; });
+  per_venue("fastmm_venue_fill_audit_duplicates_total",
+            "counter",
+            "executions the engine stored more than once",
+            [](const StatusVenue& v) { return v.fill_audit_duplicates; });
 
   e.family("fastmm_venue_tick_to_trade_quantile_seconds",
            "gauge",

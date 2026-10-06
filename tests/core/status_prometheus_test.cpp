@@ -41,6 +41,7 @@ StatusSnapshot sample() {
   s.venues[0].books_synced = 1;
   s.venues[0].books_total = 1;
   s.venues[0].md_messages = 963;
+  s.venues[0].fill_audit_missing = 4;
   return s;
 }
 
@@ -84,6 +85,7 @@ TEST_CASE("core.status_prometheus: the snapshot becomes metrics in base units") 
   CHECK(has(text, "fastmm_latency_samples_total{interval=\"tick_to_trade\"} 10\n"));
   CHECK(has(text, "fastmm_venue_channel_state{venue=\"binance\",channel=\"md\"} 2\n"));
   CHECK(has(text, "fastmm_venue_md_messages_total{venue=\"binance\"} 963\n"));
+  CHECK(has(text, "fastmm_venue_fill_audit_missing_total{venue=\"binance\"} 4\n"));
   CHECK_FALSE(has(text, "fastmm_feed_"));  // no multicast venue in this snapshot
 }
 

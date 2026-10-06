@@ -86,6 +86,7 @@
 #include "fastmm/venues/blocking_http.hpp"
 #include "fastmm/venues/connection_slot.hpp"
 #include "fastmm/venues/dead_mans_switch.hpp"
+#include "fastmm/venues/execution_audit.hpp"
 #include "fastmm/venues/order_commands.hpp"
 #include "fastmm/venues/rate_limiter.hpp"
 #include "fastmm/venues/raw_recorder.hpp"
@@ -204,6 +205,10 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
       const std::vector<std::pair<InstrumentId, std::int64_t>>& next_ids) override;
   void resume_known_trade_ids(
       const std::vector<std::pair<InstrumentId, std::vector<std::int64_t>>>& known) override;
+  bool audit_executions(std::int64_t start_ms,
+                        std::int64_t end_ms,
+                        std::function<void(bool, std::vector<AuditFill>)> done) override;
+  [[nodiscard]] bool can_audit_executions() const noexcept override { return true; }
   bool cancel_all() override;
   [[nodiscard]] VenueStatus status() const noexcept override;
 
@@ -334,7 +339,8 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   // Execution replay (ReplayScheduler): GET /fapi/v1/userTrades for one subscribed instrument,
   // and a row of it forwarded as a replayed fill.
   [[nodiscard]] bool replay_ready() const noexcept;
-  bool query_executions(const ReplayQuery& q);
+  // `audit`: the fill audit's query (audit_), not the replay's.
+  bool query_executions(const ReplayQuery& q, bool audit = false);
   bool emit_execution(std::size_t stream, const binance::MyTradeRow& t);
   // GET /fapi/v1/order?orderId= for a replayed execution whose order order_ids_ does not name.
   bool lookup_order(const ReplayLookup& l);
@@ -447,6 +453,8 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   // Execution replay, one stream per subscribed_ instrument: from the trade id after the last one
   // read (fromId), else from the time watermark.
   ReplayScheduler<binance::MyTradeRow> exec_replay_;
+  // The fill audit's read of userTrades (audit_executions), apart from the replay.
+  ExecutionAudit<binance::MyTradeRow> audit_;
   // Orders sent and order events heard per instrument: a sweep skips the quiet ones.
   OrderActivity activity_;
   // Funding, one account-wide stream.

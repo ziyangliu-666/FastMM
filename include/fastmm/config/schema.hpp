@@ -329,6 +329,25 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "validity window of signed requests, ms (default 3000)"},
     {"venues.*",
+     "fill_audit_interval_s",
+     KeyType::Int,
+     false,
+     "fastmm-live compares the venue's trade history with the stored fills this often, s; 0 = off "
+     "(default 0, at least 10)"},
+    {"venues.*",
+     "fill_audit_lag_s",
+     KeyType::Int,
+     false,
+     "a fill audit reads up to this long ago, s, so the execution replay has booked what it will "
+     "(default 180)"},
+    {"venues.*",
+     "fill_audit_mode",
+     KeyType::String,
+     false,
+     "\"report\" logs and counts what differs; \"book\" also books the executions the engine "
+     "missed "
+     "(default \"report\")"},
+    {"venues.*",
      "fees",
      KeyType::Table,
      false,

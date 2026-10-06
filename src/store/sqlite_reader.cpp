@@ -106,6 +106,79 @@ class SqliteReader final : public Reader {
     return query(sql + w.text() + " ORDER BY ts_ns" + limit(f), w);
   }
 
+  [[nodiscard]] Result<std::vector<AuditFill>, std::string> booked_fills(
+      const BookedFillQuery& q) override {
+    if (version_ < 3)
+      return fail(path_ + " predates the venues' names and times (schema 3): no fill audit");
+    std::string sql =
+        "SELECT v.name, f.symbol, f.exec_id, f.venue_order_id, f.cl_ord_id, f.side, f.price_raw,"
+        " f.qty_raw, f.fee_amount_raw, f.fee_asset, f.exch_ns, f.session_id FROM fills f"
+        " JOIN session_venues v ON v.session_id = f.session_id AND v.venue_id = f.venue_id"
+        " WHERE f.exec_id <> ''";
+    std::vector<std::string> texts;
+    std::vector<std::int64_t> ints;
+    std::vector<bool> order;
+    const auto text = [&](const char* clause, const std::string& v) {
+      sql += clause;
+      texts.push_back(v);
+      order.push_back(true);
+    };
+    const auto num = [&](const char* clause, std::int64_t v) {
+      sql += clause;
+      ints.push_back(v);
+      order.push_back(false);
+    };
+    if (!q.engine.empty())
+      text(" AND f.session_id IN (SELECT session_id FROM sessions WHERE engine = ?)", q.engine);
+    if (!q.venue.empty()) text(" AND v.name = ?", q.venue);
+    if (!q.instrument.empty()) text(" AND f.symbol = ?", q.instrument);
+    if (q.from_ms != 0) num(" AND f.exch_ns >= ?", q.from_ms * 1'000'000);
+    if (q.to_ms != 0) num(" AND f.exch_ns <= ?", q.to_ms * 1'000'000 + 999'999);
+    sql += " ORDER BY f.exch_ns, f.session_id, f.seq";
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr) != SQLITE_OK)
+      return fail(error_of(db_, "booked fills"));
+    std::size_t ti = 0;
+    std::size_t ii = 0;
+    for (std::size_t n = 0; n < order.size(); ++n) {
+      const int at = static_cast<int>(n) + 1;
+      if (order[n]) {
+        const std::string& v = texts[ti++];
+        sqlite3_bind_text(st, at, v.c_str(), static_cast<int>(v.size()), SQLITE_TRANSIENT);
+      } else {
+        sqlite3_bind_int64(st, at, ints[ii++]);
+      }
+    }
+    const auto str = [st](int i) {
+      const auto* p = reinterpret_cast<const char*>(sqlite3_column_text(st, i));
+      return p == nullptr ? std::string() : std::string(p);
+    };
+    std::vector<AuditFill> out;
+    int rc = 0;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+      AuditFill a;
+      a.venue = str(0);
+      a.symbol = str(1);
+      a.exec_id = str(2);
+      a.order_id = str(3);
+      a.cl_ord_id = str(4);
+      a.side = str(5) == "Sell" ? Side::Sell : Side::Buy;
+      a.price_raw = sqlite3_column_int64(st, 6);
+      a.qty_raw = sqlite3_column_int64(st, 7);
+      a.fee_raw = sqlite3_column_int64(st, 8);
+      a.has_fee = true;
+      a.fee_asset = str(9);
+      a.time_ms = sqlite3_column_int64(st, 10) / 1'000'000;
+      a.session_id = static_cast<std::uint64_t>(sqlite3_column_int64(st, 11));
+      out.push_back(std::move(a));
+    }
+    const bool ok = rc == SQLITE_DONE;
+    const std::string err = ok ? std::string() : error_of(db_, "booked fills");
+    sqlite3_finalize(st);
+    if (!ok) return fail(err);
+    return out;
+  }
+
   [[nodiscard]] Result<Rows, std::string> orders(const QueryFilter& f) override {
     std::string sql =
         "SELECT updated_ns, symbol, cl_ord_id, side, type, price_raw, qty_raw, cum_qty_raw,"

@@ -4,6 +4,7 @@
 // Rows are strings. The store is queried by people and by tools, never on a hot path, and a
 // string column keeps the interface small enough for a backend to implement in an afternoon;
 // raw fixed-point columns are rendered as exact decimals (Fixed::to_string).
+#include "fastmm/core/fill_audit.hpp"
 #include "fastmm/core/result.hpp"
 #include "fastmm/store/backend.hpp"
 
@@ -12,6 +13,16 @@
 #include <vector>
 
 namespace fastmm::store {
+
+// The executions an engine stored for one venue (Reader::booked_fills): the engine's side of a
+// fill audit (core/fill_audit.hpp).
+struct BookedFillQuery {
+  std::string engine;        // [engine] name (empty: every engine)
+  std::string venue;         // [venues.<name>] (empty: every venue)
+  std::string instrument;    // symbol (empty: every instrument)
+  std::int64_t from_ms = 0;  // the venue's time of the trade, inclusive (0: from the beginning)
+  std::int64_t to_ms = 0;    // inclusive (0: to the end)
+};
 
 struct Rows {
   std::vector<std::string> columns;
@@ -203,6 +214,14 @@ class Reader {
   // sound store; the default has none. Filtered by engine and instrument.
   [[nodiscard]] virtual Result<Rows, std::string> duplicates(const QueryFilter& /*f*/) {
     return Rows{};
+  }
+  // The executions stored for `q.venue`, of every session of `q.engine`, by the venue's time of the
+  // trade: the venue's trade id, order ids, side, price, quantity and the commission as reported
+  // (AuditFill::fee_asset: quote, base or other). Estimates (no trade id) are left out. Needs the
+  // venue's names and times (schema 3); the default cannot answer.
+  [[nodiscard]] virtual Result<std::vector<AuditFill>, std::string> booked_fills(
+      const BookedFillQuery& /*q*/) {
+    return fail(std::string("this store backend cannot list booked fills"));
   }
   // The last position snapshot per session and instrument.
   [[nodiscard]] virtual Result<Rows, std::string> positions(const QueryFilter& f) = 0;

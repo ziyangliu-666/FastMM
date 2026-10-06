@@ -41,6 +41,7 @@ While the session runs:
 | `venue_rejects` by reason | `PostOnlyWouldCross` only | anything else |
 | `clock_offset_ms` | well below `recv_window_ms` and `[risk] stale_md_ms` | it approaches either |
 | `reconnects`, `rest_errors`, `rate_limit_cooldowns` | flat | rising |
+| `fill_audit_missing`, `fill_audit_phantom`, `fill_audit_mismatched` | 0 | any: `fill audit` lines in the log name the executions |
 | realised PnL and fees | fees below realised | fees exceed realised: the strategy is paying the venue ([Economics](../../explanation/economics.md)) |
 
 After each session:

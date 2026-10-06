@@ -3,12 +3,16 @@
 //   fastmm-pnl pnl --since yesterday          what each instrument made, by day
 //   fastmm-pnl fills --session 1700000000     the fills of one session
 //   fastmm-pnl sessions                       what has run
+//   fastmm-pnl audit --exchange trades.json   the stored fills against the venue's export
 //
 // The journal answers "what exactly happened, byte for byte" (fastmm-replay); this answers the
 // daily questions. docs/how-to/operations/query-trading-records.md.
 #include "command_line.hpp"
 
 #include "fastmm/core/enums.hpp"
+#include "fastmm/core/fill_audit.hpp"
+#include "fastmm/core/fixed_point.hpp"
+#include "fastmm/store/fill_audit_file.hpp"
 #include "fastmm/store/registry.hpp"
 #include "fastmm/store/sqlite_store.hpp"
 
@@ -32,6 +36,10 @@ constexpr int kOk = 0;
 constexpr int kUsage = 2;
 constexpr int kNotFound = 3;
 constexpr int kDuplicates = 4;  // `duplicates` found some
+constexpr int kDiffers = 5;     // `audit` found executions that are not as they should be
+// The store's fills are read this far past the audit's window: a fill the two sides stamp a little
+// differently is compared rather than reported missing on one side and phantom on the other.
+constexpr std::int64_t kAuditMarginMs = 60'000;
 
 // "today" and "yesterday" resolve against the host's UTC clock.
 std::string resolve_day(std::string_view text) {
@@ -102,6 +110,85 @@ void print_table(const Rows& r) {
   fmt::print("{} row(s)\n", r.rows.size());
 }
 
+// "YYYY-MM-DD" (UTC) as Unix ms at its start; false when it is not a day.
+bool day_start_ms(const std::string& day, std::int64_t& out) {
+  std::tm tm{};
+  if (day.size() != 10 ||
+      std::sscanf(day.c_str(), "%4d-%2d-%2d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday) != 3)
+    return false;
+  tm.tm_year -= 1900;
+  tm.tm_mon -= 1;
+  out = timegm(&tm) * 1000;
+  return true;
+}
+
+std::string dec(std::int64_t raw) {
+  char buf[fastmm::kMaxDecimalChars];
+  return {buf, fastmm::Qty::from_raw(raw).to_decimal(buf)};
+}
+
+// One row per execution that is not as it should be.
+Rows audit_rows(const fastmm::FillAuditReport& r) {
+  using fastmm::AuditFill;
+  Rows out;
+  out.columns = {"kind",
+                 "time_ms",
+                 "symbol",
+                 "exec_id",
+                 "side",
+                 "venue_qty",
+                 "venue_price",
+                 "venue_fee",
+                 "booked_qty",
+                 "booked_price",
+                 "booked_fee",
+                 "order_id",
+                 "fields",
+                 "session_id"};
+  const auto fee = [](const AuditFill* x) {
+    if (x == nullptr || !x->has_fee) return std::string();
+    return x->fee_asset.empty() ? dec(x->fee_raw) : dec(x->fee_raw) + " " + x->fee_asset;
+  };
+  const auto add = [&](std::string_view kind,
+                       const AuditFill* v,
+                       const AuditFill* b,
+                       const std::string& fields) {
+    const AuditFill& f = v != nullptr ? *v : *b;
+    std::string order = f.order_id;
+    if (order.empty() && b != nullptr) order = b->order_id;
+    out.rows.push_back({std::string(kind),
+                        std::to_string(f.time_ms),
+                        f.symbol,
+                        f.exec_id,
+                        std::string(to_string(f.side)),
+                        v != nullptr ? dec(v->qty_raw) : std::string(),
+                        v != nullptr ? dec(v->price_raw) : std::string(),
+                        fee(v),
+                        b != nullptr ? dec(b->qty_raw) : std::string(),
+                        b != nullptr ? dec(b->price_raw) : std::string(),
+                        fee(b),
+                        order,
+                        fields,
+                        b != nullptr ? std::to_string(b->session_id) : std::string()});
+  };
+  for (const AuditFill& f : r.missing) add("missing", &f, nullptr, "");
+  for (const AuditFill& f : r.phantom) add("phantom", nullptr, &f, "");
+  for (const fastmm::AuditMismatch& m : r.mismatched)
+    add("differs", &m.venue, &m.booked, fastmm::audit_fields_text(m.fields));
+  for (const AuditFill& f : r.duplicates) add("twice", nullptr, &f, "");
+  return out;
+}
+
+// fastmm-pnl audit: the store's fills of `venue` against the executions in `file`, over
+// [from_ms, to_ms] (0: what the file spans). Prints what differs and returns the exit code.
+int audit_command(fastmm::store::Reader& reader,
+                  const QueryFilter& f,
+                  const std::string& file,
+                  const std::string& venue,
+                  std::int64_t from_ms,
+                  std::int64_t to_ms,
+                  bool csv);
+
 int bad_usage(const std::string& msg) {
   std::fprintf(stderr, "fastmm-pnl: %s\n", msg.c_str());
   return kUsage;
@@ -117,6 +204,10 @@ static int run(int argc, char** argv) {
   std::string until;
   std::string day;
   bool csv = false;
+  std::string exchange_file;
+  std::string venue;
+  std::int64_t from_ms = 0;
+  std::int64_t to_ms = 0;
   QueryFilter f;
 
   CLI::App app("What a deployment traded, read from the store.", "fastmm-pnl");
@@ -131,6 +222,7 @@ static int run(int argc, char** argv) {
       {"positions", "the last position snapshot of each session and instrument"},
       {"duplicates", "executions and funding payments stored more than once (booked twice)"},
       {"recover", "what the newest session left behind"},
+      {"audit", "the stored fills against a file of the venue's executions (--exchange)"},
   };
   for (const auto& [name, description] : commands)
     app.add_subcommand(name, description)->fallthrough();
@@ -148,6 +240,17 @@ static int run(int argc, char** argv) {
   app.add_option("--day", day, "shorthand for --since <day> --until <day>")->option_text("<day>");
   app.add_option("--limit", f.limit, "at most n rows")->option_text("<n>");
   app.add_flag("--csv", csv, "comma-separated output instead of an aligned table");
+  app.add_option("--exchange",
+                 exchange_file,
+                 "audit: the venue's executions, a JSON array (Binance myTrades / userTrades) or "
+                 "CSV")
+      ->option_text("<file>");
+  app.add_option("--venue", venue, "audit: the [venues.<name>] the file is from")
+      ->option_text("<name>");
+  app.add_option("--from-ms", from_ms, "audit: window start, Unix ms (default: the file's first)")
+      ->option_text("<ms>");
+  app.add_option("--to-ms", to_ms, "audit: window end, Unix ms (default: the file's last)")
+      ->option_text("<ms>");
   if (const auto rc = fastmm::cli::parse(app, argc, argv)) return *rc;
   if (app.get_subcommands().empty()) return fastmm::cli::usage_error(app, "a command is required");
   const std::string command = app.get_subcommands().front()->get_name();
@@ -241,6 +344,9 @@ static int run(int argc, char** argv) {
     return kOk;
   }
 
+  if (command == "audit")
+    return audit_command(*reader, f, exchange_file, venue, from_ms, to_ms, csv);
+
   fastmm::Result<Rows, std::string> rows = fastmm::fail(std::string("no command"));
   if (command == "sessions") {
     rows = reader->sessions(f);
@@ -276,6 +382,85 @@ static int run(int argc, char** argv) {
                  dup->rows.size());
   return kOk;
 }
+
+namespace {
+
+int audit_command(fastmm::store::Reader& reader,
+                  const QueryFilter& f,
+                  const std::string& file,
+                  const std::string& venue,
+                  std::int64_t from_ms,
+                  std::int64_t to_ms,
+                  bool csv) {
+  if (file.empty()) return bad_usage("audit needs --exchange <file>");
+  auto loaded = fastmm::store::load_venue_fills(file);
+  if (!loaded) return bad_usage(loaded.error());
+  const std::string want = f.instrument.empty() ? "" : fastmm::normalize_symbol(f.instrument);
+  const auto wanted = [&](const fastmm::AuditFill& a) {
+    return want.empty() || fastmm::normalize_symbol(a.symbol) == want;
+  };
+  std::vector<fastmm::AuditFill> exchange;
+  for (fastmm::AuditFill& a : *loaded) {
+    if (!venue.empty() && !a.venue.empty() && a.venue != venue) continue;
+    if (wanted(a)) exchange.push_back(std::move(a));
+  }
+  // The window: --from-ms / --to-ms, else --since / --until (whole UTC days), else the file's span.
+  std::int64_t day_ms = 0;
+  if (from_ms == 0 && !f.from.empty()) {
+    if (!day_start_ms(f.from, day_ms)) return bad_usage("--since: not a day: " + f.from);
+    from_ms = day_ms;
+  }
+  if (to_ms == 0 && !f.to.empty()) {
+    if (!day_start_ms(f.to, day_ms)) return bad_usage("--until: not a day: " + f.to);
+    to_ms = day_ms + 86'400'000 - 1;
+  }
+  if (exchange.empty() && (from_ms == 0 || to_ms == 0))
+    return bad_usage("audit: " + file +
+                     " holds no execution; name the window (--from-ms, --to-ms)");
+  if (from_ms == 0 || to_ms == 0) {
+    std::int64_t first = exchange.front().time_ms;
+    std::int64_t last = first;
+    for (const fastmm::AuditFill& a : exchange) {
+      first = std::min(first, a.time_ms);
+      last = std::max(last, a.time_ms);
+    }
+    if (from_ms == 0) from_ms = first;
+    if (to_ms == 0) to_ms = last;
+  }
+  fastmm::store::BookedFillQuery q;
+  q.engine = f.engine;
+  q.venue = venue;
+  q.from_ms = from_ms - kAuditMarginMs;
+  q.to_ms = to_ms + kAuditMarginMs;
+  auto booked = reader.booked_fills(q);
+  if (!booked) return bad_usage(booked.error());
+  std::vector<fastmm::AuditFill> stored;
+  for (fastmm::AuditFill& b : *booked) {
+    if (wanted(b)) stored.push_back(std::move(b));
+  }
+  const fastmm::FillAuditReport r = fastmm::audit_fills(exchange, stored, from_ms, to_ms);
+  const Rows out = audit_rows(r);
+  if (csv) {
+    print_csv(out);
+  } else {
+    print_table(out);
+  }
+  std::fprintf(stderr,
+               "fastmm-pnl: audit %lld to %lld ms: venue %zu, store %zu; %zu agree, %zu missing, "
+               "%zu phantom, %zu differ, %zu stored twice\n",
+               static_cast<long long>(from_ms),
+               static_cast<long long>(to_ms),
+               r.venue_rows,
+               r.booked_rows,
+               r.matched,
+               r.missing.size(),
+               r.phantom.size(),
+               r.mismatched.size(),
+               r.duplicates.size());
+  return r.clean() ? kOk : kDiffers;
+}
+
+}  // namespace
 
 int main(int argc, char** argv) {
   return fastmm::cli::guarded_main("fastmm-pnl", [&] { return run(argc, argv); });

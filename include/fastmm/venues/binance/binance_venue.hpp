@@ -38,6 +38,7 @@
 #include "fastmm/venues/binance/binance_order_encoder.hpp"
 #include "fastmm/venues/binance/binance_user_parser.hpp"
 #include "fastmm/venues/connection_slot.hpp"
+#include "fastmm/venues/execution_audit.hpp"
 #include "fastmm/venues/order_commands.hpp"
 #include "fastmm/venues/rate_limiter.hpp"
 #include "fastmm/venues/raw_recorder.hpp"
@@ -153,6 +154,10 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
       const std::vector<std::pair<InstrumentId, std::int64_t>>& next_ids) override;
   void resume_known_trade_ids(
       const std::vector<std::pair<InstrumentId, std::vector<std::int64_t>>>& known) override;
+  bool audit_executions(std::int64_t start_ms,
+                        std::int64_t end_ms,
+                        std::function<void(bool, std::vector<AuditFill>)> done) override;
+  [[nodiscard]] bool can_audit_executions() const noexcept override { return true; }
   bool cancel_all() override;
   [[nodiscard]] VenueStatus status() const noexcept override;
 
@@ -275,7 +280,10 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   // Execution replay (ReplayScheduler): GET /api/v3/myTrades for one subscribed instrument, and a
   // row of it forwarded as a replayed fill.
   [[nodiscard]] bool exec_ready() const noexcept;
-  bool query_executions(const ReplayQuery& q);
+  // `audit`: the fill audit's query (audit_), not the replay's.
+  bool query_executions(const ReplayQuery& q, bool audit = false);
+  // A myTrades row as an execution of the fill audit.
+  bool audit_row(std::size_t stream, const MyTradeRow& t, AuditFill& out) const;
   bool emit_execution(std::size_t stream, const MyTradeRow& t);
   // GET /api/v3/order?orderId= for a replayed execution whose order order_ids_ does not name.
   bool lookup_order(const ReplayLookup& l);
@@ -353,6 +361,8 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   // Execution replay, one stream per subscribed_ instrument: from the trade id after the last one
   // forwarded (fromId), else from the time watermark.
   ReplayScheduler<MyTradeRow> exec_replay_;
+  // The fill audit's read of myTrades (audit_executions), apart from the replay.
+  ExecutionAudit<MyTradeRow> audit_;
   // Orders sent and order events heard per instrument: a sweep skips the quiet ones.
   OrderActivity activity_;
   // The first trade id per instrument an earlier session left off at (resume_trade_ids): handed

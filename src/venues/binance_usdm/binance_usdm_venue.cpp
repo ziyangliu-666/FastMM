@@ -118,6 +118,24 @@ BinanceUsdmVenue::BinanceUsdmVenue(VenueId id, BinanceUsdmVenueConfig cfg)
                    ? std::string(IdText(t.order_id).view())
                    : std::string{};
       });
+  audit_.setup(cfg_.name,
+               limits,
+               {[this] { return replay_ready(); },
+                [this] { return venue_time_ms(); },
+                [this](const ReplayQuery& q) { return query_executions(q, /*audit=*/true); },
+                {},
+                {},
+                [this] {
+                  return replay_room() &&
+                         rate_.can_send(
+                             kUserTradesWeight, now_ns(), false, RateLimiter::kBulkShare);
+                }},
+               [this](std::size_t stream, const binance::MyTradeRow& t, AuditFill& out) {
+                 if (stream >= subscribed_.size() || instruments_ == nullptr) return false;
+                 const InstrumentId inst = subscribed_[stream];
+                 return instruments_->contains(inst) &&
+                        binance::audit_fill_of(cfg_.name, instruments_->get(inst), t.view(), out);
+               });
   limits.max_pages = kIncomeMaxPages;
   funding_replay_.setup(
       cfg_.name,
@@ -589,6 +607,7 @@ void BinanceUsdmVenue::subscribe(std::span<const InstrumentId> instruments) {
       md_feed_->add_perpetual(id, funding_interval_of(id));
   }
   exec_replay_.set_streams(subscribed_.size());
+  audit_.set_streams(subscribed_.size());
   std::size_t tracked = 0;
   for (InstrumentId id : subscribed_) tracked = std::max<std::size_t>(tracked, id.value + 1U);
   activity_.track(tracked, now_ns());
@@ -679,6 +698,7 @@ void BinanceUsdmVenue::disconnect() {
   order_conn_.close();
   // Replies to requests aborted by the reset are ignored: a later connect() starts afresh.
   exec_replay_.close();
+  audit_.close();
   funding_replay_.close();
   if (rest_) rest_->reset();
   listen_key_pending_ = false;
@@ -1871,7 +1891,7 @@ void BinanceUsdmVenue::replay_query_failed(std::string_view what,
                    then);
 }
 
-bool BinanceUsdmVenue::query_executions(const ReplayQuery& q) {
+bool BinanceUsdmVenue::query_executions(const ReplayQuery& q, bool audit) {
   if (rest_ == nullptr || rest_hard_stopped_ || q.stream >= subscribed_.size()) return false;
   const std::string_view symbol =
       symbols_ == nullptr ? std::string_view{} : symbols_->venue_symbol(subscribed_[q.stream]);
@@ -1886,15 +1906,17 @@ bool BinanceUsdmVenue::query_executions(const ReplayQuery& q) {
   const auto target = signed_target(rr);  // made when sent
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
-      "GET", target, api_headers(), {}, [this, alive, q](const net::HttpResponse& r) {
-        if (alive.expired() || !exec_replay_.expects(q)) return;
+      "GET", target, api_headers(), {}, [this, alive, q, audit](const net::HttpResponse& r) {
+        ReplayScheduler<binance::MyTradeRow>& sched = audit ? audit_.scheduler() : exec_replay_;
+        if (alive.expired() || !sched.expects(q)) return;
         ++stats_.rest_requests;
         note_rate_headers(r);
         if (!r.ok()) {
-          ++stats_.execution_query_errors;
-          replay_query_failed("userTrades", r);
-          exec_replay_.failed(q);
-          exec_replay_.send_waiting();
+          if (!audit) ++stats_.execution_query_errors;
+          replay_query_failed(
+              "userTrades", r, audit ? "the fill audit is incomplete" : "asked again");
+          sched.failed(q);
+          sched.send_waiting();
           return;
         }
         // The rows own their text: a window waits for its lookups past this reply.
@@ -1906,22 +1928,28 @@ bool BinanceUsdmVenue::query_executions(const ReplayQuery& q) {
                   {t.time_ms, t.id, std::string(IdText(t.id).view()), binance::MyTradeRow::of(t)});
             });
         if (st != ParseStatus::Ok) {
-          ++stats_.execution_query_errors;
+          if (!audit) ++stats_.execution_query_errors;
           FASTMM_LOG_ERROR("{}: userTrades reply could not be parsed; asked again", cfg_.name);
-          exec_replay_.failed(q);
-          exec_replay_.send_waiting();
+          sched.failed(q);
+          sched.send_waiting();
           return;
         }
-        exec_replay_.answer(q, std::move(page));
-        exec_replay_.send_waiting();
+        sched.answer(q, std::move(page));
+        sched.send_waiting();
       });
   if (!queued) {
-    ++stats_.execution_query_errors;
+    if (!audit) ++stats_.execution_query_errors;
     FASTMM_LOG_ERROR("{}: no room to ask for the account's executions", cfg_.name);
     return false;
   }
   rate_.on_sent(rr.weight, now_ns());
   return true;
+}
+
+bool BinanceUsdmVenue::audit_executions(std::int64_t start_ms,
+                                        std::int64_t end_ms,
+                                        std::function<void(bool, std::vector<AuditFill>)> done) {
+  return audit_.start(start_ms, end_ms, std::move(done));
 }
 
 bool BinanceUsdmVenue::emit_execution(std::size_t stream, const binance::MyTradeRow& t) {
@@ -2295,6 +2323,7 @@ void BinanceUsdmVenue::on_timer(std::int64_t now) {
     // a minute while all is well (the OMS deduplicates a bounded window, and the private stream can
     // drop an event without disconnecting), and funding a second after a user-stream event.
     exec_replay_.on_timer(now);
+    audit_.on_timer(now);
     funding_replay_.on_timer(now);
     // Venue-side dead man's switch. Refreshed from the housekeeping timer, which is the same
     // thread that would stop running if this process died, so there is nothing to keep the

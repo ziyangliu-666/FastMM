@@ -34,6 +34,8 @@
 namespace fastmm {
 
 inline constexpr std::size_t kMaxVenuesConfig = 8;  // == kMaxVenues (transport.hpp)
+// The shortest [venues.<name>] fill_audit_interval_s: an audit reads every subscribed symbol.
+inline constexpr int kMinFillAuditIntervalS = 10;
 
 class ConfigError : public std::runtime_error {
  public:
@@ -138,6 +140,13 @@ struct VenueSection {
   bool insecure_tls = false;
   std::string ca_file;
   int recv_window_ms = 3000;
+  // Fill audit (live/fill_auditor.hpp): every fill_audit_interval_s seconds fastmm-live compares
+  // the venue's trade history with the fills the store holds for this venue, up to
+  // fill_audit_lag_s ago. 0: off. "report" only reports a difference; "book" also books the
+  // executions the engine missed, through the execution replay.
+  int fill_audit_interval_s = 0;
+  int fill_audit_lag_s = 180;
+  std::string fill_audit_mode = "report";
   FeesSection fees;
   // Every key the generic parser does not interpret, stringified. The venue `kind` names owns
   // them: it declares them, validates them and reports an unknown one

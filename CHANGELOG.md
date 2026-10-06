@@ -25,6 +25,18 @@ All notable changes are recorded here (Keep a Changelog format).
   or another connector the standby waits cold as before.
 - `fastmm-sim-exchange`: `SimExchangeServer::accepted_client_order_ids()`, every accepted client
   order id in acceptance order.
+- Fill audit: `[venues.<name>] fill_audit_interval_s` (default 0, off) has fastmm-live compare,
+  every so often, the account's executions in the venue's trade history with the fills the store
+  holds for that venue, by trade id: missing (never booked), phantom (booked, not at the venue),
+  differing quantity, price, fee, side or order, and stored twice. Each is logged once and counted
+  in the status file (version 17) and the metrics (`fastmm_venue_fill_audit_*`).
+  `fill_audit_lag_s` (180) keeps the window behind the execution replay; `fill_audit_mode = "book"`
+  also books the missing ones through the replay. The venue's side is read on its network thread,
+  apart from the replay, within the bulk share of the request weight. Binance Spot and USDⓈ-M
+  (`Venue::audit_executions`).
+- `fastmm-pnl audit --exchange <file>`: the store's fills against the venue's executions exported
+  to a file (Binance `myTrades` / `userTrades` JSON as returned, or generic JSON or CSV); prints what
+  differs and exits 5 when anything does.
 - Strategy hook `on_batch_end(ctx)`: `ctx.request_batch_end()` from any hook asks for one call
   once the engine has handled the events waiting in its input rings (or the step's
   `max_events_per_step` is used up). Work a burst repeats per event (a requote after every balance

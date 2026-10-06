@@ -13,6 +13,7 @@
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/transport.hpp"
 #include "fastmm/live/control_socket.hpp"
+#include "fastmm/live/fill_auditor.hpp"
 #include "fastmm/live/gateway.hpp"
 #include "fastmm/live/instance_lock.hpp"
 #include "fastmm/live/live_backend.hpp"
@@ -39,6 +40,7 @@
 #include <bit>
 #include <cmath>
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <exception>
@@ -1292,6 +1294,94 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     if (const int rc = make_store(); rc != 0) return rc;
   }
 
+  // ---- fill audit ([venues.<name>] fill_audit_interval_s) ---------------------------------
+  // The venue's trade history against the store: the store holds what the engine booked, and the
+  // venue runs in this process.
+  std::unique_ptr<store::Reader> audit_reader;
+  std::unique_ptr<FillAuditor> auditor;
+  std::vector<std::size_t> audit_index(cfg.venues.size(), SIZE_MAX);  // venue -> auditor target
+  {
+    std::vector<FillAuditTarget> targets;
+    for (std::size_t i = 0; i < cfg.venues.size(); ++i) {
+      const VenueSection& v = cfg.venues[i];
+      if (v.fill_audit_interval_s <= 0) continue;
+      if (via_gateway) {
+        FASTMM_LOG_WARN("{}: fill_audit_interval_s is ignored: the venue runs in the gateway",
+                        v.name);
+        continue;
+      }
+      if (opts.dry_run || v.public_only) continue;  // no account to audit
+      if (backend_name == store::kNoBackend || !store_thread) {
+        std::fprintf(stderr,
+                     "%s: venues.%s.fill_audit_interval_s compares the venue's executions with "
+                     "the store's: it needs [storage] (backend is \"none\")\n",
+                     prog,
+                     v.name.c_str());
+        return kExitConfig;
+      }
+      if (!slots[i]->venue->can_audit_executions()) {
+        std::fprintf(stderr,
+                     "%s: venues.%s.fill_audit_interval_s: kind \"%s\" has no fill audit\n",
+                     prog,
+                     v.name.c_str(),
+                     v.kind.c_str());
+        return kExitConfig;
+      }
+      FillAuditTarget t;
+      t.venue = v.name;
+      t.connector = slots[i]->venue.get();
+      t.post = [r = slots[i]->reactor.get()](std::function<void()> task) {
+        r->post(std::move(task));
+      };
+      t.interval_ms = std::int64_t{v.fill_audit_interval_s} * 1000;
+      t.lag_ms = std::int64_t{v.fill_audit_lag_s} * 1000;
+      t.book = v.fill_audit_mode == "book";
+      audit_index[i] = targets.size();
+      targets.push_back(std::move(t));
+    }
+    if (!targets.empty()) {
+      audit_reader = store::StoreRegistry::instance().make_reader(backend_name);
+      store::BackendOptions ropts;
+      ropts.config = &cfg.storage;
+      ropts.engine_name = cfg.engine.name;
+      ropts.default_dir = cfg.engine.journal_dir;
+      ropts.read_only = true;
+      if (audit_reader == nullptr) {
+        std::fprintf(stderr,
+                     "%s: [storage] backend \"%s\" cannot be queried: no fill audit\n",
+                     prog,
+                     backend_name.c_str());
+        return kExitConfig;
+      }
+      if (auto r = audit_reader->open(ropts); !r) {
+        std::fprintf(stderr, "%s: fill audit: %s\n", prog, r.error().c_str());
+        return kExitConfig;
+      }
+      store::Reader* reader = audit_reader.get();
+      const std::string engine_name = cfg.engine.name;
+      auditor = std::make_unique<FillAuditor>(
+          std::move(targets),
+          [reader, engine_name](
+              const std::string& venue, std::int64_t from_ms, std::int64_t to_ms) {
+            store::BookedFillQuery q;
+            q.engine = engine_name;
+            q.venue = venue;
+            q.from_ms = from_ms;
+            q.to_ms = to_ms;
+            return reader->booked_fills(q);
+          },
+          wall_now().ns / 1'000'000);
+      for (std::size_t i = 0; i < auditor->size(); ++i) {
+        const FillAuditTarget& t = auditor->target(i);
+        FASTMM_LOG_INFO("{}: fill audit every {} s, {} s back ({})",
+                        t.venue,
+                        t.interval_ms / 1000,
+                        t.lag_ms / 1000,
+                        t.book ? "book what is missing" : "report");
+      }
+    }
+  }
+
   std::unique_ptr<MsgRing> journal_ring;
   std::unique_ptr<JournalFileWriter> journal;
   std::string journal_path;
@@ -1486,6 +1576,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     engine_thread = std::thread([&] { runner->run(); });
   }
 
+  if (auditor) auditor->start();
+
   FASTMM_LOG_INFO(
       "fastmm-live: session {} strategy={} venues={} instruments={} dry_run={} epoch={} net={} "
       "threading={}",
@@ -1589,6 +1681,15 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
           static_cast<std::uint8_t>(live.venue_kill_reasons[RiskEngine::venue_slot(vid)]);
       if (i >= slots.size()) continue;  // the venue runs in the gateway
       fill_status_venue(slots[i]->venue->status(), sv);
+      if (auditor && audit_index[i] != SIZE_MAX) {
+        const FillAuditCounters c = auditor->counters(audit_index[i]);
+        sv.fill_audits = c.audits;
+        sv.fill_audit_failures = c.failures;
+        sv.fill_audit_missing = c.missing;
+        sv.fill_audit_phantom = c.phantom;
+        sv.fill_audit_mismatched = c.mismatched;
+        sv.fill_audit_duplicates = c.duplicates;
+      }
     }
     if (status.is_open()) status.publish(snap);
   };
@@ -2013,6 +2114,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
   }
   shutdown_watchdog.stop_requested();  // --duration, a kill switch, fastmm-ctl stop, ...
+  if (auditor) auditor->stop();        // an audit waiting for a venue gives up
   control_socket.close();              // no command can reach a session that is shutting down
   const std::int64_t shutdown_start = steady_now().ns;
   persist_kill(runner->live_stats());
