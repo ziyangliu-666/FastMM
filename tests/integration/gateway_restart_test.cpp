@@ -39,9 +39,20 @@ struct Plan {
   bool primary_b = false;
 };
 
-void restart_with_fill(const std::string& stem, const Plan& p) {
+// The simulator of a restart. Every fill is one the test makes. The new gateway's start-up sweep
+// waits for its execution replay, a bulk query, and the first gateway and its strategies have spent
+// some 430 to 575 of the IP's weight by then: past the bulk share of a 6000 limit at the start of
+// a minute (RateLimiter::kBulkPaceFloor), so a restart in a minute's first seconds (of the venue's
+// clock) swept some 13 s later. Rate limits are not what these test.
+sim::server::SimServerConfig restart_server() {
   sim::server::SimServerConfig sc = two_markets();
-  sc.generator.market_rate_per_s = 0.0;  // every fill is one the test makes
+  sc.generator.market_rate_per_s = 0.0;
+  sc.weight_limit_per_minute = 60000;
+  return sc;
+}
+
+void restart_with_fill(const std::string& stem, const Plan& p) {
+  sim::server::SimServerConfig sc = restart_server();
   sc.clock_offset_ms = p.venue_ahead_ms;
   ServerFixture fx(sc);
   Configs c = write_configs(fx, stem);
@@ -276,9 +287,7 @@ TEST_CASE(
   // an epoch no attached strategy holds, so the account books it for nobody (unattributed). When a
   // attaches and claims its earlier epochs, the parked fill reaches it and the account moves it to
   // a's share (AccountBook::retag).
-  sim::server::SimServerConfig sc = two_markets();
-  sc.generator.market_rate_per_s = 0.0;  // every fill is one the test makes
-  ServerFixture fx(sc);
+  ServerFixture fx(restart_server());
   Configs c = write_configs(fx, "gw-rs-retag");
   rewrite(c.gw.config, [](std::string& t) { t += "\n[gateway.shared.\"sim:BTCUSDT\"]\n"; });
   const std::string gw_name = "gw-rs-retag-gw";
