@@ -122,8 +122,17 @@ class BalanceBook {
     std::int64_t total = 0;
     std::int64_t equity = 0;
     std::int64_t maintenance = 0;
+    // What the venue last said can leave the account (BalanceMsg::kWithdrawable); -1: it never
+    // said, `free` can. A report without it keeps the last one.
+    std::int64_t withdrawable = -1;
     Timestamp as_of{};
     std::uint32_t gen = 0;  // the venue's snapshot that last named it
+
+    // What an internal transfer can take now: the free estimate, capped by what the venue lets
+    // leave.
+    [[nodiscard]] std::int64_t transferable() const noexcept {
+      return withdrawable < 0 ? free : std::min(free, withdrawable);
+    }
   };
 
   // Builds the rows from the instruments. `fees`: the taker rate a spot buy holds on top of its
@@ -184,6 +193,7 @@ class BalanceBook {
       row.total = m.total.raw;
       row.equity = m.equity.raw;
       row.maintenance = m.maintenance.raw;
+      if ((m.flags & BalanceMsg::kWithdrawable) != 0) row.withdrawable = m.withdrawable.raw;
       row.as_of = m.hdr.exch_ts;
       row.reported = true;
       row.gen = vs.gen;
@@ -649,6 +659,7 @@ class BalanceBook {
       if (r.venue != venue || r.gen == vs.gen) continue;
       if (r.account && !r.reported) continue;
       r.free = r.locked = r.total = r.equity = r.maintenance = 0;
+      if (r.withdrawable > 0) r.withdrawable = 0;
       r.as_of = ts;
       r.reported = true;
       r.gen = vs.gen;

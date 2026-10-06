@@ -57,8 +57,11 @@ struct LiveBalance {
   std::uint8_t account = 0;
   std::uint8_t known = 0;  // the venue has reported it
   std::uint8_t pad_[4] = {};
+  // What an internal transfer can take (BalanceBook::Row::transferable): free, capped by what the
+  // venue lets leave the account where it says.
+  std::int64_t transferable_raw = 0;
 };
-static_assert(sizeof(LiveBalance) == 64);
+static_assert(sizeof(LiveBalance) == 72);
 inline constexpr std::size_t kMaxLiveBalances = 32;
 
 // One instrument of the perp table (core/perp_book.hpp) as the monitors see it: the venue's last

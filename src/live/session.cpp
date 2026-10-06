@@ -1544,6 +1544,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
             row.free = Notional::from_raw(b.free_raw);
             row.known = b.known != 0;
             row.as_of_ns = b.as_of_ns;
+            row.transferable = Notional::from_raw(b.transferable_raw);
             out.push_back(row);
           }
         });

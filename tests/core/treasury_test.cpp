@@ -128,6 +128,20 @@ TEST_CASE("core.treasury: weights, min_free, rounding and the caps") {
   CHECK(p.status == TreasuryPlan::Status::Balanced);
 }
 
+TEST_CASE("core.treasury: a giver gives no more than it can transfer out") {
+  const TreasuryConfig c = pool(2);
+  // main has 1000 free but may move only 300 (a derivative account's unrealised profit).
+  std::vector<TreasuryAccount> a = accounts({"1000", "0"});
+  a[0].transferable = N("300");
+  TreasuryPlan p = plan_transfers(c, a);
+  REQUIRE(p.count == 1);
+  CHECK(p.transfers[0] == PlannedTransfer{V(0), V(1), N("300")});
+  a[0].transferable = Notional{};  // nothing may leave: nothing planned
+  CHECK(plan_transfers(c, a).status == TreasuryPlan::Status::Balanced);
+  a[0].transferable = N("-1");  // the venue does not say: free can
+  CHECK(plan_transfers(c, a).transfers[0].amount == N("500"));
+}
+
 TEST_CASE("core.treasury: an unknown or missing balance stops the plan") {
   const TreasuryConfig c = pool(3);
   std::vector<TreasuryAccount> a = accounts({"1000", "0", "500"});

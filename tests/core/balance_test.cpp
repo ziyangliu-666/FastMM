@@ -266,6 +266,32 @@ TEST_CASE("core.balance: a snapshot zeroes the assets it does not name") {
   CHECK_FALSE(b.margin(kPerpVenue).known);
 }
 
+TEST_CASE("core.balance: what can be transferred out is free, capped where the venue says") {
+  const InstrumentTable t = make_table();
+  BalanceBook b;
+  b.build(t);
+  const auto row = [&](VenueId v) -> const BalanceBook::Row& {
+    for (std::size_t i = 0; i < b.size(); ++i) {
+      if (b.row(i).venue == v && b.row(i).asset.view() == "USDT" && !b.row(i).account)
+        return b.row(i);
+    }
+    FAIL("no row");
+    return b.row(0);
+  };
+  REQUIRE(b.on_report(report(kPerpVenue, "USDT", "1000", "0", 1)));
+  CHECK(row(kPerpVenue).transferable() == nt("1000").raw);  // the venue does not say
+  BalanceMsg m = report(kPerpVenue, "USDT", "1000", "0", 2);
+  m.withdrawable = nt("600");
+  m.flags = static_cast<std::uint8_t>(m.flags | BalanceMsg::kWithdrawable);
+  REQUIRE(b.on_report(m));
+  CHECK(row(kPerpVenue).transferable() == nt("600").raw);
+  // A report without it keeps the last one; a lower free caps it.
+  REQUIRE(b.on_report(report(kPerpVenue, "USDT", "400", "0", 3)));
+  CHECK(row(kPerpVenue).transferable() == nt("400").raw);
+  REQUIRE(b.on_report(report(kPerpVenue, "USDT", "900", "0", 4)));
+  CHECK(row(kPerpVenue).transferable() == nt("600").raw);
+}
+
 TEST_CASE("core.balance: nothing is checked before a venue reports") {
   Rig r;
   auto id = r.send(kSpot, Side::Buy, "50000", "1000");  // 50 M USDT

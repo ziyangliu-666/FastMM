@@ -309,10 +309,14 @@ static_assert(sizeof(FundingMsg) == 128 && offsetof(FundingMsg, funding_id) == 7
 // A snapshot (the balance leg of a reconciliation, a REST refresh) is a run of messages flagged
 // kSnapshot whose last one also carries kSnapshotEnd: an asset of the venue it did not name holds
 // nothing. A snapshot naming no asset is one message with an empty `asset`.
+// kWithdrawable: `withdrawable` is what the venue lets leave the account now by an internal
+// transfer (Binance USD-M maxWithdrawAmount, which unrealised profit does not count towards).
+// Without the flag a venue reports none and `free` is what can leave.
 struct BalanceMsg {
   static constexpr std::uint8_t kSnapshot = 1U << 0;
   static constexpr std::uint8_t kSnapshotEnd = 1U << 1;
   static constexpr std::uint8_t kAccount = 1U << 2;
+  static constexpr std::uint8_t kWithdrawable = 1U << 3;
   EventHeader hdr;
   Notional free;          // 64
   Notional locked;        // 72
@@ -321,10 +325,11 @@ struct BalanceMsg {
   Notional maintenance;   // 96
   FixedString<8> asset;   // 104 -> 113
   std::uint8_t flags;     // 113
-  std::uint8_t pad_[14];  // -> 128
+  std::uint8_t pad_[6];   // -> 120
+  Notional withdrawable;  // 120, with kWithdrawable
 };
 static_assert(sizeof(BalanceMsg) == 128 && offsetof(BalanceMsg, asset) == 104 &&
-              offsetof(BalanceMsg, flags) == 113);
+              offsetof(BalanceMsg, flags) == 113 && offsetof(BalanceMsg, withdrawable) == 120);
 
 // The venue's reference prices and funding of one derivative (EventType::PerpState), from its
 // public market data. Market data: it rides the market-data ring and the journal, so a replay sees

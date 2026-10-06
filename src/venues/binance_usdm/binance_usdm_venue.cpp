@@ -1749,6 +1749,8 @@ void BinanceUsdmVenue::on_account(std::uint64_t generation, const net::HttpRespo
     f.total = m.wallet;
     f.equity = m.margin;
     f.maintenance = m.maintenance;
+    f.withdrawable = m.max_withdraw;  // a transfer out takes no more (unrealised profit excluded)
+    f.has_withdrawable = true;
     return f;
   };
   for (const FuturesAssetMargin& a : acct.assets)

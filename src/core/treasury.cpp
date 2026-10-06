@@ -39,6 +39,7 @@ TreasuryPlan plan_transfers(const TreasuryConfig& cfg,
     return plan;
   }
   std::array<std::int64_t, TreasuryConfig::kMax> free{};
+  std::array<std::int64_t, TreasuryConfig::kMax> out{};  // what can leave; < 0: free can
   std::array<bool, TreasuryConfig::kMax> seen{};
   for (const TreasuryAccount& a : accounts) {
     const std::size_t i = cfg.index_of(a.venue);
@@ -48,6 +49,7 @@ TreasuryPlan plan_transfers(const TreasuryConfig& cfg,
       return plan;
     }
     free[i] = a.free.raw;
+    out[i] = a.transferable.raw;
     seen[i] = true;
   }
   for (std::size_t i = 0; i < n; ++i) {
@@ -79,7 +81,9 @@ TreasuryPlan plan_transfers(const TreasuryConfig& cfg,
     if (free[i] < floor) {
       need[i] = keep - free[i];
     } else if (free[i] > keep) {
-      need[i] = -(free[i] - keep);
+      std::int64_t give = free[i] - keep;
+      if (out[i] >= 0) give = std::min(give, out[i]);
+      need[i] = give > 0 ? -give : 0;
     }
   }
   // Largest need first, from the largest giver first; ties keep the configuration's order.
@@ -487,7 +491,7 @@ void Treasury::plan_and_send(std::int64_t now_ns,
     if (n == acc.size()) break;
     if (!same_currency(b.asset.view(), cfg_.asset) || cfg_.index_of(b.venue) >= cfg_.members.size())
       continue;
-    acc[n++] = TreasuryAccount{b.venue, b.free, b.known};
+    acc[n++] = TreasuryAccount{b.venue, b.free, b.known, b.transferable};
   }
   const TreasuryPlan plan = plan_transfers(cfg_, std::span<const TreasuryAccount>(acc.data(), n));
   if (plan.status != TreasuryPlan::Status::Transfers) return;

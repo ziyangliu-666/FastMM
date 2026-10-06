@@ -13,9 +13,11 @@
 // The plan. Each account has a target: the pool's total free balance shared by `weight` (equal by
 // default). An account is short when its free balance is below its floor, max(target * (1 -
 // threshold), min_free); it then asks for max(target, min_free) less what it has. An account gives
-// what it holds above max(target, min_free). The largest need is matched with the largest giver
-// first (ties: the account listed first), each transfer at most max_amount, rounded down to `step`,
-// and none below min_amount. Any account whose balance is not known stops the plan.
+// what it holds above max(target, min_free), and no more than it can transfer (a venue that says
+// what may leave the account: Binance USD-M maxWithdrawAmount). The largest need is matched with
+// the largest giver first (ties: the account listed first), each transfer at most max_amount,
+// rounded down to `step`, and none below min_amount. Any account whose balance is not known stops
+// the plan.
 //
 // One transfer at a time per pool: while a transfer is unresolved, or done and not yet visible in
 // both accounts' balance reports (a report stamped at or after the transfer was seen done, or
@@ -80,6 +82,9 @@ struct TreasuryAccount {
   VenueId venue;
   Notional free;
   bool known = false;  // the venue has reported the asset on this account
+  // What can leave the account by a transfer (BalanceMsg::kWithdrawable, Binance USD-M
+  // maxWithdrawAmount); a negative value: `free` can.
+  Notional transferable = Notional::from_raw(-1);
 };
 
 struct PlannedTransfer {
@@ -200,7 +205,8 @@ struct TreasuryBalance {
   FixedString<8> asset;
   Notional free;
   bool known = false;
-  std::int64_t as_of_ns = 0;  // the venue's time of the last report
+  std::int64_t as_of_ns = 0;                       // the venue's time of the last report
+  Notional transferable = Notional::from_raw(-1);  // TreasuryAccount::transferable
 };
 
 class Treasury {

@@ -3024,6 +3024,7 @@ class Engine {
       b.total_raw = r.total;
       b.equity_raw = r.equity;
       b.maintenance_raw = r.maintenance;
+      b.transferable_raw = r.transferable();
       b.as_of_ns = r.as_of.ns;
     }
     if (perp_.instruments() != 0) {

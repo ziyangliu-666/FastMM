@@ -1967,7 +1967,8 @@ TEST_CASE("binance_usdm.venue: the start-up balance snapshot and an ACCOUNT_UPDA
   REQUIRE(snap.size() == 1);
   const BalanceMsg& usdt = snap[0];
   CHECK(usdt.asset.view() == "USDT");
-  CHECK(usdt.flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd));
+  CHECK(usdt.flags ==
+        (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd | BalanceMsg::kWithdrawable));
   CHECK(usdt.free == notional("23.72469206"));    // availableBalance
   CHECK(usdt.locked.is_zero());                   // initialMargin
   CHECK(usdt.total == notional("23.72469206"));   // walletBalance
@@ -2007,11 +2008,12 @@ TEST_CASE("binance_usdm.venue: multi-assets mode reports the account row in USD"
   std::vector<BalanceMsg> snap = last_snapshot(s.oc);
   REQUIRE(snap.size() == 2);
   CHECK(snap[0].asset.view() == "USDT");
-  CHECK(snap[0].flags == BalanceMsg::kSnapshot);
+  CHECK(snap[0].flags == (BalanceMsg::kSnapshot | BalanceMsg::kWithdrawable));
   CHECK(snap[0].free == notional("23.72469206"));  // maxWithdrawAmount, in USDT
   CHECK(snap[0].total == notional("23.72469206"));
   CHECK(snap[1].asset.view() == "USD");
-  CHECK(snap[1].flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd | BalanceMsg::kAccount));
+  CHECK(snap[1].flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd | BalanceMsg::kAccount |
+                          BalanceMsg::kWithdrawable));
   CHECK(snap[1].free == notional("126.72469206"));    // availableBalance
   CHECK(snap[1].total == notional("126.72469206"));   // totalWalletBalance
   CHECK(snap[1].equity == notional("126.72469206"));  // totalMarginBalance
@@ -2027,6 +2029,9 @@ TEST_CASE("binance_usdm.venue: multi-assets mode reports the account row in USD"
   REQUIRE(snap.size() == 1);
   CHECK(snap[0].asset.view() == "USDT");
   CHECK(snap[0].free == notional("23.72469206"));
+  // What a transfer can take out: maxWithdrawAmount, flagged.
+  CHECK((snap[0].flags & BalanceMsg::kWithdrawable) != 0);
+  CHECK(snap[0].withdrawable == notional("23.72469206"));
 }
 
 TEST_CASE("binance_usdm.venue: a failed balance fetch does not hold up the order snapshot") {

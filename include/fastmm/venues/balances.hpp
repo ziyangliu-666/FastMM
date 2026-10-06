@@ -33,6 +33,10 @@ struct BalanceFields {
   Notional total;
   Notional equity;
   Notional maintenance;
+  // What can leave the account by an internal transfer, when the venue says
+  // (BalanceMsg::kWithdrawable); otherwise `free`.
+  Notional withdrawable;
+  bool has_withdrawable = false;
 
   // A spot holding: total and equity from free + locked.
   [[nodiscard]] static BalanceFields spot(Notional free, Notional locked) noexcept {
@@ -97,6 +101,10 @@ inline void fill_balance(BalanceMsg& m,
   m.maintenance = f.maintenance;
   m.asset.assign(asset);
   m.flags = flags;
+  if (f.has_withdrawable) {
+    m.withdrawable = f.withdrawable;
+    m.flags = static_cast<std::uint8_t>(m.flags | BalanceMsg::kWithdrawable);
+  }
   m.hdr.recv_ts = wall_now();
 }
 

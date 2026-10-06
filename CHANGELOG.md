@@ -61,6 +61,11 @@ All notable changes are recorded here (Keep a Changelog format).
   a master key of its own (`transfer_api_key_env`, `transfer_api_secret_env`, internal transfer
   permission only), `transfer_rest_url` and each account's `sub_account_email`; a USDⓈ-M transfer
   goes through the receiver's spot wallet in two steps.
+- `BalanceMsg::kWithdrawable` and `BalanceMsg::withdrawable` (in the former padding): what can
+  leave the account by an internal transfer. Binance USDⓈ-M sets it to `maxWithdrawAmount` on its
+  balance snapshots; `BalanceBook::Row::transferable()` is the free estimate capped by it (free
+  where a venue never says) and reaches `LiveBalance::transferable_raw`; the pool treasury gives
+  no more than that.
 - sim: `SimAccounts::transfer`, `SimTransport::transfer` and `sim::SimTreasuryPort`: the same
   treasury runs against a pool's simulated accounts, and the engine hears the new balances on each
   account's link.
