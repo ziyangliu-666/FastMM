@@ -58,6 +58,8 @@ What the unit sets:
 | `MemorySwapMax=0`, `OOMScoreAdjust=-500` | a swapped-out or OOM-killed engine leaves orders resting at the venue with nothing to cancel them |
 | `ReadWritePaths=/var/lib/fastmm` | `ProtectSystem=strict` makes the rest of the filesystem read-only; journals, the epoch file and the kill file live here |
 
+`[engine] cpu_dma_latency_us` needs write access to `/dev/cpu_dma_latency`, which the unit does not grant: add the udev rule in [Host tuning](running-in-production.md#idle-states).
+
 Logs: stderr carries the lines at `[logging] mirror_level` and above, so `journalctl -u fastmm-live -f` shows the warnings and errors, and `[logging] file` takes the full log for a rotation you own. Journal files grow without a cap ([The journal](running-in-production.md#the-journal)).
 
 ```bash

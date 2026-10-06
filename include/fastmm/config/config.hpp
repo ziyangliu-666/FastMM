@@ -101,6 +101,9 @@ struct EngineSection {
   int tsc_recalibrate_s = 10;       // fastmm-live: TSC recalibration period, 0 = never
   std::int64_t timer_slack_ns = 0;  // fastmm-live: PR_SET_TIMERSLACK of its threads, 0 = kernel's
   bool lock_memory = false;         // fastmm-live: mlockall(MCL_CURRENT | MCL_FUTURE)
+  // fastmm-live: PM QoS CPU latency request (/dev/cpu_dma_latency) held for the session, us;
+  // -1 = none.
+  int cpu_dma_latency_us = -1;
   int min_requote_ticks = 1;
   int min_requote_interval_ms = 50;
   int min_qty_bps = 8000;

@@ -223,6 +223,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      "fastmm-live: mlockall() the process, so no page is swapped out or faulted in on the hot "
      "path; needs ulimit -l above the process size, a warning otherwise (default false)"},
     {"engine",
+     "cpu_dma_latency_us",
+     KeyType::Int,
+     false,
+     "fastmm-live: holds /dev/cpu_dma_latency at this many us for the session, so no CPU enters "
+     "an idle state that takes longer to wake; 0 keeps every CPU polling in C0; needs write "
+     "access to the device, a warning otherwise; -1 = no request (default -1)"},
+    {"engine",
      "min_requote_ticks",
      KeyType::Int,
      false,

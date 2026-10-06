@@ -132,6 +132,35 @@ Use one key per engine, trading permission only, no withdrawal rights, IP-allowl
 
 The latency profile also needs host settings: `isolcpus`, `nohz_full` and `rcu_nocbs` on the engine and network cores, the `performance` governor, NIC interrupts elsewhere, transparent huge pages at `madvise` or `always`, and a raised `ulimit -l`. `scripts/host-setup.sh tune` sets the hugepages, IRQ affinity and governor as root.
 
+## Host tuning
+
+The `[engine]` keys below are off by default. One the process lacks the permission for logs a warning and the session runs without it, as `lock_memory` does.
+
+### Idle states
+
+A core in a deep idle state (C-state) takes tens to hundreds of microseconds to wake. A busy-spinning thread keeps its own core awake; an adaptive thread blocked in a wait, and the core that takes the NIC's interrupt, do not.
+
+`[engine] cpu_dma_latency_us = <us>` opens `/dev/cpu_dma_latency`, writes the value and keeps the descriptor open until the session ends: while it is open, no CPU enters an idle state whose exit latency exceeds `<us>`. `0` keeps every CPU polling in C0; a few microseconds still allows C1. The request applies to every CPU of the host, which then draws more power and leaves less turbo headroom to the others. The log says `cpu_dma_latency: CPUs held at <us> us exit latency or less`.
+
+The device is root's, mode 0600. Let the service's group write it with a udev rule, then `sudo udevadm trigger --name-match=cpu_dma_latency`:
+
+```text
+# /etc/udev/rules.d/99-cpu-dma-latency.rules
+KERNEL=="cpu_dma_latency", GROUP="fastmm", MODE="0660"
+```
+
+Without it the log says `cpu_dma_latency: 0 not held: /dev/cpu_dma_latency: Permission denied`.
+
+To limit only some cores, and for longer than one process, disable their deep states in sysfs until the next reboot:
+
+```bash
+scripts/host-setup.sh cstates --cpus 2-3                     # each state's exit latency and whether it is disabled
+sudo scripts/host-setup.sh cstates limit 10 --cpus 2-3       # disable the states slower than 10 us on CPUs 2 and 3
+sudo scripts/host-setup.sh cstates restore --cpus 2-3        # enable them again
+```
+
+`--dry-run` prints the changes without making them, and needs no root. `scripts/host-setup.sh tune --cstate-max-latency 10 --cstate-cpus 2-3` runs the same limit after the other tuning. A VM usually has no cpuidle states to change.
+
 ## Connectors and the OMS
 
 - A live session is not repeatable; its journal is. A replay needs the same binary and the embedded configuration ([Determinism](../../explanation/determinism.md)).

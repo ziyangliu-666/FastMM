@@ -100,6 +100,12 @@ All notable changes are recorded here (Keep a Changelog format).
   whether the opposite touch had reached it or a cancel had gone out, and fill rates live / model
   by queue ahead, ticks behind the touch, prints and resting time. `--horizons-ms`, `--pre-ms`,
   and `--market` to replay another recording of the same period; `--csv` carries the new columns.
+- `[engine] cpu_dma_latency_us` (default -1, off): `fastmm-live` holds a PM QoS CPU latency request
+  on `/dev/cpu_dma_latency` for the whole session, so no CPU enters an idle state that takes
+  longer than that to wake (0: every CPU polls in C0). Without write access to the device it logs
+  a warning and runs on. `scripts/host-setup.sh cstates show|limit <us>|restore [--cpus LIST]
+  [--dry-run]` disables the slower idle states of chosen CPUs in sysfs, and `tune
+  --cstate-max-latency <us>` runs it.
 - Strategy hook `on_batch_end(ctx)`: `ctx.request_batch_end()` from any hook asks for one call
   once the engine has handled the events waiting in its input rings (or the step's
   `max_events_per_step` is used up). Work a burst repeats per event (a requote after every balance

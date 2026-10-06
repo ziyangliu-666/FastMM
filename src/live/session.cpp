@@ -1,6 +1,7 @@
 #include "fastmm/live/session.hpp"
 
 #include "fastmm/config/env_subst.hpp"
+#include "fastmm/core/host_tuning.hpp"
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/msg_ring.hpp"
@@ -1598,6 +1599,19 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
                       std::strerror(err));
     } else {
       FASTMM_LOG_INFO("lock_memory: all memory locked");
+    }
+  }
+  // Withdrawn when it goes out of scope, after every thread has stopped.
+  CpuLatencyRequest cpu_latency;
+  if (cfg.engine.cpu_dma_latency_us >= 0) {
+    if (const int err = cpu_latency.open(cfg.engine.cpu_dma_latency_us); err != 0) {
+      FASTMM_LOG_WARN("cpu_dma_latency: {} not held: {}: {} (needs write access to the device)",
+                      cfg.engine.cpu_dma_latency_us,
+                      kCpuDmaLatencyPath,
+                      std::strerror(err));
+    } else {
+      FASTMM_LOG_INFO("cpu_dma_latency: CPUs held at {} us exit latency or less",
+                      cfg.engine.cpu_dma_latency_us);
     }
   }
   if (!signals) signals.emplace();

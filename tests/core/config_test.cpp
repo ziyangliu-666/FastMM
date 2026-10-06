@@ -121,6 +121,20 @@ TEST_CASE("core.config: instance_lock, lock_file and handoff_timeout_ms") {
                        ConfigError);
 }
 
+TEST_CASE("core.config: cpu_dma_latency_us") {
+  CHECK(Config::parse(kMinimal).engine.cpu_dma_latency_us == -1);
+  const Config cfg = Config::parse("[engine]\ncpu_dma_latency_us = 0\n");
+  CHECK(cfg.engine.cpu_dma_latency_us == 0);
+  CHECK(cfg.effective_toml().find("cpu_dma_latency_us = 0") != std::string::npos);
+  CHECK(Config::parse("[engine]\ncpu_dma_latency_us = 20\n").engine.cpu_dma_latency_us == 20);
+  CHECK_THROWS_WITH_AS(Config::parse("[engine]\ncpu_dma_latency_us = -2\n"),
+                       doctest::Contains("cpu_dma_latency_us must be -1"),
+                       ConfigError);
+  CHECK_THROWS_WITH_AS(Config::parse("[engine]\ncpu_dma_latency_us = 2147483648\n"),
+                       doctest::Contains("cpu_dma_latency_us must be -1"),
+                       ConfigError);
+}
+
 TEST_CASE("core.config: env substitution only in venues, missing var is an error") {
   setenv("FASTMM_T_URL", "wss://x", 1);
   unsetenv("FASTMM_MISSING");

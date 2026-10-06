@@ -11,8 +11,10 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
+#include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <sstream>
 
 namespace fastmm {
@@ -555,6 +557,12 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     if (e.timer_slack_ns < 0)
       fail_at(*t->get("timer_slack_ns"), "timer_slack_ns must be >= 0 (0 keeps the kernel's)");
     get(*t, "lock_memory", e.lock_memory);
+    if (const auto* n = t->get("cpu_dma_latency_us")) {
+      const auto v = n->value<std::int64_t>();
+      if (v && (*v < -1 || *v > std::numeric_limits<std::int32_t>::max()))
+        fail_at(*n, "cpu_dma_latency_us must be -1 (no request) or 0..2147483647");
+      get(*t, "cpu_dma_latency_us", e.cpu_dma_latency_us);
+    }
     get(*t, "restore_position", e.restore_position);
     get(*t, "min_requote_ticks", e.min_requote_ticks);
     get(*t, "min_requote_interval_ms", e.min_requote_interval_ms);
@@ -1306,6 +1314,7 @@ std::string Config::effective_toml() const {
   e.insert("tsc_recalibrate_s", static_cast<std::int64_t>(engine.tsc_recalibrate_s));
   e.insert("timer_slack_ns", engine.timer_slack_ns);
   e.insert("lock_memory", engine.lock_memory);
+  e.insert("cpu_dma_latency_us", static_cast<std::int64_t>(engine.cpu_dma_latency_us));
   e.insert("restore_position", engine.restore_position);
   e.insert("min_requote_ticks", static_cast<std::int64_t>(engine.min_requote_ticks));
   e.insert("min_requote_interval_ms", static_cast<std::int64_t>(engine.min_requote_interval_ms));

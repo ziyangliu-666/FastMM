@@ -54,6 +54,7 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `timer_slack_ns` | integer |  | fastmm-live: timer slack of its threads, ns; how late a timed wait may end (adaptive spin_mode: the engine's idle wait, at most 1 ms, and with threading = "single" a 50 us sleep); 0 = the kernel's, 50000 (default 0) |
 | `restore_position` | boolean |  | carry the previous session's positions over from the store and replay the venue's executions since its last recorded fill (venues that can replay executions); default true |
 | `lock_memory` | boolean |  | fastmm-live: mlockall() the process, so no page is swapped out or faulted in on the hot path; needs ulimit -l above the process size, a warning otherwise (default false) |
+| `cpu_dma_latency_us` | integer |  | fastmm-live: holds /dev/cpu_dma_latency at this many us for the session, so no CPU enters an idle state that takes longer to wake; 0 keeps every CPU polling in C0; needs write access to the device, a warning otherwise; -1 = no request (default -1) |
 | `min_requote_ticks` | integer |  | keep a resting quote whose price is within this many ticks of the desired price (default 1) |
 | `min_requote_interval_ms` | integer |  | change the same quote slot at most this often, ms (default 50) |
 | `min_qty_bps` | integer |  | keep a resting quote whose remaining quantity covers this share of the desired quantity, bps (default 8000 = 80 %) |
