@@ -4,6 +4,7 @@
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/time.hpp"
 
+#include <pthread.h>
 #include <x86intrin.h>
 
 #include <atomic>
@@ -25,6 +26,10 @@ bool set_timer_slack(Duration slack) noexcept;
 // allocations are faulted in by the allocating call. Returns errno (0 on success); ENOMEM or
 // EPERM usually mean RLIMIT_MEMLOCK (ulimit -l) is too small.
 int lock_all_memory() noexcept;
+// SCHED_FIFO at `priority` (1..99) for `thread`; priority 0 changes nothing. Returns 0 or the error
+// of pthread_setschedparam: EPERM without CAP_SYS_NICE when RLIMIT_RTPRIO (ulimit -r) is below
+// `priority`, EINVAL outside 1..99.
+int set_fifo_priority(pthread_t thread, int priority) noexcept;
 
 enum class SpinMode : std::uint8_t { Busy = 0, Adaptive = 1 };
 

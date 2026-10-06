@@ -172,6 +172,20 @@ void inline_loop(Inline& in, int cpu) {
   s.reactor->run_once(0);
 }
 
+// [engine] rt_priority / net_rt_priority: a refusal leaves the thread on the default scheduler.
+void set_rt_priority(std::thread& t, std::string_view name, std::string_view key, int priority) {
+  if (priority == 0) return;
+  if (const int err = set_fifo_priority(t.native_handle(), priority); err != 0) {
+    FASTMM_LOG_WARN("{}: SCHED_FIFO {} for {} refused: {} (needs CAP_SYS_NICE or LimitRTPRIO)",
+                    key,
+                    priority,
+                    name,
+                    std::strerror(err));
+  } else {
+    FASTMM_LOG_INFO("{}: {} runs SCHED_FIFO at priority {}", key, name, priority);
+  }
+}
+
 // [engine] log_irq_affinity: read only, and nothing it cannot read stops the session.
 void log_irq_affinity(const Config& cfg, bool single) {
   std::vector<NicIrqs> nics;
@@ -1604,6 +1618,10 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       FASTMM_LOG_WARN(
           "[engine] threading = \"single\": net_cpus is ignored (the engine thread, "
           "cpu, runs the network loop)");
+    if (cfg.engine.net_rt_priority != 0)
+      FASTMM_LOG_WARN(
+          "[engine] threading = \"single\": net_rt_priority is ignored (rt_priority applies to "
+          "the engine thread, which runs the network loop)");
   }
 
   // ---- threads --------------------------------------------------------------------------
@@ -1714,7 +1732,12 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
                                      cfg.engine.net_spin_dedicated);
     }
     engine_thread = std::thread([&] { runner->run(); });
+    for (std::size_t i = 0; i < slots.size(); ++i) {
+      const std::string name = "fm-net-" + std::to_string(i);
+      set_rt_priority(slots[i]->thread, name, "net_rt_priority", cfg.engine.net_rt_priority);
+    }
   }
+  set_rt_priority(engine_thread, "fm-engine", "rt_priority", cfg.engine.rt_priority);
 
   // A warm standby's audit and treasury start with its private channels, when it takes over.
   if (treasury && !warm) treasury->start();

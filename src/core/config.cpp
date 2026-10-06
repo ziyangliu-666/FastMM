@@ -563,6 +563,12 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
         fail_at(*n, "cpu_dma_latency_us must be -1 (no request) or 0..2147483647");
       get(*t, "cpu_dma_latency_us", e.cpu_dma_latency_us);
     }
+    get(*t, "rt_priority", e.rt_priority);
+    if (e.rt_priority < 0 || e.rt_priority > 99)
+      fail_at(*t->get("rt_priority"), "rt_priority must be 0 (off) or 1..99");
+    get(*t, "net_rt_priority", e.net_rt_priority);
+    if (e.net_rt_priority < 0 || e.net_rt_priority > 99)
+      fail_at(*t->get("net_rt_priority"), "net_rt_priority must be 0 (off) or 1..99");
     get(*t, "log_irq_affinity", e.log_irq_affinity);
     get(*t, "restore_position", e.restore_position);
     get(*t, "min_requote_ticks", e.min_requote_ticks);
@@ -1316,6 +1322,8 @@ std::string Config::effective_toml() const {
   e.insert("timer_slack_ns", engine.timer_slack_ns);
   e.insert("lock_memory", engine.lock_memory);
   e.insert("cpu_dma_latency_us", static_cast<std::int64_t>(engine.cpu_dma_latency_us));
+  e.insert("rt_priority", static_cast<std::int64_t>(engine.rt_priority));
+  e.insert("net_rt_priority", static_cast<std::int64_t>(engine.net_rt_priority));
   e.insert("log_irq_affinity", engine.log_irq_affinity);
   e.insert("restore_position", engine.restore_position);
   e.insert("min_requote_ticks", static_cast<std::int64_t>(engine.min_requote_ticks));

@@ -230,6 +230,20 @@ inline constexpr KeySpec kConfigSchema[] = {
      "an idle state that takes longer to wake; 0 keeps every CPU polling in C0; needs write "
      "access to the device, a warning otherwise; -1 = no request (default -1)"},
     {"engine",
+     "rt_priority",
+     KeyType::Int,
+     false,
+     "fastmm-live: SCHED_FIFO priority 1..99 of the engine thread (with threading = \"single\" it "
+     "also runs the network loop); needs CAP_SYS_NICE or ulimit -r at least as high, a warning "
+     "otherwise; a busy-spinning FIFO thread starves the kernel's threads on its core unless the "
+     "core is isolated; 0 = the default scheduler (default 0)"},
+    {"engine",
+     "net_rt_priority",
+     KeyType::Int,
+     false,
+     "fastmm-live: SCHED_FIFO priority 1..99 of the network threads, as rt_priority; ignored with "
+     "threading = \"single\"; 0 = the default scheduler (default 0)"},
+    {"engine",
      "log_irq_affinity",
      KeyType::Bool,
      false,

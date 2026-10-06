@@ -142,6 +142,27 @@ TEST_CASE("core.config: log_irq_affinity") {
   CHECK(cfg.effective_toml().find("log_irq_affinity = true") != std::string::npos);
 }
 
+TEST_CASE("core.config: rt_priority and net_rt_priority") {
+  const Config def = Config::parse(kMinimal);
+  CHECK(def.engine.rt_priority == 0);
+  CHECK(def.engine.net_rt_priority == 0);
+  const Config cfg = Config::parse("[engine]\nrt_priority = 80\nnet_rt_priority = 1\n");
+  CHECK(cfg.engine.rt_priority == 80);
+  CHECK(cfg.engine.net_rt_priority == 1);
+  CHECK(cfg.effective_toml().find("rt_priority = 80") != std::string::npos);
+  CHECK(cfg.effective_toml().find("net_rt_priority = 1") != std::string::npos);
+  CHECK(Config::parse("[engine]\nrt_priority = 99\n").engine.rt_priority == 99);
+  CHECK_THROWS_WITH_AS(Config::parse("[engine]\nrt_priority = 100\n"),
+                       doctest::Contains("rt_priority must be 0 (off) or 1..99"),
+                       ConfigError);
+  CHECK_THROWS_WITH_AS(Config::parse("[engine]\nrt_priority = -1\n"),
+                       doctest::Contains("rt_priority must be 0 (off) or 1..99"),
+                       ConfigError);
+  CHECK_THROWS_WITH_AS(Config::parse("[engine]\nnet_rt_priority = 100\n"),
+                       doctest::Contains("net_rt_priority must be 0 (off) or 1..99"),
+                       ConfigError);
+}
+
 TEST_CASE("core.config: env substitution only in venues, missing var is an error") {
   setenv("FASTMM_T_URL", "wss://x", 1);
   unsetenv("FASTMM_MISSING");

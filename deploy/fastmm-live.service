@@ -34,6 +34,10 @@ TimeoutStopSec=90
 # [engine] lock_memory = true calls mlockall(); without this the call fails and logs a warning.
 LimitMEMLOCK=infinity
 LimitNOFILE=65536
+# [engine] rt_priority / net_rt_priority (SCHED_FIFO) need one of these; only on isolated cores
+# (docs/how-to/operations/running-in-production.md#real-time-scheduling).
+#LimitRTPRIO=50
+#AmbientCapabilities=CAP_SYS_NICE
 # Never swap the engine out; kill the unit rather than let the OOM killer pick another process.
 MemorySwapMax=0
 OOMPolicy=stop

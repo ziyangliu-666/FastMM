@@ -182,6 +182,27 @@ irq affinity: eth1 irq 46 eth1-TxRx-1 -> CPUs 0-7 (engine net 0): it interrupts 
 
 It only reads `/proc` and `/sys`; what it cannot read is left out of the log.
 
+### Real-time scheduling
+
+`[engine] rt_priority = <1..99>` runs the engine thread under `SCHED_FIFO` at that priority, and `net_rt_priority` the network threads (with `threading = "single"` the engine thread runs the network loop and `rt_priority` covers it). A FIFO thread is not preempted by ordinary threads on its core: a stray process or kernel worker scheduled there waits instead of taking the core for a time slice. The log says `rt_priority: fm-engine runs SCHED_FIFO at priority <n>`.
+
+The process needs `CAP_SYS_NICE` or an `RLIMIT_RTPRIO` (`ulimit -r`) at least as high as the priority. Under systemd, add one of these to the unit's `[Service]` section:
+
+```ini
+LimitRTPRIO=50                     # an unprivileged user may then use priorities up to 50
+AmbientCapabilities=CAP_SYS_NICE   # or: any priority, and other scheduling changes too
+```
+
+Without either the session logs `rt_priority: SCHED_FIFO 50 for fm-engine refused: Operation not permitted (needs CAP_SYS_NICE or LimitRTPRIO)` and runs on the default scheduler. On a kernel built with `CONFIG_RT_GROUP_SCHED`, the unit's cgroup also needs an RT runtime budget (`cpu.rt_runtime_us`), or the call fails the same way.
+
+A busy-spinning thread never yields. Under `SCHED_FIFO` it starves everything of lower priority on its core, including the kernel's per-CPU threads (`ksoftirqd`, `kworker`, RCU callbacks, the TCP stack's softirq work for that core). Use it only when:
+
+- the core is isolated: `isolcpus`, `nohz_full` and `rcu_nocbs` on the kernel command line, and nothing else pinned there (`CPUAffinity`, `[engine] cpu`, `net_cpus`, one thread per core);
+- no NIC interrupt lands on the core ([NIC interrupts](#nic-interrupts));
+- RT throttling stays on. `kernel.sched_rt_runtime_us` (default 950000 of every `sched_rt_period_us` = 1000000) leaves 5 % of each second to other threads, which is what lets a starved kernel thread run at all; the spinning thread can then be held off for up to 50 ms of every second. `sysctl -w kernel.sched_rt_runtime_us=-1` removes the stall and the safety net with it; with it, a FIFO thread on a core the kernel needs can hang the host (RCU stall warnings, a hung network stack). Set -1 only on cores proven isolated, and watch `dmesg` for `rcu_sched detected stalls`.
+
+With `spin_mode = "adaptive"` the threads sleep when idle and the starvation risk is smaller, but the same rules apply under load.
+
 ## Connectors and the OMS
 
 - A live session is not repeatable; its journal is. A replay needs the same binary and the embedded configuration ([Determinism](../../explanation/determinism.md)).

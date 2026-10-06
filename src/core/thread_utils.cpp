@@ -56,6 +56,13 @@ void Waker::wake_one() noexcept {
       SYS_futex, &flag_->word(), shared_ ? FUTEX_WAKE : FUTEX_WAKE_PRIVATE, 1, nullptr, nullptr, 0);
 }
 
+int set_fifo_priority(pthread_t thread, int priority) noexcept {
+  if (priority == 0) return 0;
+  sched_param param{};
+  param.sched_priority = priority;
+  return ::pthread_setschedparam(thread, SCHED_FIFO, &param);
+}
+
 int lock_all_memory() noexcept {
   return ::mlockall(MCL_CURRENT | MCL_FUTURE) == 0 ? 0 : errno;
 }
