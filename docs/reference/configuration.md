@@ -688,6 +688,9 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `latency_ack_jitter_us` | int | `latency_jitter_us` | Random jitter added to that latency, µs, seeded |
 | `latency_md_us` | int | `0` | Fixed market-data latency, µs |
 | `latency_md_jitter_us` | int | `0` | Market-data latency jitter, µs |
+| `latency_cancel_us` | int | `latency_fixed_us` | Fixed latency for cancels to the venue, µs, when either cancel key is set; otherwise cancels take the order latency. A venue can take a cancel in faster than a new order (Binance Spot: about 0.4 ms less to its time on the ack) |
+| `latency_cancel_jitter_us` | int | `latency_jitter_us` | Random jitter added to that latency, µs, seeded |
+| `order_service_us` | int | `0` | The venue takes the order messages (new, cancel, replace) of one connection one after another, each no sooner than this after the one before: a burst of cancels reaches the book later and later, as on a live venue. `0` draws every message's latency on its own and may reorder them. `fastmm-data calibrate` fits it ([Calibrating](../explanation/backtesting.md#calibrating-against-live-sessions)) |
 | `md_arrival` | string | `"venue"` | When recorded market data reaches the strategy: `venue` at its venue time plus `latency_md_us`, `recorded` at the `recv_ts` it was recorded with plus `latency_md_us`, which replays the feed lag of a live journal (`[risk] max_feed_lag_ms` reads it); a message keeps its place behind the one before it |
 | `reorder_window_ms` | int | `1000` | Recorded data reaches the simulated venues in venue-time order, assuming no event was received more than this long after its venue time; the strategy still gets it in recorded order. `0` keeps the recorded order ([Backtesting](../explanation/backtesting.md#venue-time)) |
 | `transfer_latency_ms` | int | `0` | With a pool treasury ([`[venues.<primary>.treasury]`](#venuestreasury)): a simulated transfer between the pool's accounts is carried out this long after it is sent; `0` carries it out at once |
@@ -716,6 +719,9 @@ One venue's own settings; `<name>` is a `[venues.<name>]` that an instrument tra
 | `latency_ack_jitter_us` | int | `[backtest] latency_ack_jitter_us`, else this venue's `latency_jitter_us` | Jitter added to that latency, µs |
 | `latency_md_us` | int | `[backtest]` | Fixed market-data latency, µs |
 | `latency_md_jitter_us` | int | `[backtest]` | Market-data latency jitter, µs |
+| `latency_cancel_us` | int | `[backtest]`, else this venue's order latency | Fixed latency for cancels to this venue, µs; the cancel key it does not set comes from `[backtest]`, else from this venue's order latency |
+| `latency_cancel_jitter_us` | int | `[backtest]`, else this venue's order jitter | Jitter added to that latency, µs |
+| `order_service_us` | int | `[backtest]` | Time this venue takes per order message of one connection, µs; each pool member is a connection of its own |
 | `md_arrival` | string | `[backtest]` | `venue` or `recorded`, for this venue's market data |
 | `p_drop` | number | `[backtest]` | Probability that an outbound order message to this venue is lost |
 | `supports_replace` | bool | `[engine] supports_replace` | In-place replace on this venue: the engine replaces quotes on its instruments if `[engine] supports_replace` is true, cancel and new otherwise |

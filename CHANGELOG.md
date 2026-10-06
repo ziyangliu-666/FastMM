@@ -74,6 +74,10 @@ All notable changes are recorded here (Keep a Changelog format).
 - sim: `SimAccounts::transfer`, `SimTransport::transfer` and `sim::SimTreasuryPort`: the same
   treasury runs against a pool's simulated accounts, and the engine hears the new balances on each
   account's link.
+- backtest: `[backtest] order_service_us` (and per venue): the simulated venue takes the order
+  messages of one connection one after another, each no sooner than this after the one before, so
+  the last cancels of a burst reach the book late, as on a live venue. `latency_cancel_us` /
+  `latency_cancel_jitter_us` give cancels a latency of their own. All off by default.
 - `fastmm-data fill-check` diagnoses the live fills the `l2_queue` model misses: markouts and the
   pre-fill mid move of every first fill, live and model, by outcome (both, live only, model only),
   how each live fill printed in the recorded trades (at its price, a sweep through it, missing),

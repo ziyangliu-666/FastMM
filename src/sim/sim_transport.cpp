@@ -166,7 +166,7 @@ bool SimTransport::send(const EventHeader& m) noexcept {
       l.orders_1d.add(now);
     }
   }
-  const LatencySample s = l.lat.order_out();
+  const LatencySample s = m.type == EventType::OutCancel ? l.lat.cancel_out() : l.lat.order_out();
   if (s.dropped) {
     ++stats_.dropped;
     if (observer_ != nullptr) observer_->on_order_sent(m, now, Timestamp{});
@@ -176,12 +176,17 @@ bool SimTransport::send(const EventHeader& m) noexcept {
   slot.len = m.len;
   slot.over_limit = over_limit ? 1 : 0;
   std::memcpy(slot.bytes, &m, m.len);
-  const Timestamp arrival = now + s.delay;
+  Timestamp arrival = now + s.delay;
+  // One connection's messages are taken in one after another (SimVenueConfig::order_service).
+  if (l.order_service.ns > 0 && l.last_order_processed.valid() &&
+      arrival < l.last_order_processed + l.order_service)
+    arrival = l.last_order_processed + l.order_service;
   if (!sched_.push(arrival, slot)) {
     ++stats_.scheduler_full;
     if (observer_ != nullptr) observer_->on_order_sent(m, now, Timestamp{});
     return false;
   }
+  if (l.order_service.ns > 0) l.last_order_processed = arrival;
   if (observer_ != nullptr) observer_->on_order_sent(m, now, arrival);
   return true;
 }

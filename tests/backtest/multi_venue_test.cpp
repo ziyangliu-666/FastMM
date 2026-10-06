@@ -530,3 +530,42 @@ TEST_CASE("backtest.multi_venue: configuration errors name the venue or key") {
                        doctest::Contains("settings for venue 5, which no instrument trades on"),
                        std::invalid_argument);
 }
+
+TEST_CASE("backtest.multi_venue: cancel latency and order service time per venue") {
+  // None set: cancels take the order path, no service time.
+  const BacktestConfig plain = two_venue_config();
+  CHECK_FALSE(plain.transport.venue_config(VenueId{0}).cancel_latency);
+  CHECK(plain.transport.venue_config(VenueId{1}).order_service.ns == 0);
+
+  // [backtest] sets a cancel latency (its jitter from the order path) and a service time; venue b
+  // keeps the cancel latency and sets its own service time.
+  std::string text = kConfig;
+  text.replace(text.find("latency_jitter_us = 0\n"),
+               22,
+               "latency_jitter_us = 0\nlatency_cancel_us = 40\norder_service_us = 150\n");
+  text.replace(text.find("latency_md_us = 1000\n"), 21, "order_service_us = 300\n");
+  const BacktestConfig g = BacktestConfig::from_config(Config::parse(text));
+  const sim::SimVenueConfig a = g.transport.venue_config(VenueId{0});
+  const sim::SimVenueConfig b = g.transport.venue_config(VenueId{1});
+  CHECK(a.cancel_latency);
+  CHECK(a.cancel_out.fixed == microseconds(40));
+  CHECK(a.cancel_out.jitter.ns == 0);
+  CHECK(a.order_service == microseconds(150));
+  CHECK(b.cancel_latency);
+  CHECK(b.cancel_out.fixed == microseconds(40));
+  CHECK(b.order_out.fixed == microseconds(2500));
+  CHECK(b.order_service == microseconds(300));
+
+  // Only venue b's cancel jitter: its fixed part is b's order latency.
+  const BacktestConfig own =
+      two_venue_config("", "latency_fixed_us = 2500\nlatency_cancel_jitter_us = 30");
+  CHECK_FALSE(own.transport.venue_config(VenueId{0}).cancel_latency);
+  const sim::SimVenueConfig ob = own.transport.venue_config(VenueId{1});
+  CHECK(ob.cancel_latency);
+  CHECK(ob.cancel_out.fixed == microseconds(2500));
+  CHECK(ob.cancel_out.jitter == microseconds(30));
+  CHECK_THROWS_WITH_AS(
+      static_cast<void>(two_venue_config("", "latency_fixed_us = 2500\norder_service_us = -1")),
+      doctest::Contains("order_service_us must be >= 0"),
+      ConfigError);
+}

@@ -1,7 +1,8 @@
 #pragma once
 // LatencyModel (8.2): per-direction delay = fixed + jitter * LogNormal(mean 1), plus an
-// independent drop probability for the order path. All draws come from one seeded
-// Xoshiro256ss so a run is reproducible bit for bit; the double math is confined to the
+// independent drop probability for the order path. Cancels take the order path, or a path of their
+// own when one is given (a venue may take a cancel in faster than a new order). All draws come from
+// one seeded Xoshiro256ss so a run is reproducible bit for bit; the double math is confined to the
 // simulator (delays are converted to integer nanoseconds immediately).
 #include "fastmm/core/rng.hpp"
 #include "fastmm/core/time.hpp"
@@ -31,11 +32,31 @@ class LatencyModel {
                const LatencyParams& md_in,
                std::uint64_t seed) noexcept
       : order_out_(order_out), ack_in_(ack_in), md_in_(md_in), rng_(seed) {}
+  // `cancel_out`: the cancels' own engine -> venue path (its p_drop is the order path's).
+  LatencyModel(const LatencyParams& order_out,
+               const LatencyParams& ack_in,
+               const LatencyParams& md_in,
+               const LatencyParams& cancel_out,
+               std::uint64_t seed) noexcept
+      : order_out_(order_out),
+        ack_in_(ack_in),
+        md_in_(md_in),
+        cancel_out_(cancel_out),
+        own_cancel_(true),
+        rng_(seed) {}
 
   // Engine -> venue (orders, cancels, replaces).
   [[nodiscard]] LatencySample order_out() noexcept {
     LatencySample s;
     s.delay = draw(order_out_);
+    s.dropped = order_out_.p_drop > 0.0 && rng_.uniform01() < order_out_.p_drop;
+    return s;
+  }
+  // Engine -> venue, a cancel.
+  [[nodiscard]] LatencySample cancel_out() noexcept {
+    if (!own_cancel_) return order_out();
+    LatencySample s;
+    s.delay = draw(cancel_out_);
     s.dropped = order_out_.p_drop > 0.0 && rng_.uniform01() < order_out_.p_drop;
     return s;
   }
@@ -64,6 +85,8 @@ class LatencyModel {
   LatencyParams order_out_{};
   LatencyParams ack_in_{};
   LatencyParams md_in_{};
+  LatencyParams cancel_out_{};
+  bool own_cancel_ = false;
   Xoshiro256ss rng_{1};
 };
 

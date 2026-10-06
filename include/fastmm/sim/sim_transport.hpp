@@ -81,6 +81,12 @@ struct SimVenueConfig {
   // ctx.order_budget reports the counts. 0: unlimited and not reported.
   std::int64_t orders_10s = 0;
   std::int64_t orders_1d = 0;
+  // Cancels' own engine -> venue latency (cancel_latency set), else the order path's.
+  bool cancel_latency = false;
+  LatencyParams cancel_out{};
+  // The venue takes the order messages of one connection one at a time: a message is processed
+  // no sooner than this after the one sent before it (zero: each on its own latency draw).
+  Duration order_service{};
 };
 
 struct SimTransportConfig {
@@ -100,6 +106,9 @@ struct SimTransportConfig {
   std::int64_t orders_10s =
       0;  // SimVenueConfig::orders_10s / orders_1d for venues without an entry
   std::int64_t orders_1d = 0;
+  bool cancel_latency = false;  // SimVenueConfig::cancel_latency, cancel_out, order_service
+  LatencyParams cancel_out{};
+  Duration order_service{};
   MdAggregatorConfig md{};  // coupled-generator mode
   // SHA-256 over every outbound message (outbound_hash()), used by the determinism and replay
   // checks. It costs about 70 ns per order, more than the engine work that produced it, so a
@@ -138,7 +147,10 @@ struct SimTransportConfig {
                           supports_replace,
                           stp,
                           orders_10s,
-                          orders_1d};
+                          orders_1d,
+                          cancel_latency,
+                          cancel_out,
+                          order_service};
   }
   // Bit v set: venue v uses cancel-replace (the journal header's replace_venues).
   [[nodiscard]] std::uint64_t replace_mask() const noexcept {
@@ -339,12 +351,14 @@ class SimTransport final : public MatchingSink {
   struct Link {
     Link(VenueId v, const SimVenueConfig& c, std::uint64_t seed, const SimTransportConfig& t)
         : id(v),
-          lat(c.order_out, c.ack_in, c.md_in, seed),
+          lat(c.cancel_latency ? LatencyModel(c.order_out, c.ack_in, c.md_in, c.cancel_out, seed)
+                               : LatencyModel(c.order_out, c.ack_in, c.md_in, seed)),
           md_wire(t.md_wire_bytes),
           order_wire(t.order_wire_bytes),
           orders_10s{seconds(10).ns, c.orders_10s},
           orders_1d{seconds(86'400).ns, c.orders_1d},
-          md_recorded_arrival(c.md_recorded_arrival) {}
+          md_recorded_arrival(c.md_recorded_arrival),
+          order_service(c.order_service) {}
     VenueId id;
     LatencyModel lat;
     MsgRing md_wire;
@@ -355,6 +369,8 @@ class SimTransport final : public MatchingSink {
     OrderWindow orders_1d;
     std::uint64_t taken = 0;  // new orders and replaces sent (OrderBudget::orders_taken)
     bool md_recorded_arrival;
+    Duration order_service;          // SimVenueConfig::order_service
+    Timestamp last_order_processed;  // venue time the last order message was taken in
     [[nodiscard]] bool limited() const noexcept {
       return orders_10s.limit > 0 || orders_1d.limit > 0;
     }

@@ -13,6 +13,7 @@
 //   latency_fixed_us, latency_jitter_us,          market_qty_median_lots, regimes,
 //   latency_ack_us, latency_ack_jitter_us,
 //   latency_md_us, latency_md_jitter_us, p_drop   volatile_mult, seed_levels
+//   latency_cancel_us, latency_cancel_jitter_us, order_service_us
 //   md_arrival = "venue" | "recorded", reorder_window_ms = 1000
 //   balances_from_journal = false, own_orders_in_feed = true, transfer_latency_ms = 0
 //   [backtest.balances] <ASSET> = "<amount>"  (and [backtest.venues.<name>.balances])

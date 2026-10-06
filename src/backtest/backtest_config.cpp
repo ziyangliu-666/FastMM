@@ -51,6 +51,20 @@ void read_latency(const GenericSection& bt, const std::string& prefix, sim::SimV
       microseconds(non_negative(bt, prefix + "latency_md_us", v.md_in.fixed.ns / 1000)),
       microseconds(non_negative(bt, prefix + "latency_md_jitter_us", v.md_in.jitter.ns / 1000)),
       0.0};
+  // A cancel's own path: the keys given, the others from the cancel path already set, else from
+  // the order path.
+  const std::string cancel_fixed = prefix + "latency_cancel_us";
+  const std::string cancel_jitter = prefix + "latency_cancel_jitter_us";
+  if (bt.has(cancel_fixed) || bt.has(cancel_jitter)) {
+    const sim::LatencyParams base = v.cancel_latency ? v.cancel_out : v.order_out;
+    v.cancel_out =
+        sim::LatencyParams{microseconds(non_negative(bt, cancel_fixed, base.fixed.ns / 1000)),
+                           microseconds(non_negative(bt, cancel_jitter, base.jitter.ns / 1000)),
+                           0.0};
+    v.cancel_latency = true;
+  }
+  v.order_service =
+      microseconds(non_negative(bt, prefix + "order_service_us", v.order_service.ns / 1000));
   const std::string arrival_key = prefix + "md_arrival";
   if (bt.has(arrival_key)) {
     const std::string a = bt.get_string(arrival_key, "venue");
@@ -61,12 +75,15 @@ void read_latency(const GenericSection& bt, const std::string& prefix, sim::SimV
 }
 
 // Keys of [backtest.venues.<name>] (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 12> kVenueKeys = {"latency_fixed_us",
+constexpr std::array<std::string_view, 15> kVenueKeys = {"latency_fixed_us",
                                                          "latency_jitter_us",
                                                          "latency_ack_us",
                                                          "latency_ack_jitter_us",
                                                          "latency_md_us",
                                                          "latency_md_jitter_us",
+                                                         "latency_cancel_us",
+                                                         "latency_cancel_jitter_us",
+                                                         "order_service_us",
                                                          "md_arrival",
                                                          "p_drop",
                                                          "supports_replace",
@@ -150,7 +167,8 @@ std::vector<sim::SimVenueConfig> read_venues(const Config& cfg,
       throw ConfigError(
           fmt::format("backtest.{}: unknown key (latency_fixed_us, latency_jitter_us, "
                       "latency_ack_us, latency_ack_jitter_us, latency_md_us, "
-                      "latency_md_jitter_us, md_arrival, p_drop, supports_replace, stp, "
+                      "latency_md_jitter_us, latency_cancel_us, latency_cancel_jitter_us, "
+                      "order_service_us, md_arrival, p_drop, supports_replace, stp, "
                       "orders_10s, orders_1d, balances.<ASSET>){}",
                       key,
                       where));
@@ -249,7 +267,7 @@ std::vector<Duration> parse_horizons(const std::string& text) {
 }
 
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 25> kBacktestKeys = {"markout_horizons_s",
+constexpr std::array<std::string_view, 28> kBacktestKeys = {"markout_horizons_s",
                                                             "orders_10s",
                                                             "orders_1d",
                                                             "source",
@@ -269,6 +287,9 @@ constexpr std::array<std::string_view, 25> kBacktestKeys = {"markout_horizons_s"
                                                             "latency_ack_jitter_us",
                                                             "latency_md_us",
                                                             "latency_md_jitter_us",
+                                                            "latency_cancel_us",
+                                                            "latency_cancel_jitter_us",
+                                                            "order_service_us",
                                                             "md_arrival",
                                                             "balances_from_journal",
                                                             "own_orders_in_feed",
@@ -348,6 +369,9 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   t.ack_in = defaults.ack_in;
   t.md_in = defaults.md_in;
   t.md_recorded_arrival = defaults.md_recorded_arrival;
+  t.cancel_latency = defaults.cancel_latency;
+  t.cancel_out = defaults.cancel_out;
+  t.order_service = defaults.order_service;
   t.supports_replace = cfg.engine.supports_replace;
   t.stp = cfg.risk.stp ? sim::StpMode::CancelTaker : sim::StpMode::None;
   defaults.supports_replace = t.supports_replace;
