@@ -19,6 +19,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <numbers>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -66,6 +67,53 @@ std::pair<std::int64_t, std::int64_t> fit_leg(std::vector<double> us) {
   const double jitter = std::max(0.0, (p50 - p5) / (kExcessP50 - kExcessP5));
   const double fixed = std::max(0.0, p5 - kExcessP5 * jitter);
   return {std::llround(fixed), std::llround(jitter)};
+}
+
+// The same from whole-millisecond venue times: each latency is only known to lie in the
+// millisecond [x - 500, x + 500) us (x: the stamp plus half a millisecond, less the send time),
+// but the sends fall anywhere in their millisecond, so the intervals of many orders identify the
+// spread. Maximum likelihood over a grid of fixed (20 us steps) and jitter; among equal
+// likelihoods (every send on the same phase) the median nearest the intervals' median wins.
+std::pair<std::int64_t, std::int64_t> fit_leg_ms(std::vector<double> us) {
+  if (us.empty()) return {0, 0};
+  std::sort(us.begin(), us.end());
+  const double mid = pct(us, 0.5);
+  // At most 4000 intervals, evenly through the sorted sample.
+  std::vector<double> x;
+  const std::size_t step = us.size() / 4000 + 1;
+  for (std::size_t i = 0; i < us.size(); i += step) x.push_back(us[i]);
+  constexpr double kSigma = 0.5;
+  const auto cdf = [](double v, double fixed, double jitter) {
+    const double e = v - fixed;
+    if (e <= 0) return 0.0;
+    if (jitter <= 0) return 1.0;
+    return 0.5 *
+           std::erfc(-(std::log(e / jitter) + kSigma * kSigma / 2) / kSigma / std::numbers::sqrt2);
+  };
+  constexpr std::array<double, 30> kJitter{0,   10,  20,  30,   40,   50,   60,   80,   100,  125,
+                                           150, 175, 200, 250,  300,  350,  400,  450,  500,  600,
+                                           700, 800, 900, 1000, 1250, 1500, 2000, 2500, 3000, 4000};
+  double best_ll = -std::numeric_limits<double>::infinity();
+  double best_gap = std::numeric_limits<double>::infinity();
+  std::pair<std::int64_t, std::int64_t> best{std::llround(std::max(0.0, mid)), 0};
+  const auto steps = static_cast<std::int64_t>(std::max(0.0, mid + 500.0) / 20.0);
+  for (std::int64_t f = 0; f <= steps; ++f) {
+    const auto fixed = static_cast<double>(f * 20);
+    for (const double jitter : kJitter) {
+      double ll = 0;
+      for (const double v : x) {
+        const double p = cdf(v + 500.0, fixed, jitter) - cdf(v - 500.0, fixed, jitter);
+        ll += std::log(std::max(p, 1e-12));
+      }
+      const double gap = std::abs(fixed + kExcessP50 * jitter - mid);
+      if (ll > best_ll + 1e-6 || (ll > best_ll - 1e-6 && gap < best_gap)) {
+        best_ll = std::max(ll, best_ll);
+        best_gap = gap;
+        best = {std::llround(fixed), std::llround(jitter)};
+      }
+    }
+  }
+  return best;
 }
 
 std::string venue_name(const Config* cfg, VenueId v) {
@@ -178,11 +226,6 @@ constexpr std::size_t kMinCancels = 20;
 constexpr std::int64_t kServiceGridUs = 2000;
 constexpr std::int64_t kServiceStepUs = 10;
 
-double median(std::vector<double> v) {
-  std::sort(v.begin(), v.end());
-  return pct(v, 0.5);
-}
-
 }  // namespace
 
 void VenueLatency::fit() {
@@ -206,19 +249,15 @@ void VenueLatency::fit() {
     ack_us = std::max<std::int64_t>(0, rt_fixed - fixed_us);
     ack_jitter_us = std::max<std::int64_t>(0, rt_jitter - jitter_us);
   } else {
-    fixed_us = std::clamp<std::int64_t>(std::llround(median(leg)), 0, rt_fixed);
-    jitter_us = 0;
+    std::tie(fixed_us, jitter_us) = fit_leg_ms(leg);
+    fixed_us = std::min(fixed_us, rt_fixed);
     ack_us = rt_fixed - fixed_us;
-    ack_jitter_us = rt_jitter;
+    ack_jitter_us = std::max<std::int64_t>(0, rt_jitter - jitter_us);
   }
   cancel_fitted = iso_cancel.size() >= kMinCancels;
   if (cancel_fitted) {
-    if (ms_venue_times) {
-      cancel_fixed_us = std::max<std::int64_t>(0, std::llround(median(iso_cancel)));
-      cancel_jitter_us = 0;
-    } else {
-      std::tie(cancel_fixed_us, cancel_jitter_us) = fit_leg(iso_cancel);
-    }
+    std::tie(cancel_fixed_us, cancel_jitter_us) =
+        ms_venue_times ? fit_leg_ms(iso_cancel) : fit_leg(iso_cancel);
   }
   fit_service();
 }

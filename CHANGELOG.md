@@ -79,6 +79,9 @@ All notable changes are recorded here (Keep a Changelog format).
   cancel acks and message bursts, fits the order latency on isolated messages, and replays each
   session's cancels through the simulated intake to show what the fitted keys change in the fill
   check.
+- `fastmm-data calibrate` fits fixed latency and jitter from millisecond venue times (Binance) by
+  maximum likelihood over the stamps' millisecond intervals; it used to take the median and no
+  jitter.
 - backtest: `[backtest] order_service_us` (and per venue): the simulated venue takes the order
   messages of one connection one after another, each no sooner than this after the one before, so
   the last cancels of a burst reach the book late, as on a live venue. `latency_cancel_us` /

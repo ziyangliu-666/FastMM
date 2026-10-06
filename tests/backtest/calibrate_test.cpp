@@ -176,7 +176,7 @@ TEST_CASE("backtest.calibrate: the latency model fitted to the journal's round t
     CHECK(l[0].ack_us == 1100);
     CHECK(l[0].ack_jitter_us == 0);
   }
-  SUBCASE("millisecond venue times: the one-way leg at its median plus half a millisecond") {
+  SUBCASE("millisecond venue times: the one-way leg from the stamps' intervals") {
     const std::string path = tmp_path("calibrate_latency_ms.fmj");
     write_session(path, {.orders = 3, .to_venue_us = 1300, .round_trip_us = 2500, .ms = true});
     JournalReader reader;
@@ -184,9 +184,12 @@ TEST_CASE("backtest.calibrate: the latency model fitted to the journal's round t
     const std::vector<VenueLatency> l = measure_latency(reader);
     REQUIRE(l.size() == 1);
     CHECK(l[0].ms_venue_times);
-    // Sends are whole milliseconds apart here, so 1.3 ms is stamped 1 ms, read as 1.5.
-    CHECK(l[0].fixed_us == 1500);
-    CHECK(l[0].ack_us == 1000);
+    // The first order goes out on a whole millisecond (1.3 ms is stamped 1 ms later: the latency
+    // is in [1, 2) ms), the others half a millisecond into one (stamped 0.5 ms later: [0.5, 1.5)
+    // ms). Both hold for [1, 1.5) ms; the fit takes the end nearest the middle of the stamps.
+    CHECK(l[0].fixed_us == 1480);
+    CHECK(l[0].jitter_us == 0);
+    CHECK(l[0].ack_us == 1020);
   }
   SUBCASE("a spread: fixed and jitter through the 5th and 50th percentiles") {
     // 101 round trips whose 5th percentile is 687.7 us and median 1182.5 us: those of 300 us fixed
