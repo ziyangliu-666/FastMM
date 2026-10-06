@@ -4,6 +4,7 @@
 //   fastmm-data convert --config configs/backtest-binance.toml
 //       --data binance:BTCUSDT,2024-03-27 --out ~/.cache/fastmm/data/btcusdt-2024-03-27.fmj
 //   fastmm-data fill-check runs/demo-1/session.fmj [--conservatism 0,0.5,1] [--csv orders.csv]
+//       [--horizons-ms 100,1000,10000] [--pre-ms 100] [--market recorded.fmj]
 //   fastmm-data calibrate a.fmj b.fmj c.fmj [--conservatism ...] [--backtest [--config f.toml]]
 //       [--csv grid.csv]
 //
@@ -21,6 +22,7 @@
 #include "fastmm/cli/modules.hpp"
 #include "fastmm/config/config.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -51,6 +53,9 @@ int data(int argc, char** argv) {
   std::vector<double> conservatism;
   std::string csv;
   bool backtest = false;
+  std::vector<double> horizons_ms;
+  double pre_ms = 100;
+  std::string market;
 
   CLI::App app("Lists the market-data sources a backtest can read and packs them into journals.",
                program);
@@ -67,6 +72,23 @@ int data(int argc, char** argv) {
   fill_check->add_option("journal", journal, "journal recorded by fastmm-live")
       ->option_text("<file.fmj>")
       ->required();
+  fill_check
+      ->add_option("--horizons-ms",
+                   horizons_ms,
+                   "markout horizons of the diagnosis, in ms (default 100,1000,10000)")
+      ->option_text("<ms,...>")
+      ->delimiter(',')
+      ->check(CLI::PositiveNumber);
+  fill_check
+      ->add_option("--pre-ms", pre_ms, "the diagnosis's mid move before each fill, in ms (100)")
+      ->option_text("<ms>")
+      ->check(CLI::NonNegativeNumber);
+  fill_check
+      ->add_option("--market",
+                   market,
+                   "replay this journal's market data (the same period, instruments matched by "
+                   "venue and symbol) instead of the session's own")
+      ->option_text("<file.fmj>");
   CLI::App* calibrate = app.add_subcommand(
       "calibrate",
       "fit queue_conservatism and the latencies to live sessions, cross-validated, and print the "
@@ -148,14 +170,23 @@ int data(int argc, char** argv) {
   }
   if (fill_check->parsed()) {
     if (conservatism.empty()) conservatism = {0.0, 0.5, 1.0};
+    bt::FillCheckOptions opt;
+    if (!horizons_ms.empty()) {
+      opt.horizons_ns.clear();
+      for (const double h : horizons_ms) opt.horizons_ns.push_back(std::llround(h * 1e6));
+    }
+    opt.pre_window = Duration{std::llround(pre_ms * 1e6)};
+    opt.market = market;
     bt::FillCheckResult r;
     try {
-      r = bt::fill_check(journal, conservatism);
+      r = bt::fill_check(journal, conservatism, opt);
     } catch (const std::exception& e) {
       std::fprintf(stderr, "%s: %s\n", prog, e.what());
       return kExitData;
     }
     std::fputs(bt::format_fill_check(r).c_str(), stdout);
+    // The diagnosis at the last value listed.
+    std::fputs(("\n" + bt::format_fill_diagnosis(r, r.conservatism.size() - 1)).c_str(), stdout);
     if (!csv.empty() && !write_csv(bt::fill_check_csv(r))) return kExitWrite;
     return 0;
   }

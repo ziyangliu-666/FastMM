@@ -24,6 +24,18 @@
 // Orders that cannot rest (market, IOC, FOK) and orders whose price crossed the mirrored book at
 // the ack are left out and counted. A model fill is timed by the trade that caused it, a live
 // fill by the OrderFill, both in venue time.
+//
+// The diagnosis (FillCheckOptions, format_fill_diagnosis) says which live fills the model misses
+// and what they were worth. Each order records what the market did while it rested: whether the
+// opposite touch reached its price (a live venue matches it there; the model waits for a print),
+// whether a public trade printed through its price, how much printed at it, and how its first live
+// fill shows in the recorded trades (FillPrint). Each first fill, live and model, gets the mid
+// move over `pre_window` before it and its markouts at `horizons_ns`, all against the journal's
+// BookTicker mids (mid_series.hpp): s * (mid(t + h) - price) / price, s = +1 for a buy, in basis
+// points. The report sets the live fills the model also has beside those it misses, and the fill
+// rate (live / model) per bucket of each feature. `market` replays another journal's market data
+// recorded over the same period (instruments matched by venue id and symbol) in place of the
+// session's own; the session's own orders are still taken out of its depth.
 #include "fastmm/backtest/own_orders.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
@@ -33,13 +45,28 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fastmm::bt {
 
 using FillCheckEnd = OrderEnd;  // how the live order left the book
+
+// How the first live fill shows in the recorded trades.
+enum class FillPrint : std::uint8_t {
+  None = 0,     // no live fill
+  Missing = 1,  // no trade at its price against its side in the fill's millisecond, none through
+  AtPrice = 2,  // its trade (the exec id is the public trade id on Binance) or one at its price
+                // against its side in the fill's millisecond
+  Through = 3,  // a trade against its side printed through its price in the fill's millisecond:
+                // a sweep took it
+};
+[[nodiscard]] std::string_view to_string(FillPrint p) noexcept;
+
+inline constexpr double kNoValue = std::numeric_limits<double>::quiet_NaN();
 
 struct FillCheckOrder {
   ClientOrderId cl_ord_id;
@@ -62,7 +89,30 @@ struct FillCheckOrder {
   // (the order's queue position when the venue filled it); raw -1: none.
   std::vector<Qty> model_ahead_at_fill;
   std::vector<Qty> model_ahead_at_live_fill;
+
+  // Diagnosis. Times in venue time except cancel_sent; NaN: not measured.
+  Timestamp cancel_sent;  // engine time of its first cancel or replace; invalid: none
+  // Ticks behind the best price on its side at the ack (others' quantity, the touch when newer
+  // than the depth); negative: it improved on it. touch_known: that side had a price.
+  std::int32_t ticks_behind = 0;
+  bool touch_known = false;
+  Timestamp touch_crossed;   // first time while it rested the opposite touch was at or through it
+  Timestamp traded_through;  // first public trade through its price against its side
+  Qty printed_at_px;         // public quantity printed at its price against its side
+  FillPrint live_print = FillPrint::None;
+  double live_pre_move_bps = kNoValue;   // s * (mid(fill) - mid(fill - pre_window)) / price
+  std::vector<double> live_markout_bps;  // per horizon
+  // Per conservatism value: the first model fill came from a print through its price; its pre-fill
+  // mid move; its markouts (index k * horizons + h).
+  std::vector<std::uint8_t> model_through;
+  std::vector<double> model_pre_move_bps;
+  std::vector<double> model_markout_bps;
+
   [[nodiscard]] Duration resting() const noexcept { return end_ts - ack_ts; }
+  // A cancel or replace had gone out before the first live fill.
+  [[nodiscard]] bool live_fill_after_cancel() const noexcept {
+    return cancel_sent.valid() && live_first_fill_ts.valid() && live_first_fill_ts > cancel_sent;
+  }
 };
 
 // One conservatism value, over every order of FillCheckResult::orders.
@@ -103,6 +153,12 @@ struct FillCheckResult {
   std::uint64_t end_ties = 0;          // model fills by a trade in the end's millisecond
   bool ms_order_times = false;         // every venue order time is a whole millisecond
   bool own_in_depth = false;           // the depth feed includes our orders (live session)
+  // Diagnosis.
+  std::vector<std::int64_t> horizons_ns;  // markout horizons
+  Duration pre_window;                    // mid move measured before each fill
+  std::uint64_t exec_matched = 0;         // first live fills whose exec id printed in the trades
+  std::string market;                     // the journal the market data came from, if not this
+  std::uint64_t market_unmapped = 0;      // its market messages on instruments the session lacks
   [[nodiscard]] FillCheckSummary summary(std::size_t k) const;
 };
 
@@ -112,17 +168,33 @@ struct FillCheckInputs {
   bool tape = true;   // trades printed since a view took their quantity from its levels
 };
 
+struct FillCheckOptions {
+  FillCheckInputs inputs;
+  std::vector<std::int64_t> horizons_ns{100'000'000, 1'000'000'000, 10'000'000'000};
+  Duration pre_window = milliseconds(100);
+  std::string market;  // journal whose market data replaces the session's own; empty: none
+};
+
 // Walks the journal once. `conservatism` values are in [0, 1] (queue_conservatism).
 [[nodiscard]] FillCheckResult fill_check(JournalReader& reader,
                                          std::span<const double> conservatism,
                                          const FillCheckInputs& in = {});
-// Throws std::runtime_error if the file cannot be opened.
+[[nodiscard]] FillCheckResult fill_check(JournalReader& reader,
+                                         std::span<const double> conservatism,
+                                         const FillCheckOptions& opt);
+// Throws std::runtime_error if a file cannot be opened.
 [[nodiscard]] FillCheckResult fill_check(const std::string& path,
                                          std::span<const double> conservatism,
                                          const FillCheckInputs& in = {});
+[[nodiscard]] FillCheckResult fill_check(const std::string& path,
+                                         std::span<const double> conservatism,
+                                         const FillCheckOptions& opt);
 
 // The report fastmm-data fill-check prints, and the per-order CSV of --csv.
 [[nodiscard]] std::string format_fill_check(const FillCheckResult& r);
 [[nodiscard]] std::string fill_check_csv(const FillCheckResult& r);
+// The live fills the model misses beside those it has, by outcome and by feature, for the
+// conservatism value at index k.
+[[nodiscard]] std::string format_fill_diagnosis(const FillCheckResult& r, std::size_t k = 0);
 
 }  // namespace fastmm::bt

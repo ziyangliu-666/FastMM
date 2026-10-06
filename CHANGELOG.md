@@ -74,6 +74,12 @@ All notable changes are recorded here (Keep a Changelog format).
 - sim: `SimAccounts::transfer`, `SimTransport::transfer` and `sim::SimTreasuryPort`: the same
   treasury runs against a pool's simulated accounts, and the engine hears the new balances on each
   account's link.
+- `fastmm-data fill-check` diagnoses the live fills the `l2_queue` model misses: markouts and the
+  pre-fill mid move of every first fill, live and model, by outcome (both, live only, model only),
+  how each live fill printed in the recorded trades (at its price, a sweep through it, missing),
+  whether the opposite touch had reached it or a cancel had gone out, and fill rates live / model
+  by queue ahead, ticks behind the touch, prints and resting time. `--horizons-ms`, `--pre-ms`,
+  and `--market` to replay another recording of the same period; `--csv` carries the new columns.
 - Strategy hook `on_batch_end(ctx)`: `ctx.request_batch_end()` from any hook asks for one call
   once the engine has handled the events waiting in its input rings (or the step's
   `max_events_per_step` is used up). Work a burst repeats per event (a requote after every balance

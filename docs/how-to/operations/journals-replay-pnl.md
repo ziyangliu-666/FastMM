@@ -111,6 +111,31 @@ The model predicted 38-39% of the quantity this session filled, whatever the con
 
 Times are venue times (`exch_ts`): a venue sends its execution report before the public trade that filled the order, so by receive time the trade would fall after the order's end. An event without a venue time uses its receive time; the `times` line counts them. Binance order times are whole milliseconds, so a trade in the ack's millisecond counts for the order (a tie, counted); one in the end's millisecond only when the order had a fill in that millisecond, and only up to that fill's trade id. A fill reported after the order's end (the API's cancel response can arrive before the execution report) is still a live fill. In a live session the depth feed shows our own orders; each level is stripped of what we had resting at its price at the update's venue time before the model sees it (the same stripping as `journal:<file>,strip_own=1`, [Market-data sources](../../reference/data-sources.md#journal)). `--csv` writes one row per order: price, size, the quantity ahead at the ack, resting time, how it ended, and the live and model fills with their times. `fastmm-data calibrate` runs this over several sessions, fits the conservatism and the latencies, and compares a backtest of each session with it ([Backtesting](../../explanation/backtesting.md#calibrating-against-live-sessions)).
 
+### Which live fills the model misses
+
+After the table, `fill-check` prints a diagnosis at the last conservatism listed. Each order's first live fill and first model fill get the mid move over `--pre-ms` (default 100) before it and markouts at `--horizons-ms` (default `100,1000,10000`), all against the journal's book ticker mids, in bps of the order's price, positive when the mid moved the order's way:
+
+```text
+  fills                     n    100ms       1s      10s  pre p10  pre p50  pre p90  through  missing  crossed   cancel
+  both, live fill         ...
+  both, model fill        ...
+  live only               ...
+  model only              ...
+```
+
+`live only` against `both, live fill` says whether the fills the model misses are worse ones. The columns after the markouts say how each fill came about:
+
+| Column | Meaning |
+|---|---|
+| `through` | live: a trade printed through the order's price in the fill's millisecond (a sweep took it); model: the fill came from such a print |
+| `missing` | no trade at or through the order's price in the live fill's millisecond: the recorded trades do not show it |
+| `crossed` | the opposite touch had reached the order's price by the fill |
+| `cancel` | a cancel or replace of the order had gone out before the live fill: it lost the race |
+
+The line under the table counts the first live fills whose exec id is a trade id of the recorded tape (Binance spot's raw trade stream: all of them; an aggregated stream: none, and the fills are matched by price and millisecond instead). Then each feature splits the orders into buckets, with the orders filled live, by the model, their ratio and the live-only count: the queue ahead at the ack in order quantities, ticks behind the touch at the ack, whether the opposite touch reached the price while the order rested, whether a trade printed through it, how much printed at the price against the queue at the ack, resting time, and whether the order was cancelled or replaced. A bucket whose `live/model` stands far from the others locates what the model gets wrong. `--csv` adds these per order: the cancel's send time, ticks behind, when the touch reached the price and when a trade printed through it, the quantity printed at it, the live fill's print class, and the pre-fill moves and markouts of the live fill and of each conservatism's model fill.
+
+`--market other.fmj` replays the market data of another journal recorded over the same period (a recorder on another host, a feed with more depth) instead of the session's own. Its instruments are matched to the session's by venue id and symbol; messages on others are counted. The session's own orders are still taken out of its depth.
+
 ## Check PnL
 
 A session's PnL has four views:

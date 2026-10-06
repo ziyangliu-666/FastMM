@@ -143,12 +143,16 @@ class Collector {
       s.qty = m.qty;
       s.replaces = m.orig_cl_ord_id;
       if (OwnOrder* orig = find(m.orig_cl_ord_id)) {
+        if (!orig->cancel_sent.valid()) orig->cancel_sent = h.recv_ts;
         s.side = orig->side;
         s.type = orig->type == OrderType::PostOnly ? OrderType::PostOnly : OrderType::Limit;
         orig->replaced_by = m.cl_ord_id;
       }
       add(s);
       ++log_.orders_sent;
+    } else if (h.type == EventType::OutCancel) {
+      OwnOrder* s = find(msg_cast<OutCancelMsg>(&h).cl_ord_id);
+      if (s != nullptr && !s->cancel_sent.valid()) s->cancel_sent = h.recv_ts;
     }
   }
 

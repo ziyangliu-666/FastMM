@@ -83,6 +83,7 @@ struct OwnOrder {
   bool ended = false;  // gone at the venue (before or after the ack)
   VenueTime ack;
   VenueTime end;
+  Timestamp cancel_sent;  // engine time its first cancel or replace went out; invalid: none
   OrderEnd why = OrderEnd::Open;
   std::vector<OwnFill> fills;
   std::uint64_t last_exec = 0;  // exec id of the last fill

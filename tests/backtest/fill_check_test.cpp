@@ -10,6 +10,7 @@
 #include "fastmm/core/journal.hpp"
 
 #include <array>
+#include <cmath>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -556,4 +557,115 @@ TEST_CASE("backtest.fill_check: a fill after a reconciliation ended the order ma
   CHECK(o.end_ts.ns == kV0 + 2 * kMs);
   CHECK(o.live_filled == qt("1"));
   for (std::size_t k = 0; k < kC.size(); ++k) CHECK(o.model_filled[k] == qt("1"));
+}
+
+TEST_CASE("backtest.fill_check: the diagnosis classifies live fills and marks them") {
+  const std::string path = tmp_path("fill_check_diagnosis.fmj");
+  constexpr std::int64_t t0 = 1'000'000'000;
+  {
+    JournalBuilder j(path);
+    j.book(true, {{"100.00", "5"}}, {{"100.10", "5"}});
+    j.ticker("100.00", "5", "100.10", "5");   // mid 100.05
+    j.out_new(1, Side::Buy, "100.00", "1");   // A: its trade printed at its price
+    j.out_new(2, Side::Buy, "99.90", "1");    // B: a sell swept through it
+    j.out_new(3, Side::Sell, "100.20", "1");  // C: filled live, nothing printed
+    j.out_new(4, Side::Sell, "100.30", "1");  // D: the bid reaches it, then it is cancelled
+    j.now += 1000;
+    j.ack(1);
+    j.ack(2);
+    j.ack(3);
+    j.ack(4);
+    j.now = t0 + 2000;
+    j.trade("100.00", "6", Side::Sell, 7);
+    j.now = t0 + 2500;
+    j.fill(1, "100.00", "1", "0", "7");
+    j.now = t0 + 3000;
+    j.trade("99.80", "2", Side::Sell, 8);
+    j.now = t0 + 3200;
+    j.fill(2, "99.90", "1", "0", "8");
+    j.now = t0 + 4000;
+    j.fill(3, "100.20", "1", "0", "99");
+    j.now = t0 + 5000;
+    j.ticker("100.30", "1", "100.40", "1");  // mid 100.35
+    j.now = t0 + 6000;
+    j.out_cancel(4);
+    j.cancel_ack(4);
+    j.now = t0 + 20'000;
+    j.ticker("100.30", "1", "100.40", "1");
+  }
+  FillCheckOptions opt;
+  opt.horizons_ns = {1000, 10'000};
+  opt.pre_window = Duration{1000};
+  const std::array<double, 1> c{1.0};
+  const FillCheckResult r = fill_check(path, c, opt);
+  REQUIRE(r.orders.size() == 4);
+  CHECK(r.exec_matched == 2);
+
+  const FillCheckOrder& a = order(r, 1);
+  CHECK(a.live_print == FillPrint::AtPrice);
+  CHECK(a.printed_at_px == qt("6"));
+  CHECK(a.ticks_behind == 0);
+  CHECK(a.touch_known);
+  // Live fill at 2.5 us: the mid 1 us later is 100.05, 10 us later 100.35.
+  CHECK(a.live_markout_bps[0] == doctest::Approx(5.0));
+  CHECK(a.live_markout_bps[1] == doctest::Approx(35.0));
+  CHECK(a.live_pre_move_bps == doctest::Approx(0.0));
+  CHECK(a.model_markout_bps[0] == doctest::Approx(5.0));
+  CHECK(a.model_through[0] == 0);
+
+  const FillCheckOrder& b = order(r, 2);
+  CHECK(b.live_print == FillPrint::Through);
+  CHECK(b.ticks_behind == 10);
+  CHECK(b.traded_through.ns == t0 + 3000);
+  CHECK(b.model_through[0] == 1);
+  CHECK(b.model_filled[0] == qt("1"));
+
+  const FillCheckOrder& cc = order(r, 3);
+  CHECK(cc.live_print == FillPrint::Missing);
+  CHECK(cc.model_filled[0].is_zero());
+  // A sell at 100.20 filled at 4 us: 10 us later the mid is 100.35, 15 cents against it.
+  CHECK(cc.live_markout_bps[1] == doctest::Approx(-0.15 / 100.20 * 1e4));
+
+  const FillCheckOrder& d = order(r, 4);
+  CHECK(d.live_print == FillPrint::None);
+  CHECK(d.touch_crossed.ns == t0 + 5000);
+  CHECK(d.cancel_sent.ns == t0 + 6000);
+  CHECK(std::isnan(d.live_markout_bps[0]));
+
+  const std::string report = format_fill_diagnosis(r, 0);
+  CHECK(report.find("live only") != std::string::npos);
+  CHECK(report.find("opposite touch reached the price") != std::string::npos);
+  const std::string csv = fill_check_csv(r);
+  CHECK(csv.find("live_markout_10us_bps") != std::string::npos);
+  CHECK(csv.find(",through,") != std::string::npos);
+}
+
+TEST_CASE("backtest.fill_check: market data from another journal of the same period") {
+  const std::string session = tmp_path("fill_check_session_only.fmj");
+  const std::string market = tmp_path("fill_check_market.fmj");
+  {
+    JournalBuilder j(session);
+    j.out_new(1, Side::Buy, "100.00", "1");
+    j.now += 1000;
+    j.ack(1);
+    j.now += 3000;
+    j.fill(1, "100.00", "1", "0", "5");
+  }
+  {
+    JournalBuilder m(market);
+    m.book(true, {{"100.00", "2"}}, {{"100.10", "2"}});
+    m.now += 2000;
+    m.trade("100.00", "3", Side::Sell, 5);
+  }
+  const std::array<double, 1> c{1.0};
+  CHECK(fill_check(session, c).orders.front().model_filled[0].is_zero());
+  FillCheckOptions opt;
+  opt.market = market;
+  const FillCheckResult r = fill_check(session, c, opt);
+  REQUIRE(r.orders.size() == 1);
+  CHECK(r.orders.front().queue_ahead == qt("2"));
+  CHECK(r.orders.front().model_filled[0] == qt("1"));
+  CHECK(r.orders.front().live_print == FillPrint::AtPrice);
+  CHECK(r.market == market);
+  CHECK(r.market_unmapped == 0);
 }
