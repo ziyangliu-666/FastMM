@@ -15,6 +15,10 @@
 #                                              US on LIST (default: every CPU); until reboot
 #   scripts/host-setup.sh cstates restore [--cpus LIST] [--dry-run]
 #                                              enable every idle state again
+#   scripts/host-setup.sh irq-affinity <iface> <cpu-list> [--dry-run]
+#                                              <iface>'s queue interrupts to the CPUs of the list in
+#                                              turn (queue 0 to the first, ...); irqbalance, while
+#                                              it runs, moves them back
 #   scripts/host-setup.sh firewall <iface>     when ufw is active: allow everything from <iface>'s
 #                                              subnet (Vultr images enable ufw)
 #   scripts/host-setup.sh xdp-prep <iface>     one combined queue and no GRO/LRO on <iface> (af_xdp),
@@ -31,8 +35,9 @@
 set -euo pipefail
 
 STATE=/var/lib/fastmm
-# Another root for /sys (a test tree); the default is the live one.
+# Other roots for /sys and /proc (a test tree); the defaults are the live ones.
 SYSFS="${HOST_SETUP_SYSFS:-/sys}"
+PROCFS="${HOST_SETUP_PROCFS:-/proc}"
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
 die() { echo "host-setup: $*" >&2; exit 1; }
 need_root() { [[ $EUID -eq 0 ]] || die "run as root${1:+ $1}"; }
@@ -167,6 +172,65 @@ cmd_cstates() {
   (( found )) || echo "cstates: no cpuidle states under $SYSFS/devices/system/cpu (a VM often has none)"
 }
 
+# "<irq> <name>" per queue interrupt of <iface>: the /proc/interrupts lines whose name contains
+# <iface> (eth1-TxRx-0), or else the device's MSI vectors (its own msi_irqs or its parent's, as for
+# virtio and mlx5) minus the config, async, mgmnt and ctrl ones. fastmm-live's [engine]
+# log_irq_affinity picks the same set.
+nic_irqs() {
+  local ifc="$1" dev d irq name found=0
+  local names re="${1//./\\.}([^[:alnum:]]|$)"
+  names="$(awk 'NR > 1 && $1 ~ /^[0-9]+:$/ {sub(":", "", $1); print $1, $NF}' "$PROCFS/interrupts")"
+  while read -r irq name; do
+    [[ -n "$irq" ]] || continue
+    if [[ "$name" =~ $re ]]; then echo "$irq $name"; found=1; fi
+  done <<< "$names"
+  (( found )) && return 0
+  dev="$(readlink -f "$SYSFS/class/net/$ifc/device")" || return 0
+  for d in "$dev/msi_irqs" "$(dirname "$dev")/msi_irqs"; do
+    [[ -d "$d" ]] || continue
+    for irq in $(find "$d" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort -n); do
+      name="$(awk -v n="$irq" '$1 == n {print $2}' <<< "$names")"
+      [[ "$name" =~ config|async|mgmnt|ctrl ]] && continue
+      echo "$irq ${name:--}"
+    done
+    return 0
+  done
+}
+
+cmd_irq_affinity() {
+  local ifc="" list="" dry=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run) dry=1; shift;;
+      -*) die "irq-affinity: unknown option $1";;
+      *) if [[ -z "$ifc" ]]; then ifc="$1"; elif [[ -z "$list" ]]; then list="$1"; else die "irq-affinity <iface> <cpu-list> [--dry-run]"; fi; shift;;
+    esac
+  done
+  [[ -n "$ifc" && -n "$list" ]] || die "irq-affinity <iface> <cpu-list> [--dry-run]"
+  [[ -d "$SYSFS/class/net/$ifc" ]] || die "no interface $ifc"
+  (( dry )) || need_root "(--dry-run prints the plan)"
+  local -a cpus
+  read -r -a cpus <<< "$(expand_cpus "$list")"
+  local i=0 irq name cpu cur
+  while read -r irq name; do
+    [[ -n "$irq" ]] || continue
+    cpu="${cpus[i % ${#cpus[@]}]}"
+    cur="$(cat "$PROCFS/irq/$irq/smp_affinity_list" 2>/dev/null || echo '?')"
+    if (( dry )); then
+      echo "would set irq $irq ($name) $cur -> $cpu"
+    elif echo "$cpu" > "$PROCFS/irq/$irq/smp_affinity_list" 2>/dev/null; then
+      echo "irq $irq ($name) $cur -> $cpu"
+    else
+      echo "host-setup: irq $irq ($name): cannot set CPU $cpu (a managed interrupt keeps its own)" >&2
+    fi
+    i=$((i + 1))
+  done <<< "$(nic_irqs "$ifc")"
+  (( i )) || die "$ifc: no queue interrupts found in $PROCFS/interrupts or its device's msi_irqs"
+  if systemctl is-active -q irqbalance 2>/dev/null; then
+    echo "host-setup: irqbalance is running and will move these interrupts; systemctl disable --now irqbalance" >&2
+  fi
+}
+
 # The subnets of <iface>'s IPv4 addresses (the kernel's link routes), e.g. 10.77.0.0/24.
 subnets_of() { ip -o -4 route show dev "$1" proto kernel scope link 2>/dev/null | awk '{print $1}'; }
 
@@ -279,6 +343,7 @@ case "$1" in
   deps) need_root; cmd_deps;;
   tune) shift; cmd_tune "$@";;
   cstates) shift; cmd_cstates "$@";;
+  irq-affinity) shift; cmd_irq_affinity "$@";;
   firewall) shift; need_root; cmd_firewall "$@";;
   xdp-prep) shift; need_root; cmd_xdp_prep "$@";;
   dpdk-bind) shift; need_root; cmd_dpdk_bind "$@";;

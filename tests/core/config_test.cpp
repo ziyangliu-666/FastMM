@@ -135,6 +135,13 @@ TEST_CASE("core.config: cpu_dma_latency_us") {
                        ConfigError);
 }
 
+TEST_CASE("core.config: log_irq_affinity") {
+  CHECK_FALSE(Config::parse(kMinimal).engine.log_irq_affinity);
+  const Config cfg = Config::parse("[engine]\nlog_irq_affinity = true\n");
+  CHECK(cfg.engine.log_irq_affinity);
+  CHECK(cfg.effective_toml().find("log_irq_affinity = true") != std::string::npos);
+}
+
 TEST_CASE("core.config: env substitution only in venues, missing var is an error") {
   setenv("FASTMM_T_URL", "wss://x", 1);
   unsetenv("FASTMM_MISSING");

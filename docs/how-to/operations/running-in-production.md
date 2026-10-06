@@ -161,6 +161,27 @@ sudo scripts/host-setup.sh cstates restore --cpus 2-3        # enable them again
 
 `--dry-run` prints the changes without making them, and needs no root. `scripts/host-setup.sh tune --cstate-max-latency 10 --cstate-cpus 2-3` runs the same limit after the other tuning. A VM usually has no cpuidle states to change.
 
+### NIC interrupts
+
+A receive interrupt runs the kernel's network processing on the CPU it lands on. Put a venue's queues on or next to its network thread's core and off the engine's core:
+
+```bash
+sudo systemctl disable --now irqbalance                    # it moves interrupts back otherwise
+scripts/host-setup.sh irq-affinity eth1 6 --dry-run        # the queue interrupts and where each would go
+sudo scripts/host-setup.sh irq-affinity eth1 6,7           # queue 0 to CPU 6, queue 1 to 7, queue 2 to 6, ...
+```
+
+The queue interrupts are the `/proc/interrupts` lines named after the interface (`eth1-TxRx-0`), or else the device's MSI vectors without its configuration vector (virtio, mlx5). `tune` first sends every interrupt to CPU 0, so run `irq-affinity` after it. A managed interrupt refuses the change and the script says so.
+
+`[engine] log_irq_affinity = true` makes `fastmm-live` log, at start, each interface's queue interrupts with their CPUs and which of them are `[engine] cpu` or `net_cpus`. An interrupt that may run on the engine's CPU is a warning:
+
+```text
+irq affinity: eth1 irq 45 eth1-TxRx-0 -> CPUs 6 (net 0)
+irq affinity: eth1 irq 46 eth1-TxRx-1 -> CPUs 0-7 (engine net 0): it interrupts the engine's core
+```
+
+It only reads `/proc` and `/sys`; what it cannot read is left out of the log.
+
 ## Connectors and the OMS
 
 - A live session is not repeatable; its journal is. A replay needs the same binary and the embedded configuration ([Determinism](../../explanation/determinism.md)).

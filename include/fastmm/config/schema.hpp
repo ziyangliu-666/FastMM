@@ -230,6 +230,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      "an idle state that takes longer to wake; 0 keeps every CPU polling in C0; needs write "
      "access to the device, a warning otherwise; -1 = no request (default -1)"},
     {"engine",
+     "log_irq_affinity",
+     KeyType::Bool,
+     false,
+     "fastmm-live: at start, log each network interface's queue interrupts with the CPUs they may "
+     "run on and which of them are cpu or net_cpus, and warn about any that may run on the "
+     "engine's CPU; read only (default false)"},
+    {"engine",
      "min_requote_ticks",
      KeyType::Int,
      false,

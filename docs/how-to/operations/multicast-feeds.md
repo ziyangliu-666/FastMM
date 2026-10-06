@@ -128,6 +128,8 @@ grep eth1 /proc/interrupts
 echo 5 | sudo tee /proc/irq/<irq>/smp_affinity_list
 ```
 
+`scripts/host-setup.sh irq-affinity eth1 5` does the same for every queue of `eth1`, and `[engine] log_irq_affinity = true` logs the result at start ([NIC interrupts](running-in-production.md#nic-interrupts)).
+
 ## 6. Timestamps
 
 `recv_ts` of every event is the kernel's receive time of its datagram (`af_xdp`: the wall clock at T0). `hw_timestamps = true` enables NIC timestamps on the line interfaces (`SIOCSHWTSTAMP`, `CAP_NET_ADMIN`, `kernel` backend); they replace `recv_ts` only with `hw_clock = "phc_synced"`, which requires the NIC clock to follow `CLOCK_REALTIME` (for example `phc2sys -s eth1 -c CLOCK_REALTIME -O 0`). The kernel-to-T0 time (from the kernel's receive time to the network thread's read) is in the status file.

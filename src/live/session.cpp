@@ -172,6 +172,41 @@ void inline_loop(Inline& in, int cpu) {
   s.reactor->run_once(0);
 }
 
+// [engine] log_irq_affinity: read only, and nothing it cannot read stops the session.
+void log_irq_affinity(const Config& cfg, bool single) {
+  std::vector<NicIrqs> nics;
+  try {
+    nics = nic_irqs();
+  } catch (const std::exception& e) {
+    FASTMM_LOG_WARN("irq affinity: cannot read the interrupts: {}", std::string_view(e.what()));
+    return;
+  }
+  if (nics.empty()) FASTMM_LOG_INFO("irq affinity: no network interface backed by a device");
+  // Single: the engine thread runs the network loop and net_cpus is ignored.
+  const std::span<const int> net_cpus =
+      single ? std::span<const int>{} : std::span<const int>(cfg.engine.net_cpus);
+  for (const IrqReportLine& l : irq_affinity_report(nics, cfg.engine.cpu, net_cpus)) {
+    if (l.irq < 0) {
+      FASTMM_LOG_INFO("irq affinity: {}: no queue interrupt found", std::string_view(l.iface));
+    } else if (l.engine) {
+      FASTMM_LOG_WARN("irq affinity: {} irq {} {} -> CPUs {} ({}): it interrupts the engine's core",
+                      std::string_view(l.iface),
+                      l.irq,
+                      std::string_view(l.name),
+                      std::string_view(l.cpus),
+                      std::string_view(l.pinned));
+    } else {
+      FASTMM_LOG_INFO(
+          "irq affinity: {} irq {} {} -> CPUs {} ({})",
+          std::string_view(l.iface),
+          l.irq,
+          std::string_view(l.name),
+          std::string_view(l.cpus),
+          l.pinned.empty() ? std::string_view("no pinned thread") : std::string_view(l.pinned));
+    }
+  }
+}
+
 bool push_control(MsgRing& ring, ControlCommand cmd, VenueId venue = VenueId::invalid()) {
   ControlMsg m{};
   init_header(m, EventType::Control, InstrumentId{}, venue);
@@ -1614,6 +1649,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
                       cfg.engine.cpu_dma_latency_us);
     }
   }
+  if (cfg.engine.log_irq_affinity) log_irq_affinity(cfg, single);
   if (!signals) signals.emplace();
   // A stop that does not finish in time ends the process anyway (shutdown_guard.hpp).
   ShutdownWatchdog shutdown_watchdog;

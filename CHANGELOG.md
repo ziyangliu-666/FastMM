@@ -106,6 +106,11 @@ All notable changes are recorded here (Keep a Changelog format).
   a warning and runs on. `scripts/host-setup.sh cstates show|limit <us>|restore [--cpus LIST]
   [--dry-run]` disables the slower idle states of chosen CPUs in sysfs, and `tune
   --cstate-max-latency <us>` runs it.
+- `[engine] log_irq_affinity` (default false): `fastmm-live` logs at start each network
+  interface's queue interrupts with the CPUs they may run on and which of them are `cpu` or
+  `net_cpus`, and warns about one that may run on the engine's CPU. `scripts/host-setup.sh
+  irq-affinity <iface> <cpu-list> [--dry-run]` spreads an interface's queue interrupts over the
+  listed CPUs.
 - Strategy hook `on_batch_end(ctx)`: `ctx.request_batch_end()` from any hook asks for one call
   once the engine has handled the events waiting in its input rings (or the step's
   `max_events_per_step` is used up). Work a burst repeats per event (a requote after every balance

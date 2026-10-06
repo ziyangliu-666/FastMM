@@ -1,7 +1,12 @@
 #pragma once
 // Host settings a live process holds or inspects at start: the CPU wake-up latency request
-// (/dev/cpu_dma_latency).
+// (/dev/cpu_dma_latency) and the CPUs the network interfaces' interrupts may run on.
 #include <cstdint>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace fastmm {
 
@@ -36,5 +41,42 @@ class CpuLatencyRequest {
  private:
   int fd_ = -1;
 };
+
+// "0-3,6" -> {0, 1, 2, 3, 6}; nullopt when malformed. An empty or blank list is empty.
+[[nodiscard]] std::optional<std::vector<int>> parse_cpu_list(std::string_view list);
+
+struct NicIrq {
+  int irq = -1;
+  std::string name;       // the action name, last column of /proc/interrupts
+  std::vector<int> cpus;  // /proc/irq/<irq>/smp_affinity_list; empty when unreadable
+};
+
+struct NicIrqs {
+  std::string iface;
+  std::vector<NicIrq> irqs;  // ascending
+};
+
+// Every interface with a device behind it (<sys_root>/class/net/<iface>/device) and its queue
+// interrupts: the /proc/interrupts lines whose name contains the interface's name (eth1-TxRx-0),
+// or else the device's MSI vectors (<device>/msi_irqs or its parent's: virtio, mlx5) minus the
+// ones named config, async, mgmnt or ctrl. Read only; whatever cannot be read is left out.
+[[nodiscard]] std::vector<NicIrqs> nic_irqs(const std::string& sys_root = "/sys",
+                                            const std::string& proc_root = "/proc");
+
+// One queue interrupt against the pinned CPUs; irq < 0: the interface has none.
+struct IrqReportLine {
+  std::string iface;
+  int irq = -1;
+  std::string name;
+  std::string cpus;     // "0-3,6"; "?" when unreadable
+  std::string pinned;   // "engine", "net 0", "net 1", ... space separated; empty for none
+  bool engine = false;  // may run on the engine's CPU
+};
+
+// One line per queue interrupt of each interface, naming the pinned threads whose CPU
+// (`engine_cpu`, `net_cpus` by index; negative = unpinned) it may run on.
+[[nodiscard]] std::vector<IrqReportLine> irq_affinity_report(std::span<const NicIrqs> nics,
+                                                             int engine_cpu,
+                                                             std::span<const int> net_cpus);
 
 }  // namespace fastmm

@@ -104,6 +104,8 @@ struct EngineSection {
   // fastmm-live: PM QoS CPU latency request (/dev/cpu_dma_latency) held for the session, us;
   // -1 = none.
   int cpu_dma_latency_us = -1;
+  bool log_irq_affinity =
+      false;  // fastmm-live: log the NICs' interrupt CPUs against the pinned ones
   int min_requote_ticks = 1;
   int min_requote_interval_ms = 50;
   int min_qty_bps = 8000;

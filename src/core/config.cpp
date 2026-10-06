@@ -563,6 +563,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
         fail_at(*n, "cpu_dma_latency_us must be -1 (no request) or 0..2147483647");
       get(*t, "cpu_dma_latency_us", e.cpu_dma_latency_us);
     }
+    get(*t, "log_irq_affinity", e.log_irq_affinity);
     get(*t, "restore_position", e.restore_position);
     get(*t, "min_requote_ticks", e.min_requote_ticks);
     get(*t, "min_requote_interval_ms", e.min_requote_interval_ms);
@@ -1315,6 +1316,7 @@ std::string Config::effective_toml() const {
   e.insert("timer_slack_ns", engine.timer_slack_ns);
   e.insert("lock_memory", engine.lock_memory);
   e.insert("cpu_dma_latency_us", static_cast<std::int64_t>(engine.cpu_dma_latency_us));
+  e.insert("log_irq_affinity", engine.log_irq_affinity);
   e.insert("restore_position", engine.restore_position);
   e.insert("min_requote_ticks", static_cast<std::int64_t>(engine.min_requote_ticks));
   e.insert("min_requote_interval_ms", static_cast<std::int64_t>(engine.min_requote_interval_ms));
