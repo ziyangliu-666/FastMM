@@ -132,6 +132,8 @@ class Collector {
       s.tif = m.tif;
       s.price = m.price;
       s.qty = m.qty;
+      s.sent = h.recv_ts;
+      s.venue = h.venue;
       add(s);
       ++log_.orders_sent;
     } else if (h.type == EventType::OutReplace) {
@@ -141,6 +143,8 @@ class Collector {
       s.instrument = h.instrument;
       s.price = m.price;
       s.qty = m.qty;
+      s.sent = h.recv_ts;
+      s.venue = h.venue;
       s.replaces = m.orig_cl_ord_id;
       if (OwnOrder* orig = find(m.orig_cl_ord_id)) {
         if (!orig->cancel_sent.valid()) orig->cancel_sent = h.recv_ts;

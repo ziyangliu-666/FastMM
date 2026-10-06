@@ -13,10 +13,12 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -166,32 +168,123 @@ std::size_t pick_conservatism(std::span<const double> conservatism,
 
 // ---- latency ----------------------------------------------------------------------------------
 
+namespace {
+
+// A message sent at least this long after the one before it on its connection found the venue's
+// intake idle: its latency is the path's own.
+constexpr std::int64_t kIsolatedNs = 1'000'000;
+// Cancels a cancel path is fitted from, at least.
+constexpr std::size_t kMinCancels = 20;
+constexpr std::int64_t kServiceGridUs = 2000;
+constexpr std::int64_t kServiceStepUs = 10;
+
+double median(std::vector<double> v) {
+  std::sort(v.begin(), v.end());
+  return pct(v, 0.5);
+}
+
+}  // namespace
+
 void VenueLatency::fit() {
+  // The legs from the isolated messages (none: every new order, as recorded in to_venue_us).
+  std::vector<double> iso_new;
+  std::vector<double> iso_cancel;
+  std::int64_t prev = std::numeric_limits<std::int64_t>::min();
+  for (const Message& m : messages) {
+    const bool isolated = prev == std::numeric_limits<std::int64_t>::min() || m.sent_ns < prev ||
+                          m.sent_ns - prev >= kIsolatedNs;
+    prev = m.sent_ns;
+    if (!isolated || m.venue_ns == 0) continue;
+    (m.cancel ? iso_cancel : iso_new)
+        .push_back(static_cast<double>(m.venue_ns - m.sent_ns) / kNsPerUs);
+  }
+  const std::vector<double>& leg = iso_new.empty() ? to_venue_us : iso_new;
   const auto [rt_fixed, rt_jitter] = fit_leg(round_trip_us);
   if (!ms_venue_times) {
-    std::tie(fixed_us, jitter_us) = fit_leg(to_venue_us);
+    std::tie(fixed_us, jitter_us) = fit_leg(leg);
     // The ack leg is what the round trip leaves.
     ack_us = std::max<std::int64_t>(0, rt_fixed - fixed_us);
     ack_jitter_us = std::max<std::int64_t>(0, rt_jitter - jitter_us);
-    return;
+  } else {
+    fixed_us = std::clamp<std::int64_t>(std::llround(median(leg)), 0, rt_fixed);
+    jitter_us = 0;
+    ack_us = rt_fixed - fixed_us;
+    ack_jitter_us = rt_jitter;
   }
-  std::vector<double> v = to_venue_us;
-  std::sort(v.begin(), v.end());
-  fixed_us = std::clamp<std::int64_t>(std::llround(pct(v, 0.5)), 0, rt_fixed);
-  jitter_us = 0;
-  ack_us = rt_fixed - fixed_us;
-  ack_jitter_us = rt_jitter;
+  cancel_fitted = iso_cancel.size() >= kMinCancels;
+  if (cancel_fitted) {
+    if (ms_venue_times) {
+      cancel_fixed_us = std::max<std::int64_t>(0, std::llround(median(iso_cancel)));
+      cancel_jitter_us = 0;
+    } else {
+      std::tie(cancel_fixed_us, cancel_jitter_us) = fit_leg(iso_cancel);
+    }
+  }
+  fit_service();
+}
+
+double VenueLatency::burst_error(std::int64_t service) const {
+  // Each path's median (fixed + 0.8825 jitter), queued behind the message before.
+  const auto median_ns = [](std::int64_t fixed, std::int64_t jitter) {
+    return std::llround((static_cast<double>(fixed) + kExcessP50 * static_cast<double>(jitter)) *
+                        kNsPerUs);
+  };
+  const std::int64_t base_new = median_ns(fixed_us, jitter_us);
+  const std::int64_t base_cancel =
+      cancel_fitted ? median_ns(cancel_fixed_us, cancel_jitter_us) : base_new;
+  const std::int64_t service_ns = service * 1000;
+  std::int64_t prev_done = 0;
+  std::int64_t prev_sent = std::numeric_limits<std::int64_t>::min();
+  double sum = 0;
+  std::uint64_t n = 0;
+  for (const Message& m : messages) {
+    const bool next_session =
+        prev_sent == std::numeric_limits<std::int64_t>::min() || m.sent_ns < prev_sent;
+    std::int64_t t = m.sent_ns + (m.cancel ? base_cancel : base_new);
+    if (service_ns > 0 && !next_session) t = std::max(t, prev_done + service_ns);
+    const bool burst = !next_session && m.sent_ns - prev_sent < kIsolatedNs;
+    prev_done = t;
+    prev_sent = m.sent_ns;
+    if (!burst || m.venue_ns == 0) continue;
+    sum += static_cast<double>(std::abs(m.venue_ns - t));
+    ++n;
+  }
+  return n == 0 ? 0.0 : sum / static_cast<double>(n) / kNsPerUs;
+}
+
+void VenueLatency::fit_service() {
+  burst_messages = 0;
+  std::int64_t prev = std::numeric_limits<std::int64_t>::min();
+  for (const Message& m : messages) {
+    if (prev != std::numeric_limits<std::int64_t>::min() && m.sent_ns >= prev &&
+        m.sent_ns - prev < kIsolatedNs && m.venue_ns != 0)
+      ++burst_messages;
+    prev = m.sent_ns;
+  }
+  service_us = 0;
+  burst_err_us = burst_error(0);
+  burst_err_fit_us = burst_err_us;
+  if (burst_messages == 0) return;
+  for (std::int64_t s = kServiceStepUs; s <= kServiceGridUs; s += kServiceStepUs) {
+    const double e = burst_error(s);
+    if (e < burst_err_fit_us) {
+      burst_err_fit_us = e;
+      service_us = s;
+    }
+  }
 }
 
 std::vector<VenueLatency> measure_latency(JournalReader& reader) {
   const std::optional<Config> cfg = embedded_config(reader.config_text(), "journal");
   struct Sent {
     Timestamp at;
-    VenueId venue;
+    std::size_t venue = 0;    // index into `out`
+    std::size_t message = 0;  // index into its VenueLatency::messages
     bool acked = false;
     bool timed = false;
   };
-  std::unordered_map<std::uint64_t, Sent> sent;
+  std::unordered_map<std::uint64_t, Sent> sent;     // new orders and replaces, by their id
+  std::unordered_map<std::uint64_t, Sent> cancels;  // cancels, by the cancelled order's id
   std::vector<VenueLatency> out;
   std::vector<bool> ms;
   auto slot = [&](VenueId v) -> std::size_t {
@@ -211,30 +304,50 @@ std::vector<VenueLatency> measure_latency(JournalReader& reader) {
     if (h.venue.valid() || h.instrument.value >= instruments.size()) return h.venue;
     return instruments[h.instrument.value].venue;
   };
+  const auto send = [&](const EventHeader& h, bool cancel) {
+    const std::size_t i = slot(venue_of(h));
+    out[i].messages.push_back(VenueLatency::Message{h.recv_ts.ns, 0, cancel});
+    return Sent{h.recv_ts, i, out[i].messages.size() - 1};
+  };
+  const auto venue_time = [&](Sent& s, const EventHeader& h) {
+    if (s.timed || !h.exch_ts.valid()) return false;
+    s.timed = true;
+    VenueLatency::Message& m = out[s.venue].messages[s.message];
+    // Whole milliseconds or not, by the acks of new orders (a cancel's ack follows them).
+    if (!m.cancel && h.exch_ts.ns % kMs != 0) ms[s.venue] = false;
+    m.venue_ns = h.exch_ts.ns;
+    return true;
+  };
   reader.for_each([&](const EventHeader* h) {
     if ((h->flags & EventHeader::kOutbound) != 0) {
       if ((h->flags & EventHeader::kDropped) != 0) return;
       if (h->type == EventType::OutNewOrder) {
-        sent[msg_cast<OutNewOrderMsg>(h).cl_ord_id.value] = Sent{h->recv_ts, venue_of(*h)};
+        sent[msg_cast<OutNewOrderMsg>(h).cl_ord_id.value] = send(*h, false);
       } else if (h->type == EventType::OutReplace) {
-        sent[msg_cast<OutReplaceMsg>(h).cl_ord_id.value] = Sent{h->recv_ts, venue_of(*h)};
+        sent[msg_cast<OutReplaceMsg>(h).cl_ord_id.value] = send(*h, false);
+      } else if (h->type == EventType::OutCancel) {
+        cancels.try_emplace(msg_cast<OutCancelMsg>(h).cl_ord_id.value, send(*h, true));
       }
+      return;
+    }
+    if (h->type == EventType::OrderCancelAck) {
+      const auto it = cancels.find(msg_cast<OrderCancelAckMsg>(h).cl_ord_id.value);
+      if (it == cancels.end()) return;
+      if (venue_time(it->second, *h))
+        out[it->second.venue].cancel_to_venue_us.push_back(
+            static_cast<double>((h->exch_ts - it->second.at).ns) / kNsPerUs);
       return;
     }
     if (h->type != EventType::OrderAck) return;
     const auto it = sent.find(msg_cast<OrderAckMsg>(h).cl_ord_id.value);
     if (it == sent.end()) return;
     Sent& s = it->second;
-    const std::size_t i = slot(s.venue);
     if (!s.acked) {
       s.acked = true;
-      out[i].round_trip_us.push_back(static_cast<double>((h->recv_ts - s.at).ns) / kNsPerUs);
+      out[s.venue].round_trip_us.push_back(static_cast<double>((h->recv_ts - s.at).ns) / kNsPerUs);
     }
-    if (!s.timed && h->exch_ts.valid()) {
-      s.timed = true;
-      if (h->exch_ts.ns % kMs != 0) ms[i] = false;
-      out[i].to_venue_us.push_back(static_cast<double>((h->exch_ts - s.at).ns) / kNsPerUs);
-    }
+    if (venue_time(s, *h))
+      out[s.venue].to_venue_us.push_back(static_cast<double>((h->exch_ts - s.at).ns) / kNsPerUs);
   });
   reader.reset();
   for (std::size_t i = 0; i < out.size(); ++i) {
@@ -243,7 +356,16 @@ std::vector<VenueLatency> measure_latency(JournalReader& reader) {
     // A whole-millisecond venue time is on average half a millisecond before the event.
     if (l.ms_venue_times) {
       for (double& x : l.to_venue_us) x += 500.0;
+      for (double& x : l.cancel_to_venue_us) x += 500.0;
+      for (VenueLatency::Message& m : l.messages) {
+        if (m.venue_ns != 0) m.venue_ns += 500'000;
+      }
     }
+    std::stable_sort(l.messages.begin(),
+                     l.messages.end(),
+                     [](const VenueLatency::Message& a, const VenueLatency::Message& b) {
+                       return a.sent_ns < b.sent_ns;
+                     });
     l.fit();
   }
   return out;
@@ -322,10 +444,56 @@ Calibration calibrate(std::span<const std::string> journals, std::span<const dou
       it->to_venue_us.insert(it->to_venue_us.end(), v.to_venue_us.begin(), v.to_venue_us.end());
       it->round_trip_us.insert(
           it->round_trip_us.end(), v.round_trip_us.begin(), v.round_trip_us.end());
+      it->cancel_to_venue_us.insert(
+          it->cancel_to_venue_us.end(), v.cancel_to_venue_us.begin(), v.cancel_to_venue_us.end());
+      it->messages.insert(it->messages.end(), v.messages.begin(), v.messages.end());
     }
   }
   for (VenueLatency& l : c.latency) l.fit();
+  replay_cancels(c);
   return c;
+}
+
+namespace {
+
+// The simulated intake of each venue: the fitted order path, and with `fitted` the cancel path
+// and the service time too.
+std::vector<OrderPath> order_paths(const Calibration& c, bool fitted) {
+  std::vector<OrderPath> out;
+  for (const VenueLatency& l : c.latency) {
+    if (l.round_trip_us.empty()) continue;
+    OrderPath p;
+    p.venue = l.venue;
+    p.order_out = sim::LatencyParams{microseconds(l.fixed_us), microseconds(l.jitter_us)};
+    if (fitted) {
+      p.cancel_latency = l.cancel_fitted;
+      p.cancel_out =
+          sim::LatencyParams{microseconds(l.cancel_fixed_us), microseconds(l.cancel_jitter_us)};
+      p.order_service = microseconds(l.service_us);
+    }
+    out.push_back(p);
+  }
+  return out;
+}
+
+}  // namespace
+
+void replay_cancels(Calibration& c) {
+  if (c.conservatism.empty()) return;
+  const bool any = std::any_of(c.latency.begin(), c.latency.end(), [](const VenueLatency& l) {
+    return l.service_us > 0 || l.cancel_fitted;
+  });
+  if (!any) return;
+  const std::array<double, 1> pick{c.conservatism[c.pick]};
+  FillCheckOptions before;
+  before.cancel_paths = order_paths(c, false);
+  FillCheckOptions after;
+  after.cancel_paths = order_paths(c, true);
+  for (SessionCalibration& s : c.sessions) {
+    s.cancels_replayed = true;
+    s.cancels_before = FillScore::of(fill_check(s.path, pick, before).summary(0));
+    s.cancels_after = FillScore::of(fill_check(s.path, pick, after).summary(0));
+  }
 }
 
 std::vector<std::pair<std::string, std::string>> Calibration::backtest_keys() const {
@@ -341,6 +509,11 @@ std::vector<std::pair<std::string, std::string>> Calibration::backtest_keys() co
     k.emplace_back(p + "latency_jitter_us", std::to_string(l.jitter_us));
     k.emplace_back(p + "latency_ack_us", std::to_string(l.ack_us));
     k.emplace_back(p + "latency_ack_jitter_us", std::to_string(l.ack_jitter_us));
+    if (l.cancel_fitted) {
+      k.emplace_back(p + "latency_cancel_us", std::to_string(l.cancel_fixed_us));
+      k.emplace_back(p + "latency_cancel_jitter_us", std::to_string(l.cancel_jitter_us));
+    }
+    if (l.service_us > 0) k.emplace_back(p + "order_service_us", std::to_string(l.service_us));
   }
   return k;
 }
@@ -446,6 +619,7 @@ void format_fills(std::back_insert_iterator<std::string> it,
 void format_latency(std::back_insert_iterator<std::string> it, const VenueLatency& l) {
   const Quantiles tv = Quantiles::of(l.to_venue_us);
   const Quantiles rt = Quantiles::of(l.round_trip_us);
+  const Quantiles cv = Quantiles::of(l.cancel_to_venue_us);
   fmt::format_to(
       it,
       "  latency {}: {} acks; send to venue time p10/p50/p90 {:.0f} / {:.0f} / {:.0f} us{}; "
@@ -460,6 +634,17 @@ void format_latency(std::back_insert_iterator<std::string> it, const VenueLatenc
       rt.p50,
       rt.p90,
       rt.p99);
+  if (cv.n > 0) {
+    fmt::format_to(it,
+                   "  cancels {}: {} cancel acks; send to venue time p10/p50/p90 {:.0f} / {:.0f} / "
+                   "{:.0f} us; {} messages sent within 1 ms of the one before\n",
+                   l.name,
+                   cv.n,
+                   cv.p10,
+                   cv.p50,
+                   cv.p90,
+                   l.burst_messages);
+  }
 }
 
 }  // namespace
@@ -490,6 +675,10 @@ std::string format_calibration(const Calibration& c) {
     format_grid_row(it, "no ticker", s.no_touch[p]);
     format_grid_row(it, "no tape", s.no_tape[p]);
     format_grid_row(it, "neither", s.no_both[p]);
+    if (s.cancels_replayed) {
+      format_grid_row(it, "cancels, before", s.cancels_before);
+      format_grid_row(it, "cancels, fitted", s.cancels_after);
+    }
     format_fills(it, r, p);
     out += '\n';
   }
@@ -543,6 +732,21 @@ std::string format_calibration(const Calibration& c) {
                    l.jitter_us,
                    l.ack_us,
                    l.ack_jitter_us);
+    if (l.cancel_fitted)
+      fmt::format_to(it,
+                     "  cancels: fixed {} us + jitter {} us to the venue\n",
+                     l.cancel_fixed_us,
+                     l.cancel_jitter_us);
+    if (l.burst_messages > 0)
+      fmt::format_to(
+          it,
+          "  intake: {} us per message of one connection; {} messages sent within 1 "
+          "ms of the one before, mean |venue time - predicted| {:.0f} us without, {:.0f} "
+          "us with it\n",
+          l.service_us,
+          l.burst_messages,
+          l.burst_err_us,
+          l.burst_err_fit_us);
   }
   return out;
 }

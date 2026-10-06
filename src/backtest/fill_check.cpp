@@ -4,6 +4,7 @@
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/queue_model.hpp"
+#include "fastmm/core/transport.hpp"
 
 #include <fmt/format.h>
 
@@ -65,6 +66,7 @@ class Walker {
         log_(log),
         placed_(log.orders.size()) {
     const std::span<const Instrument> inst = reader.instruments();
+    simulate_cancels(inst);
     ticks_.resize(inst.size());
     for (std::size_t i = 0; i < inst.size(); ++i) ticks_[i] = inst[i].tick;
     res_.horizons_ns = opt.horizons_ns;
@@ -186,6 +188,62 @@ class Walker {
     return static_cast<std::uint32_t>(&o - log_.orders.data());
   }
 
+  // When each order's cancel reaches the simulated intake of its venue (FillCheckOptions::
+  // cancel_paths): every order message in send order, one latency draw each, queued behind the
+  // one before by the service time.
+  void simulate_cancels(std::span<const Instrument> inst) {
+    if (opt_.cancel_paths.empty()) return;
+    struct Msg {
+      std::int64_t sent;
+      std::uint32_t order;
+      bool cancel;
+    };
+    struct Venue {
+      const OrderPath* path = nullptr;
+      std::unique_ptr<sim::LatencyModel> lat;
+      std::vector<Msg> msgs;
+    };
+    std::vector<Venue> venues(kMaxVenues);
+    for (const OrderPath& p : opt_.cancel_paths) {
+      if (!p.venue.valid() || p.venue.value >= kMaxVenues) continue;
+      Venue& v = venues[p.venue.value];
+      v.path = &p;
+      const std::uint64_t seed = opt_.seed ^ (0x9E3779B97F4A7C15ULL * (p.venue.value + 1U));
+      v.lat = p.cancel_latency ? std::make_unique<sim::LatencyModel>(
+                                     p.order_out, p.order_out, p.order_out, p.cancel_out, seed)
+                               : std::make_unique<sim::LatencyModel>(
+                                     p.order_out, p.order_out, p.order_out, seed);
+    }
+    for (std::uint32_t i = 0; i < log_.orders.size(); ++i) {
+      const OwnOrder& o = log_.orders[i];
+      VenueId v = o.venue;
+      if (!v.valid() && o.instrument.value < inst.size()) v = inst[o.instrument.value].venue;
+      if (!v.valid() || v.value >= kMaxVenues || venues[v.value].path == nullptr) continue;
+      auto& msgs = venues[v.value].msgs;
+      if (o.sent.valid()) msgs.push_back(Msg{o.sent.ns, i, false});
+      // A replace is the successor's own message; only a cancel ends an order here.
+      if (o.cancel_sent.valid() && !o.replaced_by.valid())
+        msgs.push_back(Msg{o.cancel_sent.ns, i, true});
+    }
+    sim_end_.assign(log_.orders.size(), Timestamp{});
+    for (Venue& v : venues) {
+      if (v.path == nullptr) continue;
+      std::stable_sort(
+          v.msgs.begin(), v.msgs.end(), [](const Msg& a, const Msg& b) { return a.sent < b.sent; });
+      const Duration service = v.path->order_service;
+      Timestamp last{};
+      for (const Msg& m : v.msgs) {
+        Timestamp t =
+            Timestamp{m.sent} + (m.cancel ? v.lat->cancel_out() : v.lat->order_out()).delay;
+        if (service.ns > 0) {
+          if (last.valid() && t < last + service) t = last + service;
+          last = t;
+        }
+        if (m.cancel) sim_end_[m.order] = t;
+      }
+    }
+  }
+
   void schedule() {
     for (std::uint32_t i = 0; i < log_.orders.size(); ++i) {
       const OwnOrder& s = log_.orders[i];
@@ -207,6 +265,13 @@ class Walker {
       for (const OwnFill& f : s.fills) static_cast<void>(time_of(f.at));
       if (!s.fills.empty())
         items_.push_back(Item{first_fill(s).ns, Step::LiveFill, next_seq_++, nullptr, i});
+      if (!sim_end_.empty() && sim_end_[i].valid()) {
+        if (s.ended) static_cast<void>(time_of(s.end));
+        ++res_.cancels_simulated;
+        items_.push_back(
+            Item{std::max(sim_end_[i], ack).ns, Step::Remove, next_seq_++, nullptr, i});
+        continue;
+      }
       if (!s.ended) continue;
       static_cast<void>(time_of(s.end));
       // Millisecond venue times: the end may lie anywhere in its millisecond, so trades up to its
@@ -457,7 +522,8 @@ class Walker {
       for (std::size_t n = active_.size(); n-- > 0;) {
         const OwnOrder& s = log_.orders[active_[n]];
         if (s.ended && s.instrument == t.hdr.instrument && s.last_exec != 0 &&
-            t.trade_id > s.last_exec && ts > s.end.ts)
+            t.trade_id > s.last_exec && ts > s.end.ts &&
+            (sim_end_.empty() || !sim_end_[active_[n]].valid()))
           remove(s);
       }
     }
@@ -499,6 +565,7 @@ class Walker {
   MidSeries mids_;
   std::unordered_map<std::uint64_t, std::uint32_t> exec_order_;  // first live fill's exec id
   std::vector<std::vector<std::uint32_t>> active_by_inst_;
+  std::vector<Timestamp> sim_end_;  // per order: its simulated cancel (cancel_paths)
   sim::EventBuf remap_buf_;
   std::vector<std::unique_ptr<Book>> books_;
   std::vector<QueueTouch> touches_;

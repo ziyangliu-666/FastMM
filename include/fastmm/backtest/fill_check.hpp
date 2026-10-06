@@ -42,6 +42,7 @@
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/strong_id.hpp"
 #include "fastmm/core/time.hpp"
+#include "fastmm/sim/latency_model.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -159,6 +160,7 @@ struct FillCheckResult {
   std::uint64_t exec_matched = 0;         // first live fills whose exec id printed in the trades
   std::string market;                     // the journal the market data came from, if not this
   std::uint64_t market_unmapped = 0;      // its market messages on instruments the session lacks
+  std::uint64_t cancels_simulated = 0;    // orders whose model end is a simulated cancel
   [[nodiscard]] FillCheckSummary summary(std::size_t k) const;
 };
 
@@ -168,11 +170,30 @@ struct FillCheckInputs {
   bool tape = true;   // trades printed since a view took their quantity from its levels
 };
 
+// One venue's simulated order intake (the [backtest] latency_*, latency_cancel_* and
+// order_service_us of SimVenueConfig): what FillCheckOptions::cancel_paths sends the session's
+// order messages through.
+struct OrderPath {
+  VenueId venue;
+  sim::LatencyParams order_out;
+  bool cancel_latency = false;  // cancels take cancel_out, else order_out
+  sim::LatencyParams cancel_out;
+  Duration order_service;
+};
+
 struct FillCheckOptions {
   FillCheckInputs inputs;
   std::vector<std::int64_t> horizons_ns{100'000'000, 1'000'000'000, 10'000'000'000};
   Duration pre_window = milliseconds(100);
   std::string market;  // journal whose market data replaces the session's own; empty: none
+  // Non-empty: the session's order messages (new, replace, cancel) go out at their recorded send
+  // times through the simulated intake of their connection's venue, and an order the session
+  // cancelled leaves the models when its cancel would have been taken in there, not at the
+  // venue's recorded time: the cancel race under the simulated latencies, with the strategy's
+  // decisions as they were. Orders on a venue without a path, and replaced ones, keep their
+  // recorded ends. The draws are seeded with `seed`.
+  std::vector<OrderPath> cancel_paths;
+  std::uint64_t seed = 1;
 };
 
 // Walks the journal once. `conservatism` values are in [0, 1] (queue_conservatism).

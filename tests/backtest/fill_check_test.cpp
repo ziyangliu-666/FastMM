@@ -669,3 +669,51 @@ TEST_CASE("backtest.fill_check: market data from another journal of the same per
   CHECK(r.market == market);
   CHECK(r.market_unmapped == 0);
 }
+
+TEST_CASE("backtest.fill_check: cancels replayed through a simulated venue intake") {
+  // Two bids behind 1 at 100.00, both cancelled at 1 ms (the venue took the cancels at 1.2 ms), a
+  // sell of 5 at 2 ms. Live, neither filled.
+  const std::string path = tmp_path("fill_check_cancel_paths.fmj");
+  constexpr std::int64_t t0 = 1'000'000'000;
+  {
+    JournalBuilder j(path);
+    j.book(true, {{"100.00", "1"}}, {{"100.10", "1"}});
+    j.out_new(1, Side::Buy, "100.00", "1");
+    j.out_new(2, Side::Buy, "100.00", "1");
+    j.now = t0 + 1000;
+    j.ack(1);
+    j.ack(2);
+    j.now = t0 + kMs;
+    j.out_cancel(1);
+    j.out_cancel(2);
+    j.now = t0 + 1'200'000;
+    j.cancel_ack(1);
+    j.cancel_ack(2);
+    j.now = t0 + 2 * kMs;
+    j.trade("100.00", "5", Side::Sell);
+    j.now = t0 + 10 * kMs;
+  }
+  const std::array<double, 1> c{1.0};
+  const auto run = [&](std::int64_t fixed_us, std::int64_t service_us) {
+    FillCheckOptions opt;
+    OrderPath p;
+    p.venue = VenueId{0};
+    p.order_out = sim::LatencyParams{microseconds(fixed_us), Duration{}};
+    p.order_service = microseconds(service_us);
+    opt.cancel_paths.push_back(p);
+    return fill_check(path, c, opt);
+  };
+  CHECK(fill_check(path, c).summary(0).model_only == 0);
+  // 0.5 ms each: the cancels are in at 1.5 ms, before the sell.
+  const FillCheckResult fast = run(500, 0);
+  CHECK(fast.cancels_simulated == 2);
+  CHECK(fast.summary(0).model_only == 0);
+  // 3 ms: both still rest when the sell prints and fill, model only.
+  CHECK(run(3000, 0).summary(0).model_only == 2);
+  // 0.5 ms, 1 ms a message: the new orders are in at 0.5 and 1.5 ms, the cancels at 2.5 and
+  // 3.5 ms.
+  const FillCheckResult queued = run(500, 1000);
+  CHECK(queued.summary(0).model_only == 2);
+  CHECK(order(queued, 1).model_filled[0] == qt("1"));
+  CHECK(order(queued, 1).end_ts.ns == t0 + 1'200'000);  // the live end stays the live one
+}

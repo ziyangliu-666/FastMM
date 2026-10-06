@@ -21,6 +21,14 @@
 // measured ones. With millisecond venue times the one-way leg cannot show its spread: it gets its
 // median as fixed and no jitter, and the ack leg the rest of the fitted round trip.
 //
+// The one-way legs are fitted on isolated messages (sent at least 1 ms after the one before on
+// their connection); cancels, timed by their cancel acks, get a path of their own from 20 or more.
+// The messages sent within 1 ms of the one before fit the venue's per-connection service time
+// (order_service_us): each is predicted at the later of its path's median and the previous
+// message's prediction plus the service time, and the grid value with the smallest mean error
+// wins. replay_cancels() then re-runs the fill check with the session's cancels taken in by the
+// simulated venue (FillCheckOptions::cancel_paths), before and after these keys.
+//
 // compare_backtests() re-runs each session as a strip_own backtest with its embedded configuration
 // (or a given one), once as configured and once with the fitted keys, and sets both beside the live
 // session: orders, fills, time to fill, the PnL decomposition and markouts, every one of the three
@@ -69,16 +77,38 @@ struct Quantiles {
 
 // One venue's order round trips and the latency model fitted to them (microseconds).
 struct VenueLatency {
+  // One order message on the venue's connection: its send time (engine clock), the venue time it
+  // was taken in (its ack's, a cancel's cancel ack's; 0: none), and whether it is a cancel.
+  struct Message {
+    std::int64_t sent_ns = 0;
+    std::int64_t venue_ns = 0;
+    bool cancel = false;
+  };
   VenueId venue;
   std::string name;
-  bool ms_venue_times = false;        // every ack's venue time is a whole millisecond
-  std::vector<double> to_venue_us;    // send -> the ack's venue time
-  std::vector<double> round_trip_us;  // send -> first ack received
-  std::int64_t fixed_us = 0;          // [backtest] latency_fixed_us
-  std::int64_t jitter_us = 0;         // latency_jitter_us
-  std::int64_t ack_us = 0;            // latency_ack_us
-  std::int64_t ack_jitter_us = 0;     // latency_ack_jitter_us
+  bool ms_venue_times = false;             // every ack's venue time is a whole millisecond
+  std::vector<double> to_venue_us;         // send -> the ack's venue time
+  std::vector<double> round_trip_us;       // send -> first ack received
+  std::vector<double> cancel_to_venue_us;  // cancel send -> its cancel ack's venue time
+  std::vector<Message> messages;           // in send order; sessions one after another
+  std::int64_t fixed_us = 0;               // [backtest] latency_fixed_us
+  std::int64_t jitter_us = 0;              // latency_jitter_us
+  std::int64_t ack_us = 0;                 // latency_ack_us
+  std::int64_t ack_jitter_us = 0;          // latency_ack_jitter_us
+  bool cancel_fitted = false;              // enough isolated cancels for a path of their own
+  std::int64_t cancel_fixed_us = 0;        // latency_cancel_us
+  std::int64_t cancel_jitter_us = 0;       // latency_cancel_jitter_us
+  std::int64_t service_us = 0;             // order_service_us
+  std::uint64_t burst_messages = 0;        // timed messages sent within 1 ms of the one before
+  double burst_err_us = 0;      // their mean |venue time - predicted| without a service time
+  double burst_err_fit_us = 0;  // ... with service_us
   void fit();
+  // Mean |venue time - predicted| over the burst messages, the venue taking one message per
+  // `service` us (0: none) after each path's median latency.
+  [[nodiscard]] double burst_error(std::int64_t service) const;
+
+ private:
+  void fit_service();
 };
 
 struct SessionCalibration {
@@ -91,6 +121,13 @@ struct SessionCalibration {
   std::vector<FillScore> no_tape;
   std::vector<FillScore> no_both;
   std::vector<VenueLatency> latency;
+  // At the fitted conservatism, the session's cancels taken in by the simulated venue at their
+  // recorded send times (FillCheckOptions::cancel_paths): through the fitted order path alone
+  // (what a backtest did without the cancel path and service time), and through everything
+  // fitted.
+  bool cancels_replayed = false;
+  FillScore cancels_before;
+  FillScore cancels_after;
 };
 
 // Fit on `fit`, score on `test` (indices into Calibration::sessions).
@@ -127,6 +164,8 @@ struct Calibration {
                                     std::span<const double> conservatism);
 // Each venue's order round trips in one journal.
 [[nodiscard]] std::vector<VenueLatency> measure_latency(JournalReader& reader);
+// Fills SessionCalibration::cancels_* when a venue has a cancel path or a service time fitted.
+void replay_cancels(Calibration& c);
 
 [[nodiscard]] std::string format_calibration(const Calibration& c);
 [[nodiscard]] std::string calibration_snippet(const Calibration& c);

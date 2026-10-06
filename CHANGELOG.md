@@ -74,6 +74,11 @@ All notable changes are recorded here (Keep a Changelog format).
 - sim: `SimAccounts::transfer`, `SimTransport::transfer` and `sim::SimTreasuryPort`: the same
   treasury runs against a pool's simulated accounts, and the engine hears the new balances on each
   account's link.
+- `fastmm-data calibrate` fits a cancel latency of its own and the venue's per-connection service
+  time (`latency_cancel_us`, `latency_cancel_jitter_us`, `order_service_us`) from the journals'
+  cancel acks and message bursts, fits the order latency on isolated messages, and replays each
+  session's cancels through the simulated intake to show what the fitted keys change in the fill
+  check.
 - backtest: `[backtest] order_service_us` (and per venue): the simulated venue takes the order
   messages of one connection one after another, each no sooner than this after the one before, so
   the last cancels of a burst reach the book late, as on a live venue. `latency_cancel_us` /

@@ -10,6 +10,7 @@
 #include "fastmm/backtest/backtest_runner.hpp"
 #include "fastmm/config/config.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <filesystem>
@@ -320,4 +321,43 @@ TEST_CASE("backtest.calibrate: the command's fixtures are what write_session wri
   CHECK(calibration_snippet(got) == calibration_snippet(want));
   CHECK(calibration_snippet(got).find("latency_fixed_us = 400\n") != std::string::npos);
   CHECK(calibration_snippet(got).find("latency_ack_us = 1100\n") != std::string::npos);
+}
+
+TEST_CASE("backtest.calibrate: a cancel path and the intake's service time from bursts") {
+  // New orders alone take 400 us to the venue, cancels alone 150 us; bursts of five cancels sent
+  // together are taken in 200 us apart.
+  VenueLatency v;
+  std::int64_t t = kT0;
+  for (int i = 0; i < 30; ++i) {
+    t += 10 * kMs;
+    v.messages.push_back({t, t + 400 * kUs, false});
+    v.round_trip_us.push_back(1500.0);
+    t += 10 * kMs;
+    v.messages.push_back({t, t + 150 * kUs, true});
+  }
+  for (int b = 0; b < 10; ++b) {
+    t += 10 * kMs;
+    for (int k = 0; k < 5; ++k) v.messages.push_back({t, t + (150 + 200 * k) * kUs, true});
+  }
+  v.fit();
+  CHECK(v.fixed_us == 400);
+  CHECK(v.cancel_fitted);
+  CHECK(v.cancel_fixed_us == 150);
+  CHECK(v.cancel_jitter_us == 0);
+  CHECK(v.burst_messages == 40);
+  CHECK(v.service_us == 200);
+  CHECK(v.burst_err_fit_us == doctest::Approx(0.0));
+  CHECK(v.burst_err_us == doctest::Approx(500.0));  // (200 + 400 + 600 + 800) / 4 off
+  Calibration c;
+  c.conservatism = {1.0};
+  c.latency.push_back(v);
+  const auto keys = c.backtest_keys();
+  const auto has = [&](const char* k, const char* value) {
+    return std::find(keys.begin(), keys.end(), std::pair<std::string, std::string>{k, value}) !=
+           keys.end();
+  };
+  CHECK(has("latency_cancel_us", "150"));
+  CHECK(has("order_service_us", "200"));
+  CHECK(calibration_snippet(c).find("order_service_us = 200\n") != std::string::npos);
+  CHECK(format_calibration(c).find("intake: 200 us per message") != std::string::npos);
 }
