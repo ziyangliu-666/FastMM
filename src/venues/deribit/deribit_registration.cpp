@@ -63,6 +63,7 @@ constexpr VenueKeySpec kDeribitKeys[] = {
 std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactoryOptions& opts) {
   deribit::DeribitVenueConfig c = deribit::make_deribit_config(s, opts.dry_run);
   c.record_raw_dir = opts.record_raw_dir;
+  c.source = source_address(s);
   return std::make_unique<deribit::DeribitVenue>(id, std::move(c));
 }
 
@@ -78,7 +79,8 @@ void register_deribit_venue(VenueRegistry& r) {
                                     .positions = true,
                                     .polls = false,
                                     // private/get_user_trades_by_currency_and_time
-                                    .executions = true},
+                                    .executions = true,
+                                    .bind_source = true},
                            .make = &make}));
 }
 

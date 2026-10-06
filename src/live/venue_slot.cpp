@@ -52,6 +52,12 @@ int make_venue_slots(const Config& cfg,
                      VenueSlots& slots) {
   for (std::size_t i = 0; i < cfg.venues.size(); ++i) {
     auto slot = std::make_unique<VenueSlot>();
+    // The source address must be one this host has: a bind to another fails every connect.
+    if (const std::string e = net::check_source(venues::source_address(cfg.venues[i]));
+        !e.empty()) {
+      std::fprintf(stderr, "%s: venues.%s: %s\n", prog, cfg.venues[i].name.c_str(), e.c_str());
+      return kExitConfig;
+    }
     try {
       venues::VenueFactoryOptions vo = vopts;
       vo.dry_run = vopts.dry_run || cfg.venues[i].public_only;  // a price leader runs public-only

@@ -72,6 +72,7 @@ constexpr VenueKeySpec kGateKeys[] = {
 std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactoryOptions& opts) {
   gate::GateUsdtVenueConfig c = gate::make_gate_usdt_config(s, opts.dry_run);
   c.record_raw_dir = opts.record_raw_dir;
+  c.source = source_address(s);
   return std::make_unique<gate::GateUsdtVenue>(id, std::move(c));
 }
 
@@ -89,7 +90,8 @@ void register_gate_usdt_venue(VenueRegistry& r) {
                                     .positions = true,
                                     .polls = false,
                                     // GET /my_trades_timerange
-                                    .executions = true},
+                                    .executions = true,
+                                    .bind_source = true},
                            .make = &make}));
 }
 

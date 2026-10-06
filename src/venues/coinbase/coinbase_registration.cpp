@@ -58,6 +58,7 @@ constexpr VenueKeySpec kCoinbaseKeys[] = {
 std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactoryOptions& opts) {
   coinbase::CoinbaseVenueConfig c = coinbase::make_coinbase_config(s, opts.dry_run);
   c.record_raw_dir = opts.record_raw_dir;
+  c.source = source_address(s);
   return std::make_unique<coinbase::CoinbaseExchangeVenue>(id, std::move(c));
 }
 
@@ -73,7 +74,8 @@ void register_coinbase_venue(VenueRegistry& r) {
                                     .positions = false,
                                     .polls = false,
                                     // GET /fills
-                                    .executions = true},
+                                    .executions = true,
+                                    .bind_source = true},
                            .make = &make}));
 }
 

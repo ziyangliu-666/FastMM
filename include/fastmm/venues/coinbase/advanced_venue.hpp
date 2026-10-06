@@ -68,6 +68,8 @@ struct AdvancedVenueConfig {
   CdpCredentials credentials;
   bool insecure_tls = false;
   std::string ca_file;
+  // [venues.<name>] source_ip / source_interface: every connection goes out from it.
+  net::SourceAddress source;
   bool dry_run = false;
   bool emit_ack_from_response = true;
   bool cancel_on_order_channel_loss = true;  // the user channel

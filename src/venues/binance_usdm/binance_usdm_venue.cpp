@@ -84,8 +84,11 @@ BinanceUsdmVenue::BinanceUsdmVenue(VenueId id, BinanceUsdmVenueConfig cfg)
       signer_(cfg_.credentials),
       rate_(cfg_.rate_threshold),
       dms_(cfg_.dry_run ? 0 : cfg_.dead_mans_switch_ms) {
-  // Binance counts request weight per IP: the accounts of a pool spend one window.
-  if (cfg_.share_ip_weight) rate_.share_ip(shared_rate("binance_usdm " + cfg_.rest_url));
+  // Binance counts request weight per IP: the accounts of a pool that leave from one address
+  // (source_ip / source_interface, or none) spend one window.
+  if (cfg_.share_ip_weight)
+    rate_.share_ip(
+        shared_rate(ip_weight_key("binance_usdm", cfg_.rest_url, net::source_label(cfg_.source))));
   std::memset(scratch_, 0, sizeof scratch_);
   ReplayLimits limits;
   limits.window_ms = kUserTradesWindowMs;
@@ -193,6 +196,7 @@ net::ConnectionConfig BinanceUsdmVenue::ws_config(const std::string& url,
   net::ConnectionConfig c;
   c.url = url;
   c.tls.ca_file = cfg_.ca_file;
+  c.source = cfg_.source;
   c.tls.insecure = cfg_.insecure_tls;
   c.stale_ms = cfg_.stale_ms;
   c.dead_ms = std::max<std::uint32_t>(cfg_.dead_ms, min_dead_ms);
@@ -279,6 +283,7 @@ Result<void, std::string> BinanceUsdmVenue::load_reference_data(InstrumentTable&
   if (mine.empty()) return {};
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
+  opts.source = cfg_.source;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   HttpReply reply;
@@ -334,6 +339,7 @@ void BinanceUsdmVenue::load_funding_intervals(const std::vector<Instrument*>& mi
   funding_intervals_.clear();
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
+  opts.source = cfg_.source;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   HttpReply reply;
@@ -379,6 +385,7 @@ Duration BinanceUsdmVenue::funding_interval_of(InstrumentId id) const noexcept {
 std::string BinanceUsdmVenue::account_checks(const std::vector<Instrument*>& mine) {
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
+  opts.source = cfg_.source;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   try {

@@ -8,6 +8,9 @@
 #include <fmt/format.h>
 #include <toml++/toml.hpp>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -15,6 +18,12 @@
 namespace fastmm {
 
 namespace {
+
+// An IPv4 or IPv6 address as written (inet_pton): no name, no port.
+bool valid_ip_literal(const std::string& ip) {
+  unsigned char buf[sizeof(in6_addr)];
+  return ::inet_pton(AF_INET, ip.c_str(), buf) == 1 || ::inet_pton(AF_INET6, ip.c_str(), buf) == 1;
+}
 
 int line_of(const toml::node& n) noexcept {
   return static_cast<int>(n.source().begin.line);
@@ -507,6 +516,22 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
       get(*t, "pool_of", v.pool_of);
       get(*t, "insecure_tls", v.insecure_tls);
       get(*t, "recv_window_ms", v.recv_window_ms);
+      get(*t, "source_ip", v.source_ip);
+      get(*t, "source_interface", v.source_interface);
+      if (!v.source_ip.empty() && !v.source_interface.empty())
+        fail_at(*t->get("source_interface"),
+                fmt::format("venues.{}: source_ip and source_interface are exclusive: name one",
+                            name.str()));
+      if (!v.source_ip.empty() && !valid_ip_literal(v.source_ip))
+        fail_at(*t->get("source_ip"),
+                fmt::format("venues.{}.source_ip '{}' is not an IPv4 or IPv6 address",
+                            name.str(),
+                            v.source_ip));
+      if (v.source_interface.size() >= 16)
+        fail_at(*t->get("source_interface"),
+                fmt::format("venues.{}.source_interface '{}' is longer than an interface name",
+                            name.str(),
+                            v.source_interface));
       get(*t, "fill_audit_interval_s", v.fill_audit_interval_s);
       get(*t, "fill_audit_lag_s", v.fill_audit_lag_s);
       get(*t, "fill_audit_mode", v.fill_audit_mode);
@@ -909,6 +934,8 @@ std::string Config::redacted() const {
     kv("insecure_tls", v.insecure_tls);
     if (!v.ca_file.empty()) kq("ca_file", v.ca_file);
     kv("recv_window_ms", v.recv_window_ms);
+    if (!v.source_ip.empty()) kq("source_ip", v.source_ip);
+    if (!v.source_interface.empty()) kq("source_interface", v.source_interface);
     if (v.fill_audit_interval_s > 0) {
       kv("fill_audit_interval_s", v.fill_audit_interval_s);
       kv("fill_audit_lag_s", v.fill_audit_lag_s);
@@ -1120,6 +1147,8 @@ std::string Config::effective_toml() const {
       t.insert("insecure_tls", v.insecure_tls);
       t.insert("ca_file", v.ca_file);
       t.insert("recv_window_ms", static_cast<std::int64_t>(v.recv_window_ms));
+      if (!v.source_ip.empty()) t.insert("source_ip", v.source_ip);
+      if (!v.source_interface.empty()) t.insert("source_interface", v.source_interface);
       if (v.fill_audit_interval_s > 0) {
         t.insert("fill_audit_interval_s", static_cast<std::int64_t>(v.fill_audit_interval_s));
         t.insert("fill_audit_lag_s", static_cast<std::int64_t>(v.fill_audit_lag_s));

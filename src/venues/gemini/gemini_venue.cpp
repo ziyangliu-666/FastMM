@@ -147,6 +147,7 @@ net::ConnectionConfig GeminiVenue::ws_config(const std::string& url) const {
   net::ConnectionConfig c;
   c.url = url;
   c.tls.ca_file = cfg_.ca_file;
+  c.source = cfg_.source;
   c.tls.insecure = cfg_.insecure_tls;
   c.stale_ms = cfg_.stale_ms;
   // Our `ping` every ping_interval_ms is answered, so a quiet order connection still hears from

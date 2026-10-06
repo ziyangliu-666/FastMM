@@ -329,6 +329,18 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "validity window of signed requests, ms (default 3000)"},
     {"venues.*",
+     "source_ip",
+     KeyType::String,
+     false,
+     "the venue's connections leave this host from this address, IPv4 or IPv6; it must be one of "
+     "the host's (default: the kernel chooses)"},
+    {"venues.*",
+     "source_interface",
+     KeyType::String,
+     false,
+     "the venue's connections leave this host from this network interface's address; exclusive "
+     "with source_ip (default: the kernel chooses)"},
+    {"venues.*",
      "fill_audit_interval_s",
      KeyType::Int,
      false,

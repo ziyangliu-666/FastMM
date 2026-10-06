@@ -7,6 +7,7 @@
 #include "fastmm/net/dns.hpp"
 #include "fastmm/net/http_client.hpp"
 #include "fastmm/net/reactor.hpp"
+#include "fastmm/net/source_address.hpp"
 #include "fastmm/net/tls_stream.hpp"
 #include "fastmm/net/url.hpp"
 
@@ -26,6 +27,7 @@ struct RestChannelConfig {
   bool insecure_tls = false;
   std::uint32_t timeout_ms = 5000;
   std::size_t max_queue = 8;
+  net::SourceAddress source;  // where the connection leaves this host from; empty: anywhere
 };
 
 // Queue room for a connector's REST channel with `symbols` subscribed: every connector fans some
@@ -45,6 +47,7 @@ template <class Cfg>
   rc.insecure_tls = cfg.insecure_tls;
   rc.timeout_ms = cfg.http_timeout_ms;
   rc.max_queue = rest_queue_for(symbols);
+  if constexpr (requires { cfg.source; }) rc.source = cfg.source;
   return rc;
 }
 
@@ -172,11 +175,17 @@ class RestChannel {
         return false;
       }
       addrs_ = r.addrs;
+      net::keep_reachable(cfg_.source, addrs_);
+      if (addrs_.empty()) {
+        ++errors_;
+        return false;
+      }
       addr_gen_ = resolve_gen_;
     }
     net::TcpSocket sock;
     const net::SockAddr& addr = addrs_[addr_index_++ % addrs_.size()];
-    if (sock.connect(addr) == net::ConnectStatus::Error) {
+    const std::optional<net::SockAddr> local = net::source_bind_address(cfg_.source, addr.family());
+    if (sock.connect(addr, local ? &*local : nullptr) == net::ConnectStatus::Error) {
       ++errors_;
       ++resolve_gen_;  // re-resolve next time
       return false;

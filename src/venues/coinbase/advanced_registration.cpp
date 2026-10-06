@@ -48,6 +48,7 @@ constexpr VenueKeySpec kAdvancedKeys[] = {
 std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactoryOptions& opts) {
   coinbase::AdvancedVenueConfig c = coinbase::make_coinbase_advanced_config(s, opts.dry_run);
   c.record_raw_dir = opts.record_raw_dir;
+  c.source = source_address(s);
   return std::make_unique<coinbase::CoinbaseAdvancedVenue>(id, std::move(c));
 }
 
@@ -63,7 +64,8 @@ void register_coinbase_advanced_venue(VenueRegistry& r) {
                                     .positions = false,
                                     .polls = false,
                                     // GET /orders/historical/fills
-                                    .executions = true},
+                                    .executions = true,
+                                    .bind_source = true},
                            .make = &make}));
 }
 

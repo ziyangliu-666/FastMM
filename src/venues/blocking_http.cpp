@@ -5,7 +5,9 @@
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/net/url.hpp"
 
+#include <optional>
 #include <stdexcept>
+#include <system_error>
 
 namespace fastmm::venues {
 
@@ -86,14 +88,23 @@ HttpReply BlockingHttp::request(std::string_view method,
                                 std::string_view extra_headers,
                                 std::string_view body) {
   HttpReply reply;
-  const net::ResolveResult res = net::resolve_sync(host_, port_);
+  net::ResolveResult res = net::resolve_sync(host_, port_);
   if (!res.ok()) {
     reply.error = "resolve failed: " + res.error_text();
     return reply;
   }
+  net::keep_reachable(opts_.source, res.addrs);
+  if (res.addrs.empty()) {
+    reply.error = "no address of " + host_ + " in the family of the source address";
+    return reply;
+  }
   net::TcpSocket sock;
-  if (sock.connect(res.addrs.front()) == net::ConnectStatus::Error) {
-    reply.error = "connect failed";
+  const net::SockAddr& addr = res.addrs.front();
+  const std::optional<net::SockAddr> local = net::source_bind_address(opts_.source, addr.family());
+  if (sock.connect(addr, local ? &*local : nullptr) == net::ConnectStatus::Error) {
+    reply.error = local ? "connect failed from " + local->to_string() + ": " +
+                              std::error_code(sock.last_error(), std::generic_category()).message()
+                        : std::string("connect failed");
     return reply;
   }
   sock.set_nodelay(true);

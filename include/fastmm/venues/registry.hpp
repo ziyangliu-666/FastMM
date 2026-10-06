@@ -22,6 +22,7 @@
 // tables out of the registration files so a venue's keys land in the configuration reference.
 #include "fastmm/config/config.hpp"
 #include "fastmm/config/schema.hpp"
+#include "fastmm/net/source_address.hpp"
 #include "fastmm/venues/venue.hpp"
 
 #include <cstdint>
@@ -35,6 +36,11 @@ namespace fastmm::venues {
 
 // Runtime knobs every connector honours, passed to the factory. Anything venue-specific is a
 // config key the venue owns instead.
+// [venues.<x>] source_ip / source_interface as a net::SourceAddress.
+[[nodiscard]] inline net::SourceAddress source_address(const VenueSection& s) {
+  return net::SourceAddress{s.source_ip, s.source_interface};
+}
+
 struct VenueFactoryOptions {
   bool dry_run = false;        // public market data only: no keys, no orders
   std::string record_raw_dir;  // non-empty: append raw frames to <dir>/<venue>-<channel>.jsonl
@@ -65,6 +71,9 @@ struct VenueCapabilities {
   // Runs as a member of an account pool ([venues.<x>] pool_of, core/account_pool.hpp): the order
   // path alone, for the primary's instruments, without market data of its own.
   bool account_pools = false;
+  // Binds every outbound connection (WebSocket, REST, the blocking control requests) to the
+  // section's source address ([venues.<x>] source_ip / source_interface, net/source_address.hpp).
+  bool bind_source = false;
 };
 
 // One `[venues.<name>]` key a venue owns. `doc` is the Meaning column of the configuration

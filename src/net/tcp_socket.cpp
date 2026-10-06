@@ -107,13 +107,17 @@ TcpSocket TcpSocket::listen(const SockAddr& bind_addr, int backlog) noexcept {
   return s;
 }
 
-ConnectStatus TcpSocket::connect(const SockAddr& addr) noexcept {
+ConnectStatus TcpSocket::connect(const SockAddr& addr, const SockAddr* local) noexcept {
   if (!valid()) {
     *this = open(addr.family());
     if (!valid()) {
       err_ = errno;
       return ConnectStatus::Error;
     }
+  }
+  if (local != nullptr && ::bind(fd_, local->ptr(), local->len) != 0) {
+    err_ = errno;
+    return ConnectStatus::Error;
   }
   if (::connect(fd_, addr.ptr(), addr.len) == 0) {
     connecting_ = false;

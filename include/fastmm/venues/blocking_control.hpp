@@ -41,6 +41,7 @@ template <class Cfg>
   o.ca_file = cfg.ca_file;
   o.insecure_tls = cfg.insecure_tls;
   o.timeout_ms = cfg.http_timeout_ms;
+  if constexpr (requires { cfg.source; }) o.source = cfg.source;
   return o;
 }
 

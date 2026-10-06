@@ -756,3 +756,27 @@ TEST_CASE("core.config: the fill audit is off by default and checked when set") 
                        doctest::Contains(R"(fill_audit_mode must be "report" or "book")"),
                        ConfigError);
 }
+
+TEST_CASE("core.config: source_ip and source_interface are checked as written") {
+  const Config none = Config::parse(audit_toml(""));
+  CHECK(none.venues[0].source_ip.empty());
+  CHECK(none.effective_toml().find("source_") == std::string::npos);
+  const Config ip = Config::parse(audit_toml("source_ip = \"10.0.0.7\"\n"));
+  CHECK(ip.venues[0].source_ip == "10.0.0.7");
+  CHECK(Config::parse(ip.effective_toml()).venues[0].source_ip == "10.0.0.7");
+  CHECK(ip.redacted().find("source_ip = \"10.0.0.7\"") != std::string::npos);
+  CHECK(Config::parse(audit_toml("source_ip = \"fe80::1\"\n")).venues[0].source_ip == "fe80::1");
+  const Config nic = Config::parse(audit_toml("source_interface = \"eth1\"\n"));
+  CHECK(nic.venues[0].source_interface == "eth1");
+  CHECK(Config::parse(nic.effective_toml()).venues[0].source_interface == "eth1");
+  CHECK_THROWS_WITH_AS(Config::parse(audit_toml("source_ip = \"10.0.0.300\"\n")),
+                       doctest::Contains("is not an IPv4 or IPv6 address"),
+                       ConfigError);
+  CHECK_THROWS_WITH_AS(
+      Config::parse(audit_toml("source_ip = \"10.0.0.7\"\nsource_interface = \"eth1\"\n")),
+      doctest::Contains("source_ip and source_interface are exclusive"),
+      ConfigError);
+  CHECK_THROWS_WITH_AS(Config::parse(audit_toml("source_interface = \"a-name-far-too-long\"\n")),
+                       doctest::Contains("longer than an interface name"),
+                       ConfigError);
+}

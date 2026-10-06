@@ -87,6 +87,8 @@ struct GeminiVenueConfig {
   bool sandbox = true;
   bool insecure_tls = false;
   std::string ca_file;
+  // [venues.<name>] source_ip / source_interface: every connection goes out from it.
+  net::SourceAddress source;
   bool dry_run = false;
   bool cancel_on_disconnect = true;
   bool heartbeat = false;  // the key has "Requires Heartbeat": POST /v1/heartbeat every 15 s

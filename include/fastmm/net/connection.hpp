@@ -22,6 +22,7 @@
 #include "fastmm/net/byte_stream.hpp"
 #include "fastmm/net/dns.hpp"
 #include "fastmm/net/reactor.hpp"
+#include "fastmm/net/source_address.hpp"
 #include "fastmm/net/tls_stream.hpp"
 #include "fastmm/net/url.hpp"
 #include "fastmm/net/ws_client.hpp"
@@ -31,6 +32,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -69,6 +71,9 @@ struct ConnectionConfig {
   std::uint64_t max_lifetime_ms = 0;        // 0 = never roll over
   std::uint32_t heartbeat_interval_ms = 0;  // 0 = no client pings
   std::uint32_t connect_timeout_ms = 10'000;
+  // Where the connection leaves this host from (net/source_address.hpp); empty: anywhere. Only
+  // the venue's addresses of a family the source has are tried.
+  SourceAddress source;
   bool manual_auth = false;       // handler calls auth_done()
   bool manual_subscribe = false;  // handler calls subscribe_done()
   std::string extra_headers;      // "Name: value\r\n" block for the upgrade request
@@ -281,6 +286,11 @@ class Connection {
         return;
       }
       addrs_ = std::move(r.addrs);
+      keep_reachable(cfg_.source, addrs_);
+      if (addrs_.empty()) {
+        schedule_backoff();
+        return;
+      }
       addr_index_ = 0;
       open_session(/*rollover=*/false);
     });
@@ -298,7 +308,8 @@ class Connection {
     const SockAddr& addr = addrs_[addr_index_ % addrs_.size()];
     ++addr_index_;
     TcpSocket sock;
-    if (sock.connect(addr) == ConnectStatus::Error) {
+    const std::optional<SockAddr> local = source_bind_address(cfg_.source, addr.family());
+    if (sock.connect(addr, local ? &*local : nullptr) == ConnectStatus::Error) {
       if (rollover) {
         schedule_rollover_retry();
       } else {

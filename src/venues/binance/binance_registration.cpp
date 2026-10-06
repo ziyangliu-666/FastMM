@@ -91,6 +91,7 @@ std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactor
   c.record_raw_dir = opts.record_raw_dir;
   c.pool_of = opts.pool_of;
   c.share_ip_weight = opts.pooled;
+  c.source = source_address(s);
   return std::make_unique<binance::BinanceVenue>(id, std::move(c));
 }
 
@@ -108,7 +109,8 @@ void register_binance_venue(VenueRegistry& r) {
                                     .positions = true,
                                     .polls = false,
                                     .executions = true,
-                                    .account_pools = true},
+                                    .account_pools = true,
+                                    .bind_source = true},
                            .make = &make}));
 }
 

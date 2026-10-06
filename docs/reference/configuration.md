@@ -88,6 +88,8 @@ One table per venue; `<name>` is how instruments refer to it.
 | `public_only` | boolean |  | market data only: no keys, no private sessions, no orders on this venue (default false) |
 | `pool_of` | string |  | name of another [venues.<name>] of the same kind whose instruments this account takes orders for, with its own keys, balances and order-count windows; no instruments or market data of its own (default none) |
 | `recv_window_ms` | integer |  | validity window of signed requests, ms (default 3000) |
+| `source_ip` | string |  | the venue's connections leave this host from this address, IPv4 or IPv6; it must be one of the host's (default: the kernel chooses) |
+| `source_interface` | string |  | the venue's connections leave this host from this network interface's address; exclusive with source_ip (default: the kernel chooses) |
 | `fill_audit_interval_s` | integer |  | fastmm-live compares the venue's trade history with the stored fills this often, s; 0 = off (default 0, at least 10) |
 | `fill_audit_lag_s` | integer |  | a fill audit reads up to this long ago, s, so the execution replay has booked what it will (default 180) |
 | `fill_audit_mode` | string |  | "report" logs and counts what differs; "book" also books the executions the engine missed (default "report") |
@@ -122,7 +124,22 @@ api_secret = "${S2}"
 
 A member's `kind` is the primary's; a member is nobody's primary, lists no `[[instruments]]` of its own and is not `public_only`; a pool holds at most 8 accounts, the primary included; the connector must run as a pool member (Binance Spot and USDⓈ-M do). The engine routes each new order to one account and the order stays there ([Account pools](strategy-api.md#account-pools)); in a backtest, `[venues.<member>] kind = "sim"` with `[backtest.venues.<member>.balances]` gives the member its own simulated account ([`[backtest.venues.<name>]`](#backtestvenues)).
 
-Binance counts request weight per IP, so a pool's accounts share the IP's window (6000 a minute on Spot, 2400 on USDⓈ-M): each request of any account counts against it, and a 429 or 418 answered to one account pauses or stops them all. Order counts stay each account's.
+Binance counts request weight per IP, so a pool's accounts share the IP's window (6000 a minute on Spot, 2400 on USDⓈ-M): each request of any account counts against it, and a 429 or 418 answered to one account pauses or stops them all. Order counts stay each account's. Accounts that leave from different addresses ([Source address](#source-address)) count apart.
+
+### Source address
+
+On a host with several addresses, `source_ip` or `source_interface` sends every connection of a venue (market data, user stream, order entry, REST, and the blocking requests of start-up and the kill switch) from one of them, so that a venue counting request weight per IP sees each account's address:
+
+```toml
+[venues.binance_b]
+kind = "binance_spot"
+pool_of = "binance"
+source_ip = "10.0.1.21"       # or: source_interface = "eth1"
+```
+
+The socket is bound to the address before it connects; `source_interface` binds to the interface's first address in the family of the venue's address. Binding chooses the source address only: the route, and with it the network device, follows the host's routing table, so no privilege is needed, and on a host with several devices the routing must send traffic from each address out of its device (source-based routing rules, as clouds set up for secondary interfaces). The operating system must hold the address already: fastmm-live and fastmm-gateway refuse to start when it is not one of the host's (`source_ip 10.0.1.21 is not an address of this host`) or the interface does not exist; any address in a loopback interface's network counts (127.0.0.2 on Linux). Only the venue's addresses of a family the source has are tried.
+
+The two are exclusive; neither: the kernel chooses, as before. Binance Spot and USDⓈ-M accounts of a pool count request weight per source address: those leaving from one address (or all without one) share a window, cooldown and ban, as above. Every connector except `nasdaq_itch` binds; that one refuses the keys.
 
 ### Fill audit
 

@@ -140,6 +140,10 @@ struct VenueSection {
   bool insecure_tls = false;
   std::string ca_file;
   int recv_window_ms = 3000;
+  // Where this venue's connections leave the host from: one of its addresses, or the address of a
+  // network interface (net/source_address.hpp). Empty: the kernel chooses.
+  std::string source_ip;
+  std::string source_interface;
   // Fill audit (live/fill_auditor.hpp): every fill_audit_interval_s seconds fastmm-live compares
   // the venue's trade history with the fills the store holds for this venue, up to
   // fill_audit_lag_s ago. 0: off. "report" only reports a difference; "book" also books the

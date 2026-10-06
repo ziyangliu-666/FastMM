@@ -75,6 +75,7 @@ constexpr VenueKeySpec kOkxKeys[] = {
 std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactoryOptions& opts) {
   okx::OkxVenueConfig c = okx::make_okx_config(s, opts.dry_run);
   c.record_raw_dir = opts.record_raw_dir;
+  c.source = source_address(s);
   return std::make_unique<okx::OkxVenue>(id, std::move(c));
 }
 
@@ -93,7 +94,8 @@ void register_okx_venue(VenueRegistry& r) {
                       .positions = true,
                       .polls = false,
                       // GET /api/v5/trade/fills
-                      .executions = true},
+                      .executions = true,
+                      .bind_source = true},
              .make = &make}));
 }
 

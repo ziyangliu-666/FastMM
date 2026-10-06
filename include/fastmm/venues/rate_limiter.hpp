@@ -353,7 +353,23 @@ struct SharedRate {
   RateLimiter r{1.0};  // its weight buckets, cooldown and hard stop; never shared itself
 };
 
-// The SharedRate of `key` (a REST host), made on first use; process-wide.
+// The key of one IP's weight at one venue: the connector kind, its REST host and the address its
+// connections leave from (net::source_label; empty: the host's default), so accounts sending
+// from different addresses count apart and those sending from the same one count together.
+[[nodiscard]] inline std::string ip_weight_key(std::string_view kind,
+                                               std::string_view rest_url,
+                                               std::string_view source) {
+  std::string key(kind);
+  key += ' ';
+  key += rest_url;
+  if (!source.empty()) {
+    key += " from ";
+    key += source;
+  }
+  return key;
+}
+
+// The SharedRate of `key` (ip_weight_key), made on first use; process-wide.
 inline std::shared_ptr<SharedRate> shared_rate(std::string_view key) {
   static std::mutex m;
   static std::map<std::string, std::shared_ptr<SharedRate>, std::less<>> by_key;

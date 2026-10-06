@@ -101,6 +101,7 @@ net::ConnectionConfig GateUsdtVenue::ws_config(bool manual_auth, bool manual_sub
   net::ConnectionConfig c;
   c.url = cfg_.ws_url;
   c.tls.ca_file = cfg_.ca_file;
+  c.source = cfg_.source;
   c.tls.insecure = cfg_.insecure_tls;
   c.stale_ms = cfg_.stale_ms;
   // Our own futures.ping every ping_interval_ms is answered, so the dead threshold must exceed
@@ -124,6 +125,7 @@ Result<void, std::string> GateUsdtVenue::load_reference_data(InstrumentTable& in
   if (mine.empty()) return {};
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
+  opts.source = cfg_.source;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   try {
@@ -271,6 +273,7 @@ Result<void, std::string> GateUsdtVenue::load_reference_data(InstrumentTable& in
 std::string GateUsdtVenue::check_account(AccountInfo& out) {
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
+  opts.source = cfg_.source;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   try {
@@ -319,6 +322,7 @@ Result<std::vector<VenueFee>, std::string> GateUsdtVenue::account_fees(
   if (!cfg_.fetch_fees || cfg_.dry_run || !signer_.usable()) return out;
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
+  opts.source = cfg_.source;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   try {

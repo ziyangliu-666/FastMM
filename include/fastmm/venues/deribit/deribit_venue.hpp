@@ -70,6 +70,8 @@ struct DeribitVenueConfig {
   Credentials credentials;
   bool insecure_tls = false;
   std::string ca_file;
+  // [venues.<name>] source_ip / source_interface: every connection goes out from it.
+  net::SourceAddress source;
   bool dry_run = false;
   bool supports_replace = true;  // private/edit
   std::vector<std::string> currencies{"BTC"};

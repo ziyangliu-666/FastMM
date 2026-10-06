@@ -200,6 +200,7 @@ net::ConnectionConfig OkxVenue::ws_config(const std::string& url,
   net::ConnectionConfig c;
   c.url = url;
   c.tls.ca_file = cfg_.ca_file;
+  c.source = cfg_.source;
   c.tls.insecure = cfg_.insecure_tls;
   c.stale_ms = cfg_.stale_ms;
   // Our "ping" every ping_interval_ms is answered with "pong", so a quiet private or order
@@ -222,6 +223,7 @@ Result<void, std::string> OkxVenue::load_reference_data(InstrumentTable& instrum
   if (mine.empty()) return {};
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
+  opts.source = cfg_.source;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   // instIdCode may differ between production and demo: public requests carry the header too.
@@ -374,6 +376,7 @@ Result<void, std::string> OkxVenue::load_reference_data(InstrumentTable& instrum
 std::string OkxVenue::check_account(bool swaps) {
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
+  opts.source = cfg_.source;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   try {

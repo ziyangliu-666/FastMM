@@ -25,6 +25,12 @@ All notable changes are recorded here (Keep a Changelog format).
   or another connector the standby waits cold as before.
 - `fastmm-sim-exchange`: `SimExchangeServer::accepted_client_order_ids()`, every accepted client
   order id in acceptance order.
+- `[venues.<name>] source_ip` / `source_interface`: every connection of the venue (WebSocket,
+  REST, the blocking start-up and kill-switch requests) is bound to that address of the host
+  before it connects, so the accounts of a pool can leave from different addresses. Binance Spot
+  and USDⓈ-M pool accounts count request weight, cooldowns and bans per source address. fastmm-live
+  and fastmm-gateway refuse to start when the address is not the host's or the interface does not
+  exist. Unset: the kernel chooses, as before. Every connector but `nasdaq_itch`.
 - Fill audit: `[venues.<name>] fill_audit_interval_s` (default 0, off) has fastmm-live compare,
   every so often, the account's executions in the venue's trade history with the fills the store
   holds for that venue, by trade id: missing (never booked), phantom (booked, not at the venue),

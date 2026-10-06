@@ -130,6 +130,7 @@ net::ConnectionConfig CoinbaseExchangeVenue::ws_config(const std::string& url,
   net::ConnectionConfig c;
   c.url = url;
   c.tls.ca_file = cfg_.ca_file;
+  c.source = cfg_.source;
   c.tls.insecure = cfg_.insecure_tls;
   c.stale_ms = cfg_.stale_ms;
   c.dead_ms = dead_ms;

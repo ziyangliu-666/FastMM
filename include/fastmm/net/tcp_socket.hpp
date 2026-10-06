@@ -67,8 +67,9 @@ class TcpSocket {
   static TcpSocket listen(const SockAddr& bind_addr, int backlog = 128) noexcept;
 
   // Starts a non-blocking connect (opens the socket if needed). On InProgress, wait for
-  // writability and call finish_connect().
-  ConnectStatus connect(const SockAddr& addr) noexcept;
+  // writability and call finish_connect(). `local`: bind() the socket to this address (port 0:
+  // any) first, so the connection leaves from it; a failed bind is an Error (last_error()).
+  ConnectStatus connect(const SockAddr& addr, const SockAddr* local = nullptr) noexcept;
   // Completes an in-progress connect: returns 0 on success, otherwise the errno (SO_ERROR).
   int finish_connect() noexcept;
   // SO_ERROR without changing the connecting state (0 also while still in progress).

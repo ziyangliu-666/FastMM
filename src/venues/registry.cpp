@@ -211,6 +211,13 @@ void validate_venues(const Config& cfg, const VenueRegistry& r) {
                                     e.name),
                         line == s.extra_lines.end() ? 0 : line->second);
     }
+    if (!source_address(s).empty() && !e.caps.bind_source) {
+      throw ConfigError(
+          fmt::format("venues.{}: connector '{}' cannot bind its connections to a "
+                      "source address (source_ip, source_interface)",
+                      s.name,
+                      e.name));
+    }
   }
 }
 
@@ -220,6 +227,11 @@ std::unique_ptr<Venue> make_venue(VenueId id,
                                   const VenueRegistry& r) {
   const VenueEntry& e = entry_for(r, section);
   check_keys(e, section);
+  if (!source_address(section).empty() && !e.caps.bind_source)
+    throw std::invalid_argument(
+        fmt::format("venues.{}: connector '{}' cannot bind its connections to a source address",
+                    section.name,
+                    e.name));
   return e.make(id, section, opts);
 }
 

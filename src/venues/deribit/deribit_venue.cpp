@@ -171,6 +171,7 @@ net::ConnectionConfig DeribitVenue::ws_config(const std::string& url, bool authe
   net::ConnectionConfig c;
   c.url = url;
   c.tls.ca_file = cfg_.ca_file;
+  c.source = cfg_.source;
   c.tls.insecure = cfg_.insecure_tls;
   c.stale_ms = cfg_.stale_ms;
   // With heartbeats on, the server sends a test_request about every interval, so a healthy but
@@ -195,6 +196,7 @@ Result<void, std::string> DeribitVenue::load_reference_data(InstrumentTable& ins
   if (mine.empty()) return {};
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
+  opts.source = cfg_.source;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   try {

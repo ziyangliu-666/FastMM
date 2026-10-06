@@ -61,6 +61,7 @@ constexpr VenueKeySpec kBybitKeys[] = {
 std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactoryOptions& opts) {
   bybit::BybitVenueConfig c = bybit::make_bybit_config(s, opts.dry_run);
   c.record_raw_dir = opts.record_raw_dir;
+  c.source = source_address(s);
   return std::make_unique<bybit::BybitVenue>(id, std::move(c));
 }
 
@@ -79,7 +80,8 @@ void register_bybit_venue(VenueRegistry& r) {
                                     .positions = true,
                                     .polls = false,
                                     // GET /v5/execution/list
-                                    .executions = true},
+                                    .executions = true,
+                                    .bind_source = true},
                            .make = &make}));
 }
 

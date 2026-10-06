@@ -4,6 +4,7 @@
 // reference data at startup, server-time probes, and the kill-switch cancel_all (6.7:
 // "independent REST connection"). Allocates freely; never touched by the hot path.
 #include "fastmm/net/http_message.hpp"
+#include "fastmm/net/source_address.hpp"
 #include "fastmm/net/tls_stream.hpp"
 
 #include <cstddef>
@@ -38,6 +39,7 @@ struct BlockingHttpOptions {
   // Largest response body. Binance USD-M's exchangeInfo has no symbol filter and was 1.1 MB on
   // production in 2026-09 (1 MiB is the streaming client's default).
   std::size_t recv_capacity = std::size_t{16} * 1024 * 1024;
+  net::SourceAddress source;  // where the connection leaves this host from; empty: anywhere
 };
 
 class BlockingHttp {

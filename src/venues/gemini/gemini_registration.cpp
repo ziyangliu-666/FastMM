@@ -50,6 +50,7 @@ constexpr VenueKeySpec kGeminiKeys[] = {
 std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactoryOptions& opts) {
   gemini::GeminiVenueConfig c = gemini::make_gemini_config(s, opts.dry_run);
   c.record_raw_dir = opts.record_raw_dir;
+  c.source = source_address(s);
   return std::make_unique<gemini::GeminiVenue>(id, std::move(c));
 }
 
@@ -66,7 +67,8 @@ void register_gemini_venue(VenueRegistry& r) {
                                     .positions = true,
                                     .polls = false,
                                     // POST /v1/mytrades
-                                    .executions = true},
+                                    .executions = true,
+                                    .bind_source = true},
                            .make = &make}));
 }
 

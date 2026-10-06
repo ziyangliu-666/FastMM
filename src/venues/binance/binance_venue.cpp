@@ -55,8 +55,11 @@ BinanceVenue::BinanceVenue(VenueId id, BinanceVenueConfig cfg)
       md_venue_(cfg_.pool_of.valid() ? cfg_.pool_of : id),
       signer_(cfg_.credentials),
       rate_(cfg_.rate_threshold) {
-  // Binance counts request weight per IP: the accounts of a pool spend one window.
-  if (cfg_.share_ip_weight) rate_.share_ip(shared_rate("binance_spot " + cfg_.rest_url));
+  // Binance counts request weight per IP: the accounts of a pool that leave from one address
+  // (source_ip / source_interface, or none) spend one window.
+  if (cfg_.share_ip_weight)
+    rate_.share_ip(
+        shared_rate(ip_weight_key("binance_spot", cfg_.rest_url, net::source_label(cfg_.source))));
   if (cfg_.user_stream == UserStreamMode::Auto)
     cfg_.user_stream = signer_.usable() ? UserStreamMode::WsApi : UserStreamMode::None;
   if (cfg_.dry_run) cfg_.user_stream = UserStreamMode::None;
@@ -135,6 +138,7 @@ net::ConnectionConfig BinanceVenue::ws_config(const std::string& url, bool manua
   net::ConnectionConfig c;
   c.url = url;
   c.tls.ca_file = cfg_.ca_file;
+  c.source = cfg_.source;
   c.tls.insecure = cfg_.insecure_tls;
   c.stale_ms = cfg_.stale_ms;
   // Binance sends a WebSocket ping every 20 s (web-socket-streams.md / web-socket-api.md
@@ -174,6 +178,7 @@ Result<void, std::string> BinanceVenue::load_reference_data(InstrumentTable& ins
 
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
+  opts.source = cfg_.source;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   HttpReply reply;
@@ -268,6 +273,7 @@ Result<std::vector<VenueFee>, std::string> BinanceVenue::account_fees(
   SymbolTable symbols;
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
+  opts.source = cfg_.source;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   try {

@@ -122,6 +122,8 @@ struct BinanceUsdmVenueConfig {
   int recv_window_ms = kDefaultRecvWindowMs;
   bool insecure_tls = false;
   std::string ca_file;
+  // [venues.<name>] source_ip / source_interface: every connection goes out from it.
+  net::SourceAddress source;
   bool dry_run = false;  // public market data only: no user/order channels
   // A pool member ([venues.<x>] pool_of): the venue whose instruments this account trades; order,
   // user and REST sessions only, no market data (binance/binance_venue.hpp has the whole of it).
