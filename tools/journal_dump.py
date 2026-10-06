@@ -102,7 +102,7 @@ FEE_ASSETS = ("quote", "base", "other")
 # ControlCommand and the TimerMsg.engine tags (include/fastmm/core/enums.hpp, core/engine.hpp).
 CONTROL_COMMANDS = ("Stop", "PullQuotes", "ResumeQuotes", "TripKill", "ResetKill", "Reload",
                     "FlushStats", "RecalibrateTsc", "TripVenueKill", "Flatten", "SetLimits",
-                    "Reconcile", "SetUnderlyingLimit")
+                    "Reconcile", "SetUnderlyingLimit", "TakeOver")
 ENGINE_TIMERS = {1: "max_param_age", 2: "ack sweep", 3: "flatten"}
 
 

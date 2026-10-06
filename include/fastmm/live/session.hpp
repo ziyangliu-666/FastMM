@@ -88,9 +88,13 @@ struct LiveOptions {
   // whole [risk] max_loss budget again ([engine] kill_file).
   bool clear_kill = false;
   // Waits for the instance lock (live/instance_lock.hpp) instead of refusing to start while another
-  // process holds it; [engine] instance_lock is implied. The venues' reference data and account
-  // fees are loaded first (attached to a gateway: nothing); the kill state, the store, the epoch
-  // file, the strategy state and every venue connection wait for the lock.
+  // process holds it; [engine] instance_lock is implied. Warm when every trading venue can hold its
+  // private channels back (Venue::defer_private) and replays its executions before quoting, the
+  // session is split-threaded and not attached to a gateway: market data, books and the strategy
+  // run, orders are refused until the first reconciliation, and the kill file, the strategy state,
+  // the store, the status file, the control socket and the private channels wait for the lock.
+  // Otherwise cold: the reference data and account fees are loaded (attached: nothing), and
+  // everything else waits for the lock.
   bool standby = false;
   // standby, and once ready send `handoff` to the control socket of the session holding the lock;
   // give up after [engine] handoff_timeout_ms without the lock (kExitLocked).

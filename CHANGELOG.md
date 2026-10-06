@@ -15,6 +15,14 @@ All notable changes are recorded here (Keep a Changelog format).
   `python -m fastmm run --standby/--takeover`, `run_live(standby=, takeover=)`. The systemd units
   do not restart on exit 8. [Hand over a running session](docs/how-to/operations/hand-over-a-session.md)
   also designs a handoff that keeps the quotes.
+- Warm standby: a `fastmm-live --standby`/`--takeover` whose venues can hold their private
+  channels back (`Venue::defer_private`, Binance Spot) connects to market data and runs its
+  strategy while the running session trades, with every order refused until each venue's first
+  reconciliation, and writes no kill, state, status or store file. Once it holds the lock it reads
+  them, sends `ControlCommand::TakeOver` (the carried PnL; the strategy restores the state file
+  then) and opens its private channels: the pause is the reconciliation, not a restart. It
+  cancels nothing if it stops before taking over. Behind a gateway, with `threading = "single"`
+  or another connector the standby waits cold as before.
 - `fastmm-sim-exchange`: `SimExchangeServer::accepted_client_order_ids()`, every accepted client
   order id in acceptance order.
 - Strategy hook `on_batch_end(ctx)`: `ctx.request_batch_end()` from any hook asks for one call

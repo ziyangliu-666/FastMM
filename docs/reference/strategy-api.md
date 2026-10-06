@@ -525,6 +525,8 @@ A strategy that keeps something worth more than one session (an online model, le
 
 With `[strategy] state_file` set, the engine calls `restore` once, after `on_start` and before the first event, with the file's contents (no file is a first start; an unreadable one is a configuration error), and takes `state()` every `state_interval_s` (300 by default) of engine time and at the end, never from inside another hook. The live session and the backtest write the bytes to the file atomically (a temporary file, then a rename) off the engine thread. A backtest's end state is what the next backtest, or a live session, starts from; a replay of a journal neither reads nor writes the file, so it sees the session as the journal recorded it.
 
+A warm standby (`fastmm-live --standby`) is the exception: it runs on market data before the session it replaces has written the file for the last time, so `restore` comes once it takes over, after `on_start` and the market data it warmed up on ([Hand over a running session](../how-to/operations/hand-over-a-session.md#warm-standby)).
+
 ## Fixed-point helpers
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#helpers -->

@@ -467,6 +467,11 @@ enum class ControlCommand : std::uint8_t {
   // A new [risk.underlying.<BASE>] max_net for RiskEngine::set_underlying_limit. The message is a
   // ControlUnderlyingMsg: the underlying's index in the session's plan, and the limit in `arg`.
   SetUnderlyingLimit = 12,
+  // A warm standby took the instance lock (fastmm-live --standby): arg is the PnL carried from
+  // earlier sessions (Notional raw, two's complement), read from the kill file once the session
+  // before it had written it last, and the strategy restores the state staged with
+  // Engine::stage_strategy_state (none in a replay).
+  TakeOver = 13,
 };
 [[nodiscard]] constexpr std::string_view to_string(ControlCommand c) noexcept {
   switch (c) {
@@ -496,6 +501,8 @@ enum class ControlCommand : std::uint8_t {
       return "Reconcile";
     case ControlCommand::SetUnderlyingLimit:
       return "SetUnderlyingLimit";
+    case ControlCommand::TakeOver:
+      return "TakeOver";
   }
   return "?";
 }

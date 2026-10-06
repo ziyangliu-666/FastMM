@@ -185,3 +185,33 @@ TEST_CASE("core.engine: a strategy without state() yields none") {
   std::string out;
   CHECK_FALSE(f.engine->take_strategy_state(out));
 }
+
+TEST_CASE("core.engine: TakeOver restores the staged state after the warm-up and sets the carry") {
+  Fixture<Counting> f;  // a warm standby starts without the state file
+  f.engine->start();
+  CHECK(f.strategy.restored.empty());
+  f.book();
+  f.book();
+  CHECK(f.strategy.books == 2);
+  f.engine->stage_strategy_state("books=40");
+  ControlMsg m{};
+  init_header(m, EventType::Control, InstrumentId{}, VenueId::invalid());
+  m.command = ControlCommand::TakeOver;
+  m.arg = static_cast<std::uint64_t>(Notional::from_int(-3).raw);
+  REQUIRE(f.feed.push(m.hdr));
+  while (f.engine->step() != 0) {
+  }
+  CHECK(f.strategy.restored == std::vector<std::string>{"books=40"});
+  CHECK(f.strategy.books_at_restore == 2);  // after the market data it warmed up on
+  CHECK(f.strategy.books == 40);
+  CHECK(f.engine->net_pnl() == Notional::from_int(-3));
+  // The state to write is the restored one, not what the warm-up captured.
+  std::string taken;
+  REQUIRE(f.engine->take_strategy_state(taken));
+  CHECK(taken == "books=40");
+  // A TakeOver with nothing staged (a replay) restores nothing.
+  REQUIRE(f.feed.push(m.hdr));
+  while (f.engine->step() != 0) {
+  }
+  CHECK(f.strategy.restored.size() == 1);
+}

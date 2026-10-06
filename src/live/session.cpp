@@ -691,12 +691,13 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
           ? KillStateStore::default_path(cfg.engine.journal_dir, cfg.engine.name)
           : cfg.engine.kill_file;
   KillState kill_state;
-  const auto load_kill = [&]() -> int {
+  // `holding`: this process holds the instance lock (or needs none) and may clear the file.
+  const auto load_kill = [&](bool holding = true) -> int {
     if (const std::filesystem::path kp(kill_path); kp.has_parent_path()) {
       std::error_code ec;
       std::filesystem::create_directories(kp.parent_path(), ec);
     }
-    if (opts.clear_kill) {
+    if (opts.clear_kill && holding) {
       if (auto r = KillStateStore::clear(kill_path); !r) {
         std::fprintf(stderr, "%s: %s\n", prog, r.error().c_str());
         return kExitConfig;
@@ -710,7 +711,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       std::fprintf(stderr, "%s: %s\n", prog, loaded.error().c_str());
       return kExitConfig;
     }
-    if (kill_state.latched) {
+    if (kill_state.latched && (!opts.clear_kill || holding)) {
       std::fprintf(stderr,
                    "%s: a %s kill switch is latched in %s (net PnL %.8f over %llu session(s)). "
                    "Check the positions, then clear it with --clear-kill or by removing the file; "
@@ -896,10 +897,45 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
   }
   const Config& recorded = fetched_fees ? *fetched_fees : cfg;
+  // Warm standby: when the lock is held and every venue that trades can hold its private channels
+  // back (Venue::defer_private) and replays its executions before it quotes (await_reconcile),
+  // this process connects to market data and runs its strategy now, with every order refused
+  // until it has taken the lock over, read what the session before it left and reconciled. Else
+  // it waits for the lock here, before it connects at all.
+  bool warm = false;
   if (lock_late) {
-    if (const int rc = take_lock(); rc != 0) return rc;
-    if (const int rc = load_kill(); rc != 0) return rc;
+    std::string err;
+    const InstanceLock::Status st = instance_lock.try_acquire(lock_path, &err);
+    if (st == InstanceLock::Status::Error) {
+      std::fprintf(stderr, "%s: %s\n", prog, err.c_str());
+      return kExitConfig;
+    }
+    if (st == InstanceLock::Status::Held && !cfg.single_threaded() && !opts.dry_run) {
+      warm = true;
+      for (std::size_t i = 0; i < slots.size(); ++i) {
+        if (cfg.venues[i].public_only) continue;
+        const venues::VenueEntry* entry =
+            venues::VenueRegistry::instance().find(cfg.venues[i].kind);
+        if (entry == nullptr || !entry->caps.executions || !slots[i]->venue->defer_private())
+          warm = false;
+      }
+      if (!warm) {
+        for (auto& s : slots) s->venue->enable_private();  // undo: nothing is connected yet
+        FASTMM_LOG_INFO(
+            "standby: a venue cannot hold its private channels back; waiting for the lock before "
+            "connecting");
+      }
+    }
+    if (warm) {
+      if (const int rc = load_kill(/*holding=*/false); rc != 0) return rc;
+    } else {
+      if (const int rc = take_lock(); rc != 0) return rc;
+      if (const int rc = load_kill(); rc != 0) return rc;
+    }
   }
+  // This process holds the instance lock or needs none: it may write the kill, state, status and
+  // store files and talk to the account. A warm standby gets there in the control loop.
+  bool owner = !warm;
 
   // [accounting] converts the PnL totals, [risk] max_loss and the exposure caps to one reporting
   // currency. Without it every total is one currency-less Notional. The venues' reference data has
@@ -1056,7 +1092,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   Wake wake_ctx{&slots, cfg.spin_mode() == SpinMode::Busy};
   const net::ReactorBackend net_backend =
       via_gateway ? net::ReactorBackend::Epoll : resolve_net_backend(cfg);
-  if (!via_gateway) read_previous();
+  if (!via_gateway && !warm) read_previous();
   for (std::size_t i = 0; i < slots.size(); ++i) {
     VenueSlot& s = *slots[i];
     const VenueId vid{static_cast<std::uint8_t>(i)};
@@ -1172,7 +1208,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   deps.engine.max_param_age = milliseconds(cfg.strategy.max_param_age_ms);
   deps.engine.state_file = cfg.strategy.state_file;
   deps.engine.state_interval = seconds(cfg.strategy.state_interval_s);
-  if (!cfg.strategy.state_file.empty()) {
+  if (!cfg.strategy.state_file.empty() && !warm) {
+    // A warm standby reads it when it takes over (ControlCommand::TakeOver), after the session
+    // before it has written it last.
     // The strategy's state from the last session; no file is a first start. An unreadable one is
     // a configuration error: trading on fresh state when the operator meant otherwise is not.
     auto loaded = load_strategy_state(cfg.strategy.state_file, deps.engine.initial_state);
@@ -1216,6 +1254,15 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   std::unique_ptr<MsgRing> record_ring;
   std::unique_ptr<store::StoreThread> store_thread;
   if (backend_name != store::kNoBackend) {
+    const auto ring_bytes =
+        static_cast<std::size_t>(cfg.storage.get_int("ring_bytes", std::int64_t{4} * 1024 * 1024));
+    record_ring = std::make_unique<MsgRing>(ring_size(ring_bytes));
+    deps.record_ring = record_ring.get();
+  }
+  // Opens the backend; a warm standby once it holds the lock (the session before it writes the
+  // same store until then). The engine's records wait in the ring.
+  const auto make_store = [&]() -> int {
+    if (backend_name == store::kNoBackend) return 0;
     store::register_builtin_backends();
     auto& registry = store::StoreRegistry::instance();
     auto backend = registry.make_backend(backend_name);
@@ -1237,12 +1284,12 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       std::fprintf(stderr, "%s: [storage] %s\n", prog, r.error().c_str());
       return kExitConfig;
     }
-    const auto ring_bytes =
-        static_cast<std::size_t>(cfg.storage.get_int("ring_bytes", std::int64_t{4} * 1024 * 1024));
-    record_ring = std::make_unique<MsgRing>(ring_size(ring_bytes));
     store_thread = std::make_unique<store::StoreThread>(*record_ring, std::move(backend));
-    deps.record_ring = record_ring.get();
     FASTMM_LOG_INFO("storage: {}", backend_name);
+    return 0;
+  };
+  if (!warm) {
+    if (const int rc = make_store(); rc != 0) return rc;
   }
 
   std::unique_ptr<MsgRing> journal_ring;
@@ -1382,7 +1429,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     WatchdogRegistration(const WatchdogRegistration&) = delete;
     WatchdogRegistration& operator=(const WatchdogRegistration&) = delete;
   } const watchdog_registration(&shutdown_watchdog);
-  if (store_thread) {
+  // The session's rows: a warm standby's from when it takes over.
+  const auto start_store = [&]() -> int {
+    if (!store_thread) return 0;
     store::SessionOpen so;
     so.session_id = deps.engine.session_id;
     so.session_epoch = deps.engine.session_epoch;
@@ -1397,7 +1446,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     so.host = host_name();
     so.pid = static_cast<std::uint32_t>(::getpid());
     so.dry_run = opts.dry_run;
-    so.pnl_carry_raw = deps.engine.pnl_carry.raw;
+    so.pnl_carry_raw = kill_state.carry().raw;
     so.venues = venue_names;
     store::Backend& store_backend = store_thread->backend();
     if (auto r = store_backend.session_open(so); !r) {
@@ -1412,6 +1461,10 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       return kExitConfig;
     }
     store_thread->start();
+    return 0;
+  };
+  if (!warm) {
+    if (const int rc = start_store(); rc != 0) return rc;
   }
   if (journal) journal->start();
   std::thread engine_thread;
@@ -1448,7 +1501,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   // ---- live status for fastmm-top --------------------------------------------------------
   StatusWriter status;
   StatusSnapshot snap;
-  if (!opts.no_status) {
+  // A warm standby's from when it takes over: until then the file is the running session's.
+  const auto open_status = [&] {
+    if (opts.no_status) return;
     const std::string path =
         opts.status_path.empty() ? default_status_path(cfg.engine.name) : opts.status_path;
     std::string err;
@@ -1457,7 +1512,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     } else {
       FASTMM_LOG_WARN("status file {} unavailable: {}", path, err);
     }
-  }
+  };
+  if (owner) open_status();
   snap.pid = static_cast<std::uint32_t>(::getpid());
   snap.session_id = deps.engine.session_id;
   snap.started_ns = wall_now().ns;
@@ -1546,11 +1602,13 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   // with the next capture.
   std::string state_bytes;
   auto save_strategy_state = [&] {
-    if (cfg.strategy.state_file.empty() || !runner->take_strategy_state(state_bytes)) return;
+    if (!owner || cfg.strategy.state_file.empty() || !runner->take_strategy_state(state_bytes))
+      return;
     if (auto w = write_file_atomic(cfg.strategy.state_file, state_bytes); !w)
       FASTMM_LOG_ERROR("strategy state: {}", w.error());
   };
   const auto persist_kill = [&](const EngineLiveStats& live) {
+    if (!owner) return;  // the running session's file until this one takes over
     KillState st = kill_state;
     st.realized = kill_state.realized + Notional::from_raw(live.stats.realized_pnl_raw);
     st.fees = kill_state.fees + Notional::from_raw(live.stats.fees_raw);
@@ -1590,7 +1648,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   // 1 duration, 2 signal, 3 order ring overflow, 4 kill switch tripped by the engine, 5 watchdog,
   // 6 the runner cannot run inline (threading = "single"), 7 the journal cannot be written,
   // 8 the control socket's `stop`, 9 the gateway closed the attachment, 10 the control socket's
-  // `handoff`
+  // `handoff`, 11 a warm standby that gave up or could not take over (standby_rc)
   int reason = 0;
   std::string watchdog_cause;
   std::int64_t next_status = start + 250'000'000;
@@ -1708,17 +1766,160 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     plane.params = custom->set_params;
   }
   ControlSocket control_socket;
-  if (!opts.no_control) {
+  // A warm standby's from when it takes over: until then the path is the running session's.
+  const auto open_control = [&] {
+    if (opts.no_control) return;
     std::string ctl_error;
     if (control_socket.open(ctl_path, &ctl_error)) {
       FASTMM_LOG_INFO("control socket: {} (fastmm-ctl --path {} status)", ctl_path, ctl_path);
     } else {
       FASTMM_LOG_WARN("control socket {} unavailable: {}", ctl_path, ctl_error);
     }
-  }
+  };
+  if (owner) open_control();
+
+  // ---- warm standby -------------------------------------------------------------------------
+  // The engine runs on market data with every order refused (await_reconcile: no venue has
+  // reconciled). --takeover asks for the handoff once every book is synced (or after 30 s); the
+  // lock is polled every 10 ms. Taking over reads what the session before this one wrote last, in
+  // the order a cold start reads it, then opens the private channels; the venues' replays and
+  // reconciliations open the gate.
+  bool handoff_sent = false;
+  std::int64_t handoff_deadline = 0;
+  const std::int64_t warm_start = steady_now().ns;
+  const auto books_synced = [&] {
+    bool any = false;  // a pool member has no books; a status not published yet has none either
+    for (const auto& sl : slots) {
+      const venues::VenueStatus st = sl->venue->status();
+      if (st.books_total == 0) continue;
+      any = true;
+      if (st.books_synced < st.books_total) return false;
+    }
+    return any;
+  };
+  const auto take_over = [&]() -> int {
+    std::string probe;
+    if (control_request(ctl_path, {}, 1000, probe) == ControlReply::Answered) {
+      FASTMM_LOG_ERROR(
+          "standby: a session answers on {} without holding the instance lock {}; not taking "
+          "over",
+          ctl_path,
+          lock_path);
+      return kExitLocked;
+    }
+    if (const int rc = load_kill(); rc != 0) return rc;
+    ++kill_state.sessions;
+    if (!cfg.strategy.state_file.empty()) {
+      std::string bytes;
+      auto loaded = load_strategy_state(cfg.strategy.state_file, bytes);
+      if (!loaded) {
+        FASTMM_LOG_ERROR("standby: {}", std::string_view(loaded.error()));
+        return kExitConfig;
+      }
+      runner->stage_strategy_state(std::move(bytes));
+    }
+    ControlMsg tm{};
+    init_header(tm, EventType::Control, InstrumentId{}, VenueId::invalid());
+    tm.command = ControlCommand::TakeOver;
+    tm.arg = static_cast<std::uint64_t>(kill_state.carry().raw);
+    tm.hdr.recv_ts = wall_now();
+    if (!control_ring.try_push(&tm, tm.hdr.len)) {
+      FASTMM_LOG_ERROR("standby: control ring full; not taking over");
+      return kExitRuntime;
+    }
+    feed.notify();
+    // The previous sessions' positions and each venue's execution replay start, on the venue's own
+    // network thread (it produces into the order ring and owns the connector).
+    read_previous();
+    if (previous && cfg.engine.restore_position) {
+      std::vector<RestoreVenue> rv;
+      for (std::size_t i = 0; i < slots.size(); ++i) {
+        const venues::VenueEntry* entry =
+            venues::VenueRegistry::instance().find(cfg.venues[i].kind);
+        rv.push_back({slots[i]->venue->name(), entry != nullptr && entry->caps.executions});
+      }
+      restore_positions(
+          *previous,
+          instruments,
+          rv,
+          [&](std::size_t i, const ReconcileMsg& m) {
+            VenueSlot* sl = slots[i].get();
+            sl->reactor->post([sl, m] { static_cast<void>(sl->order_sink.push(m.hdr)); });
+          },
+          [&](std::size_t i, const ResumePlan& plan) {
+            venues::Venue* v = slots[i]->venue.get();
+            slots[i]->reactor->post([v, plan] {
+              v->resume_executions(plan.since_ms, plan.known);
+              if (!plan.next_ids.empty()) v->resume_trade_ids(plan.next_ids);
+              if (!plan.known_after.empty()) v->resume_known_trade_ids(plan.known_after);
+            });
+          });
+    }
+    if (const int rc = make_store(); rc != 0) return rc;
+    if (const int rc = start_store(); rc != 0) return rc;
+    owner = true;
+    open_status();
+    open_control();
+    for (auto& sl : slots) {
+      venues::Venue* v = sl->venue.get();
+      sl->reactor->post([v] { v->enable_private(); });
+      sl->reactor->wake();
+    }
+    FASTMM_LOG_WARN("standby: took over after {} ms warm; opening the private channels",
+                    (steady_now().ns - warm_start) / 1'000'000);
+    return 0;
+  };
+  if (warm)
+    FASTMM_LOG_WARN(
+        "standby: process {} holds {}; connected to market data only, orders refused until the "
+        "lock is taken over{}",
+        InstanceLock::holder_pid(lock_path),
+        lock_path,
+        opts.takeover ? " (the handoff is asked for once the books are synced)"
+                      : std::string_view(" (fastmm-ctl handoff to the running session)"));
+  int standby_rc = 0;  // why a warm standby gave up before taking over
 
   while (reason == 0) {
-    sleep_for(milliseconds(50));
+    sleep_for(milliseconds(owner ? 50 : 10));
+    if (!owner && g_signal == 0) {
+      const std::int64_t t = steady_now().ns;
+      if (opts.takeover && !handoff_sent && (books_synced() || t - warm_start >= 30'000'000'000)) {
+        handoff_sent = true;
+        std::string reply;
+        const ControlReply r = control_request(ctl_path, "handoff", 5000, reply);
+        while (!reply.empty() && (reply.back() == '\n' || reply.back() == '\r')) reply.pop_back();
+        if (r != ControlReply::Answered || !reply.starts_with("ok")) {
+          FASTMM_LOG_ERROR("takeover: the session holding {} did not accept the handoff on {}: {}",
+                           lock_path,
+                           ctl_path,
+                           std::string_view(reply));
+          standby_rc = kExitLocked;
+        } else {
+          handoff_deadline = t + std::int64_t{cfg.engine.handoff_timeout_ms} * 1'000'000;
+          FASTMM_LOG_WARN("takeover: handoff accepted after {} ms warm; waiting for {}",
+                          (t - warm_start) / 1'000'000,
+                          lock_path);
+        }
+      }
+      if (standby_rc == 0 && handoff_deadline != 0 && t >= handoff_deadline) {
+        FASTMM_LOG_ERROR("takeover: {} still held {} ms after the handoff was accepted",
+                         lock_path,
+                         cfg.engine.handoff_timeout_ms);
+        standby_rc = kExitLocked;
+      }
+      if (standby_rc == 0) {
+        std::string err;
+        const InstanceLock::Status st = instance_lock.try_acquire(lock_path, &err);
+        if (st == InstanceLock::Status::Error) {
+          FASTMM_LOG_ERROR("standby: {}", std::string_view(err));
+          standby_rc = kExitConfig;
+        } else if (st == InstanceLock::Status::Acquired) {
+          FASTMM_LOG_WARN("standby: instance lock {} taken over", lock_path);
+          standby_rc = take_over();
+        }
+      }
+      if (standby_rc != 0) reason = 11;
+    }
     control_socket.poll(plane);
     if (g_signal != 0) reason = 2;
     const std::int64_t now = steady_now().ns;
@@ -1828,6 +2029,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
                      to_string(journal->error()));
   } else if (reason == 9) {
     FASTMM_LOG_ERROR("fastmm-live: shutting down (the gateway went away)");
+  } else if (reason == 11) {
+    FASTMM_LOG_ERROR("fastmm-live: shutting down (the standby did not take over)");
   } else {
     FASTMM_LOG_WARN("fastmm-live: shutting down ({})",
                     reason == 1    ? std::string_view("duration elapsed")
@@ -1849,6 +2052,10 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     FASTMM_LOG_WARN(
         "fastmm-live: no venue cancel_all here: the gateway cancels every open order when this "
         "attachment closes");
+  } else if (!owner) {
+    FASTMM_LOG_WARN(
+        "fastmm-live: no venue cancel_all: this standby never took over, and the orders on the "
+        "account are another session's");
   } else if (!opts.dry_run) {
     for (std::size_t i = 0; i < slots.size(); ++i) {
       if (cfg.venues[i].public_only) continue;  // market data only: nothing to cancel
@@ -1955,6 +2162,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   const int rc = !cancel_ok                                                 ? kExitRuntime
                  : reason == 4                                              ? kExitKilled
                  : reason == 5                                              ? kExitSlowTier
+                 : reason == 11                                             ? standby_rc
                  : reason == 3 || reason == 6 || reason == 7 || reason == 9 ? kExitRuntime
                                                                             : kExitOk;
   if (store_thread) {

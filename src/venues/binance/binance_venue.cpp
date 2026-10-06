@@ -350,6 +350,64 @@ void BinanceVenue::connect(net::Reactor& reactor) {
   if (md_feed_ == nullptr) throw std::logic_error("BinanceVenue::connect before attach");
   reactor_ = &reactor;
   connected_ = true;
+  // A deferred pool member has nothing public to read: it opens nothing until enable_private().
+  if (private_deferred_ && pool_member()) {
+    FASTMM_LOG_INFO("{}: pool member waiting for the private channels", cfg_.name);
+    return;
+  }
+  open_channels(!private_deferred_);
+}
+
+bool BinanceVenue::defer_private() {
+  if (connected_ || cfg_.dry_run) return false;
+  private_deferred_ = true;
+  return true;
+}
+
+void BinanceVenue::enable_private() {
+  if (!private_deferred_) return;
+  private_deferred_ = false;
+  if (!connected_) return;  // connect() opens everything
+  if (rest_ == nullptr) {   // a pool member that opened nothing
+    open_channels(true);
+    return;
+  }
+  FASTMM_LOG_INFO("{}: opening the private channels", cfg_.name);
+  connect_private();
+}
+
+void BinanceVenue::open_channels(bool with_private) {
+  if (!cfg_.record_raw_dir.empty()) {
+    raw_md_.open(cfg_.record_raw_dir, cfg_.name, "md");
+    raw_user_.open(cfg_.record_raw_dir, cfg_.name, "user");
+    raw_order_.open(cfg_.record_raw_dir, cfg_.name, "order");
+  }
+  open_rest();
+  request_server_time();
+  if (!pool_member()) open_md();  // a member reads no market data: the primary has the books
+  if (with_private) {
+    connect_private();
+  } else {
+    reconcile_.open(false);
+    exec_replay_.open(false);
+  }
+  std::weak_ptr<int> alive = alive_;
+  housekeeping_timer_ = reactor_->add_timer_after(kHousekeepingNs, [this, alive] {
+    if (alive.expired()) return;
+    housekeeping_timer_ = net::kInvalidTimer;
+    on_timer(now_ns());
+  });
+  FASTMM_LOG_INFO(
+      "{}: connecting (dry_run={}, user_stream={}, ws_orders={}, pool_member={}, private={})",
+      cfg_.name,
+      cfg_.dry_run,
+      static_cast<int>(cfg_.user_stream),
+      cfg_.ws_order_api,
+      pool_member(),
+      with_private ? "now" : "deferred");
+}
+
+void BinanceVenue::connect_private() {
   reconcile_.open(!cfg_.dry_run && signer_.usable());
   // Nobody said where the execution replay should start, so it starts here: this session can only
   // have missed what happened after it connected, and replaying further back would book another
@@ -371,14 +429,6 @@ void BinanceVenue::connect(net::Reactor& reactor) {
   }
   resume_known_ids_.clear();
   exec_replay_.open(!cfg_.dry_run && signer_.usable());
-  if (!cfg_.record_raw_dir.empty()) {
-    raw_md_.open(cfg_.record_raw_dir, cfg_.name, "md");
-    raw_user_.open(cfg_.record_raw_dir, cfg_.name, "user");
-    raw_order_.open(cfg_.record_raw_dir, cfg_.name, "order");
-  }
-  open_rest();
-  request_server_time();
-  if (!pool_member()) open_md();  // a member reads no market data: the primary has the books
   if (!cfg_.dry_run) {
     if (cfg_.ws_order_api) open_order();
     if (cfg_.user_stream == UserStreamMode::WsApi) {
@@ -387,18 +437,6 @@ void BinanceVenue::connect(net::Reactor& reactor) {
       request_listen_key();
     }
   }
-  std::weak_ptr<int> alive = alive_;
-  housekeeping_timer_ = reactor.add_timer_after(kHousekeepingNs, [this, alive] {
-    if (alive.expired()) return;
-    housekeeping_timer_ = net::kInvalidTimer;
-    on_timer(now_ns());
-  });
-  FASTMM_LOG_INFO("{}: connecting (dry_run={}, user_stream={}, ws_orders={}, pool_member={})",
-                  cfg_.name,
-                  cfg_.dry_run,
-                  static_cast<int>(cfg_.user_stream),
-                  cfg_.ws_order_api,
-                  pool_member());
 }
 
 void BinanceVenue::disconnect() {
@@ -1817,7 +1855,7 @@ void BinanceVenue::align_rate_windows() noexcept {
 void BinanceVenue::on_timer(std::int64_t now) {
   if (!connected_) return;
   md_feed_->on_timer(now);
-  if (cfg_.user_stream == UserStreamMode::ListenKey && !cfg_.dry_run) {
+  if (cfg_.user_stream == UserStreamMode::ListenKey && !cfg_.dry_run && !private_deferred_) {
     if (listen_key_.empty()) {
       request_listen_key();
     } else if (now - listen_key_refresh_ns_ >= kListenKeyKeepaliveNs) {

@@ -127,8 +127,9 @@ int live(int argc, char** argv, std::span<const StrategyModule> modules) {
                "whole [risk] max_loss budget again");
   app.add_flag("--standby",
                opts.standby,
-               "while another process holds the instance lock, load the reference data, then wait "
-               "for the lock instead of exiting; trade once it is free");
+               "while another process holds the instance lock, wait for it instead of exiting: "
+               "connected to market data with orders refused where the venues allow it, else "
+               "before connecting; trade once it is free");
   app.add_flag("--takeover",
                opts.takeover,
                "--standby, and ask the process holding the lock to hand over (control socket "

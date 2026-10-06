@@ -136,6 +136,8 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
               MsgRing* outbound) override;
   void connect(net::Reactor& reactor) override;
   void disconnect() override;
+  bool defer_private() override;
+  void enable_private() override;
   void subscribe(std::span<const InstrumentId> instruments) override;
   void on_timer(std::int64_t now_ns) override;
   void resync_books() override;
@@ -208,6 +210,10 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
 
   // helpers
   void open_md();
+  // connect()'s work: REST, the clock, market data, and with `with_private` connect_private().
+  void open_channels(bool with_private);
+  // The account's side: the open-order sweep, the execution replay, order entry, the user stream.
+  void connect_private();
   void open_user();
   void open_order();
   void open_rest();
@@ -366,6 +372,7 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   bool fatal_ = false;
   bool venue_kill_sent_ = false;  // TripVenueKill emitted
   bool connected_ = false;
+  bool private_deferred_ = false;  // defer_private() until enable_private()
   bool rest_hard_stopped_ = false;
   ConnState md_state_ = ConnState::Disconnected;
   ConnState user_state_ = ConnState::Disconnected;

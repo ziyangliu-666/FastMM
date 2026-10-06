@@ -33,7 +33,12 @@ SessionFiles locked_config(const ServerFixture& fx, const std::string& stem) {
   const std::string section = "[engine]\n";
   text.replace(text.find(section), section.size(), section + "instance_lock = true\n");
   std::ofstream(f.config, std::ios::trunc) << text;
-  remove_all_of({f.epoch, f.kill, f.journal_dir, f.config + ".a.log", f.config + ".b.log"});
+  remove_all_of({f.epoch,
+                 f.kill,
+                 f.journal_dir,
+                 f.config + ".a.log",
+                 f.config + ".b.log",
+                 f.config + ".c.log"});
   return f;
 }
 
@@ -227,6 +232,75 @@ TEST_CASE("handoff: a takeover the holder cannot accept leaves the holder tradin
   CHECK(reap(first) == live::kExitOk);
   check_one_trader_at_a_time(fx, 1);
   CHECK(fx.server.stats().open_orders == 0);
+}
+
+// The pause a handoff costs, cold and warm. Cold: the session stops, a new process starts from
+// nothing. Warm: a --standby has had its market data, books and strategy running all along, and
+// its private channels and reconciliation are all that is left once the lock is free.
+TEST_CASE("handoff: a warm standby reads market data before the handoff and quotes sooner") {
+  ServerFixture fx;
+  const SessionFiles f = locked_config(fx, "handoff-warm");
+  OpenOrderWatch watch(fx);
+  const auto first_order_after = [&](std::size_t before, const std::string& log) {
+    REQUIRE_MESSAGE(
+        wait_until([&] { return fx.server.accepted_client_order_ids().size() > before; }, 30000),
+        "no order from the new process: " << fastmm::test::read_file(log));
+    return std::chrono::steady_clock::now();
+  };
+  const auto ms = [](auto d) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(d).count();
+  };
+
+  const pid_t a = start(f, f.config + ".a.log", {});
+  REQUIRE(wait_until([&] { return fx.server.stats().orders_accepted > 0; }, 60000));
+
+  // Cold: stop, then start.
+  REQUIRE(::kill(a, SIGTERM) == 0);
+  CHECK(reap(a) == live::kExitOk);
+  const auto a_exit = std::chrono::steady_clock::now();
+  std::size_t before = fx.server.accepted_client_order_ids().size();
+  const pid_t b = start(f, f.config + ".b.log", {});
+  const auto cold = first_order_after(before, f.config + ".b.log") - a_exit;
+
+  // Warm: a standby next to the running session, once that one's start-up queries are done.
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  const sim::server::SimServerStats running = fx.server.stats();
+  const pid_t c = start(f, f.config + ".c.log", {"--standby"});
+  REQUIRE_MESSAGE(
+      wait_until([&] { return fx.server.stats().md_sessions > running.md_sessions; }, 30000),
+      "the standby never connected to market data");
+  std::this_thread::sleep_for(std::chrono::seconds(3));  // its books sync, its strategy runs
+  const sim::server::SimServerStats warm_up = fx.server.stats();
+  CHECK(warm_up.depth_snapshots > running.depth_snapshots);  // the standby's books
+  // Nothing of the account: no WebSocket API session, no user stream, no order, no query.
+  CHECK(warm_up.api_sessions_opened == running.api_sessions_opened);
+  CHECK(warm_up.user_subscriptions == running.user_subscriptions);
+  CHECK(warm_up.open_orders_queries == running.open_orders_queries);
+  CHECK(warm_up.my_trades_queries == running.my_trades_queries);
+  CHECK(warm_up.cancel_all_requests == running.cancel_all_requests);
+  const std::uint16_t b_epoch = epoch_of(fx.server.accepted_client_order_ids().back());
+  for (const std::string& id : fx.server.open_client_order_ids()) CHECK(epoch_of(id) == b_epoch);
+
+  std::string reply;
+  REQUIRE(live::control_request(ctl_of(f), "handoff", 2000, reply) == live::ControlReply::Answered);
+  REQUIRE(reply.starts_with("ok"));
+  CHECK(reap(b) == live::kExitOk);
+  const auto b_exit = std::chrono::steady_clock::now();
+  before = fx.server.accepted_client_order_ids().size();
+  const auto warm = first_order_after(before, f.config + ".c.log") - b_exit;
+  MESSAGE("first order after the previous process exited: cold " << ms(cold) << " ms, warm "
+                                                                 << ms(warm) << " ms");
+  CHECK(warm < cold);
+
+  REQUIRE(live::control_request(ctl_of(f), "stop", 2000, reply) == live::ControlReply::Answered);
+  CHECK(reap(c) == live::kExitOk);
+  watch.finish();
+  CHECK(fastmm::test::read_file(f.config + ".c.log").find("private=deferred") != std::string::npos);
+  CHECK(watch.mixed.load() == 0);
+  check_one_trader_at_a_time(fx, 3);
+  CHECK(fx.server.stats().open_orders == 0);
+  CHECK(booked_twice(f, "handoff-warm").empty());
+  CHECK(store_position(f, "handoff-warm") == fx.server.stats().position);
 }
 
 #endif  // FASTMM_LIVE_EXE

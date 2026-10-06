@@ -554,6 +554,15 @@ class Engine {
       return true;
     }
   }
+  // Bytes for restore() when the next ControlCommand::TakeOver arrives (a warm standby reads the
+  // state file only once the session before it has written it last). Any thread, before the
+  // message is pushed.
+  void stage_strategy_state(std::string bytes) {
+    if constexpr (KeepsState<Strategy>) {
+      const std::lock_guard<std::mutex> lock(state_mu_);
+      staged_state_ = std::move(bytes);
+    }
+  }
   [[nodiscard]] std::uint64_t state_captures() const noexcept { return state_captures_; }
   [[nodiscard]] bool state_restored() const noexcept { return state_restored_; }
 
@@ -1910,7 +1919,34 @@ class Engine {
         break;
       case ControlCommand::Reconcile:
         break;  // engine output, see request_reconcile
+      case ControlCommand::TakeOver:
+        take_over(Notional::from_raw(static_cast<std::int64_t>(c.arg)));
+        break;
     }
+  }
+
+  // ControlCommand::TakeOver: the loss budget the session before this one left, and its strategy
+  // state. Orders stay refused until each venue's first reconciliation (await_reconcile), which
+  // the venue starts once the private channels it held back are open.
+  FASTMM_NOINLINE void take_over(Notional carry) noexcept {
+    cfg_.pnl_carry = carry;
+    FASTMM_LOG_WARN("taking over: carried PnL {}", carry);
+    if constexpr (KeepsState<Strategy>) {
+      std::string staged;
+      {
+        const std::lock_guard<std::mutex> lock(state_mu_);
+        staged.swap(staged_state_);
+      }
+      if (!staged.empty()) {
+        cfg_.initial_state.swap(staged);
+        restore_state();
+      }
+      // What was captured during the warm-up is not this session's to write: the state file gets
+      // the state as of now.
+      capture_state();
+    }
+    if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
+    publish_live(latency_pub_.load());
   }
 
   // A state naming an instrument is that book's alone (a per-symbol resync: Binance's depth sync,
@@ -3070,6 +3106,7 @@ class Engine {
   TimerId state_timer_{};    // ... and the strategy state capture (state_interval)
   // The strategy's state between capture_state (engine thread) and take_strategy_state (any).
   std::mutex state_mu_;
+  std::string staged_state_;  // stage_strategy_state -> take_over, under state_mu_
   std::string state_pending_;
   bool state_dirty_ = false;
   bool state_restored_ = false;

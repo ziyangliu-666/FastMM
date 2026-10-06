@@ -170,6 +170,10 @@ class IEngineRunner {
   // end), to be written to EngineConfig::state_file; false: none, or the strategy keeps no state.
   // Any thread while run() is active.
   virtual bool take_strategy_state(std::string& /*out*/) { return false; }
+  // Bytes the strategy restores when ControlCommand::TakeOver reaches the engine (a warm standby's
+  // state file, read once it holds the instance lock). Any thread, before the message is pushed.
+  // NOLINTNEXTLINE(performance-unnecessary-value-param): by value, an override keeps it
+  virtual void stage_strategy_state(std::string /*bytes*/) {}
 };
 
 // Owns a strategy + engine pair and exposes them through IEngineRunner.
@@ -190,6 +194,9 @@ class EngineRunner final : public IEngineRunner {
   [[nodiscard]] EngineLiveStats live_stats() const override { return engine_->live_stats(); }
   [[nodiscard]] std::string_view strategy_name() const override { return Strategy::name(); }
   bool take_strategy_state(std::string& out) override { return engine_->take_strategy_state(out); }
+  void stage_strategy_state(std::string bytes) override {
+    engine_->stage_strategy_state(std::move(bytes));
+  }
   [[nodiscard]] Engine& engine() noexcept { return *engine_; }
   [[nodiscard]] Strategy& strategy() noexcept { return *strategy_; }
 

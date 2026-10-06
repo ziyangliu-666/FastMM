@@ -215,6 +215,15 @@ class Venue {
   // Opens every channel (market data, user stream, order entry) on `reactor`.
   virtual void connect(net::Reactor& reactor) = 0;
   virtual void disconnect() = 0;
+  // Warm standby (fastmm-live --standby while another process holds the instance lock). Called
+  // before connect(); true when the connector takes it: connect() then opens only what public
+  // market data needs (a pool member, which reads none, opens nothing), and enable_private(), on
+  // the network thread, opens the rest: order entry, the private stream, the execution replay and
+  // the start-up sweep of open orders. Nothing in between sends, cancels or reads anything of the
+  // account. False: the connector cannot split, and the session waits for the lock before it
+  // connects at all.
+  virtual bool defer_private() { return false; }
+  virtual void enable_private() {}
   virtual void subscribe(std::span<const InstrumentId> instruments) = 0;
 
   // Periodic housekeeping (listenKey keepalive, app-level pings, clock offset refresh,

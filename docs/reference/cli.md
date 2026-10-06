@@ -37,8 +37,9 @@ OPTIONS:
                               connecting to the venues (no API keys here)
   --clear-kill                clear a latched kill switch and the cumulative PnL before
                               starting; arms the whole [risk] max_loss budget again
-  --standby                   while another process holds the instance lock, load the
-                              reference data, then wait for the lock instead of exiting;
+  --standby                   while another process holds the instance lock, wait for it
+                              instead of exiting: connected to market data with orders
+                              refused where the venues allow it, else before connecting;
                               trade once it is free
   --takeover                  --standby, and ask the process holding the lock to hand over
                               (control socket `handoff`); exit 8 if it refuses or keeps the
