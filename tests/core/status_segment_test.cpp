@@ -305,7 +305,7 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   CHECK(frame.find("fallback=5") != std::string::npos);
 
   const std::string json = format_status_json(s);
-  CHECK(json.find(R"({"kind": "engine", "version": 17,)") == 0);
+  CHECK(json.find(R"({"kind": "engine", "version": 18,)") == 0);
   CHECK(json.find(R"("engine": "binance-demo")") != std::string::npos);
   CHECK(json.find(R"("tick_to_trade": {"count": 10, "p50_ns": 106495, "p99_ns": 216053, )"
                   R"("p999_ns": 250000, "max_ns": 300000})") != std::string::npos);
@@ -464,7 +464,7 @@ TEST_CASE("core.status_segment: a gateway's snapshot round trips and shows its a
 
   const std::string json = format_status_json(got);
   INFO(json);
-  CHECK(json.find(R"({"kind": "gateway", "version": 17,)") == 0);
+  CHECK(json.find(R"({"kind": "gateway", "version": 18,)") == 0);
   CHECK(json.find(R"("gateway": "gw")") != std::string::npos);
   CHECK(json.find(R"("net_pnl": -0.25, "realized": 1.5)") != std::string::npos);
   CHECK(json.find(R"("engine": "mm-a", "pid": 1001)") != std::string::npos);
@@ -530,6 +530,25 @@ TEST_CASE("core.status_segment: balances in the frame and the JSON form") {
                   R"("known": true, "free": 40, "locked": 60, "total": 100, "equity": 100, )"
                   R"("maintenance": 0, "as_of_ns": 1790000000000000000}, {"venue": "okx", )"
                   R"("asset": "BTC", "account": false, "known": false)") != std::string::npos);
+}
+
+TEST_CASE("core.status_segment: the pool treasuries' counters in the frame and the JSON form") {
+  StatusSnapshot s;
+  s.state = StatusRunState::Running;
+  CHECK(format_status(s, 0, false).find("treasury") == std::string::npos);
+  CHECK(format_status_json(s).find(R"("treasury": {"pools": 0, "in_flight": 0, )") !=
+        std::string::npos);
+  s.treasury.pools = 1;
+  s.treasury.in_flight = 1;
+  s.treasury.sent = 3;
+  s.treasury.done = 2;
+  s.treasury.limited = 4;
+  CHECK(format_status(s, 0, false)
+            .find("treasury   pools=1 in_flight=1 sent=3 done=2 failed=0 timed_out=0 limited=4 "
+                  "dry_run_plans=0 errors=0\n") != std::string::npos);
+  CHECK(format_status_json(s).find(R"("treasury": {"pools": 1, "in_flight": 1, "plans": 0, )"
+                                   R"("dry_run_plans": 0, "sent": 3, "done": 2, "failed": 0, )") !=
+        std::string::npos);
 }
 
 TEST_CASE("core.status_segment: the perp table in the frame and the JSON form") {

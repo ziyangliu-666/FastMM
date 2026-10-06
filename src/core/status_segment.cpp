@@ -441,6 +441,21 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                  money(s.fees_raw),
                  money(s.pnl_carry_raw),
                  money(s.pnl_carry_raw + s.realized_pnl_raw + s.unrealized_pnl_raw - s.fees_raw));
+  if (s.treasury.pools != 0) {
+    const StatusTreasury& t = s.treasury;
+    fmt::format_to(std::back_inserter(out),
+                   "treasury   pools={} in_flight={} sent={} done={} failed={} timed_out={} "
+                   "limited={} dry_run_plans={} errors={}\n\n",
+                   t.pools,
+                   t.in_flight,
+                   t.sent,
+                   t.done,
+                   t.failed,
+                   t.timed_out,
+                   t.limited,
+                   t.dry_run_plans,
+                   t.errors);
+  }
   append_underlyings(out, s.underlyings);
   append_balances(out, s);
   append_perps(out, s);
@@ -1007,6 +1022,20 @@ std::string format_status_json(const StatusSnapshot& s) {
     json_latency(out, to_string(static_cast<LatencyInterval>(i)), s.latency[i]);
   }
   out += "}, ";
+  fmt::format_to(it,
+                 "\"treasury\": {{\"pools\": {}, \"in_flight\": {}, \"plans\": {}, "
+                 "\"dry_run_plans\": {}, \"sent\": {}, \"done\": {}, \"failed\": {}, "
+                 "\"timed_out\": {}, \"limited\": {}, \"errors\": {}}}, ",
+                 s.treasury.pools,
+                 s.treasury.in_flight,
+                 s.treasury.plans,
+                 s.treasury.dry_run_plans,
+                 s.treasury.sent,
+                 s.treasury.done,
+                 s.treasury.failed,
+                 s.treasury.timed_out,
+                 s.treasury.limited,
+                 s.treasury.errors);
   json_underlyings(out, s.underlyings);
   out += ", ";
   json_balances(out, s);

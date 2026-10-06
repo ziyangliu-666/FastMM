@@ -39,7 +39,8 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 15: balance_withheld.
 // 16: each venue's wire tick-to-trade over the last minute and the last hour.
 // 17: each venue's fill audit counters.
-inline constexpr std::uint32_t kStatusVersion = 17;
+// 18: the pool treasuries' counters.
+inline constexpr std::uint32_t kStatusVersion = 18;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 inline constexpr std::size_t kStatusMaxUnderlyings = 8;    // kMaxUnderlyings
@@ -146,6 +147,23 @@ struct StatusUnderlying {
 // One asset of a venue's account (core/balance_book.hpp): the engine's estimate of free, locked
 // and total (the gateway's over every attached strategy), the venue's equity and maintenance
 // margin, raw amounts in the asset. An unused entry has an empty asset and account 0.
+// The pool treasuries ([venues.<primary>.treasury], core/treasury.hpp), summed over the pools:
+// transfers planned, sent, done, failed and timed out, plans the limiter held back, requests and
+// ledger writes that failed, and transfers in flight now. All zero without a treasury.
+struct StatusTreasury {
+  std::uint32_t pools = 0;  // treasuries running
+  std::uint32_t in_flight = 0;
+  std::uint64_t plans = 0;
+  std::uint64_t dry_run_plans = 0;
+  std::uint64_t sent = 0;
+  std::uint64_t done = 0;
+  std::uint64_t failed = 0;
+  std::uint64_t timed_out = 0;
+  std::uint64_t limited = 0;
+  std::uint64_t errors = 0;
+};
+static_assert(sizeof(StatusTreasury) == 72);
+
 struct StatusBalance {
   char asset[12] = {};
   std::uint8_t venue = 0;    // index into venues
@@ -348,6 +366,8 @@ struct StatusSnapshot {
   // dry_run, engine_name, venue_count, venues), kill_reason, kill_latched, kill_flags (bit 0 while
   // the account is killed) and the PnL fields with the account's, and leaves the rest zero.
   StatusGateway gateway;
+  // kind Engine: the pool treasuries of fastmm-live.
+  StatusTreasury treasury;
 };
 static_assert(std::is_trivially_copyable_v<StatusSnapshot>);
 // Every version keeps the magic and the version at these offsets (after the 8-byte sequence).

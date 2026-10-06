@@ -311,6 +311,27 @@ void engine_metrics(Exposition& e, const StatusSnapshot& s) {
           "instruments in the flatten's scope that still hold a position",
           static_cast<double>(s.flatten_instruments_left));
   e.counter("fastmm_flatten_orders_total", "reduce-only orders a flatten sent", s.flatten_orders);
+  if (s.treasury.pools != 0) {
+    const StatusTreasury& t = s.treasury;
+    e.gauge("fastmm_treasury_in_flight",
+            "pool treasury transfers sent and not yet resolved",
+            static_cast<double>(t.in_flight));
+    e.counter("fastmm_treasury_sent_total", "pool treasury transfers sent", t.sent);
+    e.counter("fastmm_treasury_done_total", "pool treasury transfers done", t.done);
+    e.counter("fastmm_treasury_failed_total", "pool treasury transfers failed", t.failed);
+    e.counter("fastmm_treasury_timed_out_total",
+              "pool treasury transfers unresolved past timeout_s",
+              t.timed_out);
+    e.counter("fastmm_treasury_limited_total",
+              "pool treasury plans held back by min_interval_s, max_per_hour or cooldown_s",
+              t.limited);
+    e.counter("fastmm_treasury_dry_run_plans_total",
+              "pool treasury transfers planned and not sent (dry_run)",
+              t.dry_run_plans);
+    e.counter("fastmm_treasury_errors_total",
+              "pool treasury requests without an answer and ledger writes that failed",
+              t.errors);
+  }
   e.counter("fastmm_kills_total", "global kill switch trips", s.kills);
   e.counter("fastmm_venue_kills_total", "per-venue kill switch trips", s.venue_kills);
 

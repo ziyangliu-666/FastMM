@@ -95,6 +95,18 @@ TEST_CASE("core.status_prometheus: an engine exports the max_loss it applies") {
   CHECK(has(format_status_prometheus(s, s.updated_ns), "fastmm_max_loss 250\n"));
 }
 
+TEST_CASE("core.status_prometheus: the pool treasuries' counters, only with a treasury") {
+  StatusSnapshot s = sample();
+  CHECK_FALSE(has(format_status_prometheus(s, s.updated_ns), "fastmm_treasury_sent_total"));
+  s.treasury.pools = 1;
+  s.treasury.sent = 3;
+  s.treasury.in_flight = 1;
+  const std::string text = format_status_prometheus(s, s.updated_ns);
+  CHECK(has(text, "fastmm_treasury_sent_total 3\n"));
+  CHECK(has(text, "fastmm_treasury_in_flight 1\n"));
+  CHECK(has(text, "fastmm_treasury_failed_total 0\n"));
+}
+
 TEST_CASE("core.status_prometheus: the net position per underlying, only when configured") {
   StatusSnapshot s = sample();
   CHECK_FALSE(has(format_status_prometheus(s, s.updated_ns), "underlying"));
