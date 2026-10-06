@@ -139,9 +139,10 @@ struct EngineStats {
   std::uint64_t replayed_foreign_fills = 0;
   // Reconciliations the engine asked a venue for (ControlCommand::Reconcile).
   std::uint64_t reconcile_requests = 0;
-  std::uint64_t ack_timeouts = 0;    // PendingNew orders force-cancelled by the ack sweep
-  std::uint64_t flattens = 0;        // operator flattens started (ControlCommand::Flatten)
-  std::uint64_t flatten_orders = 0;  // reduce-only orders a flatten sent
+  std::uint64_t ack_timeouts = 0;      // PendingNew orders force-cancelled by the ack sweep
+  std::uint64_t flattens = 0;          // operator flattens started (ControlCommand::Flatten)
+  std::uint64_t treasury_records = 0;  // pool treasury transfer steps (ControlCommand::Transfer)
+  std::uint64_t flatten_orders = 0;    // reduce-only orders a flatten sent
   std::uint64_t steps = 0;
   std::uint64_t clock_reanchors = 0;     // TscClock picked up a recalibration continuously
   std::uint64_t clock_steps = 0;         // ... or had to step (old mapping off by > threshold)
@@ -1921,6 +1922,9 @@ class Engine {
         break;  // engine output, see request_reconcile
       case ControlCommand::TakeOver:
         take_over(Notional::from_raw(static_cast<std::int64_t>(c.arg)));
+        break;
+      case ControlCommand::Transfer:
+        ++stats_.treasury_records;  // a treasury's record for the journal (ControlTransferMsg)
         break;
     }
   }

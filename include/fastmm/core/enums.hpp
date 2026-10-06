@@ -472,6 +472,10 @@ enum class ControlCommand : std::uint8_t {
   // before it had written it last, and the strategy restores the state staged with
   // Engine::stage_strategy_state (none in a replay).
   TakeOver = 13,
+  // A pool treasury's transfer (core/treasury.hpp): planned, sent, done, failed or timed out. The
+  // message is a ControlTransferMsg; the engine counts it and changes nothing, so the journal holds
+  // every transfer next to the balances it moved.
+  Transfer = 14,
 };
 [[nodiscard]] constexpr std::string_view to_string(ControlCommand c) noexcept {
   switch (c) {
@@ -503,6 +507,8 @@ enum class ControlCommand : std::uint8_t {
       return "SetUnderlyingLimit";
     case ControlCommand::TakeOver:
       return "TakeOver";
+    case ControlCommand::Transfer:
+      return "Transfer";
   }
   return "?";
 }

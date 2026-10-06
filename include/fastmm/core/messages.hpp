@@ -417,6 +417,31 @@ static_assert(sizeof(ControlUnderlyingMsg) == sizeof(ControlMsg) &&
 static_assert(offsetof(ControlUnderlyingMsg, command) == offsetof(ControlMsg, command) &&
               offsetof(ControlUnderlyingMsg, arg) == offsetof(ControlMsg, arg));
 
+// ControlCommand::Transfer: one step of a pool treasury's transfer (core/treasury.hpp), on the
+// treasury's ring into the engine, which journals it. hdr.venue is the pool's primary; `arg` the
+// amount (raw Notional) of `asset` moved from account `from` to account `to`.
+struct ControlTransferMsg {
+  EventHeader hdr;
+  ControlCommand command;
+  std::uint8_t event;  // TreasuryEventKind: planned (dry run), sent, done, failed, timed out
+  std::uint8_t state;  // TransferState of the venue's answer; Unknown without one
+  VenueId from;
+  VenueId to;
+  std::uint8_t pad0_[3];
+  std::uint64_t arg;
+  FixedString<8> asset;       // 80
+  FixedString<31> client_id;  // 89
+  FixedString<23> venue_ref;  // 121: the venue's id of the transfer
+  std::uint8_t pad_[47];      // 145 -> 192
+};
+static_assert(sizeof(ControlTransferMsg) == 192 &&
+              std::is_trivially_copyable_v<ControlTransferMsg>);
+static_assert(offsetof(ControlTransferMsg, command) == offsetof(ControlMsg, command) &&
+              offsetof(ControlTransferMsg, arg) == offsetof(ControlMsg, arg) &&
+              offsetof(ControlTransferMsg, asset) == 80 &&
+              offsetof(ControlTransferMsg, client_id) == 89 &&
+              offsetof(ControlTransferMsg, venue_ref) == 121);
+
 struct ConnectionStateMsg {
   EventHeader hdr;
   ConnState state;

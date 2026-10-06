@@ -102,7 +102,10 @@ FEE_ASSETS = ("quote", "base", "other")
 # ControlCommand and the TimerMsg.engine tags (include/fastmm/core/enums.hpp, core/engine.hpp).
 CONTROL_COMMANDS = ("Stop", "PullQuotes", "ResumeQuotes", "TripKill", "ResetKill", "Reload",
                     "FlushStats", "RecalibrateTsc", "TripVenueKill", "Flatten", "SetLimits",
-                    "Reconcile", "SetUnderlyingLimit", "TakeOver")
+                    "Reconcile", "SetUnderlyingLimit", "TakeOver", "Transfer")
+# ControlTransferMsg (include/fastmm/core/messages.hpp): TreasuryEventKind and TransferState.
+TREASURY_EVENTS = ("planned", "sent", "done", "failed", "timed_out")
+TRANSFER_STATES = ("pending", "done", "failed", "not_found", "unknown")
 ENGINE_TIMERS = {1: "max_param_age", 2: "ack sweep", 3: "flatten"}
 
 
@@ -202,6 +205,14 @@ def decode_body(type_name: str, body: bytes, params=()) -> str:
         if cmd == "SetUnderlyingLimit" and len(body) >= 25:  # ControlUnderlyingMsg
             name = body[16:16 + min(body[24], 8)].decode("utf-8", "replace")
             out = f"command={cmd} underlying={body[1]} ({name}) max_net={dec(q(8))}"
+        if cmd == "Transfer" and len(body) >= 81:  # ControlTransferMsg
+            def fixed(off: int, cap: int) -> str:
+                return body[off:off + min(body[off + cap], cap)].decode("utf-8", "replace")
+            ev = TREASURY_EVENTS[body[1]] if body[1] < len(TREASURY_EVENTS) else body[1]
+            st = TRANSFER_STATES[body[2]] if body[2] < len(TRANSFER_STATES) else body[2]
+            out = (f"command={cmd} event={ev} state={st} id={fixed(25, 31)} "
+                   f"{dec(q(8))} {fixed(16, 8)} venue {body[3]} -> {body[4]} "
+                   f"venue_ref={fixed(57, 23)}")
         return out
     if type_name == "ParamUpdate":
         return param_update_fields(body, params)
