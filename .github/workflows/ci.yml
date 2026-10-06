@@ -1,10 +1,11 @@
 name: CI
 # Pushes and pull requests run lint, the gcc build without LTO and its tests (sharded over four
 # runners, one of which builds examples/external-project against an install), the benchmark budgets
-# on an LTO build, Autobahn and the Python wheel; a push that only changes documentation runs lint
-# alone. Weekly and on manual dispatch ("Run workflow") the full set adds the LTO gcc build with
-# every test and the external project, clang-tidy, the sanitizer builds, the clang build, the
-# optional codecs and the Docker smoke test. Runners: 4 vCPUs, 16 GB (public repository).
+# on an LTO build, Autobahn and the Python wheel; a push that only changes documentation or the
+# site's build (mkdocs.yml, tools/mkdocs_*) runs lint alone. Weekly and on manual dispatch ("Run
+# workflow") the full set adds the LTO gcc build with every test and the external project,
+# clang-tidy, the sanitizer builds, the clang build, the optional codecs and the Docker smoke test.
+# Runners: 4 vCPUs, 16 GB (public repository).
 on:
   push:
     branches: [main]
@@ -37,7 +38,7 @@ jobs:
           elif [ "$EVENT" = push ]; then
             # Unknown ranges (first push, force push) count as code changes.
             if files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BEFORE...$GITHUB_SHA" --jq '.files[].filename') && [ -n "$files" ]; then
-              echo "$files" | grep -qvE '^(docs/.*|.*\.md|LICENSE)$' || code=false
+              echo "$files" | grep -qvE '^(docs/.*|.*\.md|LICENSE|mkdocs\.yml|tools/mkdocs_.*)$' || code=false
             fi
           fi
           { echo "full=$full"; echo "code=$code"; } >> "$GITHUB_OUTPUT"
