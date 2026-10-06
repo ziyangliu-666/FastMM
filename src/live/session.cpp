@@ -1576,7 +1576,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     engine_thread = std::thread([&] { runner->run(); });
   }
 
-  if (auditor) auditor->start();
+  // A warm standby's audit starts with its private channels, when it takes over.
+  if (auditor && !warm) auditor->start();
 
   FASTMM_LOG_INFO(
       "fastmm-live: session {} strategy={} venues={} instruments={} dry_run={} epoch={} net={} "
@@ -1966,6 +1967,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       sl->reactor->post([v] { v->enable_private(); });
       sl->reactor->wake();
     }
+    if (auditor) auditor->start();
     FASTMM_LOG_WARN("standby: took over after {} ms warm; opening the private channels",
                     (steady_now().ns - warm_start) / 1'000'000);
     return 0;
