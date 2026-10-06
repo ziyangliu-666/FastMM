@@ -703,6 +703,92 @@ TEST_CASE("core.config: pool members are checked against their primary") {
   }
 }
 
+TEST_CASE("core.config: [venues.<primary>.treasury] is typed, defaulted and round-trips") {
+  const Config cfg = Config::parse(pool_toml(R"(
+[engine]
+name = "mm"
+journal_dir = "runs"
+[venues.binance.treasury]
+enabled = true
+asset = "USDT"
+weights = { binance = 3, binance_b = 1 }
+min_free = { binance_b = "250.5" }
+threshold = 0.1
+max_amount = 1000
+step = "1"
+max_per_hour = 4
+)"));
+  const TreasurySection& s = cfg.venues[0].treasury;
+  CHECK(s.configured);
+  CHECK(s.enabled);
+  CHECK_FALSE(cfg.venues[1].treasury.configured);
+  const TreasuryConfig t = cfg.treasury_config("binance");
+  CHECK(t.enabled);
+  CHECK_FALSE(t.dry_run);
+  CHECK(t.asset == "USDT");
+  REQUIRE(t.members.size() == 2);
+  CHECK(t.names[0] == "binance");
+  CHECK(t.names[1] == "binance_b");
+  CHECK(t.weight[0] == 3.0);
+  CHECK(t.weight[1] == 1.0);
+  CHECK(t.min_free[0] == Notional{});
+  CHECK(t.min_free[1] == *Notional::parse("250.5"));
+  CHECK(t.threshold == 0.1);
+  CHECK(t.max_amount == *Notional::parse("1000"));
+  CHECK(t.step == *Notional::parse("1"));
+  CHECK(t.max_per_hour == 4);
+  CHECK(t.min_interval_ns == 60'000'000'000);  // the defaults
+  CHECK(t.cooldown_ns == 300'000'000'000);
+  CHECK(t.state_file == "runs/mm.binance.treasury");
+  CHECK_FALSE(cfg.treasury_config("binance_b").enabled);
+  const Config back = Config::parse(cfg.effective_toml());
+  CHECK(back.effective_toml() == cfg.effective_toml());
+  CHECK(back.treasury_config("binance").min_free[1] == *Notional::parse("250.5"));
+  CHECK(cfg.redacted().find("treasury = { enabled = true") != std::string::npos);
+  // Without the table: disabled, and nothing in the effective configuration.
+  const Config none = Config::parse(pool_toml(""));
+  CHECK_FALSE(none.treasury_config("binance").enabled);
+  CHECK(none.effective_toml().find("treasury") == std::string::npos);
+}
+
+TEST_CASE("core.config: a treasury belongs to a pool's primary and names its accounts") {
+  const auto err = [](const char* tail) {
+    try {
+      static_cast<void>(Config::parse(pool_toml(tail)));
+    } catch (const ConfigError& e) {
+      return std::string(e.what());
+    }
+    return std::string();
+  };
+  CHECK(err("[venues.binance_b.treasury]\nasset = \"USDT\"\n")
+            .find("the treasury goes on the "
+                  "primary") != std::string::npos);
+  CHECK(err("[venues.binance.treasury]\nenabled = true\n").find("enabled needs asset") !=
+        std::string::npos);
+  CHECK(err("[venues.binance.treasury]\nasset = \"USDT\"\nweights = { other = 1 }\n")
+            .find("'other' is not an account of the pool") != std::string::npos);
+  CHECK(err("[venues.binance.treasury]\nasset = \"USDT\"\nmin_free = { binance_b = \"-1\" }\n")
+            .find("not a non-negative decimal") != std::string::npos);
+  CHECK(err("[venues.binance.treasury]\nasset = \"USDT\"\nthreshold = 2.0\n")
+            .find("threshold must be 0 to 1") != std::string::npos);
+  CHECK(err("[venues.binance.treasury]\nasset = \"USDT\"\ninterval_s = 0\n")
+            .find("interval_s must be at least 1") != std::string::npos);
+  CHECK(err("[venues.binance.treasury]\nasset = \"USDT\"\nweights = { binance = 0, binance_b = 0 "
+            "}\n")
+            .find("all zero") != std::string::npos);
+  CHECK(err("[venues.binance.treasury]\nasset = \"USDT\"\nspeed = 1\n")
+            .find("unknown key 'venues.*.treasury.speed'") != std::string::npos);
+  // A venue without a pool.
+  CHECK_THROWS_WITH_AS(Config::parse(R"(
+[venues.solo]
+kind = "sim"
+[venues.solo.treasury]
+asset = "USDT"
+)"),
+                       doctest::Contains("solo has no pool"),
+                       ConfigError);
+}
+
 TEST_CASE("core.pool_plan: at most eight accounts, each venue in one pool") {
   PoolPlan plan;
   CHECK_FALSE(plan.add(VenueId{0}, VenueId{0}));

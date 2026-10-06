@@ -212,6 +212,118 @@ void get_underlying(const toml::table& parent, std::string_view section, Underly
     fail_at(*t, fmt::format("[{}.underlying]: at most {} base assets", section, kMaxUnderlyings));
 }
 
+// [venues.<primary>.treasury]: the keys and their ranges. Whether the venue is a pool's primary and
+// the accounts named are its pool's is checked once every venue is read (check_treasuries).
+void parse_treasury(const toml::table& t, VenueSection& v) {
+  validate_table(t, "venues.*.treasury");
+  TreasurySection& s = v.treasury;
+  s.configured = true;
+  const std::string at = fmt::format("venues.{}.treasury", v.name);
+  get(t, "enabled", s.enabled);
+  get(t, "dry_run", s.dry_run);
+  get(t, "asset", s.asset);
+  get(t, "threshold", s.threshold);
+  get(t, "state_file", s.state_file);
+  if (s.threshold < 0.0 || s.threshold > 1.0)
+    fail_at(*t.get("threshold"), at + ".threshold must be 0 to 1");
+  const auto decimal = [&](std::string_view key, std::string& out) {
+    const toml::node* n = t.get(key);
+    if (n == nullptr) return;
+    out = stringify(*n);
+    const auto d = Notional::parse(out);
+    if (!d || d->raw < 0)
+      fail_at(*n, fmt::format("{}.{}: '{}' is not a non-negative decimal", at, key, out));
+  };
+  decimal("min_amount", s.min_amount);
+  decimal("max_amount", s.max_amount);
+  decimal("step", s.step);
+  const auto seconds = [&](std::string_view key, std::int64_t& out, std::int64_t least) {
+    const toml::node* n = t.get(key);
+    if (n == nullptr) return;
+    get(t, key, out);
+    if (out < least) fail_at(*n, fmt::format("{}.{} must be at least {}", at, key, least));
+  };
+  seconds("interval_s", s.interval_s, 1);
+  seconds("min_interval_s", s.min_interval_s, 0);
+  seconds("max_per_hour", s.max_per_hour, 0);
+  seconds("cooldown_s", s.cooldown_s, 0);
+  seconds("timeout_s", s.timeout_s, 1);
+  seconds("settle_s", s.settle_s, 0);
+  if (const auto* w = t.get_as<toml::table>("weights")) {
+    for (const auto& [k, val] : *w) {
+      const auto x = val.value<double>();
+      if (!x || *x < 0.0)
+        fail_at(val, fmt::format("{}.weights.{} must be a non-negative number", at, k.str()));
+      s.weights[std::string(k.str())] = *x;
+    }
+  }
+  if (const auto* m = t.get_as<toml::table>("min_free")) {
+    for (const auto& [k, val] : *m) {
+      const std::string text = stringify(val);
+      const auto d = Notional::parse(text);
+      if (!d || d->raw < 0)
+        fail_at(
+            val,
+            fmt::format("{}.min_free.{}: '{}' is not a non-negative decimal", at, k.str(), text));
+      s.min_free[std::string(k.str())] = text;
+    }
+  }
+  if (s.enabled && s.asset.empty()) fail_at(t, at + ": enabled needs asset");
+  if (s.asset.size() > 8) fail_at(*t.get("asset"), at + ".asset: at most 8 characters");
+}
+
+// A treasury belongs to a pool's primary, and names only the pool's accounts.
+void check_treasuries(const toml::table& doc, const Config& cfg) {
+  const PoolPlan plan = cfg.pool_plan();
+  for (const VenueSection& v : cfg.venues) {
+    if (!v.treasury.configured) continue;
+    const toml::node* node = doc["venues"][v.name]["treasury"].node();
+    const auto fail_here = [&](const std::string& msg) {
+      if (node != nullptr) fail_at(*node, msg);
+      throw ConfigError(msg);
+    };
+    const VenueId id = cfg.venue_id(v.name);
+    if (!v.pool_of.empty()) {
+      fail_here(
+          fmt::format("venues.{}.treasury: {} is a member of pool '{}'; the treasury goes on "
+                      "the primary",
+                      v.name,
+                      v.name,
+                      v.pool_of));
+    }
+    if (!plan.pooled(id)) {
+      fail_here(
+          fmt::format("venues.{}.treasury: {} has no pool (no [venues.<name>] pool_of = \"{}\")",
+                      v.name,
+                      v.name,
+                      v.name));
+    }
+    const PoolMembers members = plan.members(id);
+    const auto in_pool = [&](const std::string& name) {
+      const VenueId a = cfg.venue_id(name);
+      return a.valid() && members.contains(a);
+    };
+    for (const auto& [name, w] : v.treasury.weights) {
+      if (!in_pool(name))
+        fail_here(fmt::format(
+            "venues.{}.treasury.weights: '{}' is not an account of the pool", v.name, name));
+    }
+    for (const auto& [name, m] : v.treasury.min_free) {
+      if (!in_pool(name))
+        fail_here(fmt::format(
+            "venues.{}.treasury.min_free: '{}' is not an account of the pool", v.name, name));
+    }
+    if (!v.treasury.weights.empty()) {
+      double sum = 0;
+      for (const VenueId a : members) {
+        const auto it = v.treasury.weights.find(cfg.venues[a.value].name);
+        sum += it == v.treasury.weights.end() ? 1.0 : it->second;
+      }
+      if (sum <= 0) fail_here(fmt::format("venues.{}.treasury.weights: all zero", v.name));
+    }
+  }
+}
+
 // [gateway.shared."<venue>:<symbol>"] primary = "<engine name>": instruments of [[instruments]]
 // that several strategies may trade at once.
 void get_shared(const toml::table& gateway, Config& cfg) {
@@ -551,6 +663,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
         get(*fees, "maker_bps", v.fees.maker_bps);
         get(*fees, "taker_bps", v.fees.taker_bps);
       }
+      if (const auto* tr = t->get_as<toml::table>("treasury")) parse_treasury(*tr, v);
       // Everything the generic parser did not read belongs to the connector: keep it verbatim,
       // with its line, for the venue that owns it (venues/registry.hpp).
       for (const auto& [k, val] : *t) {
@@ -654,6 +767,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
       }
     }
   }
+  check_treasuries(doc, cfg);
 
   // [strategy]
   if (const auto* t = doc["strategy"].as_table()) {
@@ -826,6 +940,39 @@ PoolPlan Config::pool_plan() const noexcept {
   return plan;
 }
 
+TreasuryConfig Config::treasury_config(std::string_view primary) const {
+  TreasuryConfig c;
+  const VenueSection* v = venue(primary);
+  if (v == nullptr || !v->treasury.configured) return c;
+  const TreasurySection& s = v->treasury;
+  c.enabled = s.enabled;
+  c.dry_run = s.dry_run;
+  c.asset = s.asset;
+  c.members = pool_plan().members(venue_id(primary));
+  for (std::size_t i = 0; i < c.members.size(); ++i) {
+    const std::string& name = venues[c.members[i].value].name;
+    c.names[i] = name;
+    if (const auto w = s.weights.find(name); w != s.weights.end()) c.weight[i] = w->second;
+    if (const auto m = s.min_free.find(name); m != s.min_free.end())
+      c.min_free[i] = Notional::parse(m->second).value_or(Notional{});
+  }
+  c.threshold = s.threshold;
+  c.min_amount = Notional::parse(s.min_amount).value_or(Notional{});
+  c.max_amount = Notional::parse(s.max_amount).value_or(Notional{});
+  c.step = Notional::parse(s.step).value_or(Notional{});
+  constexpr std::int64_t kS = 1'000'000'000;
+  c.interval_ns = s.interval_s * kS;
+  c.min_interval_ns = s.min_interval_s * kS;
+  c.max_per_hour = static_cast<std::uint32_t>(s.max_per_hour);
+  c.cooldown_ns = s.cooldown_s * kS;
+  c.timeout_ns = s.timeout_s * kS;
+  c.settle_ns = s.settle_s * kS;
+  c.state_file = !s.state_file.empty()
+                     ? s.state_file
+                     : engine.journal_dir + "/" + engine.name + "." + v->name + ".treasury";
+  return c;
+}
+
 namespace {
 template <class F>
 F parse_fixed(const std::string& s, const char* what) {
@@ -945,6 +1092,13 @@ std::string Config::redacted() const {
                    "fees = {{ maker_bps = {}, taker_bps = {} }}\n",
                    v.fees.maker_bps,
                    v.fees.taker_bps);
+    if (v.treasury.configured) {
+      fmt::format_to(std::back_inserter(out),
+                     "treasury = {{ enabled = {}, dry_run = {}, asset = \"{}\" }}\n",
+                     v.treasury.enabled,
+                     v.treasury.dry_run,
+                     v.treasury.asset);
+    }
   }
   for (const auto& i : instruments) {
     out += "\n[[instruments]]\n";
@@ -1072,6 +1226,32 @@ toml::table underlying_table(const UnderlyingSpec& spec) {
   return t;
 }
 
+// [venues.<primary>.treasury], every key with its value (decimals as their text).
+toml::table treasury_table(const TreasurySection& s) {
+  toml::table t;
+  t.insert("enabled", s.enabled);
+  t.insert("dry_run", s.dry_run);
+  t.insert("asset", s.asset);
+  toml::table w;
+  for (const auto& [k, v] : s.weights) w.insert(k, v);
+  t.insert("weights", std::move(w));
+  toml::table m;
+  for (const auto& [k, v] : s.min_free) m.insert(k, v);
+  t.insert("min_free", std::move(m));
+  t.insert("threshold", s.threshold);
+  t.insert("min_amount", s.min_amount);
+  t.insert("max_amount", s.max_amount);
+  t.insert("step", s.step);
+  t.insert("interval_s", s.interval_s);
+  t.insert("min_interval_s", s.min_interval_s);
+  t.insert("max_per_hour", s.max_per_hour);
+  t.insert("cooldown_s", s.cooldown_s);
+  t.insert("timeout_s", s.timeout_s);
+  t.insert("settle_s", s.settle_s);
+  if (!s.state_file.empty()) t.insert("state_file", s.state_file);
+  return t;
+}
+
 toml::table generic_table(const GenericSection& g) {
   toml::table t;
   for (const auto& [k, v] : g.values)
@@ -1158,6 +1338,7 @@ std::string Config::effective_toml() const {
       fees.insert("maker_bps", v.fees.maker_bps);
       fees.insert("taker_bps", v.fees.taker_bps);
       t.insert("fees", std::move(fees));
+      if (v.treasury.configured) t.insert("treasury", treasury_table(v.treasury));
       for (const auto& [k, val] : v.extra) insert_typed(t, k, val);
       vs.insert(v.name, std::move(t));
     }

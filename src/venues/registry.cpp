@@ -218,6 +218,13 @@ void validate_venues(const Config& cfg, const VenueRegistry& r) {
                       s.name,
                       e.name));
     }
+    if (s.treasury.enabled && !s.treasury.dry_run && !e.caps.internal_transfer) {
+      throw ConfigError(
+          fmt::format("venues.{}.treasury: connector '{}' has no internal transfers; "
+                      "only dry_run = true can run here",
+                      s.name,
+                      e.name));
+    }
   }
 }
 

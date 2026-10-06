@@ -20,6 +20,7 @@
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/risk.hpp"
 #include "fastmm/core/thread_utils.hpp"
+#include "fastmm/core/treasury.hpp"
 #include "fastmm/core/underlying.hpp"
 #include "fastmm/strategies/params.hpp"
 
@@ -119,6 +120,28 @@ struct FeesSection {
   double taker_bps = 0.0;
 };
 
+// [venues.<primary>.treasury]: the pool treasury of an account pool's primary
+// (core/treasury.hpp). Decimals keep their text; Config::treasury_config() makes it typed.
+struct TreasurySection {
+  bool configured = false;  // the table is present
+  bool enabled = false;
+  bool dry_run = false;
+  std::string asset;
+  std::map<std::string, double> weights;        // pool account -> weight (absent: 1)
+  std::map<std::string, std::string> min_free;  // pool account -> decimal (absent: 0)
+  double threshold = 0.2;
+  std::string min_amount = "0";
+  std::string max_amount = "0";
+  std::string step = "0.01";
+  std::int64_t interval_s = 10;
+  std::int64_t min_interval_s = 60;
+  std::int64_t max_per_hour = 12;
+  std::int64_t cooldown_s = 300;
+  std::int64_t timeout_s = 60;
+  std::int64_t settle_s = 30;
+  std::string state_file;  // empty: <journal_dir>/<engine name>.<primary>.treasury
+};
+
 struct VenueSection {
   std::string name;
   std::string kind;
@@ -152,6 +175,7 @@ struct VenueSection {
   int fill_audit_lag_s = 180;
   std::string fill_audit_mode = "report";
   FeesSection fees;
+  TreasurySection treasury;
   // Every key the generic parser does not interpret, stringified. The venue `kind` names owns
   // them: it declares them, validates them and reports an unknown one
   // (fastmm::venues::validate_venues, include/fastmm/venues/registry.hpp), which is why the
@@ -294,6 +318,9 @@ class Config {
   [[nodiscard]] VenueId venue_id(std::string_view name) const noexcept;  // invalid if unknown
   // The account pools ([venues.<x>] pool_of), by venue id; inactive without any.
   [[nodiscard]] PoolPlan pool_plan() const noexcept;
+  // The treasury of the pool whose primary is `primary` ([venues.<primary>.treasury]), typed; a
+  // disabled one when the venue has none.
+  [[nodiscard]] TreasuryConfig treasury_config(std::string_view primary) const;
 
   // Typed views used to wire the engine.
   [[nodiscard]] RiskLimits risk_limits() const;
