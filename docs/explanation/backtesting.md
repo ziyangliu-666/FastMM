@@ -131,17 +131,33 @@ When a cancel path or a service time is fitted, each session's fill check runs t
 ```text
 [backtest]
 fill_model = "l2_queue"
-queue_conservatism = 1.00
+queue_conservatism = 0.75
 md_arrival = "recorded"
-latency_fixed_us = 792
-latency_jitter_us = 0
-latency_ack_us = 0
-latency_ack_jitter_us = 817
+latency_fixed_us = 360
+latency_jitter_us = 300
+latency_ack_us = 375
+latency_ack_jitter_us = 160
+latency_cancel_us = 200
+latency_cancel_jitter_us = 250
+order_service_us = 220
 ```
+
+With several venues (a pool's accounts are venues of their own) the latency keys go under `[backtest.venues.<name>]`, one table per venue.
 
 `md_arrival = "recorded"` is for backtests over journals like these: market data reaches the strategy when the session received it.
 
-`--backtest` then re-runs each session with its own recorded strategy configuration (or `--config`, one for all or one per journal) over its journal with our orders stripped (`journal:<file>,strip_own=1`), once with the configuration's `[backtest]` and once with the fitted keys (`l2_queue` and recorded arrival in both), and prints both beside the live session: orders, the venue's rejects, fills, time to fill, the PnL decomposition and markouts, all three marked against the journal's book ticker mids. The fill check isolates the fill model; this comparison adds everything else a backtest re-decides, such as how often the strategy requotes and what the account's balances allowed. `--csv` writes the fill-check grid.
+`--backtest` then re-runs each session with its own recorded strategy configuration (or `--config`, one for all or one per journal) over its journal with our orders stripped (`journal:<file>,strip_own=1`), once with the configuration's `[backtest]` and once with the fitted keys (`l2_queue` and recorded arrival in both), and prints both beside the live session: orders, the venue's rejects, fills, time to fill, the PnL decomposition and markouts, all three marked against the journal's book ticker mids. The fill check isolates the fill model; this comparison adds everything else a backtest re-decides, such as how often the strategy requotes and what the account's balances allowed. `--from-live-state` starts both runs from the state the session recorded and replays its parameter updates ([below](#starting-from-the-live-sessions-state)). `--csv` writes the fill-check grid.
+
+## Starting from the live session's state
+
+A strategy that adapts as it trades (fitted parameters, inventory targets, hedge state) carries that state across sessions through `state()` and `restore()` and `[strategy] state_file`. A backtest that starts it fresh over a live session's journal is not the same strategy: it quotes elsewhere and in other sizes until it has learnt again, and the gap to live says little about the fill model. With a journal the engine records what a session starts from (`StrategyState`, [Journal format](../reference/journal-format.md#strategy-state)):
+
+* the bytes it handed to `restore()` at the start, flagged with whether the strategy took them;
+* with `[strategy] state_snapshot_interval_s`, the strategy's `state()` and the engine's positions that often, written by the engine thread from a buffer made once, so a part of a session cut by `journal_max_bytes` has a state of its own.
+
+The positions a session restores from its store and the venues report at the start are in every journal already, as the reconciliation records before its first order.
+
+`[backtest] initial_state = "journal"` starts the strategy from the journal's restored state, else from its first snapshot, and the engine's positions from that snapshot, or from the reconciled positions before the first order. The positions reach the engine as reconciliation records at the first step, as they did live; the venues' balances come from `balances_from_journal`. The run's log names what it started from. A journal without any of these records starts the strategy fresh and flat, as before. A session whose parameters were changed while it ran (`ParamUpdate`) quoted with them from then on; `params_from_journal = true` hands the backtest's strategy the same updates at the same times. `fastmm-replay` hands the restored bytes to `restore()` too, so a session whose strategy restored state replays exactly.
 
 ## Reference example
 

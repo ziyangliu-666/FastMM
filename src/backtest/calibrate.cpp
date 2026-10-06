@@ -978,7 +978,8 @@ BacktestResult run_session(const std::string& path,
 }  // namespace
 
 std::vector<BacktestGap> compare_backtests(const Calibration& c,
-                                           std::span<const std::string> configs) {
+                                           std::span<const std::string> configs,
+                                           bool from_live_state) {
   if (configs.size() > 1 && configs.size() != c.sessions.size())
     throw std::invalid_argument("compare_backtests: one configuration, or one per session");
   const auto read = [](const std::string& path) {
@@ -990,10 +991,16 @@ std::vector<BacktestGap> compare_backtests(const Calibration& c,
   };
   const std::vector<std::int64_t> horizons(std::begin(kDefaultMarkoutHorizonsNs),
                                            std::end(kDefaultMarkoutHorizonsNs));
-  const Keys fitted = c.backtest_keys();
+  Keys fitted = c.backtest_keys();
   Keys before;
   for (const auto& kv : fitted) {
     if (kv.first == "fill_model" || kv.first == "md_arrival") before.push_back(kv);
+  }
+  if (from_live_state) {
+    for (Keys* k : {&before, &fitted}) {
+      k->emplace_back("initial_state", "\"journal\"");
+      k->emplace_back("params_from_journal", "true");
+    }
   }
   std::vector<BacktestGap> out;
   for (std::size_t i = 0; i < c.sessions.size(); ++i) {

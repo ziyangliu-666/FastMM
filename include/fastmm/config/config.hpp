@@ -216,6 +216,7 @@ struct StrategySection {
   std::int64_t max_param_age_ms = 0;  // 0 = off
   std::string state_file;             // the strategy's state across sessions; empty: none
   std::int64_t state_interval_s = 300;
+  std::int64_t state_snapshot_interval_s = 0;  // journal snapshots of state(); 0: none
 };
 
 struct RiskSection {

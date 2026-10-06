@@ -1,5 +1,6 @@
 #include "fastmm/backtest/journal_source.hpp"
 
+#include "fastmm/backtest/journal_state.hpp"
 #include "fastmm/core/log.hpp"
 
 #include <fmt/format.h>
@@ -97,11 +98,30 @@ JournalSource::JournalSource(const std::string& path,
         if ((m.flags & BalanceMsg::kSnapshotEnd) != 0) st = kDone;
         return;
       }
+      if (h->type == EventType::ParamUpdate && (h->flags & EventHeader::kOutbound) == 0 &&
+          h->len >= sizeof(ParamUpdateMsg)) {
+        params_.updates.push_back(msg_cast<ParamUpdateMsg>(h));
+        return;
+      }
       if (!is_market_data(h->type) || (h->flags & EventHeader::kOutbound) != 0) return;
       if (md_events_ == 0) first_ts_ = h->exch_ts.valid() ? h->exch_ts : h->recv_ts;
       ++md_events_;
     });
     r.reset();
+  }
+  for (const JournalParam& p : parts_.front().params())
+    params_.table.emplace_back(std::string(p.name), p.type);
+  start_ = journal_start_state(parts_);
+  if (remap_) {
+    std::vector<ReconcileMsg> kept;
+    for (ReconcileMsg m : start_.positions) {
+      const std::uint32_t j = m.hdr.instrument.value;
+      if (j >= map_.size() || map_[j] == kUnmapped) continue;
+      m.hdr.instrument = InstrumentId{map_[j]};
+      m.hdr.venue = map_venue_[j];
+      kept.push_back(m);
+    }
+    start_.positions = std::move(kept);
   }
 }
 

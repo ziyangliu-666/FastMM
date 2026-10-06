@@ -211,6 +211,30 @@ class JournalWriter {
     }
     return r;
   }
+  // A record of `head` (its first 128 bytes) followed by `payload`, padded with zeros to head.len
+  // (StrategyStateMsg).
+  Result<std::uint64_t, JournalError> record_with(const EventHeader& head,
+                                                  const std::byte* payload,
+                                                  std::size_t n) noexcept {
+    const std::uint64_t seq = next_seq_++;
+    if (ring_ == nullptr) return seq;
+    std::byte* p = ring_->try_reserve(head.len);
+    if (FASTMM_UNLIKELY(p == nullptr)) {
+      ++overflows_;
+      clock_synced_ = false;
+      return fail(JournalError::RingFull);
+    }
+    std::memcpy(p, &head, 128);
+    if (n != 0) std::memcpy(p + 128, payload, n);
+    if (head.len > 128 + n) std::memset(p + 128 + n, 0, head.len - 128 - n);
+    auto* h = reinterpret_cast<EventHeader*>(p);
+    h->seq = seq;
+    h->flags =
+        static_cast<std::uint8_t>(h->flags & ~(EventHeader::kEngineTime | EventHeader::kDropped));
+    h->reserved0 = 0;
+    ring_->commit();
+    return seq;
+  }
   // Outbound copy; `dropped` marks a message the transport did not accept.
   Result<std::uint64_t, JournalError> record_outbound(const EventHeader& msg,
                                                       bool dropped = false) noexcept {

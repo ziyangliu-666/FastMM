@@ -54,6 +54,14 @@ class BacktestSession {
   std::unique_ptr<SyntheticSource> synthetic_;
   std::unique_ptr<sim::MarketGenerator> generator_;
   std::unique_ptr<sim::SimBackend> backend_;
+  // initial_state = journal: the positions the recorded session started with, and where they and
+  // the strategy's state came from.
+  std::vector<ReconcileMsg> start_positions_;
+  std::string start_note_;
+  // params_from_journal: the session's updates on this strategy's schema, and the schedule they go
+  // to when the caller sets none.
+  std::vector<ParamUpdateMsg> journal_params_;
+  std::unique_ptr<sim::ParamSchedule> own_params_;
   std::unique_ptr<Impl> impl_;
   RunnerDeps deps_;
   sim::ParamSchedule* params_ = nullptr;

@@ -506,6 +506,48 @@ struct LatencySampleMsg {
 };
 static_assert(sizeof(LatencySampleMsg) == 128);
 
+// Journal only: what a replay or a backtest over the journal can start from. The bytes the strategy
+// was handed to restore() at the start (Kind::Restored, flagged kAccepted when it took them), and
+// every [strategy] state_snapshot_interval_s its state() with the engine's positions
+// (Kind::Snapshot). One state is written as records of at most kChunkBytes each: `id` numbers the
+// states of the session, `part` says what the bytes are (kStatePart: the strategy's state;
+// kPositionsPart: StatePosition entries), and `offset` / `total` place them in it. A record is
+// the 128-byte head and its bytes padded to 64. Never dispatched.
+struct StrategyStateMsg {
+  enum class Kind : std::uint8_t { Restored = 0, Snapshot = 1 };
+  static constexpr std::uint8_t kStatePart = 0;
+  static constexpr std::uint8_t kPositionsPart = 1;
+  static constexpr std::uint8_t kAccepted = 1U << 0;
+  static constexpr std::uint32_t kChunkBytes = 16384;
+  EventHeader hdr;
+  std::uint64_t id;
+  std::uint32_t total;   // bytes of the part
+  std::uint32_t offset;  // of this record's bytes in the part
+  std::uint32_t bytes;   // after the head
+  Kind kind;
+  std::uint8_t part;
+  std::uint8_t flags;
+  std::uint8_t pad_[37];
+  [[nodiscard]] static constexpr std::uint32_t size_for(std::uint32_t n) noexcept {
+    return 128 + (n + 63) / 64 * 64;
+  }
+  [[nodiscard]] const std::byte* data() const noexcept {
+    return reinterpret_cast<const std::byte*>(this) + 128;
+  }
+};
+static_assert(sizeof(StrategyStateMsg) == 128);
+
+// One instrument's position in a StrategyStateMsg's kPositionsPart: on the account (venue) whose
+// Reconcile Position would set it.
+struct StatePosition {
+  std::uint32_t instrument;
+  std::uint8_t venue;
+  std::uint8_t pad_[3];
+  std::int64_t qty_raw;
+  std::int64_t avg_px_raw;
+};
+static_assert(sizeof(StatePosition) == 24 && std::is_trivially_copyable_v<StatePosition>);
+
 // Journal only (format v2): the engine clock as an absolute value. Written when the engine starts
 // and finishes, and before a consumed event whose clock delta does not fit kEngineTime's int32 ns.
 // Never dispatched.
@@ -648,9 +690,10 @@ static_assert(FixedSizeMessage<TradeMsg> && FixedSizeMessage<BookTickerMsg> &&
               FixedSizeMessage<TimerMsg> && FixedSizeMessage<ControlMsg> &&
               FixedSizeMessage<ConnectionStateMsg> && FixedSizeMessage<ReconcileMsg> &&
               FixedSizeMessage<LatencySampleMsg> && FixedSizeMessage<EngineTimeMsg> &&
-              FixedSizeMessage<OutNewOrderMsg> && FixedSizeMessage<OutCancelMsg> &&
-              FixedSizeMessage<OrderAddL3Msg> && FixedSizeMessage<OrderExecL3Msg> &&
-              FixedSizeMessage<OrderCancelL3Msg> && FixedSizeMessage<OrderReplaceL3Msg>);
+              FixedSizeMessage<StrategyStateMsg> && FixedSizeMessage<OutNewOrderMsg> &&
+              FixedSizeMessage<OutCancelMsg> && FixedSizeMessage<OrderAddL3Msg> &&
+              FixedSizeMessage<OrderExecL3Msg> && FixedSizeMessage<OrderCancelL3Msg> &&
+              FixedSizeMessage<OrderReplaceL3Msg>);
 
 template <MessageLike M>
 [[nodiscard]] FASTMM_FORCE_INLINE const M& msg_cast(const EventHeader* h) noexcept {

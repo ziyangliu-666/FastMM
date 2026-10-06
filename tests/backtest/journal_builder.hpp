@@ -5,6 +5,7 @@
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/msg_ring.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -142,6 +143,55 @@ class JournalBuilder {
     m.leaves_qty = qt(leaves);
     m.liquidity = Liquidity::Maker;
     put(m.hdr);
+  }
+
+  // A position as the store's restore or a venue reports it.
+  void position(const char* qty,
+                const char* avg_px,
+                std::uint8_t venue_id = 0,
+                std::uint32_t instrument = 0) {
+    ReconcileMsg m{};
+    init_header(m, EventType::Reconcile, InstrumentId{instrument}, VenueId{venue_id});
+    m.kind = ReconcileMsg::Kind::Position;
+    m.position_qty = qt(qty);
+    m.avg_px = px(avg_px);
+    put(m.hdr);
+  }
+  // A parameter update of one field (its schema index and raw value), for every instrument.
+  void param_update(std::uint16_t field, std::int64_t raw) {
+    ParamUpdateMsg m{};
+    init_header(m, EventType::ParamUpdate, ParamUpdateMsg::kAllInstruments);
+    m.count = 1;
+    m.publish_seq = 1;
+    m.field[0] = field;
+    m.value[0] = raw;
+    put(m.hdr);
+  }
+  // One part of a StrategyStateMsg state, split into records of at most `chunk` bytes.
+  void strategy_state(StrategyStateMsg::Kind kind,
+                      std::uint64_t id,
+                      std::uint8_t part,
+                      const std::string& bytes,
+                      std::uint8_t flags = 0,
+                      std::uint32_t chunk = StrategyStateMsg::kChunkBytes) {
+    StrategyStateMsg m{};
+    init_header(m, EventType::StrategyState);
+    m.hdr.flags |= EventHeader::kSynthetic;
+    m.hdr.recv_ts = Timestamp{now};
+    m.id = id;
+    m.total = static_cast<std::uint32_t>(bytes.size());
+    m.kind = kind;
+    m.part = part;
+    m.flags = flags;
+    std::size_t off = 0;
+    do {
+      const std::size_t n = std::min<std::size_t>(bytes.size() - off, chunk);
+      m.offset = static_cast<std::uint32_t>(off);
+      m.bytes = static_cast<std::uint32_t>(n);
+      m.hdr.len = StrategyStateMsg::size_for(m.bytes);
+      REQUIRE(w_.record_with(m.hdr, reinterpret_cast<const std::byte*>(bytes.data()) + off, n));
+      off += n;
+    } while (off < bytes.size());
   }
 
   // A reconciliation snapshot listing `open` as the venue's open orders.

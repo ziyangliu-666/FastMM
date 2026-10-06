@@ -249,6 +249,9 @@ class SimTransport final : public MatchingSink {
   void flush_md(Timestamp now) noexcept;  // aggregator flush (coupled mode)
   // Each account's balances as one snapshot per venue, at `now` (SimDriver::start).
   void publish_balances(Timestamp now) noexcept;
+  // Reconcile Position messages (a recorded session's positions) to the engine at `now`, each on
+  // the link of its header's venue, else its instrument's.
+  void publish_positions(Timestamp now, std::span<const ReconcileMsg> positions) noexcept;
   // Historical event at venue time (hdr.exch_ts, falling back to recv_ts): updates the
   // venue-side fill model and forwards the event to the engine after md_in latency, in recorded
   // order when hdr.seq gives it (from 1, VenueOrderSource), else at once.

@@ -780,6 +780,10 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "state_interval_s", cfg.strategy.state_interval_s);
     if (cfg.strategy.state_interval_s <= 0)
       fail_at(*t->get("state_interval_s"), "state_interval_s must be > 0");
+    get(*t, "state_snapshot_interval_s", cfg.strategy.state_snapshot_interval_s);
+    if (cfg.strategy.state_snapshot_interval_s < 0)
+      fail_at(*t->get("state_snapshot_interval_s"),
+              "state_snapshot_interval_s must be >= 0 (0 disables)");
     if (const auto* p = t->get_as<toml::table>("params")) {
       for (const auto& [k, v] : *p) {
         if (v.is_table() || v.is_array())
@@ -1121,6 +1125,8 @@ std::string Config::redacted() const {
   if (strategy.max_param_age_ms != 0) kv("max_param_age_ms", strategy.max_param_age_ms);
   if (!strategy.state_file.empty()) kq("state_file", strategy.state_file);
   if (strategy.state_interval_s != 300) kv("state_interval_s", strategy.state_interval_s);
+  if (strategy.state_snapshot_interval_s != 0)
+    kv("state_snapshot_interval_s", strategy.state_snapshot_interval_s);
   if (!strategy.params.empty()) {
     out += "\n[strategy.params]\n";
     for (const auto& [k, v] : strategy.params) kq(k, v);
@@ -1379,6 +1385,8 @@ std::string Config::effective_toml() const {
   if (strategy.max_param_age_ms != 0) st.insert("max_param_age_ms", strategy.max_param_age_ms);
   if (!strategy.state_file.empty()) st.insert("state_file", strategy.state_file);
   if (strategy.state_interval_s != 300) st.insert("state_interval_s", strategy.state_interval_s);
+  if (strategy.state_snapshot_interval_s != 0)
+    st.insert("state_snapshot_interval_s", strategy.state_snapshot_interval_s);
   toml::table params;
   for (const auto& [k, v] : strategy.params) params.insert_or_assign(k, v);
   st.insert("params", std::move(params));

@@ -321,6 +321,22 @@ void SimTransport::publish_balances(Timestamp now) noexcept {
   }
 }
 
+void SimTransport::publish_positions(Timestamp now,
+                                     std::span<const ReconcileMsg> positions) noexcept {
+  for (ReconcileMsg m : positions) {
+    if (m.hdr.instrument.value >= instruments_.size()) continue;
+    Link* l = order_venues_ != nullptr ? link_of_venue(m.hdr.venue) : nullptr;
+    if (l == nullptr) l = &link(m.hdr.instrument);
+    m.hdr.exch_ts = now;
+    const Timestamp arrival = std::max(l->last_order_arrival, now);
+    l->last_order_arrival = arrival;
+    m.hdr.recv_ts = arrival;
+    m.hdr.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
+    m.hdr.seq = 0;
+    if (!l->order_wire.try_push(&m.hdr, m.hdr.len)) ++stats_.wire_full;
+  }
+}
+
 void SimTransport::on_source_event(const EventHeader& md) noexcept {
   const Timestamp now = venue_time(md);
   const InstrumentId id = md.instrument;

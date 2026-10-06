@@ -1232,6 +1232,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   deps.engine.max_param_age = milliseconds(cfg.strategy.max_param_age_ms);
   deps.engine.state_file = cfg.strategy.state_file;
   deps.engine.state_interval = seconds(cfg.strategy.state_interval_s);
+  deps.engine.state_snapshot_interval = seconds(cfg.strategy.state_snapshot_interval_s);
   if (!cfg.strategy.state_file.empty() && !warm) {
     // A warm standby reads it when it takes over (ControlCommand::TakeOver), after the session
     // before it has written it last.

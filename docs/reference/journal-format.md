@@ -138,6 +138,22 @@ Message layouts are the structs in `include/fastmm/core/messages.hpp` (`EventTyp
 - Sequence numbers count `EngineTime` records too.
 - A `Timer` message with byte 68 (`engine`) set to 1 is the engine's `max_param_age_ms` deadline, not a strategy timer.
 
+## Strategy state
+
+A `StrategyState` message (type 30, 128 bytes followed by its bytes, padded to 64) records what a replay or a backtest can start from. It is never dispatched to the engine.
+
+| Offset | Size | Field | Meaning |
+|---|---|---|---|
+| 64 | 8 | `id` | the n-th state the session wrote; the records of one state share it |
+| 72 | 4 | `total` | bytes of the part |
+| 76 | 4 | `offset` | where this record's bytes go in the part |
+| 80 | 4 | `bytes` | bytes after the 128-byte head, at most 16384 |
+| 84 | 1 | `kind` | 0 `Restored`: the bytes the strategy was handed to `restore()` at the start; 1 `Snapshot`: its `state()` |
+| 85 | 1 | `part` | 0 the strategy's bytes; 1 positions, 24 bytes each: instrument id (u32), venue (u8), 3 pad, quantity and average price (fixed point, i64) |
+| 86 | 1 | `flags` | bit 0 (`Restored`): the strategy took the bytes |
+
+The engine writes the `Restored` state (its strategy part only) once, after `on_start`, when `[strategy] state_file` held something, and with `[strategy] state_snapshot_interval_s` a `Snapshot` of both parts that often ([Configuration](configuration.md#strategy)). `recv_ts` is the engine time it was taken at.
+
 ## Parameter updates
 
 A `ParamUpdate` message (448 bytes) is an engine input with new strategy parameter values; the engine assigns all of them at that event.

@@ -200,6 +200,14 @@ TEST_CASE("core.config: [strategy] state_file and state_interval_s round-trip") 
   CHECK_THROWS_WITH_AS(Config::parse("[strategy]\nname = \"basic_mm\"\nstate_interval_s = 0\n"),
                        doctest::Contains("state_interval_s must be > 0"),
                        ConfigError);
+  CHECK(plain.strategy.state_snapshot_interval_s == 0);
+  const Config snap =
+      Config::parse("[strategy]\nname = \"basic_mm\"\nstate_snapshot_interval_s = 30\n");
+  CHECK(Config::parse(snap.effective_toml()).strategy.state_snapshot_interval_s == 30);
+  CHECK_THROWS_WITH_AS(
+      Config::parse("[strategy]\nname = \"basic_mm\"\nstate_snapshot_interval_s = -1\n"),
+      doctest::Contains("state_snapshot_interval_s must be >= 0"),
+      ConfigError);
 }
 
 TEST_CASE("core.config: validation errors carry line numbers, unknown keys are errors") {

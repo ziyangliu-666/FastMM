@@ -267,7 +267,9 @@ std::vector<Duration> parse_horizons(const std::string& text) {
 }
 
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 28> kBacktestKeys = {"markout_horizons_s",
+constexpr std::array<std::string_view, 30> kBacktestKeys = {"markout_horizons_s",
+                                                            "initial_state",
+                                                            "params_from_journal",
                                                             "orders_10s",
                                                             "orders_1d",
                                                             "source",
@@ -316,6 +318,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   b.engine.max_param_age = milliseconds(cfg.strategy.max_param_age_ms);
   b.engine.state_file = cfg.strategy.state_file;
   b.engine.state_interval = seconds(cfg.strategy.state_interval_s);
+  b.engine.state_snapshot_interval = seconds(cfg.strategy.state_snapshot_interval_s);
   // A replay reruns the engine's own timers from the journal; they must find the settings the
   // recorded session ran with (the ack sweep's timeout, the flatten's period and deadline).
   b.engine.ack_timeout = milliseconds(cfg.engine.ack_timeout_ms);
@@ -395,6 +398,14 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   b.transfer_latency = milliseconds(transfer_ms);
   t.own_orders_in_feed = bt.get_bool("own_orders_in_feed", true);
   b.balances_from_journal = bt.get_bool("balances_from_journal", false);
+  b.params_from_journal = bt.get_bool("params_from_journal", false);
+  if (const std::string s = bt.get_string("initial_state", "state_file"); s == "journal") {
+    b.initial_state = InitialState::Journal;
+  } else if (s == "none") {
+    b.initial_state = InitialState::None;
+  } else if (s != "state_file") {
+    throw ConfigError("backtest.initial_state: '" + s + "' is not state_file, journal or none");
+  }
   const std::int64_t window = bt.get_int("reorder_window_ms", 1000);
   if (window < 0) throw ConfigError("backtest.reorder_window_ms must be >= 0");
   b.reorder_window = milliseconds(window);

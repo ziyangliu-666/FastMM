@@ -16,6 +16,7 @@
 //   latency_cancel_us, latency_cancel_jitter_us, order_service_us
 //   md_arrival = "venue" | "recorded", reorder_window_ms = 1000
 //   balances_from_journal = false, own_orders_in_feed = true, transfer_latency_ms = 0
+//   initial_state = "state_file" | "journal" | "none", params_from_journal = false
 //   [backtest.balances] <ASSET> = "<amount>"  (and [backtest.venues.<name>.balances])
 //   equity_bar_s = 1, initial_capital = 0
 //   markout_horizons_s = "1,10,60"
@@ -34,6 +35,13 @@
 #include <vector>
 
 namespace fastmm::bt {
+
+// Where the strategy's starting state comes from ([backtest] initial_state).
+enum class InitialState : std::uint8_t {
+  StateFile = 0,  // [strategy] state_file, when set
+  Journal = 1,    // the data journal's (journal_state.hpp), with the session's positions
+  None = 2,       // nothing: the strategy starts fresh
+};
 
 struct BacktestConfig {
   EngineConfig engine;
@@ -79,6 +87,12 @@ struct BacktestConfig {
   std::vector<TreasuryConfig> treasuries;
   // [backtest] transfer_latency_ms: a simulated transfer is carried out this long after it is sent.
   Duration transfer_latency{};
+  // The strategy's starting state; Journal also starts the engine's positions where the recorded
+  // session had them (sim::SessionStart).
+  InitialState initial_state = InitialState::StateFile;
+  // The data journal's parameter updates reach the strategy at the times the session received
+  // them (sim::RecordedParams), mapped by name and type onto its schema.
+  bool params_from_journal = false;
   // Recorded data reaches the simulated venue in venue-time order (sim/venue_order.hpp), assuming
   // no event was received more than this after its venue time; zero keeps the recorded order.
   Duration reorder_window = milliseconds(1000);

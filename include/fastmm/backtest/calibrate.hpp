@@ -200,9 +200,13 @@ struct BacktestGap {
 };
 
 // `configs`: TOML files to run instead of the sessions' embedded configurations: none, one for
-// every session, or one per session. Throws std::runtime_error / ConfigError.
+// every session, or one per session. `from_live_state`: both runs start from the state the
+// session recorded and get its parameter updates ([backtest] initial_state = "journal",
+// params_from_journal = true), else as the configuration says.
+// Throws std::runtime_error / ConfigError.
 [[nodiscard]] std::vector<BacktestGap> compare_backtests(const Calibration& c,
-                                                         std::span<const std::string> configs);
+                                                         std::span<const std::string> configs,
+                                                         bool from_live_state = false);
 [[nodiscard]] std::string format_backtest_gaps(std::span<const BacktestGap> gaps);
 
 }  // namespace fastmm::bt

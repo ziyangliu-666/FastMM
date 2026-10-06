@@ -36,6 +36,10 @@ struct EngineConfig {
   std::string state_file;
   Duration state_interval = seconds(300);
   std::string initial_state;
+  // [strategy] state_snapshot_interval_s: with a journal, the strategy's state() and the
+  // positions are written to it this often (StrategyStateMsg; zero: never). The bytes handed to
+  // restore() are written once at the start whenever there are some.
+  Duration state_snapshot_interval{};
   // [engine] ack_timeout_ms: an order still waiting for its ack this long is force-cancelled, so a
   // lost request cannot hold a pool slot, a max_open_orders slot and max_position exposure for
   // good (zero: off).

@@ -523,6 +523,7 @@ Live connectors replace `tick`, `lot` and the size bounds with the venue's refer
 | `max_param_age_ms` | integer |  | disable quoting before the first parameter update and while none was applied for this long, ms of engine time (default 0: off) |
 | `state_file` | string |  | file the strategy's state() is written to every state_interval_s and at the end, and restore() reads at the start (a strategy that keeps state; default: none) |
 | `state_interval_s` | integer |  | how often the state is written, seconds of engine time (default 300) |
+| `state_snapshot_interval_s` | integer |  | with a journal, how often the strategy's state() and the positions are written to it, seconds of engine time, for a backtest to start from (default 0: never) |
 | `params` | table |  | [strategy.params] table: the strategy's parameters |
 <!-- END config-keys -->
 
@@ -703,6 +704,8 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `output_dir` | string | `"runs/backtest"` | Where `equity.csv`, `fills.csv`, `orders.csv` and `summary.json` are written |
 | `journal_out` | string | `""` | When set, the backtest session is also recorded as a `.fmj` journal |
 | `own_orders_in_feed` | bool | `true` | The simulated venues' market data shows the strategy's resting orders, as a live venue's does, and the engine takes them out where it needs to (`ctx.own_qty`, `ctx.best_ex_self`, `ctx.queue_ahead`); `false` forwards recorded data as recorded ([Backtesting](../explanation/backtesting.md#our-orders-in-the-feed)) |
+| `initial_state` | string | `"state_file"` | Where the strategy's starting state comes from: `state_file` reads `[strategy] state_file` when set; `journal` takes the data journal's: the state the recorded session restored at its start, else its first state snapshot, with the positions of that snapshot, or with the positions the session restored and reconciled before its first order ([Backtesting](../explanation/backtesting.md#starting-from-the-live-sessions-state)); `none` starts the strategy fresh. `journal` needs a journal as the data source |
+| `params_from_journal` | bool | `false` | The data journal's parameter updates reach the strategy at the times the recorded session received them, their fields mapped by name and type onto the strategy's schema (as `fastmm-replay` maps them); the data source must be a journal |
 | `balances_from_journal` | bool | `false` | Each venue's account starts from the first balance snapshot the journal source recorded for it (every asset at its total; account-wide margin rows are left out); a venue without one keeps `[backtest.balances]`. The data source must be one journal |
 
 Command-line flags of `fastmm-backtest` (`--data`, `--strategy`, `--param key=value`, `--seed`, `--duration`, `--out`, `--journal-out`) override these values ([Command lines](cli.md#fastmm-backtest)).

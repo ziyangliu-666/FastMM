@@ -74,6 +74,14 @@ All notable changes are recorded here (Keep a Changelog format).
 - sim: `SimAccounts::transfer`, `SimTransport::transfer` and `sim::SimTreasuryPort`: the same
   treasury runs against a pool's simulated accounts, and the engine hears the new balances on each
   account's link.
+- The journal records what a session starts from: the bytes the strategy was handed to
+  `restore()` (`StrategyState` records), and with `[strategy] state_snapshot_interval_s` (default
+  0: off) the strategy's `state()` and the engine's positions that often. `[backtest]
+  initial_state = "journal"` (default `"state_file"`, as before; `"none"`) starts a backtest from
+  them, or, in an older journal, from the positions reconciled before the first order;
+  `[backtest] params_from_journal = true` replays the session's parameter updates at their
+  times. `fastmm-data calibrate --backtest --from-live-state` compares runs started that way.
+  `fastmm-replay` restores the recorded bytes, so a session that restored state replays exactly.
 - `fastmm-data calibrate` fits a cancel latency of its own and the venue's per-connection service
   time (`latency_cancel_us`, `latency_cancel_jitter_us`, `order_service_us`) from the journals'
   cancel acks and message bursts, fits the order latency on isolated messages, and replays each

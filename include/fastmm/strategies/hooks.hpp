@@ -168,9 +168,10 @@ struct RiskReject {
 // state()` returns the bytes to save (valid until the strategy's next hook; the engine copies them
 // at once) and `bool restore(std::string_view)` takes the bytes saved before, false when they are
 // not this strategy's (it then starts fresh). The engine calls restore once, after on_start and
-// before the first event, and state() every state_interval_s, at the end, and never from inside
-// another hook. The bytes are the strategy's own format; they are not journaled, so a replay of a
-// session that restored them does not see them.
+// before the first event, and state() every state_interval_s, at the end, every
+// state_snapshot_interval_s for the journal, and never from inside another hook. The bytes are the
+// strategy's own format. With a journal, the bytes handed to restore() are journaled
+// (StrategyStateMsg), so a replay restores them too and a backtest can start from them.
 template <class S>
 concept KeepsState = requires(S& s, std::string_view bytes) {
   { s.state() } -> std::convertible_to<std::string_view>;

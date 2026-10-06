@@ -532,6 +532,12 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "how often the state is written, seconds of engine time (default 300)"},
     {"strategy",
+     "state_snapshot_interval_s",
+     KeyType::Int,
+     false,
+     "with a journal, how often the strategy's state() and the positions are written to it, "
+     "seconds of engine time, for a backtest to start from (default 0: never)"},
+    {"strategy",
      "params",
      KeyType::Table,
      false,

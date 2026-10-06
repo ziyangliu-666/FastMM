@@ -1,6 +1,7 @@
 #include "fastmm/backtest/replay.hpp"
 
 #include "fastmm/backtest/journal_source.hpp"
+#include "fastmm/backtest/journal_state.hpp"
 #include "fastmm/backtest/registrations.hpp"
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/log.hpp"
@@ -135,9 +136,13 @@ BacktestConfig journal_config(const std::string& path) {
     cfg.measure_wall_clock = false;
     cfg.output_dir.clear();
     cfg.journal_out.clear();
-    // The state the session restored is not in the journal, and the file has moved on since: a
-    // replay neither reads nor writes it.
+    // The file has moved on since: a replay neither reads nor writes it. The bytes the session
+    // handed to restore() are in the journal when there were any (journal_state.hpp), and its
+    // state snapshots come back as the journal's timers.
     cfg.engine.state_file.clear();
+    cfg.engine.state_snapshot_interval = Duration{};
+    if (std::optional<std::string> restored = restored_state(reader))
+      cfg.engine.initial_state = *restored;
     return cfg;
   } catch (const std::exception& e) {
     throw std::runtime_error("journal " + path + ": embedded configuration: " + e.what());

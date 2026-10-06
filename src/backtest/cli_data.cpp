@@ -6,7 +6,7 @@
 //   fastmm-data fill-check runs/demo-1/session.fmj [--conservatism 0,0.5,1] [--csv orders.csv]
 //       [--horizons-ms 100,1000,10000] [--pre-ms 100] [--market recorded.fmj]
 //   fastmm-data calibrate a.fmj b.fmj c.fmj [--conservatism ...] [--backtest [--config f.toml]]
-//       [--csv grid.csv]
+//       [--from-live-state] [--csv grid.csv]
 //
 // Downloading the files themselves is `python3 -m fastmm.data fetch` (no third-party packages).
 //
@@ -53,6 +53,7 @@ int data(int argc, char** argv) {
   std::vector<double> conservatism;
   std::string csv;
   bool backtest = false;
+  bool from_live_state = false;
   std::vector<double> horizons_ms;
   double pre_ms = 100;
   std::string market;
@@ -100,6 +101,11 @@ int data(int argc, char** argv) {
                       backtest,
                       "also re-run each session as a strip_own backtest, as configured and with "
                       "the fitted keys, beside the live session");
+  calibrate->add_flag("--from-live-state",
+                      from_live_state,
+                      "calibrate --backtest: start both runs from the strategy state and positions "
+                      "the session recorded and replay its parameter updates ([backtest] "
+                      "initial_state = \"journal\", params_from_journal = true)");
   for (CLI::App* sub : app.get_subcommands({})) sub->fallthrough();
   app.require_subcommand(0, 1);
   app.add_option("--data", spec, "convert: source, e.g. binance:BTCUSDT,2024-03-27")
@@ -153,7 +159,7 @@ int data(int argc, char** argv) {
     if (configs.size() > 1 && configs.size() != journals.size())
       return usage_error(app, "calibrate --backtest takes one --config, or one per journal");
     try {
-      gaps = bt::compare_backtests(c, configs);
+      gaps = bt::compare_backtests(c, configs, from_live_state);
     } catch (const ConfigError& e) {
       std::fprintf(stderr, "%s: config error: %s\n", prog, e.what());
       return kExitConfig;

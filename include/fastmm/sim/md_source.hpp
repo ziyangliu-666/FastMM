@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fastmm::sim {
@@ -36,6 +37,24 @@ struct alignas(64) EventBuf {
   }
 };
 
+// What a recorded session started from (backtest [backtest] initial_state = "journal"): the
+// bytes for the strategy's restore(), and Reconcile Position messages that set the engine's
+// positions as the session had them. `note` says where they came from.
+struct SessionStart {
+  bool has_state = false;  // `strategy` holds a recorded state (possibly empty)
+  std::string strategy;
+  std::vector<ReconcileMsg> positions;
+  std::string note;
+};
+
+// A recorded session's parameter updates (backtest [backtest] params_from_journal): each at the
+// time the session received it (hdr.recv_ts), its fields by the session's parameter table, the
+// name and ParamType of each recorded index (empty: the indices are the strategy's own).
+struct RecordedParams {
+  std::vector<std::pair<std::string, std::uint8_t>> table;
+  std::vector<ParamUpdateMsg> updates;
+};
+
 class MdSource {
  public:
   virtual ~MdSource() = default;
@@ -48,6 +67,11 @@ class MdSource {
   [[nodiscard]] virtual const std::vector<SimAccountConfig>* balance_snapshots() const {
     return nullptr;
   }
+  // The state the recorded session started from; null for a source that cannot carry one
+  // (anything but a journal).
+  [[nodiscard]] virtual const SessionStart* session_start() const { return nullptr; }
+  // The parameter updates the recorded session received; null for a source without them.
+  [[nodiscard]] virtual const RecordedParams* recorded_params() const { return nullptr; }
   // Time of the first event if known (invalid Timestamp otherwise); lets the driver start
   // the virtual clock at the data.
   [[nodiscard]] virtual Timestamp start_ts() const { return Timestamp{}; }

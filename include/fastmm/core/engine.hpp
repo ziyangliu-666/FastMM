@@ -174,6 +174,8 @@ class Engine {
   // Not a timer: the on_batch_end call a strategy asked for (ctx.request_batch_end), journaled as a
   // TimerMsg so a replay calls it after the same event.
   static constexpr std::uint8_t kBatchEndTimer = 5;
+  // The journal's strategy state snapshot ([strategy] state_snapshot_interval_s).
+  static constexpr std::uint8_t kStateSnapshotTimer = 6;
 
   Engine(const EngineConfig& cfg,
          const InstrumentTable& instruments,
@@ -364,6 +366,15 @@ class Engine {
       restore_state();
       if (!cfg_.state_file.empty() && cfg_.state_interval.ns > 0)
         state_timer_ = timers_.add(now_, cfg_.state_interval, /*repeat=*/true);
+      // What the session starts from, for a replay or a backtest over the journal.
+      if (journal_.enabled() && !cfg_.initial_state.empty()) {
+        journal_state(StrategyStateMsg::Kind::Restored,
+                      cfg_.initial_state,
+                      state_restored_ ? StrategyStateMsg::kAccepted : 0,
+                      false);
+      }
+      if (journal_.enabled() && cfg_.state_snapshot_interval.ns > 0)
+        snapshot_timer_ = timers_.add(now_, cfg_.state_snapshot_interval, /*repeat=*/true);
     }
     flush_out();
     unlatch_clock();
@@ -977,6 +988,8 @@ class Engine {
           if constexpr (KeepsState<Strategy>) capture_state();
         } else if (t.engine == kBatchEndTimer) {
           call_batch_end();  // replay of a batch end
+        } else if (t.engine == kStateSnapshotTimer) {
+          journal_snapshot();  // replay of the journal's state snapshot
         } else if (t.engine != 0) {
           check_param_age();  // replay of the engine's max_param_age timer
         } else {
@@ -1006,6 +1019,7 @@ class Engine {
       case EventType::OrderReplaceL3:
       case EventType::Padding:
       case EventType::EngineTime:
+      case EventType::StrategyState:
       case EventType::Count:
         break;  // not consumed by the L2 engine
     }
@@ -1944,6 +1958,14 @@ class Engine {
       if (!staged.empty()) {
         cfg_.initial_state.swap(staged);
         restore_state();
+        // As a snapshot, not as Restored: a replay restores at the start, and this one came after
+        // the warm-up (backtest/journal_state.hpp starts from it when nothing was restored then).
+        if (journal_.enabled()) {
+          journal_state(StrategyStateMsg::Kind::Snapshot,
+                        cfg_.initial_state,
+                        state_restored_ ? StrategyStateMsg::kAccepted : 0,
+                        true);
+        }
       }
       // What was captured during the warm-up is not this session's to write: the state file gets
       // the state as of now.
@@ -2339,18 +2361,20 @@ class Engine {
     const bool ack_timer = ack_timer_.valid() && id == ack_timer_;
     const bool flatten_timer = flatten_timer_.valid() && id == flatten_timer_;
     const bool state_timer = state_timer_.valid() && id == state_timer_;
-    const bool engine_timer =
-        ack_timer || flatten_timer || state_timer || (param_timer_.valid() && id == param_timer_);
+    const bool snapshot_timer = snapshot_timer_.valid() && id == snapshot_timer_;
+    const bool engine_timer = ack_timer || flatten_timer || state_timer || snapshot_timer ||
+                              (param_timer_.valid() && id == param_timer_);
     // Journal a synthetic TimerMsg so replay reproduces the strategy's timer calls.
     if (journal_.enabled()) {
       TimerMsg t{};
       init_header(t, EventType::Timer);
       t.timer_id = id;
-      t.engine = ack_timer       ? kAckSweepTimer
-                 : flatten_timer ? kFlattenTimer
-                 : state_timer   ? kStateTimer
-                 : engine_timer  ? 1
-                                 : 0;
+      t.engine = ack_timer        ? kAckSweepTimer
+                 : flatten_timer  ? kFlattenTimer
+                 : state_timer    ? kStateTimer
+                 : snapshot_timer ? kStateSnapshotTimer
+                 : engine_timer   ? 1
+                                  : 0;
       t.user_data = user_data;
       t.fire_ts = now_;
       t.hdr.flags |= EventHeader::kSynthetic;
@@ -2368,6 +2392,8 @@ class Engine {
       flatten_tick();
     } else if (state_timer) {
       if constexpr (KeepsState<Strategy>) capture_state();
+    } else if (snapshot_timer) {
+      journal_snapshot();
     } else if (engine_timer) {
       param_timer_ = TimerId{};  // a one-shot timer is freed once it has fired
       flush_out();
@@ -2749,6 +2775,72 @@ class Engine {
       ++state_captures_;
     }
   }
+  // The strategy's state() and the positions, into the journal (StrategyStateMsg::Kind::Snapshot).
+  FASTMM_NOINLINE void journal_snapshot() noexcept {
+    if constexpr (KeepsState<Strategy>) {
+      if (journal_.enabled())
+        journal_state(StrategyStateMsg::Kind::Snapshot, strategy_.state(), 0, true);
+    }
+  }
+  // One state as StrategyStateMsg records: the strategy's bytes, then with `positions` every
+  // instrument's non-zero position (on its venue). Records are copied straight from `state` and
+  // from a buffer made once, at the first call.
+  FASTMM_NOINLINE void journal_state(StrategyStateMsg::Kind kind,
+                                     std::string_view state,
+                                     std::uint8_t flags,
+                                     bool positions) noexcept {
+    const std::uint64_t id = ++state_records_;
+    write_state_part(id,
+                     kind,
+                     StrategyStateMsg::kStatePart,
+                     flags,
+                     reinterpret_cast<const std::byte*>(state.data()),
+                     state.size());
+    if (!positions) return;
+    if (!position_buf_) position_buf_ = std::make_unique<StatePosition[]>(instruments_.size() + 1);
+    std::size_t n = 0;
+    for (const Instrument& inst : instruments_) {
+      const Position& p = positions_.get(inst.id);
+      if (p.qty.is_zero()) continue;
+      position_buf_[n++] =
+          StatePosition{inst.id.value, inst.venue.value, {}, p.qty.raw, p.avg_px.raw};
+    }
+    write_state_part(id,
+                     kind,
+                     StrategyStateMsg::kPositionsPart,
+                     flags,
+                     reinterpret_cast<const std::byte*>(position_buf_.get()),
+                     n * sizeof(StatePosition));
+  }
+  void write_state_part(std::uint64_t id,
+                        StrategyStateMsg::Kind kind,
+                        std::uint8_t part,
+                        std::uint8_t flags,
+                        const std::byte* bytes,
+                        std::size_t total) noexcept {
+    StrategyStateMsg m{};
+    init_header(m, EventType::StrategyState);
+    m.hdr.flags |= EventHeader::kSynthetic;
+    m.hdr.recv_ts = now_;
+    m.id = id;
+    m.total = static_cast<std::uint32_t>(total);
+    m.kind = kind;
+    m.part = part;
+    m.flags = flags;
+    std::size_t off = 0;
+    do {
+      const std::size_t n = std::min<std::size_t>(total - off, StrategyStateMsg::kChunkBytes);
+      m.offset = static_cast<std::uint32_t>(off);
+      m.bytes = static_cast<std::uint32_t>(n);
+      m.hdr.len = StrategyStateMsg::size_for(m.bytes);
+      if (!journal_.record_with(m.hdr, bytes + off, n)) {
+        ++stats_.journal_overflows;
+        on_journal_overflow();
+        return;
+      }
+      off += n;
+    } while (off < total);
+  }
   // EngineConfig::initial_state, once, after on_start: bytes the strategy does not take leave it
   // as it started.
   FASTMM_NOINLINE void restore_state() noexcept {
@@ -3105,10 +3197,13 @@ class Engine {
   bool params_stale_;                  // max_param_age passed, or no ParamUpdate yet
   bool param_deadline_armed_ = false;  // param_deadline_ applies (max_param_age set, fresh)
   Timestamp param_deadline_{};
-  TimerId param_timer_{};    // the engine's one-shot max_param_age timer
-  TimerId ack_timer_{};      // the engine's repeating ack_timeout sweep
-  TimerId flatten_timer_{};  // ... and its flatten sweep while one runs
-  TimerId state_timer_{};    // ... and the strategy state capture (state_interval)
+  TimerId param_timer_{};     // the engine's one-shot max_param_age timer
+  TimerId ack_timer_{};       // the engine's repeating ack_timeout sweep
+  TimerId flatten_timer_{};   // ... and its flatten sweep while one runs
+  TimerId state_timer_{};     // ... and the strategy state capture (state_interval)
+  TimerId snapshot_timer_{};  // ... and the journal's state snapshot (state_snapshot_interval)
+  std::uint64_t state_records_ = 0;                // states written to the journal
+  std::unique_ptr<StatePosition[]> position_buf_;  // a snapshot's positions, made once
   // The strategy's state between capture_state (engine thread) and take_strategy_state (any).
   std::mutex state_mu_;
   std::string staged_state_;  // stage_strategy_state -> take_over, under state_mu_

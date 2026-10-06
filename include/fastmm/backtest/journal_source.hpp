@@ -69,6 +69,10 @@ class JournalSource final : public MdSource {
   [[nodiscard]] const std::vector<sim::SimAccountConfig>* balance_snapshots() const override {
     return &balances_;
   }
+  // journal_start_state() of the parts read (journal_state.hpp).
+  [[nodiscard]] const sim::SessionStart* session_start() const override { return &start_; }
+  // Its ParamUpdate records and the first part's parameter table.
+  [[nodiscard]] const sim::RecordedParams* recorded_params() const override { return &params_; }
 
   [[nodiscard]] static bool is_market_data(EventType t) noexcept {
     return t == EventType::BookDelta || t == EventType::BookSnapshot || t == EventType::Trade ||
@@ -89,6 +93,8 @@ class JournalSource final : public MdSource {
   std::size_t orders_ = 0;
   EventBuf buf_;
   std::vector<sim::SimAccountConfig> balances_;
+  sim::SessionStart start_;
+  sim::RecordedParams params_;
   // remap: per journal instrument id, the configured id (kUnmapped: dropped) and its venue.
   static constexpr std::uint32_t kUnmapped = 0xFFFF'FFFF;
   bool remap_ = false;

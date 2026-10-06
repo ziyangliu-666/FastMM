@@ -6,6 +6,7 @@
 #include "fastmm/backtest/pnl.hpp"
 #include "fastmm/backtest/registrations.hpp"
 #include "fastmm/core/journal.hpp"
+#include "fastmm/core/log.hpp"
 #include "fastmm/core/session_state.hpp"
 #include "fastmm/sim/sim_treasury.hpp"
 #include "fastmm/sim/venue_order.hpp"
@@ -240,9 +241,55 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
                                  std::string_view strategy_meta)
     : cfg_(cfg), source_(source) {
   if (cfg_.instruments.size() == 0) throw std::invalid_argument("backtest: no instruments");
-  if (!cfg_.engine.state_file.empty()) {
+  if (cfg_.initial_state == InitialState::StateFile && !cfg_.engine.state_file.empty()) {
     auto loaded = load_strategy_state(cfg_.engine.state_file, cfg_.engine.initial_state);
     if (!loaded) throw std::invalid_argument("backtest: " + loaded.error());
+  }
+  if (cfg_.initial_state == InitialState::None) cfg_.engine.initial_state.clear();
+  if (cfg_.initial_state == InitialState::Journal) {
+    const sim::SessionStart* s = source != nullptr ? source->session_start() : nullptr;
+    if (s == nullptr) {
+      throw std::invalid_argument(
+          "backtest: initial_state = \"journal\" needs a journal as the data source");
+    }
+    cfg_.engine.initial_state = s->strategy;
+    start_positions_ = s->positions;
+    start_note_ = s->note;
+    FASTMM_LOG_INFO("backtest: {}", start_note_);
+  }
+  if (cfg_.params_from_journal) {
+    const sim::RecordedParams* rp = source != nullptr ? source->recorded_params() : nullptr;
+    if (rp == nullptr) {
+      throw std::invalid_argument(
+          "backtest: params_from_journal needs a journal as the data source");
+    }
+    // Recorded field index -> this schema's, by name and type (as a replay maps them).
+    std::vector<int> map(rp->table.size(), -1);
+    for (std::size_t i = 0; i < rp->table.size(); ++i) {
+      for (std::size_t j = 0; schema != nullptr && j < schema->size(); ++j) {
+        const ParamDesc& d = schema->begin()[j];
+        if (rp->table[i].first == d.name &&
+            rp->table[i].second == static_cast<std::uint8_t>(d.type))
+          map[i] = static_cast<int>(j);
+      }
+    }
+    for (ParamUpdateMsg m : rp->updates) {
+      if (!rp->table.empty()) {
+        std::uint32_t kept = 0;
+        const std::uint32_t n = std::min<std::uint32_t>(m.count, ParamUpdateMsg::kMaxFields);
+        for (std::uint32_t i = 0; i < n; ++i) {
+          const int to = m.field[i] < map.size() ? map[m.field[i]] : -1;
+          if (to < 0) continue;
+          m.field[kept] = static_cast<std::uint16_t>(to);
+          m.value[kept] = m.value[i];
+          ++kept;
+        }
+        m.count = kept;
+      }
+      if (m.count != 0) journal_params_.push_back(m);
+    }
+    FASTMM_LOG_INFO("backtest: {} parameter updates of the journal replayed",
+                    journal_params_.size());
   }
   if (cfg_.equity_bar.ns <= 0) throw std::invalid_argument("backtest: equity_bar must be > 0");
   if (source_ == nullptr) {  // synthetic market
@@ -345,7 +392,15 @@ BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,
     driver.set_source(source_);
   }
   if (impl_->journal_file) driver.set_journal_writer(impl_->journal_file.get());
-  driver.set_param_schedule(params_);
+  sim::ParamSchedule* schedule = params_;
+  if (!journal_params_.empty()) {
+    if (schedule == nullptr) {
+      own_params_ = std::make_unique<sim::ParamSchedule>();
+      schedule = own_params_.get();
+    }
+    for (const ParamUpdateMsg& m : journal_params_) schedule->at(m.hdr.recv_ts, m);
+  }
+  driver.set_param_schedule(schedule);
   std::unique_ptr<TreasuryTier> tier;
   if (!cfg_.treasuries.empty()) {
     tier = std::make_unique<TreasuryTier>();
@@ -371,6 +426,8 @@ BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,
   } else {
     driver.set_slow_hooks(slow_);
   }
+  // The recorded session's positions reach the engine at the first step, as its restore did live.
+  if (!start_positions_.empty()) b.transport.publish_positions(b.clock.now(), start_positions_);
   driver.start();
   const Timestamp start = b.clock.now();
   Timestamp bar_end = start + cfg_.equity_bar;

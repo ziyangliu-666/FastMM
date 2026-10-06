@@ -320,13 +320,14 @@ enum class EventType : std::uint8_t {
   OrderExecL3 = 21,
   OrderCancelL3 = 22,
   OrderReplaceL3 = 23,
-  OptionTicker = 24,  // mark / implied vols / greeks of one option (OptionTickerMsg)
-  EngineTime = 25,    // journal only: the engine clock at start / finish / a delta overflow
-  ParamUpdate = 26,   // new strategy parameter values (ParamUpdateMsg)
-  Funding = 27,       // a perpetual funding payment booked by the venue (FundingMsg)
-  Balance = 28,       // the account's holding of one asset on one venue (BalanceMsg)
-  PerpState = 29,     // mark, index and funding of one derivative (PerpStateMsg)
-  Count = 30,
+  OptionTicker = 24,   // mark / implied vols / greeks of one option (OptionTickerMsg)
+  EngineTime = 25,     // journal only: the engine clock at start / finish / a delta overflow
+  ParamUpdate = 26,    // new strategy parameter values (ParamUpdateMsg)
+  Funding = 27,        // a perpetual funding payment booked by the venue (FundingMsg)
+  Balance = 28,        // the account's holding of one asset on one venue (BalanceMsg)
+  PerpState = 29,      // mark, index and funding of one derivative (PerpStateMsg)
+  StrategyState = 30,  // journal only: the strategy's state and the positions (StrategyStateMsg)
+  Count = 31,
 };
 [[nodiscard]] constexpr std::string_view to_string(EventType t) noexcept {
   switch (t) {
@@ -390,6 +391,8 @@ enum class EventType : std::uint8_t {
       return "Balance";
     case EventType::PerpState:
       return "PerpState";
+    case EventType::StrategyState:
+      return "StrategyState";
     case EventType::Count:
       return "Count";
   }
