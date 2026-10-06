@@ -53,7 +53,8 @@ The first command lists the built-in strategies with their parameters. The secon
 
 | Preset | Build | Use |
 |---|---|---|
-| `release` | gcc, `-O3`, LTO, portable x86-64-v2 | everyday work, CI |
+| `release` | gcc, `-O3`, LTO, portable x86-64-v2 | everyday work, releases, weekly CI |
+| `release-nolto` | as `release` without LTO | CI on pushes and pull requests |
 | `release-native` | as `release` with `-march=native` | benchmarks on this machine only |
 | `release-dpdk` | as `release` with the DPDK receive backend linked in | `rx_backend = "dpdk"` ([Receive a multicast feed](../how-to/operations/multicast-feeds.md)), `scripts/package-release.sh` |
 | `debug` | gcc, `-O0 -g`, no-allocation assertions | debugging, clang-tidy |

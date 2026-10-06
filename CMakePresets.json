@@ -35,6 +35,16 @@
       }
     },
     {
+      "name": "release-nolto",
+      "inherits": "release",
+      "displayName": "Release without LTO (CI on pushes and pull requests)",
+      "description": "Links in seconds instead of minutes. Without LTO, gcc -O3 runs the passes behind -Wnull-dereference, -Warray-bounds and -Wformat-truncation in each translation unit, where they report false positives (several in libstdc++ headers) that an LTO build does not report; here they stay warnings.",
+      "cacheVariables": {
+        "FASTMM_ENABLE_LTO": "OFF",
+        "CMAKE_CXX_FLAGS": "-Wno-error=null-dereference -Wno-error=array-bounds -Wno-error=format-truncation"
+      }
+    },
+    {
       "name": "release-native",
       "inherits": "release",
       "displayName": "Release -march=native (benchmarks)",
@@ -133,6 +143,10 @@
       "configurePreset": "release"
     },
     {
+      "name": "release-nolto",
+      "configurePreset": "release-nolto"
+    },
+    {
       "name": "release-native",
       "configurePreset": "release-native"
     },
@@ -194,6 +208,11 @@
       "name": "release",
       "inherits": "base-test",
       "configurePreset": "release"
+    },
+    {
+      "name": "release-nolto",
+      "inherits": "base-test",
+      "configurePreset": "release-nolto"
     },
     {
       "name": "release-native",

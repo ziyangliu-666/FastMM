@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end check of examples/external-project against an installed FastMM (CI gcc-release job):
+# End-to-end check of examples/external-project against an installed FastMM (CI jobs gcc external-project and the weekly gcc-release):
 #
 #   cmake --install build/release --prefix build/install
 #   ./scripts/ci-external-project.sh build/release build/install build/external-project

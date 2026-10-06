@@ -87,7 +87,7 @@ The headers document themselves with `//` comments; `tools/doxygen_filter.py` pr
 | snippets match their sources | `python3 tools/doc_snippets.py --check` | lint |
 | relative links and anchors resolve | `python3 tools/docs_links.py --check` | lint |
 | configuration reference is current | `python3 tools/docs_config_ref.py --check` | lint |
-| command-line reference is current | `python3 tools/docs_cli_help.py --check --bin build/release/bin` | gcc-release |
+| command-line reference is current | `python3 tools/docs_cli_help.py --check --bin build/release/bin` | gcc unit |
 | strategy API as documented, every public header compiles alone | `ctest --test-dir build/release -L docs` | all build jobs |
 | quick start, examples and tutorial run | `ctest --test-dir build/release -L 'examples\|tutorial'` | all build jobs |
 | every `configs/*.toml` loads without warnings | `ctest --test-dir build/release -L config` | all build jobs |

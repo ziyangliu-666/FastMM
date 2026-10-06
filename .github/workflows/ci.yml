@@ -1,7 +1,10 @@
 name: CI
-# Pushes and pull requests run lint, the gcc release build with tests, and the Python wheel; a push
-# that only changes documentation runs lint alone. clang-tidy, the sanitizer builds, the clang build
-# and the Docker smoke test run weekly and on manual dispatch ("Run workflow").
+# Pushes and pull requests run lint, the gcc build without LTO and its tests (sharded over four
+# runners, one of which builds examples/external-project against an install), the benchmark budgets
+# on an LTO build, Autobahn and the Python wheel; a push that only changes documentation runs lint
+# alone. Weekly and on manual dispatch ("Run workflow") the full set adds the LTO gcc build with
+# every test and the external project, clang-tidy, the sanitizer builds, the clang build, the
+# optional codecs and the Docker smoke test. Runners: 4 vCPUs, 16 GB (public repository).
 on:
   push:
     branches: [main]
@@ -21,7 +24,6 @@ jobs:
     outputs:
       full: ${{ steps.plan.outputs.full }}
       code: ${{ steps.plan.outputs.code }}
-      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - id: plan
         env:
@@ -29,18 +31,16 @@ jobs:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
         run: |
-          gcc_release='{"name":"gcc-release","preset":"release","cxx":"g++-13","pkgs":"g++-13"}'
-          others='{"name":"gcc-asan","preset":"asan","cxx":"g++-13","pkgs":"g++-13"},{"name":"clang-release","preset":"clang-release","cxx":"clang++-18","pkgs":"clang-18 lld-18"},{"name":"clang-tsan","preset":"clang-tsan","cxx":"clang++-18","pkgs":"clang-18 lld-18"}'
-          full=false; code=true; matrix="[$gcc_release]"
+          full=false; code=true
           if [ "$EVENT" = schedule ] || [ "$EVENT" = workflow_dispatch ]; then
-            full=true; matrix="[$gcc_release,$others]"
+            full=true
           elif [ "$EVENT" = push ]; then
             # Unknown ranges (first push, force push) count as code changes.
             if files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BEFORE...$GITHUB_SHA" --jq '.files[].filename') && [ -n "$files" ]; then
               echo "$files" | grep -qvE '^(docs/.*|.*\.md|LICENSE)$' || code=false
             fi
           fi
-          { echo "full=$full"; echo "code=$code"; echo "matrix=$matrix"; } >> "$GITHUB_OUTPUT"
+          { echo "full=$full"; echo "code=$code"; } >> "$GITHUB_OUTPUT"
           echo "full=$full code=$code"
 
   lint:
@@ -67,7 +67,7 @@ jobs:
           ! grep -rnE 'dynamic_cast|std::cout' include src || (echo "forbidden pattern in hot-path code" && exit 1)
           ! grep -rnE 'TEST_CASE\("[^"]*;' tests || (echo "';' in a TEST_CASE name breaks doctest_discover_tests filters" && exit 1)
       - name: docs (snippets, links and anchors, configuration reference)
-        # docs/contributing/writing-docs.md; the command-line reference needs a build (gcc-release).
+        # docs/contributing/writing-docs.md; the command-line reference needs a build (gcc unit).
         run: |
           python3 tools/doc_snippets.py --check
           python3 tools/docs_links.py --check
@@ -91,54 +91,97 @@ jobs:
       - name: clang-tidy (bugprone-* and performance-* fail the job)
         run: RUN_CLANG_TIDY=run-clang-tidy-18 ./scripts/tidy.sh build/debug
 
-  build-test:
+  gcc:
     needs: plan
     if: needs.plan.outputs.code == 'true'
     runs-on: ubuntu-24.04
-    # Private-repository runners have 2 vCPUs and 7 GB: a cold sanitizer build takes well over 20 min.
-    timeout-minutes: 60
+    timeout-minutes: 45
+    # The gcc build of pushes and pull requests: the release-nolto preset (no LTO, so 96 executables
+    # link in seconds), built on four runners that each run a quarter of the work. The integration
+    # tests run one at a time (RUN_SERIAL), which on one runner takes 8 min; the two longest groups
+    # get a runner each. The shards' ctest filters together select every test of the preset.
+    name: gcc ${{ matrix.shard }}
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
-    name: ${{ matrix.name }}
+        include:
+          - shard: unit
+            tests: -E '^integration\.(gateway|recovery|xmm)'
+          - shard: integration-gateway
+            tests: -R '^integration\.gateway'
+          - shard: integration-recovery-xmm
+            tests: -R '^integration\.(recovery|xmm)'
+          - shard: external-project
+            tests: ""
     steps:
       - uses: actions/checkout@v4
       - name: install
-        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.pkgs }} ninja-build libssl-dev ccache && cmake --version
+        run: sudo apt-get update && sudo apt-get install -y g++-13 ninja-build libssl-dev ccache && cmake --version
       - uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: ${{ matrix.name }}
+          key: gcc-nolto
+          max-size: 1G
+          # One shard saves the cache for every shard (and autobahn), from main only.
+          save: ${{ matrix.shard == 'unit' && github.event_name != 'pull_request' }}
       - uses: actions/cache@v4
         with:
           path: ~/.cache/CPM
           key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }}
-      - name: allow TSan on high-entropy ASLR kernels
-        if: contains(matrix.preset, 'tsan')
-        run: sudo sysctl -w vm.mmap_rnd_bits=28
       - name: configure
-        run: cmake --preset ${{ matrix.preset }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DFASTMM_WERROR=ON
+        run: cmake --preset release-nolto -DCMAKE_CXX_COMPILER=g++-13 -DFASTMM_WERROR=ON
       - name: build
         # -k 0: report every compile error in one run instead of stopping at the first one
-        run: cmake --build --preset ${{ matrix.preset }} -j$(nproc) -- -k 0
+        run: cmake --build --preset release-nolto -j$(nproc) -- -k 0
       - name: docs (command-line reference is up to date)
-        if: matrix.name == 'gcc-release'
-        run: python3 tools/docs_cli_help.py --check --bin build/release/bin
+        if: matrix.shard == 'unit'
+        run: python3 tools/docs_cli_help.py --check --bin build/release-nolto/bin
       - name: test
-        env: { ASAN_OPTIONS: "detect_leaks=1:strict_string_checks=1", UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1", TSAN_OPTIONS: "halt_on_error=1" }
-        # The test presets set no job count; run as many tests at once as the runner has cores.
+        if: matrix.tests != ''
         # Includes the labels examples (quick start, C++ examples), tutorial (its unit test, C++
-        # backtest and, outside sanitizers, scripts/docs/tutorial.sh up to the simulated exchange on
-        # a free port) and docs (strategy API doc test, public headers compile alone).
-        run: ctest --preset ${{ matrix.preset }} -j$(nproc)
+        # backtest and scripts/docs/tutorial.sh up to the simulated exchange on a free port) and
+        # docs (strategy API doc test, public headers compile alone).
+        run: ctest --preset release-nolto -j$(nproc) ${{ matrix.tests }}
+      - name: install + external project
+        if: matrix.shard == 'external-project'
+        # examples/external-project against the install prefix: strategy lists, a synthetic backtest,
+        # 15 s of live trading against fastmm-sim-exchange, a verified replay of that journal.
+        run: |
+          cmake --install build/release-nolto --prefix build/install
+          CXX=g++-13 JOBS=$(nproc) ./scripts/ci-external-project.sh build/release-nolto build/install build/external-project
+
+  bench-budgets:
+    needs: plan
+    if: needs.plan.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # The benchmarks are built as they ship: the release preset, LTO included.
+    # bench/ci_budget.toml holds absolute times measured on the reference machine. A hosted runner is
+    # roughly twice as slow and its load is not ours to control, so this gate is set at three times
+    # the budget: it catches a benchmark that errored, that stopped doing the work it is named for
+    # (the [min_counters] floors), or that collapsed by an order of magnitude -- the class of harness
+    # bug that once published an 8 ms reactor round trip. The tight gate is the local one (default
+    # --slack 0.10, scripts/bench.sh + check_budgets.py).
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: sudo apt-get update && sudo apt-get install -y g++-13 ninja-build libssl-dev ccache
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: bench-lto
+          max-size: 2G
+          save: ${{ github.event_name != 'pull_request' }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/CPM
+          key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }}
+      - name: configure
+        run: cmake --preset release -DCMAKE_CXX_COMPILER=g++-13 -DFASTMM_WERROR=ON
+      - name: build the benchmarks
+        run: >-
+          cmake --build --preset release -j$(nproc) --target bench_book bench_risk bench_oms
+          bench_quote_manager bench_logger bench_journal bench_codecs_nasdaq bench_tick_to_order
+          -- -k 0
       - name: benchmark budgets (subset)
-        if: matrix.name == 'gcc-release'
-        # bench/ci_budget.toml holds absolute times measured on the reference machine. A hosted
-        # runner is roughly twice as slow and its load is not ours to control, so this gate is set
-        # at three times the budget: it catches a benchmark that errored, that stopped doing the
-        # work it is named for (the [min_counters] floors), or that collapsed by an order of
-        # magnitude -- the class of harness bug that once published an 8 ms reactor round trip. The
-        # tight gate is the local one (default --slack 0.10, scripts/bench.sh + check_budgets.py).
         run: |
           mkdir -p bench/results/ci
           for b in bench_book bench_risk bench_oms bench_quote_manager bench_logger bench_journal \
@@ -153,10 +196,45 @@ jobs:
             --benchmark_out=bench/results/ci/bench_tick_to_order.json
           python3 tools/check_budgets.py bench/results/ci --slack 2 --hosted
 
+  build-test:
+    needs: plan
+    if: needs.plan.outputs.full == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: gcc-release, preset: release, cxx: g++-13, pkgs: g++-13 }
+          - { name: gcc-asan, preset: asan, cxx: g++-13, pkgs: g++-13 }
+          - { name: clang-release, preset: clang-release, cxx: clang++-18, pkgs: clang-18 lld-18 }
+          - { name: clang-tsan, preset: clang-tsan, cxx: clang++-18, pkgs: clang-18 lld-18 }
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.pkgs }} ninja-build libssl-dev ccache && cmake --version
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ matrix.name }}
+          max-size: 3G
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/CPM
+          key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }}
+      - name: allow TSan on high-entropy ASLR kernels
+        if: contains(matrix.preset, 'tsan')
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+      - name: configure
+        run: cmake --preset ${{ matrix.preset }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DFASTMM_WERROR=ON
+      - name: build
+        run: cmake --build --preset ${{ matrix.preset }} -j$(nproc) -- -k 0
+      - name: test
+        env: { ASAN_OPTIONS: "detect_leaks=1:strict_string_checks=1", UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1", TSAN_OPTIONS: "halt_on_error=1" }
+        # The test presets set no job count; run as many tests at once as the runner has cores.
+        run: ctest --preset ${{ matrix.preset }} -j$(nproc)
       - name: install + external project
         if: matrix.name == 'gcc-release'
-        # examples/external-project against the install prefix: strategy lists, a synthetic backtest,
-        # 15 s of live trading against fastmm-sim-exchange, a verified replay of that journal.
         run: |
           cmake --install build/release --prefix build/install
           CXX=${{ matrix.cxx }} JOBS=$(nproc) ./scripts/ci-external-project.sh build/release build/install build/external-project
@@ -176,6 +254,7 @@ jobs:
       - uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: optional-codecs
+          max-size: 2G
       - uses: actions/cache@v4
         with:
           path: ~/.cache/CPM
@@ -211,27 +290,28 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y g++-13 ninja-build libssl-dev ccache
       - uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: autobahn
+          key: gcc-nolto
+          save: false
       - uses: actions/cache@v4
         with:
           path: ~/.cache/CPM
           key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }}
       - name: configure
-        run: cmake --preset release -DCMAKE_CXX_COMPILER=g++-13 -DFASTMM_WERROR=ON
+        run: cmake --preset release-nolto -DCMAKE_CXX_COMPILER=g++-13 -DFASTMM_WERROR=ON
       - name: build
-        run: cmake --build --preset release -j$(nproc) --target fastmm_autobahn_client fastmm_autobahn_server
+        run: cmake --build --preset release-nolto -j$(nproc) --target fastmm_autobahn_client fastmm_autobahn_server
       - name: autobahn (client and server)
         # A test without docker skips, and ctest counts a skip as a pass: the grep makes it fail
         # this job instead.
         shell: bash
         run: |
-          ctest --test-dir build/release -L autobahn -j2 --output-on-failure --no-tests=error | tee autobahn.log
+          ctest --test-dir build/release-nolto -L autobahn -j2 --output-on-failure --no-tests=error | tee autobahn.log
           ! grep -q 'Skipped' autobahn.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: autobahn-reports
-          path: build/release/autobahn
+          path: build/release-nolto/autobahn
 
   docker:
     needs: plan
@@ -272,6 +352,7 @@ jobs:
       - uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: python-wheel
+          save: ${{ github.event_name != 'pull_request' }}
       - uses: actions/cache@v4
         with:
           path: ~/.cache/CPM
