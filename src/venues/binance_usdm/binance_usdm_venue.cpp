@@ -84,6 +84,7 @@ BinanceUsdmVenue::BinanceUsdmVenue(VenueId id, BinanceUsdmVenueConfig cfg)
       signer_(cfg_.credentials),
       rate_(cfg_.rate_threshold),
       dms_(cfg_.dry_run ? 0 : cfg_.dead_mans_switch_ms) {
+  rate_.set_order_threshold(cfg_.order_rate_threshold);
   // Binance counts request weight per IP: the accounts of a pool that leave from one address
   // (source_ip / source_interface, or none) spend one window.
   if (cfg_.share_ip_weight)
@@ -2454,6 +2455,9 @@ BinanceUsdmVenueConfig make_binance_usdm_config(const VenueSection& v, bool dry_
   check_liveness(v.name, x.integer("stale_ms", c.stale_ms), x.integer("dead_ms", c.dead_ms));
   c.position_from_account_update = x.flag("position_from_account_update", true);
   c.allow_offline_reference_data = x.flag("allow_offline_reference_data", false);
+  c.order_rate_threshold = x.number("order_rate_threshold", c.order_rate_threshold);
+  if (!(c.order_rate_threshold > 0.0 && c.order_rate_threshold <= 1.0))
+    throw std::invalid_argument("venue '" + v.name + "': order_rate_threshold must be in (0, 1]");
   c.cancel_on_order_channel_loss = x.flag("cancel_on_order_channel_loss", true);
   c.dead_mans_switch_ms =
       std::max<std::int64_t>(0, x.integer("dead_mans_switch_ms", c.dead_mans_switch_ms));

@@ -5,6 +5,9 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- `[venues.<name>] order_rate_threshold` (Binance Spot and USDⓈ-M, default 0.9): the share of the
+  10 s and 1 d order-count limits the connector fills before it refuses an order, apart from the
+  request weight's share.
 - Handing a running `fastmm-live` over to a new process. `[engine] instance_lock = true` (default
   false) takes an exclusive `flock` on `[engine] lock_file` (default `<journal_dir>/<name>.lock`)
   before the session reads its state or contacts a venue, and releases it after its shutdown;

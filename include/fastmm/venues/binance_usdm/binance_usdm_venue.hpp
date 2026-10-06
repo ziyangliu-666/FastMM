@@ -161,6 +161,8 @@ struct BinanceUsdmVenueConfig {
   std::uint64_t max_lifetime_ms = 23ULL * 3600 * 1000;  // connections are cut at 24 h
   std::int64_t position_settle_ms = 1000;
   double rate_threshold = 0.9;
+  // The share of the order-count limits (10 s, 1 d) the limiter fills (order_rate_threshold).
+  double order_rate_threshold = 0.9;
   std::int64_t min_snapshot_interval_ns = UsdmDepthSync::kDefaultMinInterval;
   std::string record_raw_dir;
   std::uint32_t http_timeout_ms = 5000;

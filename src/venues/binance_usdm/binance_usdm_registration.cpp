@@ -54,6 +54,11 @@ constexpr VenueKeySpec kBinanceUsdmKeys[] = {
      KeyType::String,
      false,
      "environment variable holding the Ed25519 private key PEM (instead of private_key_file)"},
+    {"order_rate_threshold",
+     KeyType::Float,
+     false,
+     "share of the venue's order-count limits (10 s, 1 d) the connector fills before it refuses "
+     "an order; the request weight stays at 0.9 (default 0.9)"},
     {"md_ticker_conns",
      KeyType::Int,
      false,

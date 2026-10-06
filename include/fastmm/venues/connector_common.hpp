@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -127,11 +128,11 @@ struct IdText {
 [[nodiscard]] inline OrderBudget budget_of(const RateLimiter& r,
                                            std::int64_t now,
                                            std::uint64_t taken) noexcept {
-  auto window = [now, &r](const RateBucket& b) {
+  auto window = [now, &r](const RateBucket& b, bool orders) {
     RateWindow w;
     w.window_ms = b.window_ns / 1'000'000;
     w.limit = b.limit;
-    w.cap = r.cap_of(b.limit);
+    w.cap = orders ? r.order_cap_of(b.limit) : r.cap_of(b.limit);
     w.used = b.window_ns > 0 && now - b.window_start >= b.window_ns ? 0 : b.used;
     return w;
   };
@@ -144,18 +145,18 @@ struct IdText {
     if (!b) continue;
     const std::int64_t s = b->window_ns / 1'000'000'000;
     if (s == 10) {
-      out.orders_10s = window(*b);
+      out.orders_10s = window(*b, true);
     } else if (s == 60) {
-      out.orders_1m = window(*b);
+      out.orders_1m = window(*b, true);
     } else if (s == 86'400) {
-      out.orders_1d = window(*b);
+      out.orders_1d = window(*b, true);
     }
   }
   for (std::size_t i = 0; i < RateLimiter::kMaxBuckets; ++i) {
     const std::optional<RateBucket> b = r.weight_bucket(i);
     if (!b) continue;
     if (!out.weight.known() || b->window_ns < out.weight.window_ms * 1'000'000)
-      out.weight = window(*b);
+      out.weight = window(*b, false);
   }
   return out;
 }
@@ -238,6 +239,13 @@ class VenueExtras {
     if (s.empty()) return def;
     const auto n = parse_int64(s);
     return n ? *n : def;
+  }
+  [[nodiscard]] double number(const char* key, double def) const {
+    const std::string s = get(key);
+    if (s.empty()) return def;
+    char* end = nullptr;
+    const double v = std::strtod(s.c_str(), &end);
+    return end != nullptr && *end == 0 ? v : def;
   }
 
  private:

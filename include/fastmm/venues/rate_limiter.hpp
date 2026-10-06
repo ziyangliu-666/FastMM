@@ -142,7 +142,8 @@ class RateLimiter {
   // may be missing from it.
   static constexpr std::int64_t kHeaderLagNs = 2'000'000'000;
 
-  explicit RateLimiter(double threshold = 0.9) noexcept : threshold_(threshold) {}
+  explicit RateLimiter(double threshold = 0.9) noexcept
+      : threshold_(threshold), order_threshold_(threshold) {}
 
   // The IP's weight, cooldown and hard stop live in `ip` from now on (null: this limiter's own).
   void share_ip(std::shared_ptr<SharedRate> ip) noexcept;
@@ -159,12 +160,20 @@ class RateLimiter {
   // where the venue's does from now on. 0 (the default): windows of the local clock.
   void set_clock_offset(std::int64_t venue_minus_local_ns, std::int64_t now) noexcept;
   void set_threshold(double t) noexcept { threshold_ = std::clamp(t, 0.0, 1.0); }
+  // The share of each order-count limit (ORDERS buckets) can_send fills; the weight keeps
+  // threshold(). An order count past its limit costs a refused order, the weight a ban.
+  void set_order_threshold(double t) noexcept { order_threshold_ = std::clamp(t, 0.0, 1.0); }
+  [[nodiscard]] double order_threshold() const noexcept { return order_threshold_; }
   // The share of each limit can_send fills before it refuses.
   [[nodiscard]] double threshold() const noexcept { return threshold_; }
   // The count a bucket of `limit` admits under that share: can_send refuses the order or request
   // that would take `used` past it (RateBucket::would_exceed).
   [[nodiscard]] std::int64_t cap_of(std::uint32_t limit) const noexcept {
     return static_cast<std::int64_t>(std::floor(static_cast<double>(limit) * threshold_));
+  }
+  // cap_of for an order-count bucket.
+  [[nodiscard]] std::int64_t order_cap_of(std::uint32_t limit) const noexcept {
+    return static_cast<std::int64_t>(std::floor(static_cast<double>(limit) * order_threshold_));
   }
 
   // True if a request of `weight` (and one order if is_order) fits under threshold * limit
@@ -188,7 +197,7 @@ class RateLimiter {
       for (RateBucket& b : orders_) {
         if (!b.active) continue;
         b.roll(now);
-        if (b.would_exceed(1, threshold_)) return {RateRefusal::Orders, b.window_ns};
+        if (b.would_exceed(1, order_threshold_)) return {RateRefusal::Orders, b.window_ns};
       }
     }
     return {};
@@ -335,6 +344,7 @@ class RateLimiter {
   void ip_cooldown(std::int64_t retry_after_ns, std::int64_t now) noexcept;
 
   double threshold_;
+  double order_threshold_;
   std::shared_ptr<SharedRate> ip_;
   std::array<RateBucket, kMaxBuckets> weight_{};
   std::array<RateBucket, kMaxBuckets> orders_{};

@@ -37,6 +37,11 @@ constexpr VenueKeySpec kBinanceKeys[] = {
      false,
      "reduce size with order.amend.keepPriority, which keeps the queue position, instead of "
      "order.cancelReplace (default true)"},
+    {"order_rate_threshold",
+     KeyType::Float,
+     false,
+     "share of the venue's order-count limits (10 s, 1 d) the connector fills before it refuses "
+     "an order; the request weight stays at 0.9 (default 0.9)"},
     {"max_order_amends",
      KeyType::Int,
      false,

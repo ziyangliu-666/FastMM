@@ -55,6 +55,7 @@ BinanceVenue::BinanceVenue(VenueId id, BinanceVenueConfig cfg)
       md_venue_(cfg_.pool_of.valid() ? cfg_.pool_of : id),
       signer_(cfg_.credentials),
       rate_(cfg_.rate_threshold) {
+  rate_.set_order_threshold(cfg_.order_rate_threshold);
   // Binance counts request weight per IP: the accounts of a pool that leave from one address
   // (source_ip / source_interface, or none) spend one window.
   if (cfg_.share_ip_weight)
@@ -2063,6 +2064,9 @@ BinanceVenueConfig make_binance_config(const VenueSectionView& v, bool dry_run) 
   c.position_from_balance = x.flag("position_from_balance", false);
   c.fetch_fees = x.flag("fetch_fees", false);
   c.allow_offline_reference_data = x.flag("allow_offline_reference_data", false);
+  c.order_rate_threshold = x.number("order_rate_threshold", c.order_rate_threshold);
+  if (!(c.order_rate_threshold > 0.0 && c.order_rate_threshold <= 1.0))
+    throw std::invalid_argument("venue '" + v.name + "': order_rate_threshold must be in (0, 1]");
   c.cancel_on_order_channel_loss = x.flag("cancel_on_order_channel_loss", true);
   c.amend_keep_priority = x.flag("amend_keep_priority", true);
   c.max_order_amends = static_cast<std::uint16_t>(

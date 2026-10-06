@@ -30,6 +30,25 @@ TEST_CASE("venues.rate_limiter: weight bucket refuses above threshold and rolls 
   CHECK(rl.weight_bucket(0)->used == 0);
 }
 
+TEST_CASE("venues.rate_limiter: the order-count share is set apart from the weight's") {
+  RateLimiter rl(0.9);
+  rl.set_order_threshold(0.99);
+  REQUIRE(rl.add_weight_bucket(1000, 60 * kSec));
+  REQUIRE(rl.add_order_bucket(100, 10 * kSec));
+  const std::int64_t now = 10 * kSec;
+  for (int i = 0; i < 99; ++i) {
+    REQUIRE(rl.can_send(1, now, true));
+    rl.on_sent(1, now, true);
+  }
+  const RateCheck rc = rl.check(1, now, true);
+  CHECK(rc.refusal == RateRefusal::Orders);
+  CHECK(rl.can_send(800, now));        // weight 99 + 800 <= 900
+  CHECK_FALSE(rl.can_send(802, now));  // the weight still stops at 0.9
+  const fastmm::OrderBudget b = budget_of(rl, now, 0);
+  CHECK(b.orders_10s.cap == 99);
+  CHECK(b.weight.cap == 900);
+}
+
 TEST_CASE("venues.rate_limiter: venue headers raise the local estimate") {
   RateLimiter rl(1.0);
   REQUIRE(rl.add_weight_bucket(6000, 60 * kSec));
