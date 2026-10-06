@@ -19,6 +19,7 @@
 #include "fastmm/live/live_backend.hpp"
 #include "fastmm/live/shutdown_guard.hpp"
 #include "fastmm/live/thread_affinity.hpp"
+#include "fastmm/live/treasury_thread.hpp"
 #include "fastmm/live/venue_slot.hpp"
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/store/registry.hpp"
@@ -1075,6 +1076,27 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   if (gateway && cfg.spin_mode() == SpinMode::Adaptive) feed.waker().share(gateway->engine_flag());
   MsgRing control_ring(1U << 16);
   static_cast<void>(feed.add_ring(&control_ring));
+  // Pool treasuries ([venues.<primary>.treasury]): their records reach the engine (and so the
+  // journal) on a ring of their own, whose only producer is fm-treasury.
+  std::vector<std::string> treasury_pools;
+  for (const VenueSection& v : cfg.venues) {
+    if (v.treasury.enabled) treasury_pools.push_back(v.name);
+  }
+  std::unique_ptr<MsgRing> treasury_ring;
+  if (!treasury_pools.empty()) {
+    if (via_gateway || opts.dry_run) {
+      FASTMM_LOG_WARN("[venues.*.treasury]: not run {}",
+                      via_gateway ? "by a strategy attached to a gateway"
+                                  : "in a dry run (no private sessions, no balances)");
+      treasury_pools.clear();
+    } else {
+      treasury_ring = std::make_unique<MsgRing>(1U << 16);
+      if (!feed.add_ring(treasury_ring.get())) {
+        std::fprintf(stderr, "%s: too many engine input rings\n", prog);
+        return kExitConfig;
+      }
+    }
+  }
   if (custom != nullptr) {
     for (MsgRing* const ring : custom->inputs) {
       if (!feed.add_ring(ring)) {
@@ -1461,6 +1483,72 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     return kExitConfig;
   }
 
+  // ---- pool treasuries -------------------------------------------------------------------
+  // fm-treasury reads the engine's balance table, and sends transfers through the pool's primary
+  // (live/treasury_thread.hpp). The ledger of each is read now: a transfer an earlier process left
+  // in flight is asked for before anything new is planned.
+  std::unique_ptr<TreasuryThread> treasury;
+  if (!treasury_pools.empty()) {
+    std::vector<TreasuryThread::Pool> pools;
+    const auto venue_of = [&slots](VenueId v) -> venues::Venue* {
+      return v.value < slots.size() ? slots[v.value]->venue.get() : nullptr;
+    };
+    const auto refresh = [&slots](VenueId v) {
+      if (v.value >= slots.size()) return;
+      venues::Venue* venue = slots[v.value]->venue.get();
+      slots[v.value]->reactor->post([venue] { venue->request_balances(); });
+    };
+    for (const std::string& name : treasury_pools) {
+      TreasuryConfig tc = cfg.treasury_config(name);
+      const VenueId primary = cfg.venue_id(name);
+      if (!tc.dry_run && !slots[primary.value]->venue->caps().internal_transfer) {
+        std::fprintf(stderr,
+                     "%s: venues.%s.treasury: the connector has no transfer credentials "
+                     "(transfer_api_key_env / transfer_api_secret_env); set them or dry_run = "
+                     "true\n",
+                     prog,
+                     name.c_str());
+        return kExitConfig;
+      }
+      auto t = std::make_unique<Treasury>(std::move(tc));
+      if (auto r = t->open(); !r) {
+        std::fprintf(stderr, "%s: venues.%s.treasury: %s\n", prog, name.c_str(), r.error().c_str());
+        return kExitConfig;
+      }
+      const TreasuryConfig& c = t->config();
+      FASTMM_LOG_INFO(
+          "[treasury {}] {} over {} accounts{}: threshold={} max_per_hour={} min_interval_s={} "
+          "ledger {}",
+          name,
+          std::string_view(c.asset),
+          c.members.size(),
+          c.dry_run ? " (dry run)" : "",
+          c.threshold,
+          c.max_per_hour,
+          c.min_interval_ns / 1'000'000'000,
+          std::string_view(c.state_file));
+      auto port = std::make_unique<LiveTreasuryPort>(
+          primary, venue_of, refresh, treasury_ring.get(), [&feed] { feed.notify(); });
+      pools.push_back({std::move(t), std::move(port)});
+    }
+    treasury = std::make_unique<TreasuryThread>(
+        std::move(pools), [&runner](std::vector<TreasuryBalance>& out) {
+          const EngineLiveStats live = runner->live_stats();
+          const std::size_t n = std::min<std::size_t>(live.balance_count, kMaxLiveBalances);
+          for (std::size_t i = 0; i < n; ++i) {
+            const LiveBalance& b = live.balances[i];
+            if (b.account != 0) continue;
+            TreasuryBalance row;
+            row.venue = VenueId{b.venue};
+            row.asset.assign(std::string_view(b.asset, ::strnlen(b.asset, sizeof b.asset)));
+            row.free = Notional::from_raw(b.free_raw);
+            row.known = b.known != 0;
+            row.as_of_ns = b.as_of_ns;
+            out.push_back(row);
+          }
+        });
+  }
+
   const bool single = cfg.single_threaded();
   Inline inline_ctx;
   if (single) {
@@ -1576,7 +1664,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     engine_thread = std::thread([&] { runner->run(); });
   }
 
-  // A warm standby's audit starts with its private channels, when it takes over.
+  // A warm standby's audit and treasury start with its private channels, when it takes over.
+  if (treasury && !warm) treasury->start();
   if (auditor && !warm) auditor->start();
 
   FASTMM_LOG_INFO(
@@ -1627,6 +1716,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     snap.fills = live.stats.fills;
     snap.risk_rejects = live.stats.risk_rejects;
     snap.balance_withheld = live.stats.balance_withheld;
+    if (treasury) snap.treasury = treasury->stats();
     snap.venue_rejects = live.stats.venue_rejects;
     set_status_rejects(snap.risk_reject_reasons, live.stats.risk_rejects_by_reason);
     set_status_rejects(snap.venue_reject_reasons, live.stats.venue_rejects_by_reason);
@@ -1967,6 +2057,13 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       sl->reactor->post([v] { v->enable_private(); });
       sl->reactor->wake();
     }
+    if (treasury) {
+      if (auto r = treasury->reload(); !r) {
+        FASTMM_LOG_ERROR("standby: treasury: {}; no transfers this session", r.error());
+      } else {
+        treasury->start();
+      }
+    }
     if (auditor) auditor->start();
     FASTMM_LOG_WARN("standby: took over after {} ms warm; opening the private channels",
                     (steady_now().ns - warm_start) / 1'000'000);
@@ -2115,9 +2212,10 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       }
     }
   }
-  shutdown_watchdog.stop_requested();  // --duration, a kill switch, fastmm-ctl stop, ...
-  if (auditor) auditor->stop();        // an audit waiting for a venue gives up
-  control_socket.close();              // no command can reach a session that is shutting down
+  shutdown_watchdog.stop_requested();      // --duration, a kill switch, fastmm-ctl stop, ...
+  if (auditor) auditor->stop();            // an audit waiting for a venue gives up
+  if (treasury) treasury->request_stop();  // no new transfer; one under way finishes
+  control_socket.close();                  // no command can reach a session that is shutting down
   const std::int64_t shutdown_start = steady_now().ns;
   persist_kill(runner->live_stats());
   publish_status(StatusRunState::Stopping, runner->live_stats());
@@ -2183,6 +2281,19 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   }
   for (auto& s : slots) {
     if (s->thread.joinable()) s->thread.join();
+  }
+  if (treasury) {
+    treasury->join();
+    const StatusTreasury t = treasury->stats();
+    FASTMM_LOG_INFO(
+        "fastmm-live: treasury sent={} done={} failed={} timed_out={} in_flight={} "
+        "dry_run_plans={}",
+        t.sent,
+        t.done,
+        t.failed,
+        t.timed_out,
+        t.in_flight,
+        t.dry_run_plans);
   }
   if (journal) journal->stop();
 
