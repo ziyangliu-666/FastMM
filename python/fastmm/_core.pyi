@@ -330,7 +330,7 @@ class BacktestResult:
         """
     def stats(self) -> dict:
         """
-        Every summary metric: PnL / volume / inventory in quote or base units (float), counts and latency percentiles (int, ns).
+        Every summary metric: PnL / volume / inventory in quote or base units (float), counts and latency percentiles (int, ns); kill_reason and kill_at_s (seconds after the start) when the kill switch stopped the run, else None.
         """
     def summary_json(self) -> str:
         """

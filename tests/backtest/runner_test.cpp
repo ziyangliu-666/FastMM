@@ -5,10 +5,12 @@
 #include "fastmm/backtest/backtest_runner.hpp"
 #include "fastmm/backtest/registrations.hpp"
 #include "fastmm/backtest/sweep.hpp"
+#include "fastmm/config/config.hpp"
 #include "fastmm/strategies/avellaneda_stoikov.hpp"
 #include "fastmm/strategies/basic_mm.hpp"
 
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <stdexcept>
 
@@ -273,4 +275,51 @@ TEST_CASE("backtest.runner: ctx.request_stop() ends a backtest after the step th
   CHECK(r.md_events < full.md_events);
   CHECK(r.end_ts < full.end_ts);
   CHECK(r.metrics.bars > 0);  // the partial run still samples its last bar
+}
+
+TEST_CASE("backtest.runner: the summary says when [risk] max_loss stopped the run") {
+  BacktestConfig cfg = synthetic_config(42, seconds(30));
+  cfg.transport.fees = sim::FeeModel::from_bps(10.0, 10.0);
+  cfg.engine.risk.max_loss = Notional::from_decimal("0.1").value();
+  const BacktestResult r = run_backtest(cfg, "basic_mm");
+  REQUIRE(r.killed());
+  CHECK(r.engine.kill_reason == KillReason::MaxLoss);
+  CHECK(r.kill_at_s() > 0.0);
+  CHECK(r.kill_at_s() < 30.0);
+  CHECK(r.metrics.quote_uptime < 1.0);
+  CHECK(r.summary_table().find("  stopped                        by the kill switch ([risk] "
+                               "max_loss) at ") != std::string::npos);
+  CHECK(r.summary_json().find("\"kill_reason\": \"MaxLoss\"") != std::string::npos);
+
+  const BacktestResult ok = run_backtest(synthetic_config(42, seconds(5)), "basic_mm");
+  CHECK_FALSE(ok.killed());
+  CHECK(ok.summary_table().find("stopped") == std::string::npos);
+  CHECK(ok.summary_json().find("\"kill_reason\": null") != std::string::npos);
+}
+
+TEST_CASE("backtest.config: a live config loads without its API keys in the environment") {
+  ::unsetenv("FASTMM_T_UNSET_KEY");
+  ::unsetenv("FASTMM_T_UNSET_SECRET");
+  const std::string live = R"(
+[venues.binance]
+kind = "binance_spot"
+api_key = "${FASTMM_T_UNSET_KEY}"
+api_secret = "${FASTMM_T_UNSET_SECRET}"
+[[instruments]]
+venue = "binance"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+tick = "0.01"
+lot = "0.00001"
+min_qty = "0.00001"
+[strategy]
+name = "basic_mm"
+)";
+  CHECK_THROWS_AS(Config::parse(live), ConfigError);  // the live default resolves them
+  ConfigLoadOptions lo;
+  lo.substitute_env = false;  // as fastmm-backtest and fastmm.BacktestConfig.from_toml load it
+  const Config c = Config::parse(live, lo);
+  CHECK(c.venues.at(0).api_key == "${FASTMM_T_UNSET_KEY}");
+  CHECK(BacktestConfig::from_config(c).strategy == "basic_mm");
 }

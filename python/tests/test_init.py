@@ -8,7 +8,7 @@ import pytest
 import fastmm
 from fastmm._scaffold import write_project
 
-FILES = ["config.toml", "strategy.py", "backtest.py", "README.md"]
+FILES = ["config.toml", "live.toml", "strategy.py", "backtest.py", "README.md"]
 
 
 def test_writes_the_project(tmp_path):
@@ -32,6 +32,20 @@ def test_config_loads_without_warnings(tmp_path):
     assert not cfg.warnings
 
 
+def test_live_config_names_the_class_and_its_params(tmp_path, monkeypatch):
+    # No keys in the environment: a backtest of the live config needs none.
+    monkeypatch.delenv("FASTMM_BINANCE_API_KEY", raising=False)
+    monkeypatch.delenv("FASTMM_BINANCE_API_SECRET", raising=False)
+    write_project(tmp_path / "my-mm")
+    cfg = fastmm.BacktestConfig.from_toml(tmp_path / "my-mm" / "live.toml")
+    assert cfg.strategy == "py:MyMm"
+    text = (tmp_path / "my-mm" / "strategy.py").read_text()
+    for name in cfg.params:
+        assert f"    {name} = Param(" in text
+    readme = (tmp_path / "my-mm" / "README.md").read_text()
+    assert "strategy:MyMm --config live.toml --dry-run" in readme
+
+
 def test_the_command_writes_a_project(tmp_path):
     out = subprocess.run([sys.executable, "-m", "fastmm", "init", str(tmp_path / "p")],
                          capture_output=True, text=True, check=True)
@@ -42,8 +56,9 @@ def test_the_command_writes_a_project(tmp_path):
 def test_the_backtest_runs(tmp_path):
     pytest.importorskip("numba")
     write_project(tmp_path / "mm")
-    out = subprocess.run([sys.executable, "backtest.py", "--duration-s", "30"],
+    out = subprocess.run([sys.executable, "backtest.py"],
                          cwd=tmp_path / "mm", capture_output=True, text=True, check=False)
     assert out.returncode == 0, out.stderr
     assert "fills (maker / taker)" in out.stdout
+    assert "stopped" not in out.stdout  # the default run does not reach [risk] max_loss
     assert (tmp_path / "mm" / "runs" / "backtest" / "fills.csv").exists()

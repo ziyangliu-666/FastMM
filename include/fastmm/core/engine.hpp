@@ -486,6 +486,8 @@ class Engine {
   [[nodiscard]] bool params_stale() const noexcept { return params_stale_; }
   // The first reason the global kill switch was set for (None while it is not set).
   [[nodiscard]] KillReason kill_reason() const noexcept { return kill_reason_; }
+  // Engine time the global kill switch was set (0 while it is not set).
+  [[nodiscard]] Timestamp kill_ts() const noexcept { return kill_ts_; }
   [[nodiscard]] KillReason venue_kill_reason(VenueId v) const noexcept {
     return venue_kill_reasons_[RiskEngine::venue_slot(v)];
   }
@@ -721,6 +723,8 @@ class Engine {
     r.risk_rejects_by_reason = stats_.risk_rejects_by_reason;
     r.venue_rejects_by_reason = stats_.venue_rejects_by_reason;
     r.balance_withheld = quotes_.stats().kept_balance;
+    r.kill_reason = kill_reason_;
+    r.kill_ts_ns = kill_ts_.ns;
     return r;
   }
 
@@ -1917,6 +1921,7 @@ class Engine {
         } else {
           risk_.reset();
           kill_reason_ = KillReason::None;
+          kill_ts_ = Timestamp{};
           venue_kill_reasons_.fill(KillReason::None);
         }
         quoting_enabled_ = true;
@@ -2240,7 +2245,10 @@ class Engine {
   void on_kill(KillReason reason) noexcept {
     ++stats_.kills;
     quoting_enabled_ = false;
-    if (kill_reason_ == KillReason::None) kill_reason_ = reason;
+    if (kill_reason_ == KillReason::None) {
+      kill_reason_ = reason;
+      kill_ts_ = now();
+    }
     emit_kill(reason, VenueId::invalid(), /*per_venue=*/false);
     if (reason == KillReason::Requested) {
       FASTMM_LOG_WARN("kill switch requested (flags={:#x}); pulling quotes and cancelling all",
@@ -3229,6 +3237,7 @@ class Engine {
   std::array<std::uint64_t, kMaxVenues> sent_orders_{};
   std::array<std::uint8_t, kMaxVenues> pool_turn_{};
   KillReason kill_reason_ = KillReason::None;
+  Timestamp kill_ts_{};
   std::array<KillReason, kKillVenueSlots> venue_kill_reasons_{};
   bool started_ = false;
   bool finished_ = false;

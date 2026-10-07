@@ -135,6 +135,12 @@ struct BacktestResult {
   BacktestTreasury treasury;
 
   [[nodiscard]] const Metrics& summary() const noexcept { return metrics; }
+  // Whether the global kill switch stopped the run ([risk] max_loss, a failing hook, ...), and
+  // when: seconds of simulated time after start_ts.
+  [[nodiscard]] bool killed() const noexcept { return engine.kill_reason != KillReason::None; }
+  [[nodiscard]] double kill_at_s() const noexcept {
+    return static_cast<double>(engine.kill_ts_ns - start_ts) / 1e9;
+  }
   // Human-readable table, one metric per line.
   [[nodiscard]] std::string summary_table() const;
   [[nodiscard]] std::string summary_json() const;

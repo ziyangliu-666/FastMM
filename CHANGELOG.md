@@ -4,13 +4,25 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+### Added
+- `fastmm init` also writes `live.toml`: the starter class on BTCUSDT on Binance Spot Demo Mode,
+  journal on, keys from `FASTMM_BINANCE_API_KEY` / `FASTMM_BINANCE_API_SECRET` (a `--dry-run`
+  needs none). The starter's `backtest.py` takes `--config` and `--data`, so a recorded journal
+  replays with `python backtest.py --config live.toml --data runs/<journal>.fmj`.
+- A backtest the kill switch stopped says so: a `stopped` line at the top of the summary table
+  (`by the kill switch ([risk] max_loss) at 101.2s of 120.0s`), `kill_reason` and `kill_at_s` in
+  `summary.json` and in `BacktestResult.stats()` (None when it did not trip). In C++,
+  `RunnerStats::kill_reason` / `kill_ts_ns` and `Engine::kill_ts()`.
+- The `@fastmm.hot` IR check names what the hook does and where, when Numba's typed IR shows it:
+  `it creates a dict at strategy.py:21` (lists, sets, strings, arrays and `print` too, in the hook
+  or an `njit` helper it calls), then the runtime symbols.
+
 ### Changed
 - `fastmm-engine` no longer installs on CPython 3.9 (end of life): `requires-python` is `>=3.10`,
   as `fastmm-engine-live` and the `hot` extra already needed, and no cp39 wheel is built. On 3.9,
   `pip install "fastmm-engine[hot,live]"` failed with an unexplained `ResolutionImpossible`.
 - `examples/quickstart/CMakeLists.txt` fetches FastMM `v0.4.0` instead of `main`. A version bump
   updates the tag; configuring FastMM with examples fails when it differs from the project version.
-
 - The release tarball needs glibc 2.28 or newer and nothing else, was the build host's glibc
   (2.39) and libssl 3: it is built in `manylinux_2_28` with OpenSSL (`scripts/wheels/build-openssl.sh`),
   libstdc++ and libgcc linked statically, and runs on Ubuntu 22.04, Debian 12, Rocky Linux 9 and
@@ -24,6 +36,8 @@ All notable changes are recorded here (Keep a Changelog format).
   README lists all eight programs and starts with the simulated exchange, which needs no network
   namespace; the ITCH example runs in `sudo unshare -n` (Ubuntu 24.04 restricts unprivileged user
   namespaces) as the calling user, and both stop the simulator when the engine exits.
+- The starter (`fastmm init`) quotes 0.0001 BTC a side, not 0.002: its default 120 s backtest
+  paid 100 in fees and was stopped by `[risk] max_loss` at 101 s. It still loses, on fees.
 
 ### Fixed
 - `scripts/bootstrap.sh` uses `$CXX` when it is set, and otherwise the first of `g++`, `g++-15` to
@@ -31,6 +45,9 @@ All notable changes are recorded here (Keep a Changelog format).
   exports it with the matching C compiler as `CXX` and `CC` for the configure. It found only `g++`
   and `clang++`, so on Ubuntu 24.04 with just the `g++-13` package it stopped with "no C++
   compiler found", even with `CXX=g++-13`.
+- `fastmm.BacktestConfig.from_toml` and `from_toml_string` no longer resolve `${VAR}` in
+  `[venues.*]`, as `fastmm-backtest` already did: a live config with unset API key variables
+  loads for a backtest instead of raising `ConfigError`.
 
 ### Documentation
 - The quick start in the README and [Install](docs/getting-started/install.md) creates a virtual

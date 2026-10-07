@@ -263,10 +263,10 @@ When the hook returns, the engine makes at most one call for the instrument: `se
 
 Hooks use Numba's nopython subset: numbers, the fields and methods above, loops, tuples and functions decorated with `numba.njit`. The code runs with bounds checks (an index outside an array raises `IndexError`) and Python's error model (a division by zero raises `ZeroDivisionError`); helpers are compiled with bounds checks when a hook first calls them.
 
-Before a run, FastMM scans the LLVM IR of each hook and of the helpers it calls. A call to anything other than an LLVM intrinsic, a libm function or `NRT_MemInfo_call_dtor` raises `fastmm.HotCompileError` (a `TypeError`) with the hook and the symbol:
+Before a run, FastMM scans the LLVM IR of each hook and of the helpers it calls. A call to anything other than an LLVM intrinsic, a libm function or `NRT_MemInfo_call_dtor` raises `fastmm.HotCompileError` (a `TypeError`) with the hook, the line that allocates or prints when Numba's typed IR shows it, and the symbols:
 
 ```text
-fastmm: Allocates.on_book is rejected by the IR check: it calls NRT_MemInfo_alloc_aligned (memory allocation (arrays, lists, dicts, strings)). Hot hooks may not allocate, print or use Python objects.
+fastmm: Allocates.on_book is rejected by the IR check: it creates an array at strategy.py:21. Hot hooks may not allocate, print or use Python objects (it calls NRT_MemInfo_alloc_aligned).
 ```
 
 This rejects arrays, lists, strings, `print` and Python objects. Calls through ctypes or cffi function pointers are not detected and are not supported. A hook that Numba cannot compile raises `HotCompileError` with the hook's name and Numba's message.

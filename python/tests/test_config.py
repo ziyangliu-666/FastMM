@@ -79,3 +79,13 @@ def test_copy_is_independent(example_config):
     b.seed = 1234
     b.set_param("half_spread_bps", 1)
     assert a.seed != 1234 and a.params["half_spread_bps"] == "0.01"
+
+
+def test_a_backtest_needs_no_api_keys(repo, monkeypatch):
+    # A live config: its ${VAR} keys stay unresolved, as in fastmm-backtest.
+    monkeypatch.delenv("FASTMM_BINANCE_API_KEY", raising=False)
+    monkeypatch.delenv("FASTMM_BINANCE_API_SECRET", raising=False)
+    path = repo / "configs" / "binance-demo.toml"
+    cfg = fastmm.BacktestConfig.from_toml(path)
+    assert cfg.strategy == "basic_mm"
+    assert fastmm.BacktestConfig.from_toml_string(path.read_text()).strategy == "basic_mm"

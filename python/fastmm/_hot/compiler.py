@@ -275,6 +275,69 @@ def disallowed_calls(ir: str) -> List[str]:
     return sorted(bad)
 
 
+def _what(expr: Any, typ: Any, typemap: Mapping[str, Any]) -> Optional[str]:
+    """What a typed IR expression does that the IR check rejects, or None."""
+    func = typemap.get(expr.func.name) if expr.op == "call" else None
+    key = getattr(func, "typing_key", None)
+    if isinstance(typ, types.DictType):
+        return "creates a dict"
+    if isinstance(typ, (types.List, types.ListType)):
+        return "creates a list"
+    if isinstance(typ, types.Set):
+        return "creates a set"
+    if isinstance(typ, types.UnicodeType) or (
+            isinstance(typ, types.StringLiteral) and expr.op == "call"):
+        return "creates a string"
+    if isinstance(typ, types.Array) and (
+            expr.op in ("binop", "inplace_binop", "unary", "arrayexpr")
+            or str(getattr(key, "__module__", "")).startswith("numpy")):
+        return "creates an array"
+    return None
+
+
+def _where(loc: Any) -> str:
+    path = os.path.relpath(loc.filename)
+    return f"{loc.filename if path.startswith('..') else path}:{loc.line}"
+
+
+def allocation_sites(dispatcher: Any, limit: int = 3) -> List[str]:
+    """'creates a dict at strategy.py:21' for the expressions in the typed IR of `dispatcher`'s
+    compiled overloads, and of the njit functions they call, that allocate or print."""
+    from numba.core import ir
+
+    out: List[str] = []
+    seen = set()
+    stack = list(dispatcher.overloads.values())
+    while stack and len(out) < limit:
+        ann = stack.pop(0).type_annotation
+        if not hasattr(ann, "blocks") or id(ann) in seen:  # None or a stub when loaded from cache
+            continue
+        seen.add(id(ann))
+        for block in ann.blocks.values():
+            for stmt in block.body:
+                if isinstance(stmt, ir.Print):
+                    site = f"prints at {_where(stmt.loc)}"
+                    if site not in out:
+                        out.append(site)
+                    continue
+                if not (isinstance(stmt, ir.Assign) and isinstance(stmt.value, ir.Expr)):
+                    continue
+                expr = stmt.value
+                what = _what(expr, ann.typemap.get(stmt.target.name), ann.typemap)
+                if what is not None:
+                    site = f"{what} at {_where(stmt.loc)}"
+                    if site not in out:
+                        out.append(site)
+                elif expr.op == "call":
+                    func = ann.typemap.get(expr.func.name)
+                    sig = ann.calltypes.get(expr)
+                    if isinstance(func, types.Dispatcher) and sig is not None:
+                        callee = func.dispatcher.overloads.get(sig.args)
+                        if callee is not None:
+                            stack.append(callee)
+    return out[:limit]
+
+
 def _explain(symbol: str) -> str:
     if symbol.startswith("NRT_"):
         return "memory allocation (arrays, lists, dicts, strings)"
@@ -432,6 +495,20 @@ class CompiledHot:
                                   f"{e}") from None
         bad = disallowed_calls(entry.inspect_llvm())
         if bad:
+            try:
+                sites = allocation_sites(user)
+                if not sites and cache:  # loaded from the cache: no typed IR, so compile it again
+                    fresh = njit(**self.options)(fn)
+                    for args in user.signatures:
+                        fresh.compile(args)
+                    sites = allocation_sites(fresh)
+            except Exception:  # noqa: BLE001 - the locations are a courtesy; the symbols suffice
+                sites = []
+            if sites:
+                calls = ", ".join(bad[:3]) + (f" and {len(bad) - 3} more" if len(bad) > 3 else "")
+                raise HotCompileError(
+                    f"fastmm: {where} is rejected by the IR check: it {'; '.join(sites)}. Hot "
+                    f"hooks may not allocate, print or use Python objects (it calls {calls}).")
             detail = "; ".join(f"{s} ({_explain(s)})" for s in bad)
             raise HotCompileError(f"fastmm: {where} is rejected by the IR check: it calls {detail}. "
                                   "Hot hooks may not allocate, print or use Python objects.")

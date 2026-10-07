@@ -133,6 +133,6 @@ identical
 |---|---|
 | `TypeError` when the class is defined | a plain `fastmm.Strategy` hook in the class, a wrong hook name or signature, a name declared twice, or an assignment to a parameter |
 | `HotCompileError: ... does not compile in Numba nopython mode` | code outside Numba's nopython subset; Numba's message follows, with the line |
-| `HotCompileError: ... is rejected by the IR check: it calls <symbol>` | an array, list, string, `print` or Python object in the hook or a helper |
+| `HotCompileError: ... is rejected by the IR check: it creates a list at strategy.py:21 ...` | an array, list, dict, string, `print` or Python object in the hook or a helper, at that line when it is named |
 | `StrategyError` with `status == 1` | the hook raised, for example an index outside an array or a division by zero |
 | `StrategyError` with `status == 3` | a float price or quantity that is not finite, out of range or a negative quantity |
