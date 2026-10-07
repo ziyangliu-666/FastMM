@@ -14,6 +14,11 @@ All notable changes are recorded here (Keep a Changelog format).
   replaces`. The engine counters and `fastmm-top` (`paper orders=`) count the paper orders.
   `ctx.quoting_enabled()` is true in a dry run, and the journal header's `quoting_enabled` is 1; a
   strategy attached to a gateway still does not quote in a dry run. The engine is unchanged.
+- A dry run leaves the keyed sessions' state alone: it runs as engine `<name>-dryrun` (its status
+  file, control socket and journal), starts flat, and opens no store, kill ledger
+  (`[engine] kill_file`), strategy state file or instance lock. Before, its store record became
+  the "previous session" a keyed start restored its position and execution replay from, and it
+  counted in the kill ledger. `--dry-run` with `--standby` or `--takeover` exits 2.
 - The per-venue status line comes every 10 s when the log goes to stderr, and every second into a
   `[logging] file` as before. `[logging] status_interval_s` sets it (0 = none). fastmm-gateway too.
 - A planned stop (`--duration`, SIGINT/SIGTERM, `fastmm-ctl stop` or `handoff`) logs `stopping:

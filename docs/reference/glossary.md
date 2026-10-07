@@ -13,7 +13,7 @@
 | **client order id** | FastMM's id of an order: the session epoch in the upper 32 bits and a sequence number in the lower 32 |
 | **context (`ctx`)** | the strategy's view of the engine passed to every hook (`StrategyContext`) |
 | **desired quotes** | the ladder a strategy asks for with `set_quotes` (`DesiredQuotes`), up to 8 levels per side |
-| **dry run** | `--dry-run`: public market data only, no keys; the strategy quotes on paper and nothing is sent |
+| **dry run** | `--dry-run`: public market data only, no keys; the strategy quotes on paper and nothing is sent. It runs as `<name>-dryrun`, starts flat and writes no store, kill ledger or strategy state |
 | **engine clock** | the time the engine uses for all decisions, read once per event; recorded in the journal |
 | **epoch** | see *session epoch* |
 | **fill** | an execution of one of our orders; `on_fill` receives a `Fill` |

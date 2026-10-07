@@ -121,7 +121,7 @@ The shipped configs raise `stale_ms` for quiet feeds ([Venue connectors](../../r
 [binance] dry run BTCUSDT: bid 83985.83 x 0.0003 ask 84238.18 x 0.0003 would send new=2 cancel=0 replace=6
 ```
 
-The summary at the end counts them: `dry run: would have sent 2 orders, 2 cancels, 6 replaces (none was sent)`; the cancels include the two the stop pulls. The status line per venue comes every 10 s on the console (`[logging] status_interval_s`); a working dry run shows `md=live`, all books synced (`books=1/1`), `malformed=0` and `dropped=0`.
+A dry run starts flat and runs as engine `<name>-dryrun` (`fastmm-top --name <name>-dryrun`); it writes no store, kill ledger or strategy state, so the next keyed session starts from the last keyed one. The summary at the end counts them: `dry run: would have sent 2 orders, 2 cancels, 6 replaces (none was sent)`; the cancels include the two the stop pulls. The status line per venue comes every 10 s on the console (`[logging] status_interval_s`); a working dry run shows `md=live`, all books synced (`books=1/1`), `malformed=0` and `dropped=0`.
 
 ## 5. Short keyed run
 

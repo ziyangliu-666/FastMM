@@ -2,16 +2,22 @@
 //   * PaperVenue acknowledges new orders, cancels and replaces at once, expires IOC orders, answers
 //     a reconciliation with its resting orders and reports the quotes and the would-be counts;
 //   * a whole dry-run session against the in-process simulator sends the exchange nothing, its
-//     engine counts the orders it would have sent, and its journal replays exactly.
+//     engine counts the orders it would have sent, and its journal replays exactly;
+//   * a dry run between two keyed sessions leaves their store, kill ledger and the position and
+//     execution-replay start the next one restores exactly as they were.
 #include "integration_util.hpp"
 
 #include "fastmm/backtest/replay.hpp"
 #include "fastmm/core/status_segment.hpp"
 #include "fastmm/live/paper_venue.hpp"
 #include "fastmm/live/session.hpp"
+#include "fastmm/store/reader.hpp"
+#include "fastmm/store/registry.hpp"
 #include "fastmm/strategies/builtin.hpp"
 #include "fastmm/strategies/registry.hpp"
 
+#include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -224,4 +230,91 @@ TEST_CASE("dry run session: quotes on paper, sends the exchange nothing, replays
   CHECK(rr.outbound_messages == rr.recorded_messages);
   CHECK(rr.recorded_messages > 0);
   CHECK(rr.ok());
+}
+
+namespace {
+
+// Every file under `dir` with its bytes.
+std::map<std::string, std::string> files_under(const std::filesystem::path& dir) {
+  std::map<std::string, std::string> out;
+  for (const auto& e : std::filesystem::recursive_directory_iterator(dir)) {
+    if (!e.is_regular_file()) continue;
+    out[std::filesystem::relative(e.path(), dir).string()] = fastmm::test::read_file(e.path());
+  }
+  return out;
+}
+
+store::Recovery recovery_of(const Config& cfg) {
+  store::register_builtin_backends();
+  auto reader = store::StoreRegistry::instance().make_reader("sqlite");
+  REQUIRE(reader != nullptr);
+  store::BackendOptions bo;
+  bo.config = &cfg.storage;
+  bo.engine_name = cfg.engine.name;
+  bo.default_dir = cfg.engine.journal_dir;
+  bo.read_only = true;
+  REQUIRE(reader->open(bo).has_value());
+  store::QueryFilter qf;
+  qf.engine = cfg.engine.name;
+  auto rec = reader->recovery(qf);
+  REQUIRE(rec.has_value());
+  return *rec;
+}
+
+}  // namespace
+
+TEST_CASE("dry run session: a keyed session's store, kill ledger and replay start are untouched") {
+  static const bool registered = [] {
+    register_builtin_strategies(StrategyRegistry::instance());
+    return true;
+  }();
+  static_cast<void>(registered);
+  ServerFixture fx;
+  const std::filesystem::path dir = fastmm::test::tmp_dir() / "dry-run-state";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  Config cfg = sim_local_config(fx, false);
+  cfg.engine.name = "dry-run-state";
+  cfg.engine.journal_dir = dir.string();
+  cfg.engine.epoch_file = (dir / "epoch").string();
+  const auto options = [&](const std::string& tag, bool dry) {
+    live::LiveOptions o;
+    o.dry_run = dry;
+    o.duration_ns = seconds(5).ns;
+    o.journal_path = fresh("dry-run-state-" + tag + ".fmj");  // outside `dir`
+    o.status_path = fresh("dry-run-state-" + tag + ".status");
+    o.program = "dry-run-test";
+    return o;
+  };
+
+  REQUIRE(live::run_live(cfg, options("keyed1", false)) == live::kExitOk);
+  const store::Recovery before = recovery_of(cfg);
+  REQUIRE(before.found);
+  for (const auto& p : before.position_state) MESSAGE(p.symbol << " qty_raw=" << p.qty_raw);
+  auto files = files_under(dir);
+  files.erase("epoch");  // the next session epoch; any value is unique
+  REQUIRE(files.contains("dry-run-state.kill"));
+
+  REQUIRE(live::run_live(cfg, options("dry", true)) == live::kExitOk);
+  auto after_files = files_under(dir);
+  after_files.erase("epoch");
+  CHECK(after_files == files);  // no store row, no kill ledger write, no new file
+
+  const store::Recovery after = recovery_of(cfg);
+  CHECK(after.session_id == before.session_id);
+  REQUIRE(after.position_state.size() == before.position_state.size());
+  for (std::size_t i = 0; i < before.position_state.size(); ++i) {
+    CHECK(after.position_state[i].symbol == before.position_state[i].symbol);
+    CHECK(after.position_state[i].qty_raw == before.position_state[i].qty_raw);
+    CHECK(after.position_state[i].avg_px_raw == before.position_state[i].avg_px_raw);
+  }
+  REQUIRE(after.venue_resume.size() == before.venue_resume.size());
+  for (std::size_t i = 0; i < before.venue_resume.size(); ++i)
+    CHECK(after.venue_resume[i].since_ms == before.venue_resume[i].since_ms);
+  CHECK(after.fallback_since_ms == before.fallback_since_ms);
+
+  // The next keyed session carries the first one's position over and records itself after it.
+  REQUIRE(live::run_live(cfg, options("keyed2", false)) == live::kExitOk);
+  const store::Recovery last = recovery_of(cfg);
+  CHECK(last.session_id != before.session_id);
 }

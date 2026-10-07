@@ -608,7 +608,45 @@ bool resolve_venue_env(Config& cfg, bool dry_run, const char* prog) {
   return true;
 }
 
+namespace {
+
+int run_session(const Config& cfg, const LiveOptions& opts);
+
+// A dry run's configuration: nothing a keyed session of the engine reads is read or written. It
+// runs as `<name>-dryrun` (its status file, control socket, journal), takes no instance lock,
+// opens no store, starts flat (no position restored, no strategy state file) and keeps no kill
+// ledger (run_session skips it).
+Config dry_run_config(const Config& in) {
+  Config c = in;
+  c.engine.name += "-dryrun";
+  c.engine.instance_lock = false;
+  c.engine.lock_file.clear();
+  c.engine.restore_position = false;
+  c.strategy.state_file.clear();
+  c.storage.values["backend"] = std::string(store::kNoBackend);
+  return c;
+}
+
+}  // namespace
+
 int run_live(const Config& cfg, const LiveOptions& opts) {
+  if (!opts.dry_run) return run_session(cfg, opts);
+  if (opts.standby || opts.takeover) {
+    std::fprintf(stderr,
+                 "%s: --standby and --takeover hand a keyed session over; not with --dry-run\n",
+                 opts.program.c_str());
+    return kExitUsage;
+  }
+  FASTMM_LOG_INFO(
+      "dry run: runs as engine {}-dryrun and starts flat; no store, kill ledger, strategy state "
+      "file or instance lock",
+      std::string_view(cfg.engine.name));
+  return run_session(dry_run_config(cfg), opts);
+}
+
+namespace {
+
+int run_session(const Config& cfg, const LiveOptions& opts) {
   const char* prog = opts.program.c_str();
   const LiveStrategy* const custom = opts.strategy;
   // ---- instruments, venues, reference data (main thread, blocking) ---------------------
@@ -781,6 +819,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   KillState kill_state;
   // `holding`: this process holds the instance lock (or needs none) and may clear the file.
   const auto load_kill = [&](bool holding = true) -> int {
+    if (opts.dry_run) return 0;  // a dry run keeps no ledger and starts from none
     if (const std::filesystem::path kp(kill_path); kp.has_parent_path()) {
       std::error_code ec;
       std::filesystem::create_directories(kp.parent_path(), ec);
@@ -1924,6 +1963,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
     snap.kill_latched = st.latched ? 1 : 0;
     snap.pnl_carry_raw = kill_state.carry().raw;
+    if (opts.dry_run) return;  // never the keyed sessions' ledger
     // Nothing traded since the last write: no rewrite, and no fsync of the journal directory.
     if (kill_written && st.realized == kill_last.realized && st.fees == kill_last.fees &&
         st.latched == kill_last.latched) {
@@ -2564,5 +2604,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   FASTMM_LOG_INFO("fastmm-live: exit code {}", rc);
   return rc;
 }
+
+}  // namespace
 
 }  // namespace fastmm::live
