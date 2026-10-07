@@ -2,6 +2,13 @@
 
 All notable changes are recorded here (Keep a Changelog format).
 
+## [Unreleased]
+
+### Fixed
+- The README `fastmm init` writes runs `pip` and `python` in the active virtual environment. It
+  called `.venv/bin/pip` in the project directory, which the quick start (a `.venv` one level up)
+  never creates.
+
 ## [0.5.0] - 2026-10-07
 
 ### Added

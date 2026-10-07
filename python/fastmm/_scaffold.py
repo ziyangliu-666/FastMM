@@ -300,10 +300,11 @@ A FastMM market maker: `strategy.py` quotes both sides around the mid and shifts
 its inventory, `config.toml` describes the simulated market it trades, `backtest.py` runs it, and
 `live.toml` runs the same class on Binance Spot Demo Mode.
 
+In the virtual environment that has `fastmm-engine[hot]`:
+
 ```bash
-python3 -m venv .venv && .venv/bin/pip install "fastmm-engine[hot]"
-.venv/bin/python backtest.py
-.venv/bin/python backtest.py --sweep half_spread_bps=0.005,0.01,0.02,0.05
+python backtest.py
+python backtest.py --sweep half_spread_bps=0.005,0.01,0.02,0.05
 ```
 
 The backtest prints the summary, the PnL decomposition and the markouts, and writes the fills,
@@ -328,9 +329,9 @@ Read the capture, the markouts and the fees separately, and see
 Live sessions need `fastmm-engine-live` (Linux x86-64):
 
 ```bash
-.venv/bin/pip install "fastmm-engine[live]"
-.venv/bin/python -m fastmm run strategy:@NAME_CLASS@ --config live.toml --dry-run --duration 60s
-.venv/bin/python backtest.py --config live.toml --data runs/<journal>.fmj
+pip install "fastmm-engine[live]"
+python -m fastmm run strategy:@NAME_CLASS@ --config live.toml --dry-run --duration 60s
+python backtest.py --config live.toml --data runs/<journal>.fmj
 ```
 
 `--dry-run` takes public market data, sends no orders and needs no keys; the session's journal in
@@ -339,7 +340,7 @@ Key Management on binance.com and run the same command without `--dry-run`:
 
 ```bash
 export FASTMM_BINANCE_API_KEY=... FASTMM_BINANCE_API_SECRET=...
-.venv/bin/python -m fastmm run strategy:@NAME_CLASS@ --config live.toml
+python -m fastmm run strategy:@NAME_CLASS@ --config live.toml
 ```
 
 Before a real account, read the go-live checklist:
