@@ -477,8 +477,10 @@ if(TARGET fastmm-live)
   string(REPLACE "[engine]\n" "[engine]\nkill_file = \"${_latched_kill}\"\n" _latched "${_sim_local}")
   set(_latched_file ${CMAKE_CURRENT_BINARY_DIR}/tmp/cli/sim-local-latched.toml)
   file(CONFIGURE OUTPUT ${_latched_file} CONTENT "${_latched}" @ONLY)
+  # Keyed: a dry run reads no kill ledger. The keys are never used, the latch stops it first.
   fastmm_cli_test(apps.fastmm-live.latched_kill_before_venues EXPECT_RC 6
-    CMD $<TARGET_FILE:fastmm-live> --config ${_latched_file} --dry-run --no-journal --no-status
+    CMD ${CMAKE_COMMAND} -E env FASTMM_SIM_API_KEY=k FASTMM_SIM_API_SECRET=s
+        $<TARGET_FILE:fastmm-live> --config ${_latched_file} --no-journal --no-status
     EXPECT_REGEX "a MaxLoss kill switch is latched in .*latched.kill"
     REJECT_REGEX "exchangeInfo")
   fastmm_cli_test(apps.fastmm-live.help_lists_exit_codes EXPECT_RC 0
