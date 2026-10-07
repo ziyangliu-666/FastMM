@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 
@@ -431,3 +432,26 @@ def test_two_venues_from_a_list_of_feeds(tmp_path):
     assert {"pnl_0", "pnl_1", "position_1", "mid_1"} <= set(frame.columns)
     with pytest.raises(TypeError):
         fastmm.run_backtest(cfg, data=[1, 2])
+
+
+def test_the_summary_says_when_the_kill_switch_stopped_the_run(repo):
+    text = (repo / "configs" / "backtest-example.toml").read_text()
+    cfg = fastmm.BacktestConfig.from_toml_string(text.replace('max_loss = "100"',
+                                                              'max_loss = "0.000001"'))
+    cfg.duration_s = 10
+    result = fastmm.run_backtest(cfg, data="synthetic")
+    stats = result.stats()
+    assert stats["kill_reason"] == "MaxLoss"
+    assert 0.0 < stats["kill_at_s"] < 10.0
+    assert "stopped                        by the kill switch ([risk] max_loss) at" in \
+        result.summary_table()
+    summary = json.loads(result.summary_json())
+    assert summary["kill_reason"] == "MaxLoss"
+    assert summary["kill_at_s"] == pytest.approx(stats["kill_at_s"])
+
+
+def test_a_run_the_kill_switch_did_not_stop_says_nothing(example_config):
+    result = fastmm.run_backtest(_short(example_config), data="synthetic")
+    assert result.stats()["kill_reason"] is None and result.stats()["kill_at_s"] is None
+    assert "stopped" not in result.summary_table()
+    assert json.loads(result.summary_json())["kill_reason"] is None

@@ -1,6 +1,6 @@
 """`fastmm init`: write a starter project that backtests a Python strategy on the simulator.
 
-The four files are templates in this module, so the command works from an installed wheel with no
+The files are templates in this module, so the command works from an installed wheel with no
 repository checkout. `write_project` returns the files it wrote, in the order it wrote them.
 """
 
@@ -49,8 +49,8 @@ name = "@NAME@"
 [strategy.params]
 half_spread_bps = 0.01
 skew_bps = 0.01
-quote_qty = 0.002
-max_inventory = 0.01
+quote_qty = 0.0001
+max_inventory = 0.0005
 requote_ticks = 2
 
 [risk]
@@ -127,8 +127,8 @@ class @NAME_CLASS@(fastmm.Strategy):
 
     half_spread_bps = Param(0.01, min=0.0, max=10000.0, doc="half spread around the mid, bps")
     skew_bps = Param(0.01, min=0.0, max=10000.0, doc="shift per quote_qty of inventory, bps")
-    quote_qty = Param(0.002, min=1e-9, doc="size per side, base units")
-    max_inventory = Param(0.01, min=0.0, doc="stop quoting the side that would pass this")
+    quote_qty = Param(0.0001, min=1e-9, doc="size per side, base units")
+    max_inventory = Param(0.0005, min=0.0, doc="stop quoting the side that would pass this")
     requote_ticks = Param(2, min=0, doc="ignore mid moves smaller than this many ticks")
     last_mid = State(0.0, doc="mid of the last quotes sent")
 
@@ -155,11 +155,89 @@ class @NAME_CLASS@(fastmm.Strategy):
             requote(self, ctx, book)
 '''
 
+LIVE_TOML = '''\
+# @NAME_CLASS@ on BTCUSDT on Binance Spot Demo Mode: real-time market data, demo balances, no real
+# money (docs: https://ziy.bio/FastMM/how-to/operations/run-on-testnet/).
+#   python -m fastmm run strategy:@NAME_CLASS@ --config live.toml --dry-run --duration 60s
+# --dry-run sends no orders and needs no keys. Orders need Demo Trading keys (API Key Management
+# after switching to Demo Trading on binance.com), not testnet or live keys:
+#   export FASTMM_BINANCE_API_KEY=... FASTMM_BINANCE_API_SECRET=...
+#   python -m fastmm run strategy:@NAME_CLASS@ --config live.toml
+
+[engine]
+name = "@NAME@"
+journal = true               # runs/*.fmj: python backtest.py --config live.toml --data <file>
+journal_dir = "runs"
+epoch_file = "runs/session_epoch"
+cpu = -1                     # no thread pinning
+min_requote_ticks = 50
+min_requote_interval_ms = 1000
+post_only = true
+supports_replace = true
+
+[venues.binance]
+kind = "binance_spot"
+ws_url = "wss://demo-stream.binance.com/stream"
+ws_api_url = "wss://demo-ws-api.binance.com/ws-api/v3"
+rest_url = "https://demo-api.binance.com"
+api_key = "${FASTMM_BINANCE_API_KEY}"
+api_secret = "${FASTMM_BINANCE_API_SECRET}"
+testnet = true
+supports_replace = true
+recv_window_ms = 3000
+stale_ms = 10000             # Demo Mode has quiet spells; 2 s would resync the book in them
+
+[venues.binance.fees]
+maker_bps = 10.0
+taker_bps = 10.0
+
+# Tick, lot and min_notional are replaced from the venue's exchangeInfo at startup.
+[[instruments]]
+venue = "binance"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "spot"
+tick = "0.01"
+lot = "0.00001"
+min_qty = "0.00001"
+min_notional = "5"
+
+[strategy]
+name = "py:@NAME_CLASS@"
+
+# A 15 bps half spread keeps 5 bps a fill after the 10 bps maker fee, before adverse selection.
+# requote_ticks is in 0.01 USDT ticks: 100 is about 1.3 bps at 77,000 USDT.
+[strategy.params]
+half_spread_bps = 15.0
+skew_bps = 5.0
+quote_qty = 0.0001
+max_inventory = 0.0005
+requote_ticks = 100
+
+[risk]
+max_order_qty = "0.0005"
+max_order_notional = "100"
+max_position = "0.001"
+max_open_orders = 4
+price_collar_bps = 50
+fat_finger_bps = 200
+stale_md_ms = 2000
+max_loss = "10"
+orders_per_sec = 5
+burst = 5
+stp = true
+
+[logging]
+level = "info"
+'''
+
 BACKTEST_PY = '''\
 """Backtest @NAME_CLASS@ on the simulated market, or sweep one of its parameters.
 
     python backtest.py
     python backtest.py --sweep half_spread_bps=0.005,0.01,0.02,0.05
+    python backtest.py --config live.toml --data runs/<journal>.fmj
 """
 
 import argparse
@@ -176,9 +254,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sweep", metavar="name=v1,v2,...", help="run one grid of one parameter")
     parser.add_argument("--duration-s", type=int, help="override [backtest] duration_s")
+    parser.add_argument("--config", default=HERE / "config.toml", help="default: config.toml")
+    parser.add_argument("--data", default="synthetic",
+                        help="a recorded .fmj journal or a CSV (default: the synthetic market)")
     args = parser.parse_args()
 
-    cfg = fastmm.BacktestConfig.from_toml(HERE / "config.toml")
+    cfg = fastmm.BacktestConfig.from_toml(args.config)
     if args.duration_s:
         cfg.duration_s = args.duration_s
 
@@ -186,14 +267,14 @@ def main():
         name, _, values = args.sweep.partition("=")
         print(f"{name:>16}  {'net PnL':>10}  {'fills':>6}  {'capture bps':>11}")
         for value in [float(v) for v in values.split(",")]:
-            result = fastmm.run_backtest(cfg, data="synthetic", strategy=@NAME_CLASS@,
+            result = fastmm.run_backtest(cfg, data=args.data, strategy=@NAME_CLASS@,
                                          params={name: value})
             stats = result.stats()
             print(f"{value:>16}  {stats['net_pnl']:>10.4f}  {stats['fills']:>6}  "
                   f"{stats['spread_capture_bps']:>11.3f}")
         return
 
-    result = fastmm.run_backtest(cfg, data="synthetic", strategy=@NAME_CLASS@)
+    result = fastmm.run_backtest(cfg, data=args.data, strategy=@NAME_CLASS@)
     print(result.summary_table())
     stats = result.stats()
     # A passive quoter captures the spread by construction; read it against fees and markouts.
@@ -216,7 +297,8 @@ README_MD = '''\
 # @NAME@
 
 A FastMM market maker: `strategy.py` quotes both sides around the mid and shifts the quotes against
-its inventory, `config.toml` describes the simulated market it trades, `backtest.py` runs it.
+its inventory, `config.toml` describes the simulated market it trades, `backtest.py` runs it, and
+`live.toml` runs the same class on Binance Spot Demo Mode.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install "fastmm-engine[hot]"
@@ -227,9 +309,10 @@ python -m venv .venv && .venv/bin/pip install "fastmm-engine[hot]"
 The backtest prints the summary, the PnL decomposition and the markouts, and writes the fills,
 orders and equity curve to `runs/backtest/`. The sweep runs one backtest per value.
 
-Net PnL is negative: the quotes capture about 0.008 bps on a synthetic spread while
-`[venues.sim.fees]` charges 10 bps a side. Read the capture, the markouts and the fees separately,
-and see <https://ziy.bio/FastMM/explanation/economics/>.
+Net PnL is negative: in this synthetic market only a quote at the touch fills, and it captures
+under 0.01 bps while `[venues.sim.fees]` charges 10 bps a fill. A wider quote does not fill at all.
+Read the capture, the markouts and the fees separately, and see
+<https://ziy.bio/FastMM/explanation/economics/>.
 
 ## What to change first
 
@@ -238,26 +321,36 @@ and see <https://ziy.bio/FastMM/explanation/economics/>.
 | A different market or fee level | `[venues.sim.fees]`, `[[instruments]]` and `[sim]` in `config.toml` |
 | A different quote | `requote` in `strategy.py`, and the `Param` defaults beside it |
 | Tighter limits | `[risk]` in `config.toml` |
-| Real market data | `python backtest.py` reads `data="synthetic"`; pass a `.fmj` journal or a CSV instead |
+| Real market data | `backtest.py --data` with a `.fmj` journal or a CSV |
 
 ## Live trading
 
-The same class runs against a venue once `fastmm-engine-live` is installed (Linux x86-64, CPython
-3.10 or later), with a config that has a venue instead of `[venues.sim] kind = "sim"`:
+Live sessions need `fastmm-engine-live` (Linux x86-64, CPython 3.10 or later):
 
 ```bash
 .venv/bin/pip install "fastmm-engine[live]"
-.venv/bin/python -m fastmm run strategy:@NAME_CLASS@ --config live.toml --dry-run
+.venv/bin/python -m fastmm run strategy:@NAME_CLASS@ --config live.toml --dry-run --duration 60s
+.venv/bin/python backtest.py --config live.toml --data runs/<journal>.fmj
 ```
 
-`--dry-run` takes public market data and sends no orders. Read the go-live checklist before you
-drop it: <https://ziy.bio/FastMM/how-to/operations/go-live-checklist/>.
+`--dry-run` takes public market data, sends no orders and needs no keys; the session's journal in
+`runs/` is market data the backtest replays. To send orders, create keys under Demo Trading's API
+Key Management on binance.com and run the same command without `--dry-run`:
+
+```bash
+export FASTMM_BINANCE_API_KEY=... FASTMM_BINANCE_API_SECRET=...
+.venv/bin/python -m fastmm run strategy:@NAME_CLASS@ --config live.toml
+```
+
+Before a real account, read the go-live checklist:
+<https://ziy.bio/FastMM/how-to/operations/go-live-checklist/>.
 
 Docs: <https://ziy.bio/FastMM/>. Strategy API: <https://ziy.bio/FastMM/reference/python-api/>.
 '''
 
 TEMPLATES = {
     "config.toml": CONFIG_TOML,
+    "live.toml": LIVE_TOML,
     "strategy.py": STRATEGY_PY,
     "backtest.py": BACKTEST_PY,
     "README.md": README_MD,

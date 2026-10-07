@@ -119,6 +119,15 @@ std::string BacktestResult::summary_table() const {
                  md_events,
                  engine_steps,
                  wall_seconds);
+  if (killed()) {
+    const KillReason k = engine.kill_reason;
+    row("stopped",
+        fmt::format(
+            "by the kill switch ({}) at {:.1f}s of {:.1f}s; no quotes after it",
+            k == KillReason::MaxLoss ? std::string("[risk] max_loss") : std::string(to_string(k)),
+            kill_at_s(),
+            m.duration_s));
+  }
   row("net pnl", fmt::format("{:.4f}", m.net_pnl));
   row("realized / unrealized / fees",
       fmt::format("{:.4f} / {:.4f} / {:.4f}", m.realized_pnl, m.unrealized_pnl, m.fees));
@@ -307,6 +316,12 @@ std::string BacktestResult::summary_json() const {
   }
   s += "},\n";
   u64("seed", seed);
+  if (killed()) {
+    str("kill_reason", to_string(engine.kill_reason));
+    num("kill_at_s", kill_at_s());
+  } else {
+    s += "  \"kill_reason\": null,\n  \"kill_at_s\": null,\n";
+  }
   num("net_pnl", m.net_pnl);
   num("realized_pnl", m.realized_pnl);
   num("unrealized_pnl", m.unrealized_pnl);

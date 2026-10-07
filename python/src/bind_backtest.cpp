@@ -667,9 +667,18 @@ void bind_backtest(py::module_& m) {
       .def_property_readonly("orders", &orders_dict, "Order columns (zero-copy numpy views).")
       .def(
           "stats",
-          [](const BacktestResult& r) { return metrics_dict(r.metrics); },
+          [](const BacktestResult& r) {
+            py::dict d = metrics_dict(r.metrics);
+            d["kill_reason"] =
+                r.killed() ? py::object(py::str(std::string(to_string(r.engine.kill_reason))))
+                           : py::object(py::none());
+            d["kill_at_s"] =
+                r.killed() ? py::object(py::float_(r.kill_at_s())) : py::object(py::none());
+            return d;
+          },
           "Every summary metric: PnL / volume / inventory in quote or base units (float), "
-          "counts and latency percentiles (int, ns).")
+          "counts and latency percentiles (int, ns); kill_reason and kill_at_s (seconds after "
+          "the start) when the kill switch stopped the run, else None.")
       .def(
           "markouts",
           [](const BacktestResult& r) { return markouts_list(r.metrics); },

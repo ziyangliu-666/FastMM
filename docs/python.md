@@ -14,7 +14,7 @@ A strategy class uses one of two styles. Hot hooks (`@fastmm.hot`) are compiled 
 
 ## First strategy
 
-`fastmm init my-mm` writes a starter project: a config for the simulated market, a strategy with hot hooks and a backtest that runs it ([Install](getting-started/install.md#without-building-it)).
+`fastmm init my-mm` writes a starter project: a config for the simulated market, a strategy with hot hooks, a backtest that runs it and a config that runs it on Binance Spot Demo Mode ([Install](getting-started/install.md#without-building-it)).
 
 Write it as hot hooks, the only style that trades live:
 
@@ -67,7 +67,7 @@ The GIL is released while a C++ strategy or hot hooks run, so several runs can p
 
 ### Results
 
-`r.fills`, `r.equity` and `r.orders` are dicts of read-only numpy views over the C++ result vectors (no copy; the arrays keep the result alive). Prices, quantities, fees and PnL are raw int64 with a 1e-8 scale (`fastmm.FIXED_SCALE`); timestamps are int64 ns. `to_pandas()` converts to floats and `datetime64[ns]`. `stats()` returns the summary metrics; `sharpe_annualized` is NaN for runs shorter than 1 day and `max_drawdown_pct` is NaN without `initial_capital` ([`[backtest]`](reference/configuration.md#backtest)). `engine_stats()` and `transport_stats()` return the component counters; `write_all(dir)` writes the same CSV/JSON files as `fastmm-backtest`.
+`r.fills`, `r.equity` and `r.orders` are dicts of read-only numpy views over the C++ result vectors (no copy; the arrays keep the result alive). Prices, quantities, fees and PnL are raw int64 with a 1e-8 scale (`fastmm.FIXED_SCALE`); timestamps are int64 ns. `to_pandas()` converts to floats and `datetime64[ns]`. `stats()` returns the summary metrics; `sharpe_annualized` is NaN for runs shorter than 1 day and `max_drawdown_pct` is NaN without `initial_capital` ([`[backtest]`](reference/configuration.md#backtest)). When the kill switch stopped the run, `kill_reason` names why (`MaxLoss` for `[risk] max_loss`) and `kill_at_s` when, in seconds of simulated time; both are None otherwise, and the summary table opens with a `stopped` line. `engine_stats()` and `transport_stats()` return the component counters; `write_all(dir)` writes the same CSV/JSON files as `fastmm-backtest`.
 
 `fastmm.write_report(r, "report.html")` writes the run as one self-contained HTML page, and `fastmm report <run-dir | journal.fmj>` does the same from a shell ([Run report](reference/run-report.md)).
 

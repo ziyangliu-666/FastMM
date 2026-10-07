@@ -40,6 +40,10 @@ struct RunnerStats {
   // Quote News held back after their old order ended: the balance no longer covered them
   // (QuoteStats::kept_balance). A side that stays unquoted for this shows here, not in the rejects.
   std::uint64_t balance_withheld = 0;
+  // The first reason the global kill switch was set for, and the engine time it was set (0 while
+  // it is not set).
+  KillReason kill_reason = KillReason::None;
+  std::int64_t kill_ts_ns = 0;
 };
 
 // One row of the engine's balance table (core/balance_book.hpp) as the monitors see it: the

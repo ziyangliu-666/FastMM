@@ -8,7 +8,7 @@ fastmm init my-mm && cd my-mm        # a config, a strategy and a backtest
 python backtest.py
 ```
 
-`fastmm init` writes `config.toml`, `strategy.py`, `backtest.py` and a README; the backtest runs on the simulated market. `pip install "fastmm-engine[live]"` adds the live runtime ([Python](#python)).
+`fastmm init` writes `config.toml`, `strategy.py`, `backtest.py`, `live.toml` and a README; the backtest runs on the simulated market, `live.toml` on Binance Spot Demo Mode. `pip install "fastmm-engine[live]"` adds the live runtime ([Python](#python)).
 
 The C++ programs come as a tarball or a container image, one per release: [Deploy a release](../how-to/operations/deploy.md). What may change between releases: [Versions and compatibility](../reference/compatibility.md).
 

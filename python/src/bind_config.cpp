@@ -100,6 +100,14 @@ void warn_config(const BacktestConfig& c, const std::string& source) {
   for (const std::string& w : c.warnings) warn(source + ": " + w, py::handle(PyExc_UserWarning));
 }
 
+// A backtest connects to nothing: a live config's ${API_KEY}s stay unresolved, as in
+// fastmm-backtest, so a backtest needs no secrets in the environment.
+ConfigLoadOptions backtest_load_options() {
+  ConfigLoadOptions lo;
+  lo.substitute_env = false;
+  return lo;
+}
+
 void bind_config(py::module_& m) {
   py::register_exception<ConfigError>(m, "ConfigError", PyExc_ValueError);
 
@@ -116,7 +124,7 @@ void bind_config(py::module_& m) {
             BacktestConfig c;
             {
               py::gil_scoped_release release;
-              c = BacktestConfig::from_config(Config::load(p));
+              c = BacktestConfig::from_config(Config::load(p, backtest_load_options()));
             }
             warn_config(c, p);
             return c;
@@ -128,7 +136,8 @@ void bind_config(py::module_& m) {
       .def_static(
           "from_toml_string",
           [](const std::string& text) {
-            BacktestConfig c = BacktestConfig::from_config(Config::parse(text));
+            BacktestConfig c =
+                BacktestConfig::from_config(Config::parse(text, backtest_load_options()));
             warn_config(c, "<string>");
             return c;
           },

@@ -2,6 +2,7 @@
 the GIL and the Numba cache."""
 
 import ctypes
+import inspect
 import os
 import subprocess
 import sys
@@ -207,6 +208,18 @@ class BuildsAList(Strategy):
         ctx.quote(levels[0], levels[1], 0.001)
 
 
+@numba.njit
+def _dict_helper(x):
+    d = {1: x}
+    return d[1]
+
+
+class CallsADictHelper(Strategy):
+    @fastmm.hot
+    def on_book(self, ctx, book):
+        ctx.quote(_dict_helper(book.mid) - 1.0, book.mid + 1.0, 0.001)
+
+
 class Prints(Strategy):
     @fastmm.hot(every="1s")
     def report(self, ctx, book):
@@ -214,17 +227,25 @@ class Prints(Strategy):
 
 
 @pytest.mark.parametrize(
-    "cls, hook, symbol",
+    "cls, hook, what, symbol",
     [
-        (Allocates, "on_book", "NRT_MemInfo_alloc"),
-        (BuildsAList, "on_book", "NRT_MemInfo_new_varsize"),
-        (Prints, "report", "numba_gil_ensure"),
+        (Allocates, "on_book", "creates an array", "NRT_MemInfo_alloc"),
+        (BuildsAList, "on_book", "creates a list", "NRT_MemInfo_new_varsize"),
+        (Prints, "report", "prints", "Py"),
     ],
 )
-def test_the_ir_check_names_the_hook_and_the_symbol(example_config, cls, hook, symbol):
-    with pytest.raises(fastmm.HotCompileError, match=rf"{cls.__name__}\.{hook} is rejected by the IR "
-                                                     rf"check: it calls .*{symbol}"):
+def test_the_ir_check_names_the_hook_the_line_and_the_symbol(example_config, cls, hook, what,
+                                                              symbol):
+    line = inspect.getsourcelines(getattr(cls, hook))[1] + 2
+    with pytest.raises(fastmm.HotCompileError,
+                       match=rf"{cls.__name__}\.{hook} is rejected by the IR check: it {what} at "
+                             rf"\S*test_hot\.py:{line}\. .*{symbol}"):
         _fixture_run(example_config, cls)
+
+
+def test_the_ir_check_finds_the_line_in_a_helper(example_config):
+    with pytest.raises(fastmm.HotCompileError, match=r"it creates a dict at \S*test_hot\.py:\d+"):
+        _fixture_run(example_config, CallsADictHelper)
 
 
 def test_a_typing_error_names_the_hook(example_config):

@@ -2,6 +2,30 @@
 
 All notable changes are recorded here (Keep a Changelog format).
 
+## [Unreleased]
+
+### Added
+- `fastmm init` also writes `live.toml`: the starter class on BTCUSDT on Binance Spot Demo Mode,
+  journal on, keys from `FASTMM_BINANCE_API_KEY` / `FASTMM_BINANCE_API_SECRET` (a `--dry-run`
+  needs none). The starter's `backtest.py` takes `--config` and `--data`, so a recorded journal
+  replays with `python backtest.py --config live.toml --data runs/<journal>.fmj`.
+- A backtest the kill switch stopped says so: a `stopped` line at the top of the summary table
+  (`by the kill switch ([risk] max_loss) at 101.2s of 120.0s`), `kill_reason` and `kill_at_s` in
+  `summary.json` and in `BacktestResult.stats()` (None when it did not trip). In C++,
+  `RunnerStats::kill_reason` / `kill_ts_ns` and `Engine::kill_ts()`.
+- The `@fastmm.hot` IR check names what the hook does and where, when Numba's typed IR shows it:
+  `it creates a dict at strategy.py:21` (lists, sets, strings, arrays and `print` too, in the hook
+  or an `njit` helper it calls), then the runtime symbols.
+
+### Changed
+- The starter (`fastmm init`) quotes 0.0001 BTC a side, not 0.002: its default 120 s backtest
+  paid 100 in fees and was stopped by `[risk] max_loss` at 101 s. It still loses, on fees.
+
+### Fixed
+- `fastmm.BacktestConfig.from_toml` and `from_toml_string` no longer resolve `${VAR}` in
+  `[venues.*]`, as `fastmm-backtest` already did: a live config with unset API key variables
+  loads for a backtest instead of raising `ConfigError`.
+
 ## [0.4.0] - 2026-10-06
 
 ### Added
