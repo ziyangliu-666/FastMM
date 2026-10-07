@@ -262,3 +262,19 @@
 .md-typeset ul.fastmm-features code {
   color: inherit;
 }
+
+/* A film on the home page and on a reference page: a poster until played, nothing loaded before. */
+.md-typeset .fastmm-video {
+  display: block;
+  width: 100%;
+  max-width: 44rem;
+  margin: 1.6rem auto 0;
+  border-radius: 0.3rem;
+  background: #0b1f44;
+  box-shadow: 0 0 0 1px var(--md-default-fg-color--lightest);
+}
+
+.md-typeset .fastmm-video--small {
+  max-width: 36rem;
+  margin: 0.4rem 0 1.2rem;
+}
