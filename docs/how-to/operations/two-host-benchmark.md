@@ -4,7 +4,7 @@
 
 ## 1. Build and copy
 
-On the build machine (Ubuntu 24.04 or older glibc), `scripts/package-release.sh` builds `build/release-dpdk` with DPDK linked in and writes `dist/fastmm-<version>-x86_64.tar.gz`:
+On the build machine (Ubuntu 24.04 or older glibc), `scripts/package-release.sh` builds `build/package-release-dpdk` with DPDK linked in and writes `dist/fastmm-<version>-x86_64.tar.gz`:
 
 ```bash
 scripts/package-release.sh

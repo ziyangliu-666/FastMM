@@ -1,7 +1,7 @@
 name: release
-# On a `v*` tag: builds the portable tarball (scripts/package-release.sh), attaches it and its
-# SHA-256 to a GitHub Release with the CHANGELOG section as the notes, and pushes the production
-# image to GHCR. The PyPI distributions are built and published by wheels.yml on the same tag.
+# On a `v*` tag: builds the portable tarball (scripts/package-release.sh --container), runs it on
+# five distributions (scripts/check-release.sh), attaches it and its SHA-256 to a GitHub Release
+# with the CHANGELOG section as the notes, and pushes the production image to GHCR. The PyPI distributions are built and published by wheels.yml on the same tag.
 # A manual run takes an existing tag and repeats both.
 on:
   push:
@@ -25,22 +25,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { ref: "${{ inputs.tag || github.ref }}" }
-      - name: install
-        run: sudo apt-get update && sudo apt-get install -y g++-13 ninja-build libssl-dev
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/CPM
-          key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }}
+      # Built in manylinux_2_28 (glibc 2.28) with OpenSSL, libstdc++ and libgcc linked statically.
       # The `release` preset, not `release-dpdk`: a hosted runner has no NIC to bind and building
       # DPDK here would triple the job. A DPDK tarball is a local `scripts/package-release.sh` run.
       - name: build the tarball
-        run: ./scripts/package-release.sh --preset release --out dist
-      - name: the checksum matches and the binaries run
+        run: ./scripts/package-release.sh --container --preset release --out dist
+      - name: the checksum matches and the binaries run on other distributions
         run: |
           (cd dist && sha256sum -c ./*.sha256)   # the file names one bare tarball, in dist/
-          tar xzf dist/*.tar.gz -C dist
-          dist/fastmm-*/bin/fastmm-live --version
-          dist/fastmm-*/bin/fastmm-top --help > /dev/null
+          ./scripts/check-release.sh dist/*.tar.gz
       - name: release notes from the CHANGELOG
         run: |
           awk -v v="${TAG#v}" '

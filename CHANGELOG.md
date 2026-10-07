@@ -11,6 +11,20 @@ All notable changes are recorded here (Keep a Changelog format).
 - `examples/quickstart/CMakeLists.txt` fetches FastMM `v0.4.0` instead of `main`. A version bump
   updates the tag; configuring FastMM with examples fails when it differs from the project version.
 
+- The release tarball needs glibc 2.28 or newer and nothing else, was the build host's glibc
+  (2.39) and libssl 3: it is built in `manylinux_2_28` with OpenSSL (`scripts/wheels/build-openssl.sh`),
+  libstdc++ and libgcc linked statically, and runs on Ubuntu 22.04, Debian 12, Rocky Linux 9 and
+  Amazon Linux 2023 as well as Ubuntu 24.04. `scripts/package-release.sh --container` builds it
+  that way with docker; without `--container` it builds on the host, into
+  `build/package-<preset>` (was `build/<preset>`), still with static OpenSSL and libstdc++.
+  `scripts/check-release.sh` runs a tarball on those five distributions; `release.yml` runs it
+  before publishing.
+- The tarball holds `fastmm-sim-exchange`, `configs/sim.toml`, `configs/sim-local.toml`,
+  `configs/sim-local-tls.toml` and the simulator's TLS certificate (`tests/fixtures/tls/`). Its
+  README lists all eight programs and starts with the simulated exchange, which needs no network
+  namespace; the ITCH example runs in `sudo unshare -n` (Ubuntu 24.04 restricts unprivileged user
+  namespaces) as the calling user, and both stop the simulator when the engine exits.
+
 ### Fixed
 - `scripts/bootstrap.sh` uses `$CXX` when it is set, and otherwise the first of `g++`, `g++-15` to
   `g++-13`, `clang++` and `clang++-21` to `clang++-16` that is gcc 13 or clang 16 or newer, and
