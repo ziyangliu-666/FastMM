@@ -40,8 +40,22 @@ jobs:
             $0 ~ "^## \\[" v "\\]" { on = 1; next }
             on && /^## \[/ { exit }
             on { print }' CHANGELOG.md > notes.md
-          printf '\n[Install](https://ziy.bio/FastMM/getting-started/install/) - [Deploy](https://ziy.bio/FastMM/how-to/operations/deploy/)\n' >> notes.md
           test -s notes.md
+          git fetch --quiet --tags origin
+          prev=$(git tag --list 'v*' --sort=v:refname | grep -B1 -x "$TAG" | head -n1)
+          cat >> notes.md <<EOF
+
+          ### Install
+
+          \`\`\`bash
+          pip install "fastmm-engine[live]==${TAG#v}"
+          docker pull ghcr.io/ziyangliu-666/fastmm:${TAG#v}
+          \`\`\`
+
+          The Linux tarball below runs on glibc 2.28 or newer. [Install guide](https://ziy.bio/FastMM/getting-started/install/), [Deploy](https://ziy.bio/FastMM/how-to/operations/deploy/).
+
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/${prev}...${TAG}
+          EOF
       - name: publish the release
         env:
           GH_TOKEN: ${{ github.token }}
