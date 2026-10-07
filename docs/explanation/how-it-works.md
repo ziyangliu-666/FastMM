@@ -2,6 +2,8 @@
 
 FastMM runs every trading decision on one thread and records every event before acting on it. [Architecture](architecture.md) and [Event flow](event-flow.md) give the detail.
 
+<video class="fastmm-video" controls preload="none" poster="../../assets/film-poster.jpg" src="https://github.com/ziyangliu-666/FastMM/releases/download/v0.5.1/fastmm-film.mp4"></video>
+
 ## One engine thread owns the trading state
 
 All trading state (books, orders, positions, risk limits, timers) lives on one thread, `fm-engine`, and nothing else reads or writes it. The decision path takes no locks, and a session is reproducible from its recording.

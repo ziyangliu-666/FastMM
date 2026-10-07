@@ -7,7 +7,7 @@
 - **[Live control](how-to/operations/operate-a-running-session.md).** `fastmm-ctl` changes a running session's parameters without a restart.
 - **[Low-latency tuning](how-to/operations/running-in-production.md#host-tuning).** Host and network tuning built in, such as core pinning and kernel bypass.
 
-<video class="fastmm-video" controls preload="none" poster="assets/film-poster.jpg" src="https://github.com/ziyangliu-666/FastMM/releases/download/v0.5.1/fastmm-film.mp4"></video>
+<video class="fastmm-video" controls preload="none" poster="assets/intro-poster.jpg" src="https://github.com/ziyangliu-666/FastMM/releases/download/v0.5.1/fastmm-intro.mp4"></video>
 
 ## Quickstart
 
