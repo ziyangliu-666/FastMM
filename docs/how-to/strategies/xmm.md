@@ -19,7 +19,7 @@ Two configs ship:
         --dry-run --duration 60s
     ```
 
-    Each venue prints a status line every second; both should show `md=live` and `books=1/1` (the order channels stay down in a dry run):
+    Each venue prints a status line every 10 s; both should show `md=live` and `books=1/1` (the order channels stay down in a dry run):
 
     ```text
     [binance] md=live user=down order=down books=1/1 md_msgs=526 resyncs=0 malformed=0 ...

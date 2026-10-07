@@ -675,6 +675,7 @@ BTC = "binance:BTCUSDT"     # BTC in USDT: the mid of BTCUSDT
 | `level` | string |  | trace \| debug \| info \| warn (or warning) \| error \| off (default info) |
 | `file` | string |  | log file; empty = stderr only |
 | `mirror_level` | string |  | records at or above this level are also written to stderr (default warn) |
+| `status_interval_s` | integer |  | seconds between the per-venue status lines, 0 = none (default 1 with a log file, 10 on stderr) |
 <!-- END config-keys -->
 
 ## `[backtest]`

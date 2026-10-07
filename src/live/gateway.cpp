@@ -3596,6 +3596,8 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
   gateway.publish_status(StatusRunState::Running);
   const std::int64_t start = steady_now().ns;
   std::int64_t next_tick = start + 1'000'000'000;
+  const std::int64_t status_every = cfg.status_interval_s();  // [logging] status_interval_s
+  std::int64_t ticks = 0;
   std::int64_t next_status = start + 250'000'000;
   std::vector<pollfd> fds;
   while (g_gw_signal == 0) {
@@ -3626,10 +3628,11 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
     }
     if (steady_now().ns >= next_tick) {
       next_tick += 1'000'000'000;
+      ++ticks;
       for (auto& s : slots) {
         venues::Venue* v = s->venue.get();
         s->reactor->post([v] { v->on_timer(net::Reactor::now_ns()); });
-        log_venue_status(*v);
+        if (status_every > 0 && ticks % status_every == 0) log_venue_status(*v);
       }
       gateway.log_counters();
       gateway.log_account();

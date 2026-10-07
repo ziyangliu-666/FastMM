@@ -20,6 +20,7 @@
 #include "fastmm/core/strong_id.hpp"
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
+#include "fastmm/live/paper_venue.hpp"
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/venues/event_sink.hpp"
 #include "fastmm/venues/registry.hpp"
@@ -49,6 +50,7 @@ struct VenueSlot {
   using Pending = bool (*)(void* ctx) noexcept;
 
   std::unique_ptr<venues::Venue> venue;
+  PaperVenue* paper = nullptr;  // `venue` when a dry run trades on paper (make_venue_slots)
   std::unique_ptr<net::Reactor> reactor;
   std::unique_ptr<MsgRing> md_ring;
   std::unique_ptr<MsgRing> order_ring;
@@ -75,12 +77,14 @@ using VenueSlots = std::vector<std::unique_ptr<VenueSlot>>;
 
 // Builds one connector per [venues.*] section and loads its reference data into `instruments`.
 // Returns 0, or the exit code (kExitConfig, kExitVenue) after printing the error prefixed with
-// `prog` to stderr.
+// `prog` to stderr. With `paper` (fastmm-live --dry-run) every venue that takes orders is a
+// PaperVenue over its dry-run connector.
 [[nodiscard]] int make_venue_slots(const Config& cfg,
                                    const venues::VenueFactoryOptions& vopts,
                                    InstrumentTable& instruments,
                                    const char* prog,
-                                   VenueSlots& slots);
+                                   VenueSlots& slots,
+                                   bool paper = false);
 
 // [engine] net_backend, falling back to epoll (with a warning) when io_uring is not available.
 [[nodiscard]] net::ReactorBackend resolve_net_backend(const Config& cfg);

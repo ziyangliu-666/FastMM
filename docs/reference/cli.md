@@ -23,7 +23,8 @@ OPTIONS:
                               strategy ignores [strategy.params]
   --param <key=value>         strategy parameter override (repeatable)
   --duration <t>              stop after t (e.g. 60s, 5m, 1500ms; default: until SIGINT)
-  --dry-run                   public market data only: no API keys, no orders
+  --dry-run                   public market data only, no API keys: quotes on paper, sends
+                              no order
   --record-raw <dir>          append raw WebSocket frames to <dir>/<venue>-<channel>.jsonl
   --journal <path>            write the session journal (.fmj) here
   --no-journal                disable journaling even if [engine] journal = true

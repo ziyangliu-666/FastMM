@@ -49,7 +49,8 @@ int make_venue_slots(const Config& cfg,
                      const venues::VenueFactoryOptions& vopts,
                      InstrumentTable& instruments,
                      const char* prog,
-                     VenueSlots& slots) {
+                     VenueSlots& slots,
+                     bool paper) {
   for (std::size_t i = 0; i < cfg.venues.size(); ++i) {
     auto slot = std::make_unique<VenueSlot>();
     // The source address must be one this host has: a bind to another fails every connect.
@@ -67,6 +68,12 @@ int make_venue_slots(const Config& cfg,
                     return v.pool_of == cfg.venues[i].name;
                   });
       slot->venue = venues::make_venue(VenueId{static_cast<std::uint8_t>(i)}, cfg.venues[i], vo);
+      const venues::VenueEntry* entry = venues::VenueRegistry::instance().find(cfg.venues[i].kind);
+      if (paper && !cfg.venues[i].public_only && entry != nullptr && entry->caps.order_entry) {
+        auto p = std::make_unique<PaperVenue>(std::move(slot->venue), entry->caps.replace);
+        slot->paper = p.get();
+        slot->venue = std::move(p);
+      }
     } catch (const std::exception& e) {
       std::fprintf(stderr, "%s: %s\n", prog, e.what());
       return kExitConfig;

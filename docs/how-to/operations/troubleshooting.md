@@ -130,7 +130,7 @@ Messages are quoted as the code writes them; `<...>` stands for a value, and `<v
 
 | Symptom | Cause | Action |
 |---|---|---|
-| No orders at all (`orders=0`) | `--dry-run` (quoting is disabled), the book is not synced, or a risk limit refuses every order (`risk_rejects` grows) | Check the status line, and the `risk_rejects` reasons in `fastmm-top` or the log |
+| No orders at all (`orders=0`) | The book is not synced, or a risk limit refuses every order (`risk_rejects` grows). In `--dry-run` the venue lines say `orders=0` and the orders are on paper: read the `dry run <symbol>` lines | Check the status line, and the `risk_rejects` reasons in `fastmm-top` or the log |
 | Orders but no fills | Quotes too far from the touch ([Binance Demo example](journals-replay-pnl.md#example-binance-demo)) | Narrow the spread |
 | The strategy is missing from `--list-strategies` | The app does not pass the registration function of the library that defines it | Pass it to `fastmm::cli::live` / `backtest` / `replay` ([Register a strategy](../strategies/register-a-strategy.md)) |
 | `fastmm-replay --verify` reports a mismatch | Different binary, config or parameters, or a determinism bug | See [Replay](journals-replay-pnl.md#replay) |

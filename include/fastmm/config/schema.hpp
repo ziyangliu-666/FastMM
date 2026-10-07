@@ -776,6 +776,12 @@ inline constexpr KeySpec kConfigSchema[] = {
      KeyType::String,
      false,
      "records at or above this level are also written to stderr (default warn)"},
+    {"logging",
+     "status_interval_s",
+     KeyType::Int,
+     false,
+     "seconds between the per-venue status lines, 0 = none (default 1 with a log file, 10 on "
+     "stderr)"},
     // free-form
     {"sim", "*", KeyType::Any, false, "simulator settings"},
     {"sim.*", "*", KeyType::Any, false, "simulator sub-tables"},

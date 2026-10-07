@@ -926,6 +926,9 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "level", cfg.logging.level);
     get(*t, "file", cfg.logging.file);
     get(*t, "mirror_level", cfg.logging.mirror_level);
+    get(*t, "status_interval_s", cfg.logging.status_interval_s);
+    if (t->contains("status_interval_s") && cfg.logging.status_interval_s < 0)
+      fail_at(*t->get("status_interval_s"), "status_interval_s must be >= 0 (0 = none)");
     parse_level(cfg.logging.level);
     parse_level(cfg.logging.mirror_level);
   }
@@ -1207,6 +1210,7 @@ std::string Config::redacted() const {
   kq("level", logging.level);
   if (!logging.file.empty()) kq("file", logging.file);
   kq("mirror_level", logging.mirror_level);
+  if (logging.status_interval_s >= 0) kv("status_interval_s", logging.status_interval_s);
   const std::pair<const GenericSection*, std::string_view> generic[] = {
       {&sim, "sim"}, {&backtest, "backtest"}, {&storage, "storage"}};
   for (const auto& [sec, name] : generic) {
@@ -1485,6 +1489,7 @@ std::string Config::effective_toml() const {
   lg.insert("level", logging.level);
   lg.insert("file", logging.file);
   lg.insert("mirror_level", logging.mirror_level);
+  if (logging.status_interval_s >= 0) lg.insert("status_interval_s", logging.status_interval_s);
   root.insert("logging", std::move(lg));
 
   if (!sim.values.empty()) root.insert("sim", generic_table(sim));

@@ -276,6 +276,9 @@ struct LoggingSection {
   std::string level = "info";
   std::string file;
   std::string mirror_level = "warn";
+  // Seconds between the per-venue status lines; 0: none. Unset (-1): every second into a log file,
+  // every 10 s when the log is stderr.
+  std::int64_t status_interval_s = -1;
 };
 
 // Free-form section used by the sim / backtest libraries: dotted keys -> stringified value.
@@ -336,6 +339,10 @@ class Config {
   [[nodiscard]] QuoteParams quote_params() const;
   [[nodiscard]] LogLevel log_level() const;
   [[nodiscard]] LogLevel mirror_level() const;
+  [[nodiscard]] std::int64_t status_interval_s() const noexcept {
+    if (logging.status_interval_s >= 0) return logging.status_interval_s;
+    return logging.file.empty() ? 10 : 1;
+  }
   [[nodiscard]] SpinMode spin_mode() const;
   [[nodiscard]] bool single_threaded() const noexcept { return engine.threading == "single"; }
 
