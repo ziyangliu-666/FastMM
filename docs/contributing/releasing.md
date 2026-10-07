@@ -10,11 +10,12 @@ What a version number promises: [Versions and compatibility](../reference/compat
 
 ## 2. Write the CHANGELOG section
 
-Rename `## [Unreleased]` to `## [<x.y.z>] - <YYYY-MM-DD>`. `release.yml` copies the section into the GitHub Release verbatim and appends the install lines and a compare link, so write it for someone deciding whether to upgrade:
+Rename `## [Unreleased]` to `## [<x.y.z>] - <YYYY-MM-DD>`. `release.yml` copies the section into the GitHub Release verbatim and appends the install lines and a compare link, so write it for someone scanning a release page:
 
-- A minor release opens with one to three sentences on what it is about. A patch release can go straight to its list.
-- Sections, in this order and only when non-empty: `### Breaking changes`, `### Added`, `### Changed`, `### Removed`, `### Fixed`, `### Documentation`. Anything that stops an existing config key, file format, call form or install from working goes under Breaking changes.
-- One change per bullet, one line where possible, prefixed with the area: `- venues: a warm standby gets its depth snapshots before the handoff`. Say what the user sees now, not how it was found or fixed; that belongs in the commit message.
+- A minor release opens with one or two sentences on what it is about. A patch release has no lead.
+- A section with more than 25 bullets gets a `Highlights:` list after the lead: three to six one-line items a user would upgrade for, each ending with the section and area it is detailed under, e.g. `(Added, venues)`.
+- Sections, in this order and only when non-empty: `### Breaking changes`, `### Added`, `### Changed`, `### Removed`, `### Fixed`, `### Documentation`. Anything that stops an existing config key, file format, call form or install from working goes under Breaking changes. Within a section, bullets are grouped by area.
+- One change per bullet, one line of at most 100 characters, prefixed with the area: `- venues: a warm standby started early in a rate-limit minute has its books before the handoff.` Say what the user sees now and stop: no "so that", "instead of", "which" or "because" clauses, no examples in parentheses, no story of how it was found. Keep config keys, flags, commands and API names in backticks. Under Breaking changes one extra clause may say what to do (`set "stay" for the old behaviour`).
 - Leave out test-only, CI-only and internal changes.
 
 ## 3. Check it locally
