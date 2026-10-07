@@ -1903,7 +1903,7 @@ class Engine {
       }
       case ControlCommand::TripKill:
         risk_.trip();
-        on_kill(KillReason::Requested);
+        on_kill(KillReason::Requested, c.arg == kTripKillPlannedStop);
         break;
       case ControlCommand::TripVenueKill:
         on_venue_kill(c.hdr.venue, static_cast<KillReason>(static_cast<std::uint8_t>(c.arg)));
@@ -2237,12 +2237,14 @@ class Engine {
   // The global flag is already set. KillReason::Requested: the control thread asked for it
   // (shutdown, operator); any other reason is a risk limit or an internal failure, which is an
   // error (fastmm-live exits or keeps running per [engine] on_kill). The first reason is kept.
-  void on_kill(KillReason reason) noexcept {
+  void on_kill(KillReason reason, bool planned_stop = false) noexcept {
     ++stats_.kills;
     quoting_enabled_ = false;
     if (kill_reason_ == KillReason::None) kill_reason_ = reason;
     emit_kill(reason, VenueId::invalid(), /*per_venue=*/false);
-    if (reason == KillReason::Requested) {
+    if (planned_stop) {
+      FASTMM_LOG_INFO("stopping: pulling quotes and cancelling all");
+    } else if (reason == KillReason::Requested) {
       FASTMM_LOG_WARN("kill switch requested (flags={:#x}); pulling quotes and cancelling all",
                       risk_.kill_flags());
     } else {

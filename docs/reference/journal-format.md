@@ -66,7 +66,7 @@ Each part is a complete journal: it repeats the header, the instrument table, th
 | 76 | 4 | `block_bytes` | maximum block size (1048576) |
 | 80 | 32 | `strategy` | strategy name, NUL-padded |
 | 112 | 2 | `session_epoch` | client order id epoch (v2) |
-| 114 | 1 | `quoting_enabled` | 0 for a dry run (v2) |
+| 114 | 1 | `quoting_enabled` | 0 for a dry run behind a gateway; a dry run of its own quotes on paper (v2) |
 | 115 | 1 | `header_flags` | bit 0: the three session fields above are valid (v2); bit 1: the engine replaced quotes per venue (without it, a replay replaces only if every traded venue could, as the engine did then); bit 2: the session's venue feeds showed its own orders (a backtest with `[backtest] own_orders_in_feed`; a live session's always do) |
 | 116 | 4 | `config_bytes` | length of the configuration text; 0 = none (v2) |
 | 120 | 8 | `replace_venues` | bit v set when venue v traded with cancel-replace (v2) |

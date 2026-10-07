@@ -23,7 +23,7 @@ timedatectl                                                  # clock synchronise
 /opt/fastmm/bin/fastmm-live --config <your.toml> --dry-run --duration 60s
 ```
 
-The dry run connects to public market data, reads no keys and sends no orders; the per-second status line must reach `md=live` and `books=n/n`.
+The dry run connects to public market data, reads no keys and sends no orders; the status line must reach `md=live` and `books=n/n`, and the `dry run <symbol>` lines must show the quotes you expect.
 
 While the session runs:
 

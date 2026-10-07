@@ -406,11 +406,13 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                  kill,
                  fmt_duration_s(s.updated_ns - s.started_ns),
                  static_cast<double>(std::max<std::int64_t>(age_ns, 0)) / 1e9);
+  // A dry run's orders are on paper (live/paper_venue.hpp): what the engine would have sent.
   fmt::format_to(std::back_inserter(out),
-                 "engine     events={} book_updates={} orders={} cancels={} replaces={} fills={} "
+                 "engine     events={} book_updates={} {}orders={} cancels={} replaces={} fills={} "
                  "kills={} venue_kills={} kill_flags={:#x}\n",
                  s.events,
                  s.book_updates,
+                 s.dry_run != 0 ? "paper " : "",
                  s.orders_sent,
                  s.cancels_sent,
                  s.replaces_sent,

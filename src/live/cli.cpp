@@ -97,7 +97,9 @@ int live(int argc, char** argv, std::span<const StrategyModule> modules) {
                "--duration",
                opts.duration_ns,
                "stop after t (e.g. 60s, 5m, 1500ms; default: until SIGINT)");
-  app.add_flag("--dry-run", opts.dry_run, "public market data only: no API keys, no orders");
+  app.add_flag("--dry-run",
+               opts.dry_run,
+               "public market data only, no API keys: quotes on paper, sends no order");
   app.add_option("--record-raw",
                  opts.record_raw_dir,
                  "append raw WebSocket frames to <dir>/<venue>-<channel>.jsonl")

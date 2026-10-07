@@ -51,7 +51,7 @@ def _parser() -> argparse.ArgumentParser:
                      help="strategy parameter override (repeatable)")
     run.add_argument("--duration", metavar="t", help="stop after t (e.g. 60s, 5m, 1500ms)")
     run.add_argument("--dry-run", action="store_true",
-                     help="public market data only: no API keys, no orders")
+                     help="public market data only, no API keys: quotes on paper, sends no order")
     run.add_argument("--record-raw", metavar="dir",
                      help="append raw WebSocket frames to <dir>/<venue>-<channel>.jsonl")
     run.add_argument("--journal", metavar="path", help="write the session journal (.fmj) here")

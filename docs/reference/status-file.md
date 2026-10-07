@@ -42,7 +42,7 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The 
 | `realized_pnl_raw`, `unrealized_pnl_raw`, `fees_raw` | i64 | settlement currency, or `[accounting] reporting_currency` when it is set; raw fixed point (divide by 1e8) |
 | `pnl_carry_raw` | i64 | net PnL of earlier sessions that `[risk] max_loss` is measured against, from `[engine] kill_file` |
 | `max_loss_raw` | i64 | `[risk] max_loss` as the engine applies it now (`fastmm-ctl limits` changes it), 0 when off; a gateway's is `gateway.max_loss_raw` |
-| `quoting_elapsed_ns`, `quoting_two_sided_ns` | i64 | time since the first order rested, and how much of it had a live order on both sides |
+| `quoting_elapsed_ns`, `quoting_two_sided_ns` | i64 | time since the first order rested, and how much of it had a live order on both sides; both summed over the instruments |
 | `latency` | 7 x {count, p50_ns, p99_ns, p999_ns, max_ns} | engine latency intervals, below |
 | `venues` | 8 x venue entry | below |
 | `underlyings` | 8 x underlying entry | `[risk.underlying]`, in the order of the configuration's base assets: `name` (char[16], empty for an unused entry), `known` (u8: 0 while an inverse contract with a position has no mark), `net_raw` (i64, base units, signed), `max_net_raw` (i64, the limit applied now, 0 none) |

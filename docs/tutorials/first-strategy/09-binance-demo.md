@@ -9,7 +9,7 @@ Binance Spot Demo Mode is a Binance environment with demo balances and its own A
 "$BIN"/tutorial-live --config configs/tutorial-binance-demo.toml --dry-run --duration 60s
 ```
 
-`--dry-run` connects to public market data only, reads no keys and sends no orders; `first_mm` logs `started, quoting off` and never `quoting on`. The status line shows `md=live` and `books=1/1`. Exit messages: [Troubleshooting](../../how-to/operations/troubleshooting.md).
+`--dry-run` connects to public market data only, reads no keys and sends no orders. `first_mm` logs `started, quoting on` and quotes as it will with keys; the orders stay on paper, and every 5 s a `dry run BTCUSDT: bid ... ask ...` line shows what would rest. The status line shows `md=live` and `books=1/1`. Exit messages: [Troubleshooting](../../how-to/operations/troubleshooting.md).
 
 ## 2. Keys
 

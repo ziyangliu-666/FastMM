@@ -221,12 +221,47 @@ void log_irq_affinity(const Config& cfg, bool single) {
   }
 }
 
-bool push_control(MsgRing& ring, ControlCommand cmd, VenueId venue = VenueId::invalid()) {
+bool push_control(MsgRing& ring,
+                  ControlCommand cmd,
+                  VenueId venue = VenueId::invalid(),
+                  std::uint64_t arg = 0) {
   ControlMsg m{};
   init_header(m, EventType::Control, InstrumentId{}, venue);
   m.command = cmd;
+  m.arg = arg;
   m.hdr.recv_ts = wall_now();
   return ring.try_push(&m, m.hdr.len);
+}
+
+// "76990.12 x 0.0003", "+2" more resting orders on the side; "-" when none rests.
+std::string paper_side(const Level& best, std::uint32_t orders) {
+  if (orders == 0) return "-";
+  char px[kMaxDecimalChars];
+  char qty[kMaxDecimalChars];
+  std::string s(px, best.price.to_decimal(px));
+  s += " x ";
+  s.append(qty, best.qty.to_decimal(qty));
+  if (orders > 1) s += fmt::format(" +{}", orders - 1);
+  return s;
+}
+
+// A dry run's paper orders (live/paper_venue.hpp): one line per instrument with what rests and
+// what the engine would have sent so far.
+void log_paper_quotes(const VenueSlots& slots, const InstrumentTable& instruments) {
+  for (const auto& s : slots) {
+    if (s->paper == nullptr) continue;
+    for (const PaperQuotes& q : s->paper->quotes()) {
+      if (!instruments.contains(q.instrument)) continue;
+      FASTMM_LOG_INFO("[{}] dry run {}: bid {} ask {} would send new={} cancel={} replace={}",
+                      s->venue->name(),
+                      instruments.get(q.instrument).symbol,
+                      paper_side(q.bid, q.bid_orders),
+                      paper_side(q.ask, q.ask_orders),
+                      q.news,
+                      q.cancels,
+                      q.replaces);
+    }
+  }
 }
 
 // Long-baseline recalibration on the calling (main) thread: logs how far the previous mapping had
@@ -903,7 +938,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     vopts.record_raw_dir = opts.record_raw_dir;
     vopts.busy_poll = cfg.spin_mode() == SpinMode::Busy;
     if (!vopts.record_raw_dir.empty()) std::filesystem::create_directories(vopts.record_raw_dir);
-    if (const int rc = make_venue_slots(cfg, vopts, instruments, prog, slots); rc != 0) return rc;
+    if (const int rc = make_venue_slots(cfg, vopts, instruments, prog, slots, opts.dry_run);
+        rc != 0)
+      return rc;
     for (const auto& s : slots) venue_names.emplace_back(s->venue->name());
   }
   // ---- fee rates ---------------------------------------------------------------------------
@@ -1306,7 +1343,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   deps.engine.balance = balance_config(cfg, &instruments, &venue_names);
   deps.engine.perp = perp_config(cfg);
   deps.engine.underlying = underlying_plan;
-  deps.engine.quoting_enabled = !opts.dry_run;
+  // A dry run quotes on paper (live/paper_venue.hpp): the engine runs as it would live. A strategy
+  // attached to a gateway has no venue of its own to put paper in front of, and does not quote.
+  deps.engine.quoting_enabled = !(opts.dry_run && via_gateway);
   deps.engine.await_reconcile = await_venues;
   deps.engine.pools = cfg.pool_plan();
   for (const VenueSection& v : cfg.venues) {
@@ -1904,6 +1943,12 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   // ---- control loop -----------------------------------------------------------------------
   const std::int64_t start = steady_now().ns;
   std::int64_t next_tick = start + 1'000'000'000;
+  // [logging] status_interval_s: the per-venue status lines every this many ticks (0: never).
+  const std::int64_t status_every = cfg.status_interval_s();
+  std::int64_t ticks = 0;
+  constexpr std::int64_t kPaperReportTicks = 5;  // a dry run's quote lines
+  const bool paper =
+      std::any_of(slots.begin(), slots.end(), [](const auto& s) { return s->paper != nullptr; });
   const std::int64_t recalibrate_ns =
       static_cast<std::int64_t>(cfg.engine.tsc_recalibrate_s) * 1'000'000'000;
   std::int64_t next_recalibration = start + recalibrate_ns;
@@ -2280,11 +2325,14 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
     if (now >= next_tick) {
       next_tick += 1'000'000'000;
+      ++ticks;
+      const bool log_status = status_every > 0 && ticks % status_every == 0;
       for (std::size_t i = 0; i < slots.size(); ++i) {
         venues::Venue* v = slots[i]->venue.get();
         slots[i]->reactor->post([v] { v->on_timer(net::Reactor::now_ns()); });
-        log_venue_status(*v);
+        if (log_status) log_venue_status(*v);
       }
+      if (paper && ticks % kPaperReportTicks == 0) log_paper_quotes(slots, instruments);
     }
   }
   shutdown_watchdog.stop_requested();      // --duration, a kill switch, fastmm-ctl stop, ...
@@ -2308,20 +2356,27 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     FASTMM_LOG_ERROR("fastmm-live: shutting down (the gateway went away)");
   } else if (reason == 11) {
     FASTMM_LOG_ERROR("fastmm-live: shutting down (the standby did not take over)");
+  } else if (reason == 3) {
+    FASTMM_LOG_WARN("fastmm-live: shutting down (order ring overflow)");
   } else {
-    FASTMM_LOG_WARN("fastmm-live: shutting down ({})",
-                    reason == 1    ? std::string_view("duration elapsed")
-                    : reason == 2  ? std::string_view("signal")
-                    : reason == 8  ? std::string_view("control socket: stop")
-                    : reason == 10 ? std::string_view("control socket: handoff")
-                                   : std::string_view("order ring overflow"));
+    FASTMM_LOG_INFO("fastmm-live: shutting down ({})",
+                    reason == 1   ? std::string_view("duration elapsed")
+                    : reason == 2 ? std::string_view("signal")
+                    : reason == 8 ? std::string_view("control socket: stop")
+                                  : std::string_view("control socket: handoff"));
   }
 
   // Kill switch: the engine pulls quotes and queues cancels (it already did when it tripped the
   // switch itself); independently every venue cancels all open orders over its own REST
   // connection (6.7).
   if (publisher) publisher->close();
-  if (reason != 4 && !push_control(control_ring, ControlCommand::TripKill))
+  if (paper) log_paper_quotes(slots, instruments);  // the quotes as they stood
+  // A stop that was asked for (the duration, a signal, fastmm-ctl stop or handoff) is no emergency.
+  const bool planned = reason == 1 || reason == 2 || reason == 8 || reason == 10;
+  if (reason != 4 && !push_control(control_ring,
+                                   ControlCommand::TripKill,
+                                   VenueId::invalid(),
+                                   planned ? kTripKillPlannedStop : 0))
     FASTMM_LOG_ERROR("control ring full: kill switch message dropped");
   feed.notify();
   bool cancel_ok = true;
@@ -2388,11 +2443,27 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   {
     const EngineLiveStats final_live = runner->live_stats();
     if (final_live.quoting_elapsed_ns > 0) {
-      FASTMM_LOG_INFO("fastmm-live: quoting two_sided={}% of {} s",
+      // Summed over the instruments that quoted, each from its first resting order.
+      FASTMM_LOG_INFO("fastmm-live: quoting two_sided={:.1f}% of {:.2f} instrument-seconds",
                       100.0 * static_cast<double>(final_live.quoting_two_sided_ns) /
                           static_cast<double>(final_live.quoting_elapsed_ns),
                       static_cast<double>(final_live.quoting_elapsed_ns) / 1e9);
     }
+  }
+  if (paper) {
+    PaperTotals t;
+    for (const auto& s : slots) {
+      if (s->paper == nullptr) continue;
+      const PaperTotals v = s->paper->totals();
+      t.news += v.news;
+      t.cancels += v.cancels;
+      t.replaces += v.replaces;
+    }
+    FASTMM_LOG_INFO(
+        "fastmm-live: dry run: would have sent {} orders, {} cancels, {} replaces (none was sent)",
+        t.news,
+        t.cancels,
+        t.replaces);
   }
   log_reject_breakdown("risk_rejects", rs.risk_rejects_by_reason);
   log_reject_breakdown("venue_rejects", rs.venue_rejects_by_reason);

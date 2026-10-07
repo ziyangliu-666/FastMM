@@ -2,6 +2,26 @@
 
 All notable changes are recorded here (Keep a Changelog format).
 
+## [Unreleased]
+
+### Changed
+- `fastmm-live --dry-run` (and `python -m fastmm run --dry-run`) quotes on paper: each venue that
+  takes orders sits behind a `PaperVenue` (`live/paper_venue.hpp`) that acknowledges every order,
+  cancel and replace at once and never fills, so the strategy, the quote manager and the risk
+  checks run as in a keyed session and nothing is sent. Every 5 s and at the stop the log has one
+  line per instrument, `[<venue>] dry run <symbol>: bid <px> x <qty> ask <px> x <qty> would send
+  new=.. cancel=.. replace=..`, and the summary `dry run: would have sent N orders, M cancels, R
+  replaces`. The engine counters and `fastmm-top` (`paper orders=`) count the paper orders.
+  `ctx.quoting_enabled()` is true in a dry run, and the journal header's `quoting_enabled` is 1; a
+  strategy attached to a gateway still does not quote in a dry run. The engine is unchanged.
+- The per-venue status line comes every 10 s when the log goes to stderr, and every second into a
+  `[logging] file` as before. `[logging] status_interval_s` sets it (0 = none). fastmm-gateway too.
+- A planned stop (`--duration`, SIGINT/SIGTERM, `fastmm-ctl stop` or `handoff`) logs `stopping:
+  pulling quotes and cancelling all` at INFO instead of the WARN `kill switch requested`, which
+  stays for `fastmm-ctl kill`. `kTripKillPlannedStop` is the `TripKill` argument that says so.
+- The end-of-session quoting line reads `quoting two_sided=93.5% of 60.43 instrument-seconds`: the
+  time is summed over the instruments that quoted.
+
 ## [0.4.0] - 2026-10-06
 
 ### Added

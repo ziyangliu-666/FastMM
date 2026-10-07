@@ -70,7 +70,7 @@ void on_risk_reject(auto& /*ctx*/, const RiskReject& r) noexcept {
 
 | Hook | Called |
 |---|---|
-| `on_start(ctx)` | once, before the first event; `ctx.quoting_enabled()` is false in a dry run |
+| `on_start(ctx)` | once, before the first event; `ctx.quoting_enabled()` is true in a dry run, whose orders are on paper |
 | `on_stop(ctx)` | once, when the engine finishes; quotes are not pulled here, shutdown's cancel-all does that |
 | `on_book(ctx, id, book)` | after a snapshot or delta is applied, the position is marked and risk has seen the mid; the book may be invalid (empty or crossed) |
 | `on_book_ticker(ctx, id, m)` | a top-of-book update without depth |
@@ -96,7 +96,7 @@ Rules:
 
 ### on_quoting
 
-`set_quotes` is ignored while quoting is disabled: an operator pull (`PullQuotes`), the kill switch, a reconciliation, parameters older than `max_param_age_ms` ([Parameter updates](#parameter-updates)), or a dry run. `on_quoting(ctx, enabled)` reports changes, so a strategy can requote as soon as quoting is back.
+`set_quotes` is ignored while quoting is disabled: an operator pull (`PullQuotes`), the kill switch, a reconciliation, or parameters older than `max_param_age_ms` ([Parameter updates](#parameter-updates)). A dry run quotes: its orders are acknowledged on paper and never sent. `on_quoting(ctx, enabled)` reports changes, so a strategy can requote as soon as quoting is back.
 
 - The engine compares `ctx.quoting_enabled()` before and after each event, fired timer and `on_start`, and calls the hook after the triggering hook has returned and all flags are final. At the end of a reconciliation that is after the engine has placed the quotes it paused, so a requote from `on_quoting` replaces them.
 - It never fires from inside a context call: a kill switch tripped by `set_quotes` or `send` is reported after the hook that made the call returns.
