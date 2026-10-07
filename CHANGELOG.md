@@ -2,7 +2,7 @@
 
 All notable changes are recorded here (Keep a Changelog format).
 
-## [Unreleased]
+## [0.5.0] - 2026-10-07
 
 ### Added
 - `fastmm init` also writes `live.toml`: the starter class on BTCUSDT on Binance Spot Demo Mode,
@@ -21,7 +21,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - `fastmm-engine` no longer installs on CPython 3.9 (end of life): `requires-python` is `>=3.10`,
   as `fastmm-engine-live` and the `hot` extra already needed, and no cp39 wheel is built. On 3.9,
   `pip install "fastmm-engine[hot,live]"` failed with an unexplained `ResolutionImpossible`.
-- `examples/quickstart/CMakeLists.txt` fetches FastMM `v0.4.0` instead of `main`. A version bump
+- `examples/quickstart/CMakeLists.txt` fetches FastMM `v0.5.0` instead of `main`. A version bump
   updates the tag; configuring FastMM with examples fails when it differs from the project version.
 - The release tarball needs glibc 2.28 or newer and nothing else, was the build host's glibc
   (2.39) and libssl 3: it is built in `manylinux_2_28` with OpenSSL (`scripts/wheels/build-openssl.sh`),
