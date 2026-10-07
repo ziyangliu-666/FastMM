@@ -2,7 +2,7 @@
 
 All notable changes are recorded here (Keep a Changelog format).
 
-## [Unreleased]
+## [0.5.1] - 2026-10-07
 
 ### Fixed
 - The README `fastmm init` writes runs `pip` and `python` in the active virtual environment. It
