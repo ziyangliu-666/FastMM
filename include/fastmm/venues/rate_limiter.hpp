@@ -12,11 +12,15 @@
 // A cooldown (429 Retry-After, -1003, 10006) blocks every send until it expires, and a second one
 // soon after the first waits longer each time; a hard stop (418 IP ban) blocks until explicitly
 // cleared. Bulk requests (a start-up's depth snapshots and history queries, one per symbol) check
-// against kBulkShare of the weight, paced over the window (kBulkPaceFloor), so the rest of the
-// window stays with the orders and the bulk does not pile up at the start of each window.
-// Several accounts behind one IP (an account pool) share the IP's weight: share_ip() points the
-// weight buckets, the cooldown and the hard stop at one SharedRate per host (shared_rate()), so a
-// 429 seen by one account pauses them all; the order-count buckets stay the account's.
+// against kBulkShare of the weight, and what this limiter sent in the window (every account of
+// the process, on a shared IP) against that share paced over it (kBulkPaceFloor), so the rest of
+// the window stays with the orders and the bulk does not pile up at the start of each window. The
+// pace leaves out what other processes on the IP spent: a second process early in a minute (a warm
+// standby, a restart) would otherwise find the paced share spent by the first and wait seconds for
+// its first depth snapshot. Several accounts behind one IP (an account pool) share the IP's weight:
+// share_ip() points the weight buckets, the cooldown and the hard stop at one SharedRate per host
+// (shared_rate()), so a 429 seen by one account pauses them all; the order-count buckets stay the
+// account's.
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -43,6 +47,9 @@ struct RateBucket {
   // The venue's clock minus the local one (RateLimiter::set_clock_offset): windows start where
   // now + offset is a multiple of window_ns, as the venue's do.
   std::int64_t offset = 0;
+  // What this limiter sent in the current window, which `used` includes: the venue's counts
+  // (calibrate) move `used` to the IP's, other processes' requests too, and leave this alone.
+  std::uint32_t own = 0;
 
   // The start of the venue's window that holds `now`.
   [[nodiscard]] std::int64_t aligned_start(std::int64_t now) const noexcept {
@@ -53,6 +60,7 @@ struct RateBucket {
     if (window_ns > 0 && now - window_start >= window_ns) {
       window_start = aligned_start(now);
       used = 0;
+      own = 0;
     }
   }
   // A new clock offset: the window holding `now` starts where the venue's does. The count stays
@@ -69,6 +77,11 @@ struct RateBucket {
   [[nodiscard]] bool would_exceed(std::uint32_t add, double threshold) const noexcept {
     if (limit == 0) return false;
     return static_cast<double>(used + add) > static_cast<double>(limit) * threshold;
+  }
+  // The same for this limiter's own weight in the window.
+  [[nodiscard]] bool own_would_exceed(std::uint32_t add, double threshold) const noexcept {
+    if (limit == 0) return false;
+    return static_cast<double>(own + add) > static_cast<double>(limit) * threshold;
   }
   // The venue's count `count` for this window, `recent` sent in the last kHeaderLagNs: raised to
   // the count, lowered to count + recent. Ignored within `lag` of the window's start, where it may
@@ -134,9 +147,10 @@ class RateLimiter {
   static constexpr std::int64_t kStreakWindowNs = 60'000'000'000;
   static constexpr std::int64_t kBackoffBaseNs = 1'000'000'000;
   static constexpr std::int64_t kBackoffMaxNs = 120'000'000'000;
-  // A bulk request's share grows with the time into the window, from this part at its start to
-  // all of kBulkShare at its end: a backlog of history queries waiting for room no longer spends
-  // the share the moment the window opens, while the orders are busiest there.
+  // The part of kBulkShare this limiter's own weight in a window may fill before a bulk request
+  // grows with the time into the window, from this part at its start to all of it at its end: a
+  // backlog of history queries waiting for room no longer spends the share the moment the window
+  // opens, while the orders are busiest there.
   static constexpr double kBulkPaceFloor = 0.2;
   // How late a venue's count (on_headers) may be: what was sent in this long before it arrived
   // may be missing from it.
@@ -291,7 +305,7 @@ class RateLimiter {
                   std::int64_t offset) noexcept {
     for (RateBucket& b : arr) {
       if (b.active) continue;
-      b = RateBucket{limit, window_ns, 0, 0, true, offset};
+      b = RateBucket{limit, window_ns, 0, 0, true, offset, 0};
       return true;
     }
     return false;
@@ -304,11 +318,13 @@ class RateLimiter {
       if (!b.active) continue;
       b.roll(now);
       b.used += n;
+      b.own += n;
     }
   }
   // This limiter's own weight: no cooldown or hard stop, and `weight` under threshold * limit;
-  // `paced` (a bulk request) under the part of it the time into the window allows
-  // (kBulkPaceFloor). A shared IP calls it on SharedRate::r under the lock.
+  // `paced` (a bulk request): what this limiter sent in the window, too, under the part of it the
+  // time into the window allows (kBulkPaceFloor). A shared IP calls it on SharedRate::r under the
+  // lock.
   RateRefusal weight_fits(std::uint32_t weight,
                           std::int64_t now,
                           double threshold,
@@ -317,13 +333,13 @@ class RateLimiter {
     for (RateBucket& b : weight_) {
       if (!b.active) continue;
       b.roll(now);
-      double t = threshold;
+      if (b.would_exceed(weight, threshold)) return RateRefusal::Weight;
       if (paced && b.window_ns > 0) {
         const double into =
             static_cast<double>(now - b.window_start) / static_cast<double>(b.window_ns);
-        t *= std::clamp(into, kBulkPaceFloor, 1.0);
+        if (b.own_would_exceed(weight, threshold * std::clamp(into, kBulkPaceFloor, 1.0)))
+          return RateRefusal::Weight;
       }
-      if (b.would_exceed(weight, t)) return RateRefusal::Weight;
     }
     return RateRefusal::None;
   }

@@ -8,6 +8,13 @@ All notable changes are recorded here (Keep a Changelog format).
 - The README `fastmm init` writes runs `pip` and `python` in the active virtual environment. It
   called `.venv/bin/pip` in the project directory, which the quick start (a `.venv` one level up)
   never creates.
+- A warm standby (`fastmm-live --standby`) started early in a venue minute has its books before
+  the handoff. The rate limiter paced a bulk request (a depth snapshot, a history query) against
+  the IP's whole count, which another process on the IP had taken past the paced share at a
+  minute's start (540 of 6000), so the standby's first snapshot waited until some 15 s into the
+  minute: it warmed nothing and quoted seconds after taking over. The pace now counts the
+  limiter's own weight; the IP's count is held to the whole bulk share. A restart early in a
+  minute next to a running process gets its snapshots and replays the same way.
 
 ## [0.5.0] - 2026-10-07
 

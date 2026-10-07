@@ -16,6 +16,7 @@
 #include <fstream>
 #include <set>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -241,26 +242,41 @@ TEST_CASE("handoff: a warm standby reads market data before the handoff and quot
   ServerFixture fx;
   const SessionFiles f = locked_config(fx, "handoff-warm");
   OpenOrderWatch watch(fx);
-  const auto first_order_after = [&](std::size_t before, const std::string& log) {
-    REQUIRE_MESSAGE(
-        wait_until([&] { return fx.server.accepted_client_order_ids().size() > before; }, 30000),
-        "no order from the new process: " << fastmm::test::read_file(log));
-    return std::chrono::steady_clock::now();
-  };
   const auto ms = [](auto d) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(d).count();
   };
+  // The epochs of the orders the venue has accepted so far.
+  const auto epochs_accepted = [&] {
+    std::set<std::uint16_t> out;
+    for (const std::string& id : fx.server.accepted_client_order_ids()) out.insert(epoch_of(id));
+    return out;
+  };
+  // Waits for the venue to accept an order of an epoch not in `old`, the new process's first;
+  // that epoch.
+  const auto new_epoch = [&](const std::set<std::uint16_t>& old, const std::string& log) {
+    std::uint16_t epoch = 0;
+    const auto arrived = [&] {
+      for (const std::string& id : fx.server.accepted_client_order_ids()) {
+        epoch = epoch_of(id);
+        if (!old.contains(epoch)) return true;
+      }
+      return false;
+    };
+    REQUIRE_MESSAGE(wait_until(arrived, 30000),
+                    "no order from the new process: " << fastmm::test::read_file(log));
+    return epoch;
+  };
 
   const pid_t a = start(f, f.config + ".a.log", {});
-  REQUIRE(wait_until([&] { return fx.server.stats().orders_accepted > 0; }, 60000));
+  REQUIRE(wait_until([&] { return !fx.server.accepted_client_order_ids().empty(); }, 60000));
 
   // Cold: stop, then start.
   REQUIRE(::kill(a, SIGTERM) == 0);
   CHECK(reap(a) == live::kExitOk);
   const auto a_exit = std::chrono::steady_clock::now();
-  std::size_t before = fx.server.accepted_client_order_ids().size();
   const pid_t b = start(f, f.config + ".b.log", {});
-  const auto cold = first_order_after(before, f.config + ".b.log") - a_exit;
+  const std::uint16_t b_epoch = new_epoch(epochs_accepted(), f.config + ".b.log");
+  const auto cold = std::chrono::steady_clock::now() - a_exit;
 
   // Warm: a standby next to the running session, once that one's start-up queries are done.
   std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -272,30 +288,42 @@ TEST_CASE("handoff: a warm standby reads market data before the handoff and quot
   std::this_thread::sleep_for(std::chrono::seconds(3));  // its books sync, its strategy runs
   const sim::server::SimServerStats warm_up = fx.server.stats();
   CHECK(warm_up.depth_snapshots > running.depth_snapshots);  // the standby's books
-  // Nothing of the account: no WebSocket API session, no user stream, no order, no query.
+  // Nothing of the account: no WebSocket API session, no user stream, no cancel. The running
+  // session reconciles on its own whenever its events ask for it, so the venue's query counts say
+  // nothing of the standby; its log does, below.
   CHECK(warm_up.api_sessions_opened == running.api_sessions_opened);
   CHECK(warm_up.user_subscriptions == running.user_subscriptions);
-  CHECK(warm_up.open_orders_queries == running.open_orders_queries);
-  CHECK(warm_up.my_trades_queries == running.my_trades_queries);
   CHECK(warm_up.cancel_all_requests == running.cancel_all_requests);
-  const std::uint16_t b_epoch = epoch_of(fx.server.accepted_client_order_ids().back());
   for (const std::string& id : fx.server.open_client_order_ids()) CHECK(epoch_of(id) == b_epoch);
 
   std::string reply;
+  const std::set<std::uint16_t> old = epochs_accepted();
+  const std::uint64_t snapshots = fx.server.stats().depth_snapshots;
+  const auto handoff = std::chrono::steady_clock::now();
   REQUIRE(live::control_request(ctl_of(f), "handoff", 2000, reply) == live::ControlReply::Answered);
   REQUIRE(reply.starts_with("ok"));
+  CHECK(new_epoch(old, f.config + ".c.log") > b_epoch);
+  const auto warm = std::chrono::steady_clock::now() - handoff;
+  // Its book was live before the handoff: no snapshot between the handoff and its first order.
+  CHECK(fx.server.stats().depth_snapshots == snapshots);
+  MESSAGE("first order of the new process: cold " << ms(cold) << " ms after the old one exited, "
+                                                  << "warm " << ms(warm)
+                                                  << " ms after the handoff");
   CHECK(reap(b) == live::kExitOk);
-  const auto b_exit = std::chrono::steady_clock::now();
-  before = fx.server.accepted_client_order_ids().size();
-  const auto warm = first_order_after(before, f.config + ".c.log") - b_exit;
-  MESSAGE("first order after the previous process exited: cold " << ms(cold) << " ms, warm "
-                                                                 << ms(warm) << " ms");
-  CHECK(warm < cold);
 
   REQUIRE(live::control_request(ctl_of(f), "stop", 2000, reply) == live::ControlReply::Answered);
   CHECK(reap(c) == live::kExitOk);
   watch.finish();
-  CHECK(fastmm::test::read_file(f.config + ".c.log").find("private=deferred") != std::string::npos);
+  const std::string c_log = fastmm::test::read_file(f.config + ".c.log");
+  CHECK(c_log.find("private=deferred") != std::string::npos);
+  // Until it took over, the standby read nothing of the account and opened none of it.
+  const std::size_t took_over = c_log.find("took over after");
+  REQUIRE(took_over != std::string::npos);
+  const std::string_view warming = std::string_view(c_log).substr(0, took_over);
+  CHECK(warming.find("reconciled") == std::string_view::npos);
+  CHECK(warming.find("replayed") == std::string_view::npos);
+  CHECK(warming.find("user=live") == std::string_view::npos);
+  CHECK(warming.find("order=live") == std::string_view::npos);
   CHECK(watch.mixed.load() == 0);
   check_one_trader_at_a_time(fx, 3);
   CHECK(fx.server.stats().open_orders == 0);

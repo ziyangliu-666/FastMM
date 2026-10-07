@@ -117,6 +117,29 @@ TEST_CASE("venues.rate_limiter: a bulk request fits its share of the window, pac
   CHECK(rl.can_send(100, 60 * kSec, false, RateLimiter::kBulkShare));
 }
 
+// A warm standby or a restart starts early in a minute next to a process that has spent some 590
+// of the IP's 6000 by then: past the paced share at the minute's start (540), so its first depth
+// snapshot waited until some 15 s into the minute and its book stayed empty. The pace is the
+// limiter's own; the IP's count is held to the whole share.
+TEST_CASE("venues.rate_limiter: the bulk pace counts this limiter's weight, not the IP's") {
+  RateLimiter rl;  // threshold 0.9
+  REQUIRE(rl.add_weight_bucket(6000, 60 * kSec));
+  const std::int64_t now = 3 * kSec;  // past the first 2 s, where a count may be the last window's
+  rl.on_headers(588, -1, now);
+  REQUIRE(rl.weight_bucket(0)->used == 588);
+  CHECK(rl.can_send(50, now, false, RateLimiter::kBulkShare));
+  rl.on_sent(50, now);
+  // Its own weight is still paced: 540 at the window's start.
+  rl.on_sent(450, now);
+  CHECK(rl.can_send(40, now, false, RateLimiter::kBulkShare));
+  CHECK_FALSE(rl.can_send(41, now, false, RateLimiter::kBulkShare));
+  // And the IP's count is held to the whole share (2700): at 2700, another process's 2200 and
+  // this limiter's 500, no bulk request until the window rolls.
+  rl.on_headers(2200 + 500, -1, now + kSec);
+  CHECK_FALSE(rl.can_send(1, 59 * kSec, false, RateLimiter::kBulkShare));
+  CHECK(rl.can_send(1, 59 * kSec));  // an order is not bulk
+}
+
 TEST_CASE("venues.rate_limiter: pauses asked in a row wait longer each time") {
   RateLimiter rl;
   REQUIRE(rl.add_weight_bucket(100, kSec));
