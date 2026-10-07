@@ -12,10 +12,11 @@ To build both packages from a checkout instead: [Install from source](../../gett
 
 ## Run against the simulated exchange
 
-Start the simulated exchange (a C++ program: a build or a [release](../operations/deploy.md)):
+Start the simulated exchange, a C++ program from a build or from the unpacked [release tarball](../operations/deploy.md), which holds the same `configs/` and the TLS certificate it reads:
 
 ```bash
-./build/release/bin/fastmm-sim-exchange --config configs/sim.toml
+./build/release/bin/fastmm-sim-exchange --config configs/sim.toml   # checkout
+bin/fastmm-sim-exchange --config configs/sim.toml                   # in fastmm-<version>-x86_64/
 ```
 
 Copy `configs/sim-local.toml` to `sim-py.toml` and set `name = "py:BasicMMHot"` in its `[strategy]` table, so its `[strategy.params]` apply to the class. In another terminal:

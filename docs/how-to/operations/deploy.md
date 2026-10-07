@@ -4,11 +4,11 @@ A release comes in three forms, from <https://github.com/ziyangliu-666/FastMM/re
 
 | Form | What it holds | Use it for |
 |---|---|---|
-| `fastmm-<version>-x86_64.tar.gz` | `fastmm-live`, `fastmm-gateway`, `fastmm-ctl`, `fastmm-top`, `fastmm-pnl`, `fastmm-replay`, `fastmm-sim-itch`, the ITCH simulator configs, the systemd units, the Prometheus alert rules (0.2.0: `fastmm-live`, `fastmm-top`, `fastmm-replay`, `fastmm-sim-itch` and `fastmm-live.service`) | a host that runs C++ strategies |
+| `fastmm-<version>-x86_64.tar.gz` | `fastmm-live`, `fastmm-gateway`, `fastmm-ctl`, `fastmm-top`, `fastmm-pnl`, `fastmm-replay`, `fastmm-sim-exchange`, `fastmm-sim-itch`, the simulator configs, the systemd units, the Prometheus alert rules (0.2.0: `fastmm-live`, `fastmm-top`, `fastmm-replay`, `fastmm-sim-itch` and `fastmm-live.service`) | a host that runs C++ strategies |
 | `ghcr.io/ziyangliu-666/fastmm:<version>` | the same programs without the simulator, non-root | a container host |
 | `pip install "fastmm-engine[live]"` | the engine as a Python package, for strategies written in Python | [Python](../../python.md) |
 
-The tarball and the image are built for x86-64-v2 and need glibc of the build host's version or newer; the tarball also needs libssl 3 (`apt install libssl3` on Ubuntu 24.04). Neither holds a strategy of your own: a C++ strategy is linked into your own `fastmm-live` build ([Register a strategy](../strategies/register-a-strategy.md)).
+Both are built for x86-64-v2. The tarball needs glibc 2.28 or newer and nothing else (Ubuntu 20.04, Debian 10, RHEL 8, Amazon Linux 2023 and later): OpenSSL, libstdc++ and libgcc are linked in. Each release's tarball is run on Ubuntu 22.04 and 24.04, Debian 12, Rocky Linux 9 and Amazon Linux 2023 before it is published. Neither holds a strategy of your own: a C++ strategy is linked into your own `fastmm-live` build ([Register a strategy](../strategies/register-a-strategy.md)).
 
 ## Install the tarball
 
@@ -24,7 +24,7 @@ sudo ln -sfn /opt/fastmm-0.2.0-x86_64 /opt/fastmm
 
 An upgrade is a second directory and a new symlink target. Stop the session before you move the link: `fastmm-top` refuses a status file written by another build. To keep the pause to one restart, run the new build with `--takeover` from its own directory ([Hand over a running session](hand-over-a-session.md)); the old unit exits 0 on the handoff and systemd does not restart it.
 
-`scripts/package-release.sh` builds the tarball from a checkout. Its default preset, `release-dpdk`, links in the DPDK receive backend ([Receive a multicast feed](multicast-feeds.md)); `--preset` picks another.
+`scripts/package-release.sh` builds the tarball from a checkout. Its default preset, `release-dpdk`, links in the DPDK receive backend ([Receive a multicast feed](multicast-feeds.md)); `--preset` picks another. A tarball built on the host needs that host's glibc or newer; `--container` builds in `manylinux_2_28` with docker, as the release does, and `scripts/check-release.sh <tarball>` runs it on the five distributions.
 
 ## Run under systemd
 

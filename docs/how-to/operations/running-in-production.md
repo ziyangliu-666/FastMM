@@ -125,7 +125,7 @@ Use one key per engine, trading permission only, no withdrawal rights, IP-allowl
 | Item | What to set |
 |---|---|
 | Service files | `deploy/fastmm-live.service`, `deploy/fastmm-live@.service` and `deploy/fastmm-gateway.service` set `Restart=on-failure`; the two `fastmm-live` units also set `LimitMEMLOCK=infinity` and `CPUAffinity=2 3`. The paths, the user and the cores are yours to set ([Deploy a release](deploy.md#run-under-systemd)) |
-| Binaries | `CMakeLists.txt` installs libraries and headers; `scripts/package-release.sh` makes the release tarball with `fastmm-live`, `fastmm-gateway`, `fastmm-ctl`, `fastmm-top`, `fastmm-pnl`, `fastmm-replay` and `fastmm-sim-itch` |
+| Binaries | `CMakeLists.txt` installs libraries and headers; `scripts/package-release.sh` makes the release tarball with `fastmm-live`, `fastmm-gateway`, `fastmm-ctl`, `fastmm-top`, `fastmm-pnl`, `fastmm-replay`, `fastmm-sim-exchange` and `fastmm-sim-itch` |
 | Container limits | `deploy/docker/Dockerfile.production` is non-root with the distro CA bundle and no test certificates; set ulimits and a memory limit in your runtime ([Deploy a release](deploy.md#run-the-container)). `deploy/docker/Dockerfile` and `deploy/docker/compose.yml` are the demo, as root |
 | Latency profile | `configs/profiles/production-latency.toml` has no loader or `--profile` flag; copy its `[engine]` table by hand. Everything outside `[engine]` in that file is simulator config, including literal passwords |
 | Log rotation | point `[logging] file` at a path your own rotation handles, or let `mirror_level` send warnings to a collector on stderr |
