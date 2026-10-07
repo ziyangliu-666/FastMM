@@ -229,6 +229,7 @@ void Logger::sink_loop() {
   Impl& im = *impl_;
   int idle = 0;
   Duration wait{};
+  bool unflushed = false;  // written since the last fflush
   while (!im.stop_requested.load(std::memory_order_acquire)) {
     // Read the flush request *before* draining so every record published before the
     // request is guaranteed to be on disk when flush_done catches up.
@@ -241,9 +242,16 @@ void Logger::sink_loop() {
     if (n != 0) {
       idle = 0;
       wait = Duration{};
+      unflushed = true;
     } else if (++idle <= kIdleSpins) {
       __builtin_ia32_pause();
     } else {
+      // A burst is over: put it on disk, so a log file follows the session (tail -f) instead of
+      // waiting for the stdio buffer to fill.
+      if (unflushed) {
+        std::fflush(im.out);
+        unflushed = false;
+      }
       // Idle: timed waits growing from 50 us to 10 ms (a thread's kLogRingSize-record ring then
       // holds bursts of 800k records/s). Logging never waits for the sink and does not signal it.
       wait = wait.ns == 0 ? kMinIdleWait : std::min(wait * 2, kMaxIdleWait);
@@ -266,6 +274,7 @@ void Logger::start(std::FILE* out, LogLevel mirror_level) {
   Impl& im = *impl_;
   im.out = out == nullptr ? stderr : out;
   im.mirror_level = mirror_level;
+  to_file_.store(im.out != stderr, std::memory_order_release);
   im.stop_requested.store(false);
   running_.store(true, std::memory_order_release);
   im.sink = std::thread([this] { sink_loop(); });

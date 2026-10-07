@@ -119,6 +119,8 @@ class Logger {
   // Drains all rings and fflush()es. Works with or without a running sink thread.
   void flush();
   [[nodiscard]] bool running() const noexcept { return running_.load(std::memory_order_acquire); }
+  // The sink writes to a stream other than stderr (a log file).
+  [[nodiscard]] bool to_file() const noexcept { return to_file_.load(std::memory_order_acquire); }
 
   [[nodiscard]] std::uint64_t dropped() const noexcept {
     return dropped_.load(std::memory_order_relaxed);
@@ -140,6 +142,7 @@ class Logger {
   struct Impl;
   Impl* impl_ = nullptr;
   std::atomic<bool> running_{false};
+  std::atomic<bool> to_file_{false};
   std::atomic<std::uint64_t> dropped_{0};
   std::atomic<std::uint64_t> written_{0};
 };

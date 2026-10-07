@@ -1984,7 +1984,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   const std::int64_t start = steady_now().ns;
   std::int64_t next_tick = start + 1'000'000'000;
   // [logging] status_interval_s: the per-venue status lines every this many ticks (0: never).
-  const std::int64_t status_every = cfg.status_interval_s();
+  const std::int64_t status_every = cfg.status_interval_s(Logger::instance().to_file());
   std::int64_t ticks = 0;
   constexpr std::int64_t kPaperReportTicks = 5;  // a dry run's quote lines
   const bool paper =

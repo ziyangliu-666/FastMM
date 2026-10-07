@@ -214,10 +214,11 @@ py::tuple run(const std::string& path,
     }
 
     std::FILE* log_file = nullptr;
-    if (rc == 0 && !log_path.empty()) {
-      log_file = std::fopen(log_path.c_str(), "a");
+    const std::string& log_to = log_path.empty() ? cfg.logging.file : log_path;  // [logging] file
+    if (rc == 0 && !log_to.empty()) {
+      log_file = std::fopen(log_to.c_str(), "a");
       if (log_file == nullptr) {
-        std::fprintf(stderr, "fastmm: cannot open log file %s\n", log_path.c_str());
+        std::fprintf(stderr, "fastmm: cannot open log file %s\n", log_to.c_str());
         rc = live::kExitUsage;
       }
     }

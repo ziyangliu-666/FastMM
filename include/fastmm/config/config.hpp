@@ -339,9 +339,10 @@ class Config {
   [[nodiscard]] QuoteParams quote_params() const;
   [[nodiscard]] LogLevel log_level() const;
   [[nodiscard]] LogLevel mirror_level() const;
-  [[nodiscard]] std::int64_t status_interval_s() const noexcept {
+  // `to_file`: the log goes to a file (--log or [logging] file), where the default is 1 s.
+  [[nodiscard]] std::int64_t status_interval_s(bool to_file) const noexcept {
     if (logging.status_interval_s >= 0) return logging.status_interval_s;
-    return logging.file.empty() ? 10 : 1;
+    return to_file ? 1 : 10;
   }
   [[nodiscard]] SpinMode spin_mode() const;
   [[nodiscard]] bool single_threaded() const noexcept { return engine.threading == "single"; }

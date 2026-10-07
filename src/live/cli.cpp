@@ -193,6 +193,7 @@ int live(int argc, char** argv, std::span<const StrategyModule> modules) {
     return kExitUsage;
 
   std::FILE* log_file = nullptr;
+  if (log_path.empty()) log_path = cfg.logging.file;  // --log, else [logging] file
   if (!log_path.empty()) {
     log_file = std::fopen(log_path.c_str(), "a");
     if (log_file == nullptr) {

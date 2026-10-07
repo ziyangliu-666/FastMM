@@ -53,7 +53,8 @@ All notable changes are recorded here (Keep a Changelog format).
   the "previous session" a keyed start restored its position and execution replay from, and it
   counted in the kill ledger. `--dry-run` with `--standby` or `--takeover` exits 2.
 - The per-venue status line comes every 10 s when the log goes to stderr, and every second into a
-  `[logging] file` as before. `[logging] status_interval_s` sets it (0 = none). fastmm-gateway too.
+  log file (`--log` or `[logging] file`) as before. `[logging] status_interval_s` sets it
+  (0 = none). fastmm-gateway too.
 - A planned stop (`--duration`, SIGINT/SIGTERM, `fastmm-ctl stop` or `handoff`) logs `stopping:
   pulling quotes and cancelling all` at INFO instead of the WARN `kill switch requested`, which
   stays for `fastmm-ctl kill`. `kTripKillPlannedStop` is the `TripKill` argument that says so.
@@ -61,6 +62,11 @@ All notable changes are recorded here (Keep a Changelog format).
   time is summed over the instruments that quoted.
 
 ### Fixed
+- `[logging] file` was read and never opened: `fastmm-live`, `fastmm-gateway` and
+  `python -m fastmm run` logged to stderr whatever it said. It is the log file now; `--log` still
+  takes precedence.
+- A log file trailed the session by up to a stdio buffer (4 KiB): the sink flushed it only when
+  asked. It flushes after each burst, so `tail -f` follows the session.
 - `scripts/bootstrap.sh` uses `$CXX` when it is set, and otherwise the first of `g++`, `g++-15` to
   `g++-13`, `clang++` and `clang++-21` to `clang++-16` that is gcc 13 or clang 16 or newer, and
   exports it with the matching C compiler as `CXX` and `CC` for the configure. It found only `g++`

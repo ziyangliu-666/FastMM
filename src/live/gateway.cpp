@@ -3596,7 +3596,8 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
   gateway.publish_status(StatusRunState::Running);
   const std::int64_t start = steady_now().ns;
   std::int64_t next_tick = start + 1'000'000'000;
-  const std::int64_t status_every = cfg.status_interval_s();  // [logging] status_interval_s
+  const std::int64_t status_every =
+      cfg.status_interval_s(Logger::instance().to_file());  // [logging] status_interval_s
   std::int64_t ticks = 0;
   std::int64_t next_status = start + 250'000'000;
   std::vector<pollfd> fds;
