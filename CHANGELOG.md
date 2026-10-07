@@ -50,6 +50,8 @@ All notable changes are recorded here (Keep a Changelog format).
   loads for a backtest instead of raising `ConfigError`.
 
 ### Documentation
+- [Register a strategy](docs/how-to/strategies/register-a-strategy.md) installs FastMM from a
+  build without its tests, benchmarks and examples, in `build/sdk`: a third of the targets.
 - The quick start in the README and [Install](docs/getting-started/install.md) creates a virtual
   environment first and names `python3-venv`: on a fresh Debian or Ubuntu there is no `pip`, and
   the system Python refuses to install packages (PEP 668).

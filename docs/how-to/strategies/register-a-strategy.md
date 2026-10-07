@@ -44,8 +44,9 @@ The apps accept every flag of `fastmm-live`, `fastmm-backtest` and `fastmm-repla
 ### Build against an installed FastMM
 
 ```bash
-cmake --preset release && cmake --build --preset release
-cmake --install build/release --prefix build/install
+cmake --preset release -B build/sdk -DFASTMM_BUILD_TESTS=OFF -DFASTMM_BUILD_BENCH=OFF \
+    -DFASTMM_BUILD_EXAMPLES=OFF
+cmake --build build/sdk && cmake --install build/sdk --prefix build/install
 cmake -S examples/external-project -B build/mm -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_PREFIX_PATH="$PWD/build/install"
 cmake --build build/mm && ctest --test-dir build/mm
@@ -58,6 +59,7 @@ cmake --build build/mm && ctest --test-dir build/mm
 | backtest and replay apps | `fastmm::backtest` |
 
 - Build your project with the compiler that built FastMM: a Release install contains GCC LTO objects.
+- The install needs the libraries only; leaving out FastMM's tests, benchmarks and examples builds a third of the targets.
 - `find_package(fastmm CONFIG REQUIRED COMPONENTS live)` fails with `component 'live' (fastmm::live) is not available: this FastMM was built with FASTMM_BUILD_NET=OFF` when the install has no networking. A backtest-only project links `fastmm::backtest` and asks for no component.
 
 ### Build together with a FastMM source tree
