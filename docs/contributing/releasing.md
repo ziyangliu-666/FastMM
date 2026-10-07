@@ -4,7 +4,7 @@ A release is a `v<version>` tag. Pushing the tag builds and publishes everything
 
 ## 1. Set the version
 
-`project(fastmm VERSION <x.y.z>)` in [`CMakeLists.txt`](../../CMakeLists.txt) is the only source. `pyproject.toml` reads it for both wheels, and its `live` extra pins `fastmm-engine-live==<x.y.z>` by hand: bump both, in one commit. `python/tests/test_packaging.py` fails when they disagree.
+`project(fastmm VERSION <x.y.z>)` in [`CMakeLists.txt`](../../CMakeLists.txt) is the only source. `pyproject.toml` reads it for both wheels. Two places repeat it by hand, and a version bump changes all three in one commit: the `live` extra in `pyproject.toml` pins `fastmm-engine-live==<x.y.z>` (`python/tests/test_packaging.py` fails when they disagree), and [`examples/quickstart/CMakeLists.txt`](../../examples/quickstart/CMakeLists.txt) fetches `GIT_TAG v<x.y.z>` (configuring FastMM with examples fails when they disagree). Run `python3 tools/doc_snippets.py` afterwards: the Quick start quotes that file.
 
 What a version number promises: [Versions and compatibility](../reference/compatibility.md).
 

@@ -2,6 +2,29 @@
 
 All notable changes are recorded here (Keep a Changelog format).
 
+## [Unreleased]
+
+### Changed
+- `fastmm-engine` no longer installs on CPython 3.9 (end of life): `requires-python` is `>=3.10`,
+  as `fastmm-engine-live` and the `hot` extra already needed, and no cp39 wheel is built. On 3.9,
+  `pip install "fastmm-engine[hot,live]"` failed with an unexplained `ResolutionImpossible`.
+- `examples/quickstart/CMakeLists.txt` fetches FastMM `v0.4.0` instead of `main`. A version bump
+  updates the tag; configuring FastMM with examples fails when it differs from the project version.
+
+### Fixed
+- `scripts/bootstrap.sh` uses `$CXX` when it is set, and otherwise the first of `g++`, `g++-15` to
+  `g++-13`, `clang++` and `clang++-21` to `clang++-16` that is gcc 13 or clang 16 or newer, and
+  exports it with the matching C compiler as `CXX` and `CC` for the configure. It found only `g++`
+  and `clang++`, so on Ubuntu 24.04 with just the `g++-13` package it stopped with "no C++
+  compiler found", even with `CXX=g++-13`.
+
+### Documentation
+- The quick start in the README and [Install](docs/getting-started/install.md) creates a virtual
+  environment first and names `python3-venv`: on a fresh Debian or Ubuntu there is no `pip`, and
+  the system Python refuses to install packages (PEP 668).
+- Install: the Ubuntu 24.04 package line installs `g++` (gcc 13) instead of `g++-13`, which
+  provides no `c++` or `g++` for CMake to find.
+
 ## [0.4.0] - 2026-10-06
 
 ### Added

@@ -219,7 +219,7 @@ A FastMM market maker: `strategy.py` quotes both sides around the mid and shifts
 its inventory, `config.toml` describes the simulated market it trades, `backtest.py` runs it.
 
 ```bash
-python -m venv .venv && .venv/bin/pip install "fastmm-engine[hot]"
+python3 -m venv .venv && .venv/bin/pip install "fastmm-engine[hot]"
 .venv/bin/python backtest.py
 .venv/bin/python backtest.py --sweep half_spread_bps=0.005,0.01,0.02,0.05
 ```
@@ -242,8 +242,8 @@ and see <https://ziy.bio/FastMM/explanation/economics/>.
 
 ## Live trading
 
-The same class runs against a venue once `fastmm-engine-live` is installed (Linux x86-64, CPython
-3.10 or later), with a config that has a venue instead of `[venues.sim] kind = "sim"`:
+The same class runs against a venue once `fastmm-engine-live` is installed (Linux x86-64), with a
+config that has a venue instead of `[venues.sim] kind = "sim"`:
 
 ```bash
 .venv/bin/pip install "fastmm-engine[live]"

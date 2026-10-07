@@ -10,12 +10,13 @@
 ## Quickstart
 
 ```bash
+python3 -m venv .venv && . .venv/bin/activate
 pip install "fastmm-engine[hot]"
 fastmm init my-mm && cd my-mm
 python backtest.py
 ```
 
-The wheel needs Linux x86-64 and CPython 3.10 or later, and no keys. To build the C++ programs, see [Install](getting-started/install.md).
+The wheel needs Linux x86-64 and CPython 3.10 or later, and no keys. On Debian and Ubuntu, `sudo apt install python3-venv` first. To build the C++ programs, see [Install](getting-started/install.md).
 
 ## Where to go next
 

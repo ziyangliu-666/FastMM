@@ -21,12 +21,13 @@ FastMM is a low-latency market-making engine. Read the [documentation](https://z
 ## Quickstart
 
 ```bash
+python3 -m venv .venv && . .venv/bin/activate
 pip install "fastmm-engine[hot]"
 fastmm init my-mm && cd my-mm
 python backtest.py
 ```
 
-This runs a strategy on a simulated market, with no account and no API keys (Linux x86-64, Python 3.10+).
+This runs a strategy on a simulated market, with no account and no API keys (Linux x86-64, Python 3.10+). On Debian and Ubuntu, `sudo apt install python3-venv` first.
 
 ## A strategy
 

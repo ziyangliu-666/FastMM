@@ -89,7 +89,8 @@ set(CMAKE_CXX_STANDARD 20)
 if(NOT TARGET fastmm::backtest)
   include(FetchContent)
   set(FASTMM_BUILD_NET OFF CACHE BOOL "backtests need no networking")
-  FetchContent_Declare(fastmm GIT_REPOSITORY https://github.com/ziyangliu-666/FastMM GIT_TAG main)
+  FetchContent_Declare(fastmm GIT_REPOSITORY https://github.com/ziyangliu-666/FastMM
+    GIT_TAG v0.4.0 GIT_SHALLOW TRUE)
   FetchContent_MakeAvailable(fastmm)
 endif()
 

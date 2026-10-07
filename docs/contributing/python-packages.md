@@ -23,7 +23,7 @@ cp /tmp/stubs/fastmm/_core.pyi python/fastmm/
 
 ## Building and publishing wheels
 
-`.github/workflows/wheels.yml` builds manylinux_2_28 x86_64 wheels of `fastmm-engine` for CPython 3.9-3.14 and of `fastmm-engine-live` for CPython 3.10-3.14 (each one tested with its test suite) and the `fastmm-engine` sdist, for a `v*` tag or when run by hand, and keeps them as workflow artifacts. `fastmm-engine-live` has no sdist.
+`.github/workflows/wheels.yml` builds manylinux_2_28 x86_64 wheels of `fastmm-engine` and `fastmm-engine-live` for CPython 3.10-3.14 (each one tested with its test suite) and the `fastmm-engine` sdist, for a `v*` tag or when run by hand, and keeps them as workflow artifacts. `fastmm-engine-live` has no sdist.
 
 `fastmm-engine-live` links OpenSSL statically, built by `scripts/wheels/build-openssl.sh` from a pinned, checksum-verified release; every OpenSSL security release needs a new `fastmm-engine-live` release. To build it locally:
 

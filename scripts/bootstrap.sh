@@ -12,14 +12,35 @@ say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 # --- compiler ---
-if command -v g++ >/dev/null; then
-  GXX_VER=$(g++ -dumpfullversion -dumpversion | cut -d. -f1)
-  [[ "$GXX_VER" -ge 13 ]] || say "g++ $GXX_VER found; gcc >= 13 recommended"
-elif command -v clang++ >/dev/null; then
-  say "using clang++ $(clang++ --version | head -1)"
+# $CXX when set, otherwise the first new enough compiler on PATH. The choice is exported as CXX and
+# CC, which CMake reads on a build directory's first configure: Ubuntu's g++-13 package installs
+# g++-13 and gcc-13 but no c++ or cc.
+cxx_ok() {
+  local v
+  v=$("$1" -dumpversion 2>/dev/null | cut -d. -f1)
+  [[ "$v" =~ ^[0-9]+$ ]] || return 1
+  if "$1" --version 2>/dev/null | grep -qi clang; then ((v >= 16)); else ((v >= 13)); fi
+}
+if [[ -n "${CXX:-}" ]]; then
+  command -v "$CXX" >/dev/null || die "CXX=$CXX not found"
+  cxx_ok "$CXX" || say "CXX=$CXX is older than gcc 13 or clang 16"
 else
-  die "no C++ compiler found (install g++ >= 13 or clang >= 16)"
+  for c in g++ g++-15 g++-14 g++-13 clang++ clang++-21 clang++-20 clang++-19 clang++-18 \
+           clang++-17 clang++-16; do
+    if command -v "$c" >/dev/null && cxx_ok "$c"; then CXX=$c; break; fi
+  done
+  [[ -n "${CXX:-}" ]] || die "no C++ compiler found (install g++ >= 13 or clang >= 16; Ubuntu 24.04: sudo apt install g++)"
 fi
+if [[ -z "${CC:-}" ]]; then
+  case "$CXX" in
+    *clang++*) CC=${CXX/clang++/clang} ;;
+    *g++*) CC=${CXX/g++/gcc} ;;
+  esac
+  command -v "${CC:-}" >/dev/null || CC=
+fi
+export CXX
+if [[ -n "$CC" ]]; then export CC; fi
+say "C++ compiler: $CXX $("$CXX" -dumpversion)"
 
 # --- cmake / ninja ---
 CMAKE_MIN=3.25

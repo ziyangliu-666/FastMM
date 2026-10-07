@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "Ultra-low-latency multi-asset market-making engine (research bindings)"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = ["numpy>=1.24"]
 
 [project.scripts]
@@ -18,9 +18,9 @@ fastmm = "fastmm.__main__:main"
 [project.optional-dependencies]
 pandas = ["pandas>=2.0"]
 plot = ["matplotlib>=3.7"]
-# Hot hooks (@fastmm.hot), CPython 3.10 or later. Tested with numba 0.61.2 and 0.67.0.
+# Hot hooks (@fastmm.hot). Tested with numba 0.61.2 and 0.67.0.
 hot = ["numba>=0.61,<0.68", "llvmlite>=0.44,<0.50"]
-# Same version as fastmm (python/tests/test_packaging.py checks it); CPython 3.10 or later.
+# Same version as fastmm (python/tests/test_packaging.py checks it).
 live = ["fastmm-engine-live==0.4.0"]
 dev = ["pytest>=7", "pandas>=2.0", "pybind11-stubgen"]
 
@@ -52,4 +52,4 @@ testpaths = ["python/tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py310"

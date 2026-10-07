@@ -13,7 +13,8 @@ set(CMAKE_CXX_STANDARD 20)
 if(NOT TARGET fastmm::backtest)
   include(FetchContent)
   set(FASTMM_BUILD_NET OFF CACHE BOOL "backtests need no networking")
-  FetchContent_Declare(fastmm GIT_REPOSITORY https://github.com/ziyangliu-666/FastMM GIT_TAG main)
+  FetchContent_Declare(fastmm GIT_REPOSITORY https://github.com/ziyangliu-666/FastMM
+    GIT_TAG v0.4.0 GIT_SHALLOW TRUE)
   FetchContent_MakeAvailable(fastmm)
 endif()
 
@@ -23,6 +24,13 @@ target_link_libraries(my_mm_backtest PRIVATE fastmm::backtest)
 
 # Inside FastMM's own build the quick start is a test: it must print a summary with fills.
 if(CMAKE_SOURCE_DIR STREQUAL fastmm_SOURCE_DIR)
+  # The tag above is the release this tree is: a version bump updates it too.
+  file(STRINGS ${CMAKE_CURRENT_LIST_FILE} _quickstart_tag REGEX "^ +GIT_TAG v[0-9]")
+  string(REGEX MATCH "v[0-9.]+" _quickstart_tag "${_quickstart_tag}")
+  if(NOT _quickstart_tag STREQUAL "v${fastmm_VERSION}")
+    message(FATAL_ERROR "examples/quickstart/CMakeLists.txt fetches FastMM ${_quickstart_tag}; "
+      "set its GIT_TAG to v${fastmm_VERSION}")
+  endif()
   fastmm_target_defaults(my_mm_backtest)
   if(FASTMM_BUILD_TESTS)
     add_test(NAME examples.quickstart COMMAND my_mm_backtest)

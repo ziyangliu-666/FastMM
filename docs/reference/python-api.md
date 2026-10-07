@@ -187,7 +187,7 @@ The end-to-end numbers include the synthetic market and the simulated venue, whi
 
 ## Hot hooks
 
-A class with `@fastmm.hot` methods is compiled with Numba in nopython mode, and the engine thread calls the compiled hooks through function pointers with the GIL released. It needs numba 0.61 to 0.67, the `hot` extra, and CPython 3.10 or later ([Install](../getting-started/install.md#python)). Steps: [Write hot hooks in Python](../how-to/strategies/python-hot-hooks.md).
+A class with `@fastmm.hot` methods is compiled with Numba in nopython mode, and the engine thread calls the compiled hooks through function pointers with the GIL released. It needs numba 0.61 to 0.67 and the `hot` extra ([Install](../getting-started/install.md#python)). Steps: [Write hot hooks in Python](../how-to/strategies/python-hot-hooks.md).
 
 ### Declarations
 
@@ -414,7 +414,7 @@ A journal's `strategy_meta` holds the keys listed under [Live sessions](#live-se
 
 ## Live sessions
 
-`fastmm.run_live(strategy, config, params=None, *, duration=None, dry_run=False, journal=None, no_journal=False, status=None, no_status=False, log=None, record_raw=None, allow_inline_secrets=False, fills_capacity=None, recent_rows=4096, slow_tier_timeout_ms=10000)` runs a class with hot hooks against the venues in `config`, in this process, and returns the exit code ([Exit codes](cli.md#exit-codes)). It needs the live runtime, `fastmm-engine-live` (CPython 3.10 or later; [Install](../getting-started/install.md#python)), and raises `ImportError` without it. Steps: [Run a Python strategy live](../how-to/strategies/python-live.md).
+`fastmm.run_live(strategy, config, params=None, *, duration=None, dry_run=False, journal=None, no_journal=False, status=None, no_status=False, log=None, record_raw=None, allow_inline_secrets=False, fills_capacity=None, recent_rows=4096, slow_tier_timeout_ms=10000)` runs a class with hot hooks against the venues in `config`, in this process, and returns the exit code ([Exit codes](cli.md#exit-codes)). It needs the live runtime, `fastmm-engine-live` ([Install](../getting-started/install.md#python)), and raises `ImportError` without it. Steps: [Run a Python strategy live](../how-to/strategies/python-live.md).
 
 | Argument | Meaning |
 |---|---|

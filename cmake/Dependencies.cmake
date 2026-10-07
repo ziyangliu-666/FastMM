@@ -160,7 +160,7 @@ endif()
 
 # --- pybind11 (python) ------------------------------------------------------
 if(FASTMM_BUILD_PYTHON OR FASTMM_BUILD_PYTHON_LIVE)
-  find_package(Python 3.9 REQUIRED COMPONENTS Interpreter Development.Module)
+  find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.Module)
   CPMAddPackage(
     NAME pybind11
     GITHUB_REPOSITORY pybind/pybind11

@@ -3,10 +3,13 @@
 ## Without building it
 
 ```bash
+python3 -m venv .venv && . .venv/bin/activate
 pip install "fastmm-engine[hot]"     # CPython 3.10 or later
 fastmm init my-mm && cd my-mm        # a config, a strategy and a backtest
 python backtest.py
 ```
+
+On Debian and Ubuntu, `python3 -m venv` needs `sudo apt install python3-venv` first.
 
 `fastmm init` writes `config.toml`, `strategy.py`, `backtest.py` and a README; the backtest runs on the simulated market. `pip install "fastmm-engine[live]"` adds the live runtime ([Python](#python)).
 
@@ -25,9 +28,9 @@ The steps below build the repository; all commands run from its root.
 | Ninja | any | all presets use it |
 | OpenSSL | 3.0 or newer, development headers | networking; not needed with `FASTMM_BUILD_NET=OFF` |
 | make | any | liburing's `configure` script calls it; not needed with `FASTMM_BUILD_NET=OFF` |
-| Python | 3.9 or newer | the tools in `tools/` and the Python package |
+| Python | 3.10 or newer | the tools in `tools/` and the Python package |
 
-On Ubuntu 24.04: `sudo apt install g++-13 make cmake ninja-build libssl-dev python3`. Every other dependency (fmt, toml++, CLI11, simdjson, liburing, SQLite, doctest, Google Benchmark, pybind11) is downloaded and pinned by CPM; [Dependencies](../contributing/dependencies.md) lists the versions.
+On Ubuntu 24.04: `sudo apt install g++ make cmake ninja-build libssl-dev python3 python3-venv` (its `g++` is gcc 13). Every other dependency (fmt, toml++, CLI11, simdjson, liburing, SQLite, doctest, Google Benchmark, pybind11) is downloaded and pinned by CPM; [Dependencies](../contributing/dependencies.md) lists the versions.
 
 ## Build
 
@@ -95,12 +98,12 @@ This builds one image and starts two containers, `sim-exchange` and `engine`, wh
 
 ## Python
 
-The `fastmm-engine` package (imported as `fastmm`) runs backtests on CPython 3.9 or later; `fastmm-engine-live` adds live trading ([Python](../python.md)).
+The `fastmm-engine` package (imported as `fastmm`) runs backtests on CPython 3.10 or later; `fastmm-engine-live` adds live trading ([Python](../python.md)).
 
-| Extra | Installs | Needs |
-|---|---|---|
-| `fastmm-engine[live]` | `fastmm-engine-live` of the same version: networking, venue connectors and OpenSSL 3 inside the extension module | CPython 3.10 or later, Linux x86-64 |
-| `fastmm-engine[hot]` | numba and llvmlite | CPython 3.10 or later |
+| Extra | Installs |
+|---|---|
+| `fastmm-engine[live]` | `fastmm-engine-live` of the same version: networking, venue connectors and OpenSSL 3 inside the extension module |
+| `fastmm-engine[hot]` | numba and llvmlite |
 
 ```bash
 pip install "fastmm-engine[hot]"    # backtests, Python strategies, the fastmm command
