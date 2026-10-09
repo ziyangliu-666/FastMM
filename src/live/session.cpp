@@ -35,9 +35,11 @@
 #include <fmt/format.h>
 
 #include <limits.h>
+#include <sched.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <cmath>
@@ -183,6 +185,58 @@ void set_rt_priority(std::thread& t, std::string_view name, std::string_view key
                     std::strerror(err));
   } else {
     FASTMM_LOG_INFO("{}: {} runs SCHED_FIFO at priority {}", key, name, priority);
+  }
+}
+
+// The start-up topology check (host_tuning.hpp topology_report): where the engine and network
+// threads sit on the physical cores, and what the spin mode costs there. Read only.
+void log_topology(const Config& cfg, bool single, const VenueSlots& slots) {
+  TopologyInput in;
+  in.hot.push_back({"engine", cfg.engine.cpu});
+  if (!single) {
+    for (std::size_t i = 0; i < slots.size(); ++i) {
+      const int cpu = i < cfg.engine.net_cpus.size() ? cfg.engine.net_cpus[i] : -1;
+      in.hot.push_back(
+          {"net " + std::to_string(i) + " (" + std::string(slots[i]->venue->name()) + ")", cpu});
+    }
+  }
+  in.cores = cpu_cores();
+  cpu_set_t mask;
+  CPU_ZERO(&mask);
+  if (sched_getaffinity(0, sizeof mask, &mask) == 0) {
+    for (int c = 0; c < CPU_SETSIZE; ++c) {
+      if (CPU_ISSET(static_cast<std::size_t>(c), &mask)) in.process_cpus.push_back(c);
+    }
+  }
+  in.busy = cfg.spin_mode() == SpinMode::Busy;
+  in.net_spin_dedicated = cfg.engine.net_spin_dedicated;
+  // A log argument holds kLogMaxStrBytes: a line goes out in pieces of that size, up to 8.
+  for (const TopologyLine& l : topology_report(in)) {
+    std::array<std::string_view, 8> part{};
+    const std::string_view text(l.text);
+    for (std::size_t i = 0; i < part.size() && i * kLogMaxStrBytes < text.size(); ++i)
+      part[i] = text.substr(i * kLogMaxStrBytes, kLogMaxStrBytes);
+    if (l.warn) {
+      FASTMM_LOG_WARN("topology: {}{}{}{}{}{}{}{}",
+                      part[0],
+                      part[1],
+                      part[2],
+                      part[3],
+                      part[4],
+                      part[5],
+                      part[6],
+                      part[7]);
+    } else {
+      FASTMM_LOG_INFO("topology: {}{}{}{}{}{}{}{}",
+                      part[0],
+                      part[1],
+                      part[2],
+                      part[3],
+                      part[4],
+                      part[5],
+                      part[6],
+                      part[7]);
+    }
   }
 }
 
@@ -1716,6 +1770,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
                       std::string_view(cpus));
     }
   }
+  log_topology(cfg, single, slots);
   // Threads started from here on (journal, network, engine) inherit the timer slack.
   if (cfg.engine.timer_slack_ns > 0) {
     if (set_timer_slack(nanoseconds(cfg.engine.timer_slack_ns))) {

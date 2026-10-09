@@ -4,6 +4,9 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+### Added
+- live: `fastmm-live` logs a topology check at start: hot threads sharing a core, and adaptive spin.
+
 ### Changed
 - live: the network thread sends queued orders between one socket's event and the next.
 - venues: a pool's accounts take their IP's shared weight without a kernel wait on each order.

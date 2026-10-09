@@ -127,7 +127,7 @@ Use one key per engine, trading permission only, no withdrawal rights, IP-allowl
 | Service files | `deploy/fastmm-live.service`, `deploy/fastmm-live@.service` and `deploy/fastmm-gateway.service` set `Restart=on-failure`; the two `fastmm-live` units also set `LimitMEMLOCK=infinity` and `CPUAffinity=2 3`. The paths, the user and the cores are yours to set ([Deploy a release](deploy.md#run-under-systemd)) |
 | Binaries | `CMakeLists.txt` installs libraries and headers; `scripts/package-release.sh` makes the release tarball with `fastmm-live`, `fastmm-gateway`, `fastmm-ctl`, `fastmm-top`, `fastmm-pnl`, `fastmm-replay`, `fastmm-sim-exchange` and `fastmm-sim-itch` |
 | Container limits | `deploy/docker/Dockerfile.production` is non-root with the distro CA bundle and no test certificates; set ulimits and a memory limit in your runtime ([Deploy a release](deploy.md#run-the-container)). `deploy/docker/Dockerfile` and `deploy/docker/compose.yml` are the demo, as root |
-| Latency profile | `configs/profiles/production-latency.toml` has no loader or `--profile` flag; copy its `[engine]` table by hand. Everything outside `[engine]` in that file is simulator config, including literal passwords |
+| Latency profile | `fastmm init --profile production` writes `production.toml`, a Binance Spot config with these settings and comments on choosing the cores. `configs/profiles/production-latency.toml` is the same `[engine]` table for the Nasdaq simulator; everything outside `[engine]` in that file is simulator config, including literal passwords |
 | Log rotation | point `[logging] file` at a path your own rotation handles, or let `mirror_level` send warnings to a collector on stderr |
 
 The latency profile also needs host settings: `isolcpus`, `nohz_full` and `rcu_nocbs` on the engine and network cores, the `performance` governor, NIC interrupts elsewhere, transparent huge pages at `madvise` or `always`, and a raised `ulimit -l`. `scripts/host-setup.sh tune` sets the hugepages, IRQ affinity and governor as root.
@@ -135,6 +135,20 @@ The latency profile also needs host settings: `isolcpus`, `nohz_full` and `rcu_n
 ## Host tuning
 
 The `[engine]` keys below are off by default. One the process lacks the permission for logs a warning and the session runs without it, as `lock_memory` does.
+
+### Cores
+
+`fastmm-live` logs a topology check before its threads start (`topology:` lines, `core/host_tuning.hpp`). The first line names each hot thread (the engine, then one network thread per `[venues.*]` section) with its CPU, the physical cores and logical CPUs online, and the CPUs the process's other threads may use. A warning follows for each of these:
+
+| Warning | Why it costs latency |
+|---|---|
+| two hot threads share a CPU, or are hyperthreads of one core | they take turns on one core; with `spin_mode = "busy"` each spins through the other's time |
+| more hot threads than physical cores | the same, for some of them |
+| a pinned CPU is not online | the thread runs wherever the scheduler puts it |
+| the journal, store, log and control threads may run on a hot thread's core | they preempt it or share its core; the line names the CPUs to start the process on with `taskset -c` |
+| `spin_mode = "adaptive"` with threads alone on their cores | an idle thread sleeps and pays a wake-up on the next event |
+
+A session with five accounts behind one venue and a hedge venue has seven hot threads: seven physical cores and one more for everything else, 16 vCPUs on an AWS c7i, where CPU n and n + 8 are one core.
 
 ### Idle states
 

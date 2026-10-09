@@ -214,4 +214,127 @@ std::vector<IrqReportLine> irq_affinity_report(std::span<const NicIrqs> nics,
   return out;
 }
 
+std::map<int, std::uint64_t> cpu_cores(const std::string& sys_root) {
+  std::map<int, std::uint64_t> out;
+  const fs::path cpu_root = fs::path(sys_root) / "devices/system/cpu";
+  std::ifstream online_in(cpu_root / "online");
+  std::string list;
+  if (!std::getline(online_in, list)) return out;
+  const auto online = parse_cpu_list(list);
+  if (!online) return out;
+  const auto read_id = [](const fs::path& path, int& v) {
+    std::ifstream in(path);
+    std::string line;
+    return std::getline(in, line) && parse_int(trim(line), v);
+  };
+  for (const int cpu : *online) {
+    const fs::path topo = cpu_root / ("cpu" + std::to_string(cpu)) / "topology";
+    int package = 0;
+    int core = 0;
+    if (!read_id(topo / "physical_package_id", package) || !read_id(topo / "core_id", core))
+      continue;
+    out[cpu] = (static_cast<std::uint64_t>(package) << 32) | static_cast<std::uint32_t>(core);
+  }
+  return out;
+}
+
+std::vector<TopologyLine> topology_report(const TopologyInput& in) {
+  std::vector<TopologyLine> out;
+  const auto warn = [&out](std::string text) { out.push_back({true, std::move(text)}); };
+  const auto core_of = [&in](int cpu) -> std::optional<std::uint64_t> {
+    const auto it = in.cores.find(cpu);
+    if (it == in.cores.end()) return std::nullopt;
+    return it->second;
+  };
+  std::vector<std::uint64_t> all_cores;
+  for (const auto& [cpu, core] : in.cores) all_cores.push_back(core);
+  std::sort(all_cores.begin(), all_cores.end());
+  all_cores.erase(std::unique(all_cores.begin(), all_cores.end()), all_cores.end());
+
+  std::string summary = std::to_string(in.hot.size()) + " hot thread(s):";
+  for (const HotThread& t : in.hot)
+    summary += " " + t.name + (t.cpu < 0 ? " unpinned" : " CPU " + std::to_string(t.cpu)) + ",";
+  summary.back() = ';';
+  summary += " " + std::to_string(all_cores.size()) + " physical core(s), " +
+             std::to_string(in.cores.size()) + " logical CPU(s) online";
+  if (!in.process_cpus.empty()) summary += "; other threads on CPUs " + cpu_ranges(in.process_cpus);
+  out.push_back({false, summary});
+
+  // A pinned hot thread shares its core with another: same CPU, or hyperthreads of one core.
+  std::vector<bool> shares(in.hot.size(), false);
+  bool any_pinned = false;
+  for (std::size_t a = 0; a < in.hot.size(); ++a) {
+    const HotThread& ta = in.hot[a];
+    if (ta.cpu < 0) continue;
+    any_pinned = true;
+    if (!in.cores.empty() && !core_of(ta.cpu)) {
+      warn(ta.name + ": CPU " + std::to_string(ta.cpu) + " is not online");
+      continue;
+    }
+    for (std::size_t b = a + 1; b < in.hot.size(); ++b) {
+      const HotThread& tb = in.hot[b];
+      if (tb.cpu < 0) continue;
+      if (ta.cpu == tb.cpu) {
+        shares[a] = shares[b] = true;
+        warn(ta.name + " and " + tb.name + " share CPU " + std::to_string(ta.cpu));
+      } else if (const auto ca = core_of(ta.cpu); ca && ca == core_of(tb.cpu)) {
+        shares[a] = shares[b] = true;
+        warn(ta.name + " (CPU " + std::to_string(ta.cpu) + ") and " + tb.name + " (CPU " +
+             std::to_string(tb.cpu) + ") are hyperthreads of one core");
+      }
+    }
+  }
+  if (!all_cores.empty() && in.hot.size() > all_cores.size()) {
+    warn(std::to_string(in.hot.size()) + " hot threads and " + std::to_string(all_cores.size()) +
+         " physical cores: some of them take turns on one");
+  }
+  if (in.busy && std::find(shares.begin(), shares.end(), true) != shares.end())
+    warn("spin_mode = \"busy\": threads that share a core take its time from each other");
+
+  // Other threads (journal, store, log, control) may run on a hot thread's core.
+  if (any_pinned && !in.process_cpus.empty() && !in.cores.empty()) {
+    std::vector<std::uint64_t> hot_cores;
+    for (const HotThread& t : in.hot) {
+      const auto c = t.cpu < 0 ? std::nullopt : core_of(t.cpu);
+      if (!c) continue;
+      hot_cores.push_back(*c);
+    }
+    std::vector<int> overlap;
+    std::vector<int> rest;
+    for (const auto& [cpu, core] : in.cores) {
+      const bool hot = std::find(hot_cores.begin(), hot_cores.end(), core) != hot_cores.end();
+      if (hot && std::binary_search(in.process_cpus.begin(), in.process_cpus.end(), cpu))
+        overlap.push_back(cpu);
+      if (!hot) rest.push_back(cpu);
+    }
+    if (!overlap.empty()) {
+      std::string text = "the journal, store, log and control threads may run on CPU(s) " +
+                         cpu_ranges(overlap) + ", on the hot threads' cores";
+      if (!rest.empty()) text += "; start the process under taskset -c " + cpu_ranges(rest);
+      warn(std::move(text));
+    }
+  }
+
+  // Adaptive: a thread alone on its core sleeps when idle and pays a wake-up on the next event.
+  if (!in.busy) {
+    std::string sleepers;
+    for (std::size_t i = 0; i < in.hot.size(); ++i) {
+      const HotThread& t = in.hot[i];
+      if (t.cpu < 0 || shares[i]) continue;
+      if (i > 0 && in.net_spin_dedicated) continue;  // a network thread that never blocks
+      sleepers += (sleepers.empty() ? "" : ", ") + t.name;
+    }
+    if (!sleepers.empty()) {
+      warn(
+          "spin_mode = \"adaptive\": idle threads on cores of their own sleep and pay a wake-up "
+          "on the next event (" +
+          sleepers + "); set spin_mode = \"busy\"");
+    }
+  }
+  for (const HotThread& t : in.hot) {
+    if (t.cpu < 0) out.push_back({false, t.name + " is not pinned ([engine] cpu, net_cpus)"});
+  }
+  return out;
+}
+
 }  // namespace fastmm

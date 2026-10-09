@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -149,4 +150,95 @@ TEST_CASE("core.host_tuning: nic_irqs finds queue interrupts by name, else by MS
   CHECK(empty[0].irq < 0);
   CHECK(nic_irqs((root / "missing").string(), (root / "missing").string()).empty());
   fs::remove_all(root);
+}
+
+namespace {
+
+// A sysfs tree with `cores[i]` the core id of CPU i, one package.
+std::filesystem::path cpu_tree(const char* name, const std::vector<int>& cores) {
+  namespace fs = std::filesystem;
+  const fs::path sys = fs::path(FASTMM_TEST_TMP_DIR) / name;
+  fs::remove_all(sys);
+  write_file(sys / "devices/system/cpu/online", "0-" + std::to_string(cores.size() - 1) + "\n");
+  for (std::size_t c = 0; c < cores.size(); ++c) {
+    const fs::path topo = sys / "devices/system/cpu" / ("cpu" + std::to_string(c)) / "topology";
+    write_file(topo / "physical_package_id", "0\n");
+    write_file(topo / "core_id", std::to_string(cores[c]) + "\n");
+  }
+  return sys;
+}
+
+std::vector<std::string> warnings(const std::vector<TopologyLine>& lines) {
+  std::vector<std::string> out;
+  for (const TopologyLine& l : lines) {
+    if (l.warn) out.push_back(l.text);
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("core.host_tuning: cpu_cores maps each online CPU to its physical core") {
+  // CPU n and n + 2 are hyperthreads of one core, as on a 2-core, 4-vCPU AWS instance.
+  const auto sys = cpu_tree("cpu_tree_2x2", {0, 1, 0, 1});
+  const std::map<int, std::uint64_t> cores = cpu_cores(sys.string());
+  REQUIRE(cores.size() == 4);
+  CHECK(cores.at(0) == cores.at(2));
+  CHECK(cores.at(1) == cores.at(3));
+  CHECK(cores.at(0) != cores.at(1));
+  CHECK(cpu_cores((std::filesystem::path(FASTMM_TEST_TMP_DIR) / "no_such_tree").string()).empty());
+}
+
+TEST_CASE("core.host_tuning: the topology check names hot threads that share a core") {
+  TopologyInput in;
+  in.cores = cpu_cores(cpu_tree("cpu_tree_crowded", {0, 1, 0, 1}).string());
+  in.hot = {{"engine", 1}, {"net 0 (binance)", 3}, {"net 1 (binance_m2)", 1}};
+  in.process_cpus = {0, 1, 2, 3};
+  in.busy = true;
+  const std::vector<TopologyLine> lines = topology_report(in);
+  REQUIRE_FALSE(lines.empty());
+  CHECK_FALSE(lines[0].warn);
+  CHECK(lines[0].text.find("3 hot thread(s)") != std::string::npos);
+  CHECK(lines[0].text.find("2 physical core(s), 4 logical CPU(s)") != std::string::npos);
+  const std::vector<std::string> w = warnings(lines);
+  const auto has = [&w](std::string_view needle) {
+    for (const std::string& s : w) {
+      if (s.find(needle) != std::string::npos) return true;
+    }
+    return false;
+  };
+  CHECK(has("engine (CPU 1) and net 0 (binance) (CPU 3) are hyperthreads of one core"));
+  CHECK(has("engine and net 1 (binance_m2) share CPU 1"));
+  CHECK(has("3 hot threads and 2 physical cores"));
+  CHECK(has("spin_mode = \"busy\""));
+  CHECK(
+      has("may run on CPU(s) 1,3, on the hot threads' cores; start the process under "
+          "taskset -c 0,2"));
+  CHECK_FALSE(has("adaptive"));
+}
+
+TEST_CASE("core.host_tuning: the topology check flags adaptive spinning on cores of their own") {
+  TopologyInput in;
+  in.cores = cpu_cores(cpu_tree("cpu_tree_4", {0, 1, 2, 3}).string());
+  in.hot = {{"engine", 1}, {"net 0 (binance)", 2}};
+  in.process_cpus = {0};
+  const std::vector<std::string> w = warnings(topology_report(in));
+  REQUIRE(w.size() == 1);
+  CHECK(w[0].find("adaptive") != std::string::npos);
+  CHECK(w[0].find("(engine, net 0 (binance))") != std::string::npos);
+  // net_spin_dedicated: a network thread on its own core never blocks; the engine still does.
+  in.net_spin_dedicated = true;
+  const std::vector<std::string> w2 = warnings(topology_report(in));
+  REQUIRE(w2.size() == 1);
+  CHECK(w2[0].find("(engine)") != std::string::npos);
+  // Busy on cores of their own, the rest of the process elsewhere: nothing to report.
+  in.busy = true;
+  CHECK(warnings(topology_report(in)).empty());
+  // An offline CPU and an unpinned thread.
+  in.hot = {{"engine", 9}, {"net 0 (binance)", -1}};
+  const std::vector<TopologyLine> lines = topology_report(in);
+  const std::vector<std::string> w3 = warnings(lines);
+  REQUIRE(w3.size() == 1);
+  CHECK(w3[0] == "engine: CPU 9 is not online");
+  CHECK(lines.back().text == "net 0 (binance) is not pinned ([engine] cpu, net_cpus)");
 }

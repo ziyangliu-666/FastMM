@@ -1,7 +1,9 @@
 #pragma once
 // Host settings a live process holds or inspects at start: the CPU wake-up latency request
-// (/dev/cpu_dma_latency) and the CPUs the network interfaces' interrupts may run on.
+// (/dev/cpu_dma_latency), the CPUs the network interfaces' interrupts may run on, and where the
+// engine and network threads sit on the machine's physical cores.
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -78,5 +80,35 @@ struct IrqReportLine {
 [[nodiscard]] std::vector<IrqReportLine> irq_affinity_report(std::span<const NicIrqs> nics,
                                                              int engine_cpu,
                                                              std::span<const int> net_cpus);
+
+// Online logical CPU -> its physical core (package and core id), from
+// <sys_root>/devices/system/cpu/online and each CPU's topology/physical_package_id and core_id.
+// Two CPUs with one value are hyperthreads of one core. Empty when the tree cannot be read.
+[[nodiscard]] std::map<int, std::uint64_t> cpu_cores(const std::string& sys_root = "/sys");
+
+// A thread that polls: the engine, a venue's network loop. cpu < 0: not pinned.
+struct HotThread {
+  std::string name;
+  int cpu = -1;
+};
+
+struct TopologyInput {
+  std::vector<HotThread> hot;          // the engine first, then the network threads
+  std::map<int, std::uint64_t> cores;  // cpu_cores()
+  std::vector<int> process_cpus;       // ascending: the process's affinity, where the rest run
+  bool busy = false;                   // [engine] spin_mode = "busy"
+  bool net_spin_dedicated = false;     // [engine] net_spin_dedicated
+};
+
+struct TopologyLine {
+  bool warn = false;  // a hot thread shares a core, or the spin mode costs a wake-up per event
+  std::string text;
+};
+
+// The start-up topology check of fastmm-live: a summary line, then one line per finding: hot
+// threads on one CPU or on hyperthreads of one core, more hot threads than cores, a pinned CPU
+// that is not online, other threads allowed on the hot cores, and adaptive spinning on cores of
+// their own (an idle thread sleeps there and pays a wake-up on the next event).
+[[nodiscard]] std::vector<TopologyLine> topology_report(const TopologyInput& in);
 
 }  // namespace fastmm
