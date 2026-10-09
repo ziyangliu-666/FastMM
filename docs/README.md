@@ -7,7 +7,7 @@
 - **[Live control](how-to/operations/operate-a-running-session.md).** `fastmm-ctl` changes a running session's parameters without a restart.
 - **[Low-latency tuning](how-to/operations/running-in-production.md#host-tuning).** Host and network tuning built in, such as core pinning and kernel bypass.
 
-<video class="fastmm-video" controls preload="none" poster="assets/intro-poster.jpg" src="https://github.com/ziyangliu-666/FastMM/releases/download/v0.5.1/fastmm-intro.mp4"></video>
+<video class="fastmm-video" controls preload="none" poster="assets/explainer-poster.jpg" src="https://github.com/ziyangliu-666/FastMM/releases/download/v0.5.1/fastmm-explainer.mp4"></video>
 
 ## Quickstart
 
@@ -19,6 +19,27 @@ python backtest.py
 ```
 
 The wheel needs Linux x86-64 and CPython 3.10 or later, and no keys. On Debian and Ubuntu, `sudo apt install python3-venv` first. To build the C++ programs, see [Install](getting-started/install.md).
+
+The same strategy trades live against the simulated exchange on this machine:
+
+```bash
+pip install "fastmm-engine[live]"
+fastmm sim &
+python -m fastmm run strategy:MyMm --config sim.toml --duration 60s
+```
+
+## Films
+
+<div class="fastmm-films" markdown>
+
+- [![](assets/explainer-poster.jpg)**FastMM in two minutes**](https://github.com/ziyangliu-666/FastMM/releases/download/v0.5.1/fastmm-explainer.mp4)
+  What a market maker does, and what FastMM does for one.
+- [![](assets/intro-poster.jpg)**The fastest trader wins**](explanation/how-fast.md)
+  Why the quote that moves first keeps the fill.
+- [![](assets/film-poster.jpg)**One tick through the engine**](explanation/how-it-works.md)
+  From the market-data packet to the order on the wire.
+
+</div>
 
 ## Where to go next
 

@@ -7,6 +7,8 @@
 
 FastMM is a low-latency market-making engine. Read the [documentation](https://ziy.bio/FastMM/).
 
+[![FastMM in two minutes](docs/assets/explainer-play.jpg)](https://github.com/ziyangliu-666/FastMM/releases/download/v0.5.1/fastmm-explainer.mp4)
+
 > If you are running FastMM on Binance, try [bndesk](https://github.com/ziyangliu-666/bndesk), a real-time dashboard for your accounts.
 
 ## Features
@@ -27,24 +29,7 @@ fastmm init my-mm && cd my-mm
 python backtest.py
 ```
 
-This runs a strategy on a simulated market, with no account and no API keys. On Debian and Ubuntu, `sudo apt install python3-venv` first.
-
-The same strategy trades live against the simulated exchange on this machine: orders over WebSocket, fills from a matching engine, a journal that replays to the same orders.
-
-```bash
-pip install "fastmm-engine[live]"
-fastmm sim &
-python -m fastmm run strategy:MyMm --config sim.toml --duration 60s
-```
-
-The wheels are for Linux x86-64 and Python 3.10 or newer. On macOS (Apple silicon included) or Windows, run the same steps in a container:
-
-```bash
-docker run --rm -it --platform linux/amd64 -v "$PWD":/work -w /work python:3.12-slim \
-  sh -c 'pip install "fastmm-engine[hot]" && fastmm init my-mm && cd my-mm && python backtest.py'
-```
-
-The C++ programs are in `ghcr.io/ziyangliu-666/fastmm` and in the release tarball ([Deploy](https://ziy.bio/FastMM/how-to/operations/deploy/)).
+This runs a strategy on a simulated market, with no account and no API keys (Linux x86-64, Python 3.10+). On Debian and Ubuntu, `sudo apt install python3-venv` first; on macOS or Windows, [run it in Docker](https://ziy.bio/FastMM/getting-started/install/#without-building-it).
 
 ## A strategy
 

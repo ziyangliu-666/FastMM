@@ -273,3 +273,39 @@
   background: #0b1f44;
   box-shadow: 0 0 0 1px var(--md-default-fg-color--lightest);
 }
+
+/* Home page: the films, one card each (docs/README.md "Films"). */
+.md-typeset .fastmm-films > ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 1rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.md-typeset .fastmm-films > ul > li {
+  margin: 0;
+  color: var(--md-default-fg-color--light);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+.md-typeset .fastmm-films > ul > li > p { margin: 0; }
+.md-typeset .fastmm-films a {
+  display: block;
+  margin-bottom: 0.3rem;
+  color: var(--md-default-fg-color);
+  font-size: 0.8rem;
+}
+.md-typeset .fastmm-films a:hover { color: var(--md-accent-fg-color); }
+.md-typeset .fastmm-films img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  margin-bottom: 0.45rem;
+  border-radius: 0.3rem;
+  box-shadow: 0 0 0 1px var(--md-default-fg-color--lightest);
+  transition: transform 0.15s ease;
+}
+.md-typeset .fastmm-films a:hover img { transform: translateY(-2px); }
+
