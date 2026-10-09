@@ -2,7 +2,7 @@
 
 <video class="fastmm-video" controls preload="none" poster="../../assets/intro-poster.jpg" src="https://github.com/ziyangliu-666/FastMM/releases/download/v0.5.1/fastmm-intro.mp4"></video>
 
-One `fastmm-live` session trading on Binance for 17 hours 44 minutes, through a full US trading day: five accounts on one 4 vCPU VM in the exchange's region, every thread pinned to its own core. The engine alone: [Benchmarks](benchmarks.md).
+One `fastmm-live` session trading on Binance for 17 hours 44 minutes, through a full US trading day: five accounts on one 4 vCPU VM (2 physical cores) in the exchange's region, so the engine and the five network threads share cores ([Cores](../how-to/operations/running-in-production.md#cores)). The engine alone: [Benchmarks](benchmarks.md).
 
 ## Market data to order
 
