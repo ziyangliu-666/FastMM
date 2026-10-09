@@ -232,6 +232,135 @@ stp = true
 level = "info"
 '''
 
+PRODUCTION_TOML = '''\
+# @NAME_CLASS@ on Binance Spot with the settings of a dedicated host (fastmm init --profile
+# production). Real account, real orders: read the go-live checklist first
+# (https://ziy.bio/FastMM/how-to/operations/go-live-checklist/).
+#
+#   python -m fastmm run strategy:@NAME_CLASS@ --config production.toml --dry-run --duration 60s
+#   taskset -c 0 python -m fastmm run strategy:@NAME_CLASS@ --config production.toml
+#
+# The dry run sends no orders and needs FASTMM_BINANCE_API_KEY alone: the SBE streams take the key,
+# not the private key.
+#
+# Cores. The engine and every venue's network thread poll without sleeping on a physical core of
+# their own; `lscpu -e` lists them (CORE column; on AWS c7i, CPU n and n + vCPUs/2 are one core).
+# Seven hot threads (an engine and six accounts) need seven cores plus one for everything else:
+# 16 vCPUs on c7i. `taskset -c 0` keeps the journal, store, log and control threads on CPU 0; the
+# engine and network threads move themselves to `cpu` and `net_cpus`. fastmm-live prints a
+# topology check at start that names any thread sharing a core.
+#
+# Host: isolcpus, nohz_full and rcu_nocbs on those cores, the performance governor, NIC interrupts
+# on CPU 0, ulimit -l unlimited for lock_memory and write access to /dev/cpu_dma_latency
+# (https://ziy.bio/FastMM/how-to/operations/running-in-production/#host-tuning).
+#
+# Keys: an Ed25519 key logs on once per connection and then sends orders unsigned, and it is the
+# key the SBE market-data streams take. Register its public key under API Management, trading
+# permission only, IP-restricted:
+#   export FASTMM_BINANCE_API_KEY=...                       # the key Binance shows for it
+#   export FASTMM_BINANCE_PRIVATE_KEY="$(cat ed25519.pem)"  # the PKCS#8 PEM private key
+
+[engine]
+name = "@NAME@"
+cpu = 1                      # the engine thread: a core of its own
+net_cpus = [2]               # one core per [venues.*] section, in order; not cpu's sibling
+spin_mode = "busy"           # never sleep: a wake-up costs more than the whole tick on a VM
+lock_memory = true           # mlockall: no page faults after start
+cpu_dma_latency_us = 0       # no CPU enters an idle state that is slow to leave
+timer_slack_ns = 1           # the waits that remain end on time
+instance_lock = true         # a second process on this engine name refuses to start
+journal = true
+journal_dir = "runs"
+epoch_file = "runs/session_epoch"
+min_requote_ticks = 1
+min_requote_interval_ms = 50
+post_only = true
+supports_replace = false     # Spot's cancel-replace is two operations; a cancel and a new order
+
+[venues.binance]
+kind = "binance_spot"
+ws_url = "wss://stream.binance.com:9443/stream"
+ws_api_url = "wss://ws-api.binance.com:443/ws-api/v3"
+rest_url = "https://api.binance.com"
+api_key = "${FASTMM_BINANCE_API_KEY}"
+key_type = "ed25519"
+private_key_env = "FASTMM_BINANCE_PRIVATE_KEY"
+md_format = "sbe"
+order_api = "ws"
+supports_replace = false
+recv_window_ms = 3000
+
+# Your account's schedule, bps; a negative value is a rebate.
+[venues.binance.fees]
+maker_bps = 10.0
+taker_bps = 10.0
+
+# A second account of the same exchange behind this venue: its own keys and network core
+# (net_cpus = [2, 3]), the primary's instruments and market data.
+# [venues.binance_m2]
+# kind = "binance_spot"
+# pool_of = "binance"
+# ws_api_url = "wss://ws-api.binance.com:443/ws-api/v3"
+# rest_url = "https://api.binance.com"
+# api_key = "${FASTMM_BINANCE_M2_API_KEY}"
+# key_type = "ed25519"
+# private_key_env = "FASTMM_BINANCE_M2_PRIVATE_KEY"
+
+# Tick, lot and min_notional are replaced from the venue's exchangeInfo at startup.
+[[instruments]]
+venue = "binance"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "spot"
+tick = "0.01"
+lot = "0.00001"
+min_qty = "0.00001"
+min_notional = "5"
+
+[strategy]
+name = "py:@NAME_CLASS@"
+
+[strategy.params]
+half_spread_bps = 15.0
+skew_bps = 5.0
+quote_qty = 0.0001
+max_inventory = 0.0005
+requote_ticks = 100
+
+# Size these to the account.
+[risk]
+max_order_qty = "0.0005"
+max_order_notional = "100"
+max_position = "0.001"
+max_open_orders = 4
+price_collar_bps = 50
+fat_finger_bps = 200
+stale_md_ms = 2000
+max_loss = "10"
+orders_per_sec = 5
+burst = 5
+stp = true
+
+[logging]
+level = "info"
+'''
+
+README_PRODUCTION_MD = '''
+## Production
+
+`production.toml` runs the same class on a Binance Spot account with the settings of a dedicated
+host: `spin_mode = "busy"`, the engine and network threads on cores of their own, `lock_memory`,
+`cpu_dma_latency_us = 0`, an Ed25519 key and SBE market data. Its header says which cores to
+choose and how to start it; fastmm-live prints a topology check at start that names any hot thread
+sharing a physical core.
+
+```bash
+python -m fastmm run strategy:@NAME_CLASS@ --config production.toml --dry-run --duration 60s
+taskset -c 0 python -m fastmm run strategy:@NAME_CLASS@ --config production.toml
+```
+'''
+
 BACKTEST_PY = '''\
 """Backtest @NAME_CLASS@ on the simulated market, or sweep one of its parameters.
 
@@ -368,20 +497,32 @@ def _class_name(name: str) -> str:
     return camel
 
 
-def render(name: str) -> dict[str, str]:
-    """The project's files, keyed by relative path."""
+PROFILES = ("starter", "production")
+
+
+def render(name: str, profile: str = "starter") -> dict[str, str]:
+    """The project's files, keyed by relative path. The production profile adds production.toml
+    and a section of the README about it."""
+    if profile not in PROFILES:
+        raise ValueError(f"unknown profile '{profile}' (one of {', '.join(PROFILES)})")
+    templates = dict(TEMPLATES)
+    if profile == "production":
+        templates["production.toml"] = PRODUCTION_TOML
+        templates["README.md"] = README_MD + README_PRODUCTION_MD
     class_name = _class_name(name)
     return {path: text.replace("@NAME_CLASS@", class_name).replace("@NAME@", name)
-            for path, text in TEMPLATES.items()}
+            for path, text in templates.items()}
 
 
-def write_project(directory: os.PathLike, force: bool = False) -> list[Path]:
-    """Write the starter project into `directory`, which is created if it does not exist.
+def write_project(directory: os.PathLike, force: bool = False,
+                  profile: str = "starter") -> list[Path]:
+    """Write the project of `profile` into `directory`, which is created if it does not exist.
 
-    Raises FileExistsError for a file that is already there unless `force`.
+    Raises FileExistsError for a file that is already there unless `force`, and ValueError for an
+    unknown profile.
     """
     target = Path(directory)
-    files = render(_project_name(target))
+    files = render(_project_name(target), profile)
     if not force:
         existing = sorted(str(target / p) for p in files if (target / p).exists())
         if existing:

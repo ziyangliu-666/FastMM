@@ -62,3 +62,27 @@ def test_the_backtest_runs(tmp_path):
     assert "fills (maker / taker)" in out.stdout
     assert "stopped" not in out.stdout  # the default run does not reach [risk] max_loss
     assert (tmp_path / "mm" / "runs" / "backtest" / "fills.csv").exists()
+
+
+def test_the_production_profile_adds_a_tuned_live_config(tmp_path, monkeypatch):
+    monkeypatch.delenv("FASTMM_BINANCE_API_KEY", raising=False)
+    written = write_project(tmp_path / "my-mm", profile="production")
+    assert sorted(p.name for p in written) == sorted(FILES + ["production.toml"])
+    cfg = fastmm.BacktestConfig.from_toml(tmp_path / "my-mm" / "production.toml")
+    assert cfg.strategy == "py:MyMm"
+    text = (tmp_path / "my-mm" / "production.toml").read_text()
+    for line in ('spin_mode = "busy"', "lock_memory = true", "cpu_dma_latency_us = 0",
+                 'key_type = "ed25519"', 'md_format = "sbe"', "net_cpus = [2]"):
+        assert line in text
+    assert "@NAME@" not in text and "@NAME_CLASS@" not in text
+    readme = (tmp_path / "my-mm" / "README.md").read_text()
+    assert "strategy:MyMm --config production.toml --dry-run" in readme
+
+
+def test_an_unknown_profile_is_refused(tmp_path):
+    with pytest.raises(ValueError):
+        write_project(tmp_path, profile="fast")
+    out = subprocess.run([sys.executable, "-m", "fastmm", "init", str(tmp_path / "p"),
+                          "--profile", "fast"], capture_output=True, text=True, check=False)
+    assert out.returncode == 2
+

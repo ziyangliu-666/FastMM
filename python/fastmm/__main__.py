@@ -1,6 +1,6 @@
 """The ``fastmm`` command, also reachable as ``python -m fastmm``.
 
-    fastmm init [directory]                                a starter project (fastmm._scaffold)
+    fastmm init [directory] [--profile production]         a starter project (fastmm._scaffold)
     fastmm report <run-dir | session.fmj> [-o out.html]     the HTML report of a run
     fastmm run module:Class --config file.toml [...]        fastmm.run_live from a shell
 
@@ -35,6 +35,9 @@ def _parser() -> argparse.ArgumentParser:
                     "only this package and the hot extra.")
     init.add_argument("directory", nargs="?", default=".", help="where to write (default: .)")
     init.add_argument("--force", action="store_true", help="overwrite files that exist")
+    init.add_argument("--profile", choices=("starter", "production"), default="starter",
+                      help="production also writes production.toml: a Binance Spot account on "
+                           "a dedicated host (busy spin, pinned cores, Ed25519, SBE)")
     from . import report as report_command
 
     report_command.add_arguments(commands.add_parser(
@@ -72,11 +75,11 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _init(directory: str, force: bool) -> int:
+def _init(directory: str, force: bool, profile: str = "starter") -> int:
     from ._scaffold import write_project
 
     try:
-        written = write_project(directory, force=force)
+        written = write_project(directory, force=force, profile=profile)
     except (FileExistsError, OSError) as e:
         print(f"fastmm init: {e}", file=sys.stderr)
         return 2
@@ -103,7 +106,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = _parser()
     args = parser.parse_args(args_list)
     if args.command == "init":
-        return _init(args.directory, args.force)
+        return _init(args.directory, args.force, args.profile)
     if args.command == "report":
         from .report import run_command
 

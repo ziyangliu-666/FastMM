@@ -20,7 +20,7 @@ docker run --rm -it --platform linux/amd64 -v "$PWD":/work -w /work python:3.12-
 
 The project lands in `./my-mm` on the host. WSL2 on Windows takes the Linux steps as they are.
 
-`fastmm init` writes `config.toml`, `strategy.py`, `backtest.py`, `live.toml` and a README; the backtest runs on the simulated market, `live.toml` on Binance Spot Demo Mode. `pip install "fastmm-engine[live]"` adds the live runtime ([Python](#python)).
+`fastmm init` writes `config.toml`, `strategy.py`, `backtest.py`, `live.toml` and a README; the backtest runs on the simulated market, `live.toml` on Binance Spot Demo Mode. `fastmm init --profile production` adds `production.toml`: a Binance Spot account on a dedicated host, with `spin_mode = "busy"`, the engine and network threads on cores of their own, `lock_memory`, `cpu_dma_latency_us = 0`, an Ed25519 key and SBE market data. `pip install "fastmm-engine[live]"` adds the live runtime ([Python](#python)).
 
 The C++ programs come as a tarball or a container image, one per release: [Deploy a release](../how-to/operations/deploy.md). What may change between releases: [Versions and compatibility](../reference/compatibility.md).
 
