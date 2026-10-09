@@ -10,6 +10,7 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ### Documentation
 - docs: the economics page, the tutorials and the `fastmm init` README give the numbers alone.
+- docs: the README and Install name Linux x86-64 and run the quick start in Docker elsewhere.
 
 ## [0.5.1] - 2026-10-07
 

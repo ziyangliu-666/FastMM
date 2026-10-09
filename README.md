@@ -27,7 +27,16 @@ fastmm init my-mm && cd my-mm
 python backtest.py
 ```
 
-This runs a strategy on a simulated market, with no account and no API keys (Linux x86-64, Python 3.10+). On Debian and Ubuntu, `sudo apt install python3-venv` first.
+This runs a strategy on a simulated market, with no account and no API keys. On Debian and Ubuntu, `sudo apt install python3-venv` first.
+
+The wheels are for Linux x86-64 and Python 3.10 or newer. On macOS (Apple silicon included) or Windows, run the same steps in a container:
+
+```bash
+docker run --rm -it --platform linux/amd64 -v "$PWD":/work -w /work python:3.12-slim \
+  sh -c 'pip install "fastmm-engine[hot]" && fastmm init my-mm && cd my-mm && python backtest.py'
+```
+
+The C++ programs are in `ghcr.io/ziyangliu-666/fastmm` and in the release tarball ([Deploy](https://ziy.bio/FastMM/how-to/operations/deploy/)).
 
 ## A strategy
 
