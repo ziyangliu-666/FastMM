@@ -89,7 +89,8 @@ struct Fixture {
   Mute strategy;
   std::unique_ptr<EngineType> engine;
 
-  Fixture() {
+  // `orders_per_sec`, `burst`: the [risk] token bucket every account's orders share (0: off).
+  explicit Fixture(std::uint32_t orders_per_sec = 0, std::uint32_t burst = 0) {
     Instrument i{};
     i.symbol = "BTCUSDT";
     i.venue = kPrimary;
@@ -101,6 +102,8 @@ struct Fixture {
     EngineConfig cfg;
     cfg.risk.max_order_qty = qt("1");
     cfg.risk.max_open_orders = 100;
+    cfg.risk.orders_per_sec = orders_per_sec;
+    cfg.risk.burst = burst;
     REQUIRE(cfg.pools.add(kMember1, kPrimary));
     REQUIRE(cfg.pools.add(kMember2, kPrimary));
     engine = std::make_unique<EngineType>(cfg, table, clock, transport, feed, strategy, nullptr);
@@ -285,4 +288,66 @@ TEST_CASE("core.engine pool: without publications the first account in pool orde
   auto& ctx = f.engine->context();
   for (int k = 0; k < 3; ++k) REQUIRE(ctx.send(Fixture::buy()));
   for (const VenueId v : f.transport.new_order_accounts()) CHECK(v == kPrimary);
+}
+
+TEST_CASE("core.engine pool: an order refused for its account's window takes no [risk] token") {
+  Fixture f(49, 40);
+  auto& ctx = f.engine->context();
+  f.transport.publish(kPrimary, 0, 100, 0, 90);
+  f.transport.publish(kMember1, 90, 100, 0, 90);  // at its connector's cap
+  f.transport.publish(kMember2, 0, 100, 0, 90);
+  REQUIRE(ctx.order_budget(kMember1).local_tokens == 40);
+  CHECK(ctx.send(Fixture::buy().account(kMember1)).error() == RejectReason::RateLimit);
+  CHECK(ctx.order_budget(kMember1).local_tokens == 40);
+  CHECK(f.transport.new_order_accounts().empty());
+  CHECK(f.engine->stats().risk_rejects_by_reason[RejectReason::RateLimit] == 1);
+  // A full burst's worth of retries at the same instant: still every token left, none sent.
+  for (int k = 0; k < 40; ++k)
+    CHECK(ctx.send(Fixture::buy().account(kMember1)).error() == RejectReason::RateLimit);
+  CHECK(ctx.order_budget(kPrimary).local_tokens == 40);
+  CHECK(f.transport.new_order_accounts().empty());
+  // The other accounts' orders get the whole burst, one token each, then the bucket refuses.
+  for (int k = 0; k < 40; ++k) REQUIRE(ctx.send(Fixture::buy().account(kMember2)));
+  CHECK(ctx.order_budget(kMember2).local_tokens == 0);
+  CHECK(f.transport.new_order_accounts().size() == 40);
+  CHECK(ctx.send(Fixture::buy().account(kPrimary)).error() == RejectReason::RateLimit);
+  CHECK(f.transport.new_order_accounts().size() == 40);
+  CHECK(f.engine->stats().risk_rejects_by_reason[RejectReason::RateLimit] == 42);
+}
+
+TEST_CASE("core.engine pool: a paused account's order takes no [risk] token") {
+  Fixture f(49, 5);
+  auto& ctx = f.engine->context();
+  OrderBudget b;
+  b.venue_known = true;
+  b.venue_paused = true;
+  for (const VenueId v : {kPrimary, kMember1, kMember2}) f.transport.budget[v.value].store(b);
+  for (int k = 0; k < 10; ++k) CHECK(ctx.send(Fixture::buy()).error() == RejectReason::RateLimit);
+  CHECK(ctx.order_budget(kPrimary).local_tokens == 5);
+  CHECK(f.transport.new_order_accounts().empty());
+  // The pause ends: the next order goes and takes one.
+  f.transport.publish(kMember2, 0, 100, 0, 90);
+  REQUIRE(ctx.send(Fixture::buy()));
+  CHECK(f.transport.new_order_accounts() == std::vector<VenueId>{kMember2});
+  CHECK(ctx.order_budget(kMember2).local_tokens == 4);
+}
+
+TEST_CASE("core.engine pool: a full account's order still gets the other checks' reasons first") {
+  Fixture f(49, 5);
+  auto& ctx = f.engine->context();
+  f.transport.publish(kPrimary, 0, 100, 0, 90);
+  f.transport.publish(kMember1, 90, 100, 0, 90);
+  f.transport.publish(kMember2, 0, 100, 0, 90);
+  // Over max_order_qty and on a full account: the size check decides.
+  auto big = NewOrderRequest::limit(kBtc, Side::Buy, px("99.50"), qt("2")).account(kMember1);
+  CHECK(ctx.send(big).error() == RejectReason::MaxOrderQty);
+  // A member of a killed primary: VenueKilled before the window, and no token either way.
+  f.engine->risk().trip_venue(kPrimary);
+  CHECK(ctx.send(Fixture::buy().account(kMember1)).error() == RejectReason::VenueKilled);
+  CHECK(ctx.send(Fixture::buy().account(kMember2)).error() == RejectReason::VenueKilled);
+  CHECK(ctx.order_budget(kMember2).local_tokens == 5);
+  CHECK(f.transport.new_order_accounts().empty());
+  f.engine->risk().reset_venue(kPrimary);
+  REQUIRE(ctx.send(Fixture::buy().account(kMember2)));
+  CHECK(ctx.order_budget(kMember2).local_tokens == 4);
 }

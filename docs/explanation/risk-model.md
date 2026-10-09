@@ -37,10 +37,13 @@ The first failing check decides the reason.
 | 19 | `MaxOpenOrders` | the instrument already has this many open orders (new orders only) | `max_open_orders` |
 | 20 | `SelfTradePrevention` | a limit price would trade against one of our own resting orders | `stp` |
 | 21 | `BalanceShort` | the account's balance on the venue does not cover the order ([Balance check](#balance-check)) | `check_balance` |
-| 22 | `RateLimit` | the token bucket is empty | `orders_per_sec`, `burst` |
+| 22 | `VenueKilled` | a pool member's order and the pool's primary venue is killed ([account pools](../reference/configuration.md#account-pools)) | |
+| 23 | `RateLimit` | a pool order's account cannot send it now: its connector is paused or an order window is at its cap (`ctx.order_budget`) | |
+| 24 | `RateLimit` | the token bucket is empty | `orders_per_sec`, `burst` |
 
 - A limit of 0 turns its check off; the checks against the instrument's reference data always run.
 - A replace excludes the existing order's remaining quantity from the position prediction and is not counted against `max_open_orders`.
+- Only an order that passes every check takes a token from the bucket: one refused for any other reason, a full or paused pool account included, leaves the tokens to the orders that are sent.
 - `MaxPosition` counts same-side open orders, so a quote ladder cannot exceed `max_position` even if it fills entirely.
 - Market orders skip the price checks (4, 9, 10, 20).
 - The notional of checks 6 and 12 is in the instrument's settlement currency: `price * qty * multiplier` for a linear contract, `qty * multiplier / price` (the base coin) for an inverse one.

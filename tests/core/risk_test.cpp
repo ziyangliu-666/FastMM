@@ -193,6 +193,26 @@ TEST_CASE("core.risk: every reject reason in isolation and in order") {
     CHECK(risk.check_new(ok, inst, in) == RejectReason::None);
     CHECK(risk.stats().rejects[static_cast<int>(RejectReason::RateLimit)] == 1);
   }
+  SUBCASE("a pool order's account and primary come after the other checks, before the bucket") {
+    RiskLimits l = limits();
+    l.orders_per_sec = 10;
+    l.burst = 1;
+    risk.set_limits(l, now);
+    in.account_full = true;
+    CHECK(risk.check_new(intent(Side::Buy, "98", "1"), inst, in) == RejectReason::PriceCollar);
+    CHECK(risk.check_new(ok, inst, in) == RejectReason::RateLimit);
+    in.primary_killed = true;
+    CHECK(risk.check_new(ok, inst, in) == RejectReason::VenueKilled);
+    in.balance_short = true;
+    CHECK(risk.check_new(ok, inst, in) == RejectReason::BalanceShort);
+    // None of them took the one token.
+    CHECK(risk.bucket().tokens() == 1);
+    in = RiskInputs{};
+    in.now = now;
+    in.position = &pos;
+    CHECK(risk.check_new(ok, inst, in) == RejectReason::None);
+    CHECK(risk.check_new(ok, inst, in) == RejectReason::RateLimit);
+  }
   SUBCASE("max loss trips the kill switch") {
     CHECK_FALSE(risk.on_pnl(Notional::from_int(-999)));
     CHECK(risk.on_pnl(Notional::from_int(-1000)));

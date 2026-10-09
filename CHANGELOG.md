@@ -13,6 +13,9 @@ All notable changes are recorded here (Keep a Changelog format).
 - live: the network thread sends queued orders between one socket's event and the next.
 - venues: a pool's accounts take their IP's shared weight without a kernel wait on each order.
 
+### Fixed
+- core: a pool order refused because its account is full or paused takes no `[risk]` token.
+
 ### Documentation
 - docs: the economics page, the tutorials and the `fastmm init` README give the numbers alone.
 - docs: the README and Install name Linux x86-64 and run the quick start in Docker elsewhere.

@@ -132,6 +132,12 @@ struct RiskInputs {
   // [risk] check_balance: the account's balance on the venue does not cover the order
   // (BalanceBook::covers); the engine sets it once a venue has reported balances.
   bool balance_short = false;
+  // A pool member's order whose primary venue is killed (the primary's kill is the pool's).
+  bool primary_killed = false;
+  // The order's account cannot send it now: its connector is paused or one of its order windows
+  // is at the cap (the engine's no_order_room). Refused before the token bucket, so an order no
+  // connector would take does not spend a token the other accounts could have used.
+  bool account_full = false;
 };
 
 struct RiskStats {
@@ -571,6 +577,10 @@ class RiskEngine {
       return RejectReason::SelfTradePrevention;
     }
     if (FASTMM_UNLIKELY(in.balance_short)) return RejectReason::BalanceShort;
+    // Last before the bucket: every check above keeps its precedence, and only an order that is
+    // sent takes a token.
+    if (FASTMM_UNLIKELY(in.primary_killed)) return RejectReason::VenueKilled;
+    if (FASTMM_UNLIKELY(in.account_full)) return RejectReason::RateLimit;
     if (!bucket_.try_take(in.now)) return RejectReason::RateLimit;
     return RejectReason::None;
   }

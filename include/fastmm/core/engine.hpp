@@ -2552,7 +2552,8 @@ class Engine {
       if (!account.valid()) return fail(RejectReason::InvalidAccount);
       // The account's order window is full up to its connector's cap, or the connector is paused
       // (the one named, or the fallback when no account with room covers the order): refused
-      // below with RateLimit, as the connector would refuse it, without reaching it.
+      // by the risk check with RateLimit, as the connector would refuse it, without reaching it
+      // and without taking a [risk] token.
       const OrderBudget b = order_budget(account);
       window_full = no_order_room(b);
       budget_known = b.venue_known;
@@ -2580,12 +2581,10 @@ class Engine {
                                          0,
                                          req.reduce_only,
                                          in.open_same_side);
-    RejectReason rr = risk_.check_new(oi, inst, in);
     // A member of a killed primary trades nothing either: the primary's kill is the pool's.
-    if (FASTMM_UNLIKELY(rr == RejectReason::None && account != inst.venue) &&
-        risk_.venue_killed(inst.venue))
-      rr = RejectReason::VenueKilled;
-    if (FASTMM_UNLIKELY(window_full) && rr == RejectReason::None) rr = RejectReason::RateLimit;
+    in.primary_killed = account != inst.venue && risk_.venue_killed(inst.venue);
+    in.account_full = window_full;
+    const RejectReason rr = risk_.check_new(oi, inst, in);
     if (FASTMM_UNLIKELY(rr != RejectReason::None)) {
       ++stats_.risk_rejects;
       stats_.risk_rejects_by_reason.add(rr);
