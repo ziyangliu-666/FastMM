@@ -7,7 +7,7 @@
 
 FastMM is a low-latency market-making engine. Read the [documentation](https://ziy.bio/FastMM/).
 
-[![FastMM in two minutes](docs/assets/explainer-play.jpg)](https://github.com/ziyangliu-666/FastMM/releases/download/v0.5.1/fastmm-explainer.mp4)
+https://github.com/user-attachments/assets/dcd130c5-28fe-482f-a757-d0fc6550c5b9
 
 > If you are running FastMM on Binance, try [bndesk](https://github.com/ziyangliu-666/bndesk), a real-time dashboard for your accounts.
 
