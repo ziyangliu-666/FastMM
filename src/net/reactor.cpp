@@ -377,6 +377,7 @@ void Reactor::dispatch_io(int nfds) {
             (ev & (EPOLLIN | EPOLLRDHUP | EPOLLHUP)) != 0,
             (ev & EPOLLOUT) != 0);
     event_hangup_ = false;
+    if (after_event_ != nullptr) after_event_(after_event_ctx_);
   }
 }
 
@@ -477,6 +478,7 @@ void Reactor::uring_complete(std::uint64_t user_data, std::int32_t res, std::uin
             (ev & (POLLIN | POLLRDHUP | POLLHUP)) != 0,
             (ev & POLLOUT) != 0);
     event_hangup_ = false;
+    if (after_event_ != nullptr) after_event_(after_event_ctx_);
   }
   // A multishot poll ends without IORING_CQE_F_MORE (e.g. the CQ ring overflowed): re-arm it if
   // the registration survived the callbacks.

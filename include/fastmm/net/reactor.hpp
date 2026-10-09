@@ -129,6 +129,15 @@ class Reactor {
   void set_busy_poll(bool enabled) noexcept { busy_poll_ = enabled; }
   bool busy_poll() const noexcept { return busy_poll_; }
 
+  // Called on the reactor thread after the handler of each I/O event, between one socket's event
+  // and the next of the same wait: work that must not wait for the whole batch to be handled
+  // (the engine's orders behind a burst of market data, live/venue_slot.cpp) goes here. Null: none.
+  using EventHook = void (*)(void* ctx);
+  void set_after_event(EventHook fn, void* ctx) noexcept {
+    after_event_ = fn;
+    after_event_ctx_ = ctx;
+  }
+
   // True while a handler runs for an event that also reported a hang-up or an error
   // (RDHUP/HUP/ERR). Only when it is false may a handler take a short read as "socket drained"
   // and skip the read that would return EAGAIN: edge-triggered readiness reports data that
@@ -180,6 +189,8 @@ class Reactor {
   int wake_fd_ = -1;
   bool busy_poll_ = false;
   bool event_hangup_ = false;
+  EventHook after_event_ = nullptr;
+  void* after_event_ctx_ = nullptr;
   std::vector<IoHandler*> handlers_;  // indexed by fd; nullptr when not registered
 
   // Live timers by slot. A TimerId is (sequence << kTimerSlotBits) | slot, so the id of a cancelled

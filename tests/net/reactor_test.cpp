@@ -514,6 +514,54 @@ FASTMM_BACKEND_TEST("reactor: handler removed during a batch is not dispatched",
   CHECK(calls == 1);  // the removed registration stays silent
 }
 
+FASTMM_BACKEND_TEST("reactor: the after-event hook runs between the events of one batch",
+                    test_after_event) {
+  // Two sockets readable in the same wait: the hook runs once after each handler, so work it does
+  // (a network thread's queued orders) lands between them instead of after the batch.
+  Reactor r(backend);
+  TcpSocket a1, b1, a2, b2;
+  REQUIRE(TcpSocket::make_pair(a1, b1));
+  REQUIRE(TcpSocket::make_pair(a2, b2));
+  struct Trace {
+    std::vector<char> events;
+  } trace;
+  class Mark final : public IoHandler {
+   public:
+    Mark(Trace& t, TcpSocket& s) : t_(t), s_(s) {}
+    void on_readable() override {
+      std::byte buf[16];
+      while (s_.read(buf).bytes > 0) {
+      }
+      t_.events.push_back('h');
+    }
+    void on_writable() override {}
+    void on_error(int) override {}
+
+   private:
+    Trace& t_;
+    TcpSocket& s_;
+  };
+  Mark h1(trace, b1);
+  Mark h2(trace, b2);
+  REQUIRE(r.add(b1.fd(), h1, IoEvent::Read));
+  REQUIRE(r.add(b2.fd(), h2, IoEvent::Read));
+  r.set_after_event([](void* ctx) { static_cast<Trace*>(ctx)->events.push_back('a'); }, &trace);
+  r.run_once(0);                // io_uring: submit the poll requests before the data arrives
+  CHECK(trace.events.empty());  // no event, no hook
+  a1.write(bytes("x"));
+  a2.write(bytes("y"));
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  REQUIRE(run_until(r, [&] { return trace.events.size() >= 4; }));
+  CHECK(trace.events == std::vector<char>{'h', 'a', 'h', 'a'});
+  r.wake();  // the reactor's own eventfd is not a handler's event
+  r.run_once(100);
+  CHECK(trace.events.size() == 4);
+  r.set_after_event(nullptr, nullptr);
+  a1.write(bytes("z"));
+  REQUIRE(run_until(r, [&] { return trace.events.size() == 5; }));
+  CHECK(trace.events.back() == 'h');
+}
+
 FASTMM_BACKEND_TEST("reactor: handler replaced during a batch gets the pending event",
                     test_modify_in_batch) {
   // Whichever handler runs first re-registers the other fd with a third handler; the other

@@ -136,6 +136,20 @@ void wake_venue(void* ctx, VenueId v) noexcept {
   if (!w->busy && s.net_blocked.take()) s.reactor->wake();
 }
 
+namespace {
+
+// Reactor::EventHook of a network thread: orders the engine queued while the thread handled one
+// socket's event go out before the next socket's, not after the whole batch of the wait (a burst of
+// market data on the depth and trade connections). The loop below still takes the flag after the
+// batch, and when nothing came in.
+void send_queued_orders(void* ctx) {
+  auto& s = *static_cast<VenueSlot*>(ctx);
+  if (s.wake.load(std::memory_order_relaxed) && s.wake.exchange(false, std::memory_order_acquire))
+    s.venue->on_wake();
+}
+
+}  // namespace
+
 bool net_cpu_shared(int engine_cpu, std::span<const int> net_cpus, std::size_t index) {
   if (index >= net_cpus.size() || net_cpus[index] < 0) return false;
   const int cpu = net_cpus[index];
@@ -159,6 +173,7 @@ void net_loop(
   pin_to_cpu(cpu);
   Logger::instance().attach_current_thread();
   s.venue->connect(*s.reactor);
+  s.reactor->set_after_event(&send_queued_orders, &s);
   const bool busy = spin == SpinMode::Busy;
   // Adaptive, alone on its core: polls like busy, and still notifies an adaptive engine.
   const bool never_block = net_never_blocks(spin, cpu, shared_cpu, spin_dedicated);
