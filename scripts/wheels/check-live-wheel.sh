@@ -32,7 +32,13 @@ if python -m zipfile -l "$wheel" | grep -qE 'lib(ssl|crypto)[-.]'; then
 fi
 
 sim="$work/fastmm_live/bin/fastmm-sim-exchange"
-[[ -x "$sim" ]] || fail "no executable fastmm_live/bin/fastmm-sim-exchange in $wheel"
+[[ -f "$sim" ]] || fail "no fastmm_live/bin/fastmm-sim-exchange in $wheel"
+# zipfile -e drops the mode bits; the archive's entry says whether pip installs it executable.
+python - "$wheel" <<'PY' || fail "fastmm_live/bin/fastmm-sim-exchange is not executable in $wheel"
+import sys, zipfile
+mode = zipfile.ZipFile(sys.argv[1]).getinfo("fastmm_live/bin/fastmm-sim-exchange").external_attr >> 16
+sys.exit(0 if mode & 0o111 else 1)
+PY
 if readelf -d "$sim" | awk '/NEEDED/ {print $NF}' | tr -d '[]' | grep -qE '^lib(ssl|crypto|uring)'; then
   fail "fastmm-sim-exchange links OpenSSL or liburing dynamically"
 fi
