@@ -21,6 +21,8 @@
 // share_ip() points the weight buckets, the cooldown and the hard stop at one SharedRate per host
 // (shared_rate()), so a 429 seen by one account pauses them all; the order-count buckets stay the
 // account's.
+#include "fastmm/core/spin_mutex.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -352,7 +354,7 @@ class RateLimiter {
     return add(weight_, limit, window_ns, offset_);
   }
 
-  // The IP-wide parts, under SharedRate's mutex (defined below).
+  // The IP-wide parts, under SharedRate's lock (defined below).
   RateRefusal ip_weight_fits(std::uint32_t weight, std::int64_t now, double share) noexcept;
   void ip_on_sent(std::uint32_t weight, std::int64_t now) noexcept;
   void ip_on_headers(std::int64_t used, std::int64_t now, std::size_t bucket) noexcept;
@@ -375,7 +377,10 @@ class RateLimiter {
 
 // One IP's request weight, shared by every account that sends from it (RateLimiter::share_ip).
 struct SharedRate {
-  std::mutex m;
+  // Every order of every account on the IP takes it twice (ip_weight_fits, ip_on_sent), from
+  // their network threads at once when a requote spreads over the pool: a spinning lock, so a
+  // waiter does not sleep in the kernel for a section of a few dozen nanoseconds.
+  SpinMutex m;
   RateLimiter r{1.0};  // its weight buckets, cooldown and hard stop; never shared itself
 };
 
@@ -408,7 +413,7 @@ inline std::shared_ptr<SharedRate> shared_rate(std::string_view key) {
 
 inline void RateLimiter::share_ip(std::shared_ptr<SharedRate> ip) noexcept {
   if (ip) {
-    const std::lock_guard<std::mutex> lock(ip->m);
+    const std::lock_guard<SpinMutex> lock(ip->m);
     for (const RateBucket& b : weight_) {
       if (b.active) static_cast<void>(ip->r.add_weight_bucket_once(b.limit, b.window_ns));
     }
@@ -418,11 +423,11 @@ inline void RateLimiter::share_ip(std::shared_ptr<SharedRate> ip) noexcept {
 inline RateRefusal RateLimiter::ip_weight_fits(std::uint32_t weight,
                                                std::int64_t now,
                                                double share) noexcept {
-  const std::lock_guard<std::mutex> lock(ip_->m);
+  const std::lock_guard<SpinMutex> lock(ip_->m);
   return ip_->r.weight_fits(weight, now, threshold_ * share, share < 1.0);
 }
 inline void RateLimiter::ip_on_sent(std::uint32_t weight, std::int64_t now) noexcept {
-  const std::lock_guard<std::mutex> lock(ip_->m);
+  const std::lock_guard<SpinMutex> lock(ip_->m);
   spend(ip_->r.weight_, weight, now);
   ip_->r.recent_weight_.add(weight, now);
 }
@@ -432,7 +437,7 @@ inline void RateLimiter::ip_on_headers(std::int64_t used,
   // The IP's count when the venue answered one account: every account's requests of the last
   // kHeaderLagNs may be missing from it, so it lowers the shared estimate only to the count plus
   // those (an older answer lowering it further would let their concurrent burst through).
-  const std::lock_guard<std::mutex> lock(ip_->m);
+  const std::lock_guard<SpinMutex> lock(ip_->m);
   auto& w = ip_->r.weight_;
   if (bucket >= w.size() || !w[bucket].active) return;
   w[bucket].calibrate(static_cast<std::uint32_t>(used),
@@ -452,7 +457,7 @@ inline void RateLimiter::set_clock_offset(std::int64_t venue_minus_local_ns,
     }
     return;
   }
-  const std::lock_guard<std::mutex> lock(ip_->m);
+  const std::lock_guard<SpinMutex> lock(ip_->m);
   ip_->r.offset_ = offset_;
   for (RateBucket& b : ip_->r.weight_) {
     if (b.active) b.realign(offset_, now);
@@ -460,16 +465,16 @@ inline void RateLimiter::set_clock_offset(std::int64_t venue_minus_local_ns,
 }
 inline bool RateLimiter::ip_add_weight_bucket(std::uint32_t limit,
                                               std::int64_t window_ns) noexcept {
-  const std::lock_guard<std::mutex> lock(ip_->m);
+  const std::lock_guard<SpinMutex> lock(ip_->m);
   return ip_->r.add_weight_bucket_once(limit, window_ns);
 }
 inline void RateLimiter::ip_cooldown(std::int64_t retry_after_ns, std::int64_t now) noexcept {
-  const std::lock_guard<std::mutex> lock(ip_->m);
+  const std::lock_guard<SpinMutex> lock(ip_->m);
   ip_->r.cooldown(retry_after_ns, now);
 }
 inline std::int64_t RateLimiter::cooldown_until() const noexcept {
   if (!ip_) return cooldown_until_;
-  const std::lock_guard<std::mutex> lock(ip_->m);
+  const std::lock_guard<SpinMutex> lock(ip_->m);
   return ip_->r.cooldown_until_;
 }
 inline void RateLimiter::hard_stop() noexcept {
@@ -477,7 +482,7 @@ inline void RateLimiter::hard_stop() noexcept {
     hard_stopped_ = true;
     return;
   }
-  const std::lock_guard<std::mutex> lock(ip_->m);
+  const std::lock_guard<SpinMutex> lock(ip_->m);
   ip_->r.hard_stopped_ = true;
 }
 inline void RateLimiter::clear_hard_stop() noexcept {
@@ -485,7 +490,7 @@ inline void RateLimiter::clear_hard_stop() noexcept {
     hard_stopped_ = false;
     return;
   }
-  const std::lock_guard<std::mutex> lock(ip_->m);
+  const std::lock_guard<SpinMutex> lock(ip_->m);
   ip_->r.hard_stopped_ = false;
 }
 inline std::optional<RateBucket> RateLimiter::weight_bucket(std::size_t i) const noexcept {
@@ -493,17 +498,17 @@ inline std::optional<RateBucket> RateLimiter::weight_bucket(std::size_t i) const
     if (i < weight_.size() && weight_[i].active) return weight_[i];
     return std::nullopt;
   }
-  const std::lock_guard<std::mutex> lock(ip_->m);
+  const std::lock_guard<SpinMutex> lock(ip_->m);
   return ip_->r.weight_bucket(i);
 }
 inline std::uint32_t RateLimiter::streak() const noexcept {
   if (!ip_) return streak_;
-  const std::lock_guard<std::mutex> lock(ip_->m);
+  const std::lock_guard<SpinMutex> lock(ip_->m);
   return ip_->r.streak_;
 }
 inline bool RateLimiter::hard_stopped() const noexcept {
   if (!ip_) return hard_stopped_;
-  const std::lock_guard<std::mutex> lock(ip_->m);
+  const std::lock_guard<SpinMutex> lock(ip_->m);
   return ip_->r.hard_stopped_;
 }
 

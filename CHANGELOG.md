@@ -2,6 +2,11 @@
 
 All notable changes are recorded here (Keep a Changelog format).
 
+## [Unreleased]
+
+### Changed
+- venues: a pool's accounts take their IP's shared weight without a kernel wait on each order.
+
 ## [0.5.1] - 2026-10-07
 
 ### Fixed
