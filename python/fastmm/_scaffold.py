@@ -310,11 +310,6 @@ python backtest.py --sweep half_spread_bps=0.005,0.01,0.02,0.05
 The backtest prints the summary, the PnL decomposition and the markouts, and writes the fills,
 orders and equity curve to `runs/backtest/`. The sweep runs one backtest per value.
 
-Net PnL is negative: in this synthetic market only a quote at the touch fills, and it captures
-under 0.01 bps while `[venues.sim.fees]` charges 10 bps a fill. A wider quote does not fill at all.
-Read the capture, the markouts and the fees separately, and see
-<https://ziy.bio/FastMM/explanation/economics/>.
-
 ## What to change first
 
 | Want | Edit |

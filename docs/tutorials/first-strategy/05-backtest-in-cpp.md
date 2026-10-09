@@ -65,6 +65,6 @@ ok    : the position stayed within max_position
 ok    : two runs sent the same orders
 ```
 
-Amounts are in USDT, the position in BTC. FirstMM captures 0.002 bps of the traded notional gross and pays 10 bps in maker fees, so it loses money on every fill; quoting one tick inside the touch of this market earns nothing. Read the decomposition and the markouts, not the net PnL ([Backtesting](../../explanation/backtesting.md)).
+Amounts are in USDT, the position in BTC. FirstMM captures 0.002 bps of the traded notional gross and pays 10 bps in maker fees. Read the decomposition and the markouts, not the net PnL ([Backtesting](../../explanation/backtesting.md)).
 
 Next: [6. Register it](06-register.md)

@@ -34,7 +34,7 @@ The strategy quotes 0.0001 BTC (about 8 USDT) per side and stops adding at 0.000
 | `max_loss` | `5` | the kill switch trips when net PnL reaches -5 USDT ([After a kill](../../how-to/operations/kill-switch-and-shutdown.md#after-a-kill-the-engine-trips-itself)) |
 | `orders_per_sec`, `burst` | `2`, `4` | orders per second, burst |
 
-The Demo account charges 10 bps per fill and `first_mm` quotes 5 bps from the microprice, so fills lose money on average.
+The Demo account charges 10 bps per fill; `first_mm` quotes 5 bps from the microprice.
 
 ## 4. A five-minute session
 

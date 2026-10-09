@@ -132,7 +132,7 @@ The Binance USD-M VIP-0 maker rate is 2 bps per fill. At 1 s and 10 s, the horiz
 
 `subsample=0.01` keeps one row per 10 ms and leaves 2 981 482 of the 15 814 430 rows. The sign and the monotonicity survive: the 1 s decile table runs from -0.503 to +0.492 bps against -0.564 to +0.565, and the information coefficient is +0.382 against +0.415. The magnitudes shift by up to 0.06 bps, because sampling on a clock reweights the day towards its quiet moments; the table above uses every update.
 
-## Why the shipped strategy loses money
+## Where basic_mm's PnL goes on this day
 
 `basic_mm` on this day nets -499 USDT: 5.62 USDT of gross spread capture, -153.54 of mid drift after the fills, and 351.13 of fees on 1 755 651 USDT of traded notional.
 

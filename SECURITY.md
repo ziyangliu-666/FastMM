@@ -2,5 +2,5 @@
 
 - API keys come from environment variables (`FASTMM_*_API_KEY/SECRET`) through `${VAR}` substitution in TOML; literal secrets are refused ([Configuration](docs/reference/configuration.md#general-rules)). Never commit keys; `.env` is git-ignored.
 - The logger redacts values wrapped in `Secret<T>`; journals record the configuration without `api_key`, `api_secret` and `api_passphrase`.
-- The configs in `configs/` point at testnets, Binance Demo Mode or the local simulator. Live trading is at your own risk.
+- The configs in `configs/` point at testnets, Binance Demo Mode or the local simulator.
 - Report vulnerabilities through GitHub private security advisories.

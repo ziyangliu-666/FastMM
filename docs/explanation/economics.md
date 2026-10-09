@@ -1,6 +1,6 @@
 # Economics of the shipped strategies
 
-`basic_mm`, `avellaneda_stoikov`, `options_mm` and `xmm` are reference implementations of published quoting rules, written to show the engine's API. `lead_mm` joins the touch of a thin pair when a liquid leader's mid, converted by an FX pair, leaves enough edge. None has been shown to make money at a fee schedule you can get.
+`basic_mm`, `avellaneda_stoikov`, `options_mm` and `xmm` are reference implementations of published quoting rules, written to show the engine's API. `lead_mm` joins the touch of a thin pair when a liquid leader's mid, converted by an FX pair, leaves enough edge.
 
 ## The example backtest and the fee table
 
@@ -52,7 +52,7 @@ Two one-hour `basic_mm` sessions on BTCUSDT in Binance Demo Mode, at the account
 | 15 bps from the mid | 0 | 0.00 USDT |
 | At the touch | 1640 (all maker) | −32.94 USDT |
 
-31,622.62 USDT of notional paid 31.62 USDT in commission, and realised PnL before fees was −1.32 USDT: the fills were adverse as well as expensive. The tutorial states the same arithmetic for its own strategy: at 10 bps per fill and a 5 bps quote, every fill loses money ([Binance Demo](../tutorials/first-strategy/09-binance-demo.md)).
+31,622.62 USDT of notional paid 31.62 USDT in commission, and realised PnL before fees was −1.32 USDT: the fills were adverse as well as expensive.
 
 ## The arithmetic you have to beat
 

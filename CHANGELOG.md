@@ -8,6 +8,9 @@ All notable changes are recorded here (Keep a Changelog format).
 - live: the network thread sends queued orders between one socket's event and the next.
 - venues: a pool's accounts take their IP's shared weight without a kernel wait on each order.
 
+### Documentation
+- docs: the economics page, the tutorials and the `fastmm init` README give the numbers alone.
+
 ## [0.5.1] - 2026-10-07
 
 ### Fixed
