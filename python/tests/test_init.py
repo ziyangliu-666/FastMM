@@ -8,7 +8,7 @@ import pytest
 import fastmm
 from fastmm._scaffold import write_project
 
-FILES = ["config.toml", "live.toml", "strategy.py", "backtest.py", "README.md"]
+FILES = ["config.toml", "sim.toml", "live.toml", "strategy.py", "backtest.py", "README.md"]
 
 
 def test_writes_the_project(tmp_path):
@@ -86,3 +86,13 @@ def test_an_unknown_profile_is_refused(tmp_path):
                           "--profile", "fast"], capture_output=True, text=True, check=False)
     assert out.returncode == 2
 
+
+def test_the_sim_config_trades_the_local_simulator(tmp_path):
+    write_project(tmp_path / "my-mm")
+    cfg = fastmm.BacktestConfig.from_toml(tmp_path / "my-mm" / "sim.toml")
+    assert cfg.strategy == "py:MyMm"
+    text = (tmp_path / "my-mm" / "sim.toml").read_text()
+    assert 'ws_api_url = "ws://127.0.0.1:9080/ws-api/v3"' in text
+    readme = (tmp_path / "my-mm" / "README.md").read_text()
+    assert "fastmm sim &" in readme
+    assert "strategy:MyMm --config sim.toml --duration 60s" in readme

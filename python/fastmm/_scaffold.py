@@ -232,6 +232,84 @@ stp = true
 level = "info"
 '''
 
+SIM_TOML = '''\
+# @NAME_CLASS@ live against the simulated exchange on this machine: real orders over WebSocket to
+# a matching engine with its own order flow, no account and no network. In one terminal:
+#   fastmm sim
+# and in another:
+#   python -m fastmm run strategy:@NAME_CLASS@ --config sim.toml --duration 60s
+# The session's journal lands in runs/: replay it, or backtest on its market data.
+
+[engine]
+name = "@NAME@-sim"
+journal = true
+journal_dir = "runs"
+epoch_file = "runs/session_epoch"
+cpu = -1
+post_only = true
+supports_replace = true
+
+[venues.sim]
+kind = "binance_spot"
+ws_url = "ws://127.0.0.1:9080/stream"
+ws_api_url = "ws://127.0.0.1:9080/ws-api/v3"
+rest_url = "http://127.0.0.1:9080"
+api_key = "sim-key"          # the simulator's built-in account
+api_secret = "sim-secret"
+testnet = true
+supports_replace = true
+recv_window_ms = 3000
+
+[venues.sim.fees]
+maker_bps = 1.0
+taker_bps = 4.0
+
+[[instruments]]
+venue = "sim"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "spot"
+tick = "0.01"
+lot = "0.00001"
+min_qty = "0.00001"
+max_qty = "100"
+min_notional = "5"
+
+[strategy]
+name = "py:@NAME_CLASS@"
+
+# The simulator's touch sits about 5 bps from its mid at 60,000 USDT.
+[strategy.params]
+half_spread_bps = 5.0
+skew_bps = 1.0
+quote_qty = 0.001
+max_inventory = 0.01
+requote_ticks = 10
+
+[risk]
+max_order_qty = "0.01"
+max_order_notional = "1000"
+max_position = "0.02"
+max_open_orders = 8
+price_collar_bps = 100
+fat_finger_bps = 500
+stale_md_ms = 2000
+max_loss = "50"
+orders_per_sec = 20
+burst = 10
+stp = true
+
+[logging]
+level = "info"
+
+# python backtest.py --config sim.toml --data journal:runs/<file>.fmj,strip_own=1
+[backtest]
+fill_model = "l2_queue"
+markout_horizons_s = "1,10"
+output_dir = "runs/backtest"
+'''
+
 PRODUCTION_TOML = '''\
 # @NAME_CLASS@ on Binance Spot with the settings of a dedicated host (fastmm init --profile
 # production). Real account, real orders: read the go-live checklist first
@@ -448,6 +526,25 @@ orders and equity curve to `runs/backtest/`. The sweep runs one backtest per val
 | Tighter limits | `[risk]` in `config.toml` |
 | Real market data | `backtest.py --data` with a `.fmj` journal or a CSV |
 
+## Live on the simulated exchange
+
+`fastmm sim` runs the simulated exchange of `fastmm-engine[live]` on 127.0.0.1:9080: Binance's
+API, a matching engine and its own order flow. `sim.toml` trades this strategy against it, with no
+keys and no network:
+
+```bash
+pip install "fastmm-engine[live]"
+fastmm sim &
+python -m fastmm run strategy:@NAME_CLASS@ --config sim.toml --duration 60s
+python -c "import glob, fastmm, strategy; print(fastmm.replay(max(glob.glob('runs/*.fmj')), strategy.@NAME_CLASS@))"
+python backtest.py --config sim.toml --data "journal:$(ls -t runs/*.fmj | head -1),strip_own=1"
+kill %1
+```
+
+The session logs every order and fill and writes its journal to `runs/`. `fastmm.replay` runs the
+journal through the strategy again and checks every order against the recording; the backtest runs
+the strategy over the session's market data, with the session's own orders taken out of the book.
+
 ## Live trading
 
 Live sessions need `fastmm-engine-live` (Linux x86-64):
@@ -475,6 +572,7 @@ Docs: <https://ziy.bio/FastMM/>. Strategy API: <https://ziy.bio/FastMM/reference
 
 TEMPLATES = {
     "config.toml": CONFIG_TOML,
+    "sim.toml": SIM_TOML,
     "live.toml": LIVE_TOML,
     "strategy.py": STRATEGY_PY,
     "backtest.py": BACKTEST_PY,

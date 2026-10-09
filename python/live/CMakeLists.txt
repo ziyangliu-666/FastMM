@@ -26,3 +26,17 @@ else()
   # In-tree use: PYTHONPATH=python/live (fastmm must be importable too)
   set_target_properties(fastmm_live_py PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/fastmm_live)
 endif()
+
+# fastmm_live/bin/fastmm-sim-exchange: the simulated exchange, so a pip install can trade live
+# without keys or a network (`fastmm sim`, fastmm_live.sim_exchange_path()). The same program as
+# apps/fastmm-sim-exchange, built from its source.
+add_executable(fastmm_live_sim_exchange ${PROJECT_SOURCE_DIR}/apps/fastmm-sim-exchange/main.cpp)
+fastmm_target_defaults(fastmm_live_sim_exchange)
+target_link_libraries(fastmm_live_sim_exchange PRIVATE fastmm::sim_server fastmm_cli11)
+set_target_properties(fastmm_live_sim_exchange PROPERTIES OUTPUT_NAME fastmm-sim-exchange)
+if(SKBUILD)
+  install(TARGETS fastmm_live_sim_exchange RUNTIME DESTINATION fastmm_live/bin COMPONENT python)
+else()
+  set_target_properties(fastmm_live_sim_exchange PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/fastmm_live/bin)
+endif()

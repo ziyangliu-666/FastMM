@@ -23,6 +23,7 @@ __pycache__/
 dist/
 *.egg-info/
 python/fastmm/_core*.so
+python/live/fastmm_live/bin/
 # bench results are committed only as baselines / latest (both are directories of JSON files,
 # see scripts/bench.sh, tools/bench_compare.py and .github/workflows/bench-nightly.yml)
 bench/results/*

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Checks a fastmm-live wheel: OpenSSL and liburing are linked into the extension (no libssl,
-# libcrypto or liburing needed or bundled) and the extension exports PyInit__live and nothing else.
+# Checks a fastmm-live wheel: OpenSSL and liburing are linked into the extension and into
+# bin/fastmm-sim-exchange (no libssl, libcrypto or liburing needed or bundled), and the extension
+# exports PyInit__live and nothing else.
 # The repair step in .github/workflows/wheels.yml runs it.
 #
 #   scripts/wheels/check-live-wheel.sh <fastmm_engine_live-*.whl>
@@ -28,6 +29,12 @@ if grep -qE '^liburing' <<<"$needed"; then
 fi
 if python -m zipfile -l "$wheel" | grep -qE 'lib(ssl|crypto)[-.]'; then
   fail "the wheel bundles an OpenSSL shared library"
+fi
+
+sim="$work/fastmm_live/bin/fastmm-sim-exchange"
+[[ -x "$sim" ]] || fail "no executable fastmm_live/bin/fastmm-sim-exchange in $wheel"
+if readelf -d "$sim" | awk '/NEEDED/ {print $NF}' | tr -d '[]' | grep -qE '^lib(ssl|crypto|uring)'; then
+  fail "fastmm-sim-exchange links OpenSSL or liburing dynamically"
 fi
 
 exported="$(nm -D --defined-only "$so" | awk '{print $NF}')"

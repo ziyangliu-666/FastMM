@@ -70,3 +70,15 @@ def test_no_openssl_symbols_exported():
         pytest.skip("nm is not available")
     names = [line.split()[-1] for line in nm.stdout.splitlines() if line.strip()]
     assert names == ["PyInit__live"]
+
+
+def test_the_simulated_exchange_ships_and_runs():
+    exe = fastmm_live.sim_exchange_path()
+    assert exe.is_file() and os.access(exe, os.X_OK)
+    out = subprocess.run([str(exe), "--help"], capture_output=True, text=True, check=False)
+    assert out.returncode == 0
+    assert "--no-tls" in out.stdout
+    help_out = subprocess.run([sys.executable, "-m", "fastmm", "sim", "--help-sim"],
+                              capture_output=True, text=True, check=False)
+    assert help_out.returncode == 0
+    assert "--no-tls" in help_out.stdout

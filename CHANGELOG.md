@@ -7,6 +7,7 @@ All notable changes are recorded here (Keep a Changelog format).
 ### Added
 - live: `fastmm-live` logs a topology check at start: hot threads sharing a core, and adaptive spin.
 - python: `fastmm init --profile production` adds `production.toml`, tuned for a dedicated host.
+- python: `fastmm sim` runs the simulated exchange; `fastmm init` writes `sim.toml` to trade it live.
 
 ### Changed
 - live: the network thread sends queued orders between one socket's event and the next.

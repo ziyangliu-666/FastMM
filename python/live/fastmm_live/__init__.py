@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import certifi
 
@@ -28,4 +29,10 @@ build_info = _live.build_info
 ca_locations = _live.ca_locations
 self_test = _live.self_test
 
-__all__ = ["__version__", "build_info", "ca_locations", "self_test"]
+
+def sim_exchange_path() -> Path:
+    """The fastmm-sim-exchange executable shipped in this package (`fastmm sim` runs it)."""
+    return Path(__file__).resolve().parent / "bin" / "fastmm-sim-exchange"
+
+
+__all__ = ["__version__", "build_info", "ca_locations", "self_test", "sim_exchange_path"]

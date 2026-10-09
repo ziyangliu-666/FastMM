@@ -29,6 +29,14 @@ python backtest.py
 
 This runs a strategy on a simulated market, with no account and no API keys. On Debian and Ubuntu, `sudo apt install python3-venv` first.
 
+The same strategy trades live against the simulated exchange on this machine: orders over WebSocket, fills from a matching engine, a journal that replays to the same orders.
+
+```bash
+pip install "fastmm-engine[live]"
+fastmm sim &
+python -m fastmm run strategy:MyMm --config sim.toml --duration 60s
+```
+
 The wheels are for Linux x86-64 and Python 3.10 or newer. On macOS (Apple silicon included) or Windows, run the same steps in a container:
 
 ```bash

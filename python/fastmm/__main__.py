@@ -1,6 +1,7 @@
 """The ``fastmm`` command, also reachable as ``python -m fastmm``.
 
     fastmm init [directory] [--profile production]         a starter project (fastmm._scaffold)
+    fastmm sim [fastmm-sim-exchange options]               the simulated exchange (live extra)
     fastmm report <run-dir | session.fmj> [-o out.html]     the HTML report of a run
     fastmm run module:Class --config file.toml [...]        fastmm.run_live from a shell
 
@@ -43,6 +44,15 @@ def _parser() -> argparse.ArgumentParser:
     report_command.add_arguments(commands.add_parser(
         "report", help=report_command.COMMAND_HELP,
         description=report_command.COMMAND_DESCRIPTION))
+    sim = commands.add_parser(
+        "sim", help="run the simulated exchange (fastmm-engine[live])",
+        description="Run fastmm-sim-exchange, the Binance Spot-compatible simulated exchange "
+                    "shipped in fastmm-engine-live, on 127.0.0.1:9080 until interrupted. The "
+                    "arguments go to it as they are (fastmm sim --help-sim lists them); without "
+                    "--config or --tls-port it trades the built-in BTCUSDT over plain WebSocket.")
+    sim.add_argument("--help-sim", action="store_true", help="print fastmm-sim-exchange's options")
+    sim.add_argument("sim_args", nargs=argparse.REMAINDER, metavar="...",
+                     help="fastmm-sim-exchange options, e.g. --port 9081 --seed 3")
     run = commands.add_parser(
         "run", help="run a strategy with hot hooks against live venues",
         description="Run a fastmm.Strategy with @fastmm.hot methods against the venues in the "
@@ -91,6 +101,26 @@ def _init(directory: str, force: bool, profile: str = "starter") -> int:
     return 0
 
 
+def _sim(sim_args: List[str], help_sim: bool) -> int:
+    try:
+        import fastmm_live
+    except ImportError:
+        print("fastmm sim: needs the live runtime: pip install 'fastmm-engine[live]'",
+              file=sys.stderr)
+        return 2
+    exe = fastmm_live.sim_exchange_path()
+    if not exe.exists():
+        print(f"fastmm sim: {exe} is missing from this fastmm-engine-live", file=sys.stderr)
+        return 2
+    args = ["--help"] if help_sim else list(sim_args)
+    # The TLS listener needs a certificate; plain WebSocket needs nothing.
+    if not help_sim and not any(a.split("=")[0] in ("--config", "--tls-port", "--tls-cert")
+                                for a in args):
+        args.append("--no-tls")
+    os.execv(str(exe), [str(exe), *args])
+    return 0  # not reached
+
+
 def _load_class(target: str) -> type:
     module_name, sep, qualname = target.partition(":")
     if not sep or not module_name or not qualname:
@@ -111,6 +141,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         from .report import run_command
 
         return run_command(args)
+    if args.command == "sim":
+        return _sim(args.sim_args, args.help_sim)
     params = {}
     for item in args.param:
         key, sep, value = item.partition("=")

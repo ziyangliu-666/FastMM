@@ -14,7 +14,7 @@ A strategy class uses one of two styles. Hot hooks (`@fastmm.hot`) are compiled 
 
 ## First strategy
 
-`fastmm init my-mm` writes a starter project: a config for the simulated market, a strategy with hot hooks, a backtest that runs it and a config that runs it on Binance Spot Demo Mode ([Install](getting-started/install.md#without-building-it)).
+`fastmm init my-mm` writes a starter project: a config for the simulated market, a strategy with hot hooks, a backtest that runs it, a config that trades it live against the simulated exchange `fastmm sim` runs, and one that runs it on Binance Spot Demo Mode ([Install](getting-started/install.md#without-building-it)).
 
 Write it as hot hooks, the only style that trades live:
 
