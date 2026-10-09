@@ -9,8 +9,6 @@ FastMM is a low-latency market-making engine. Read the [documentation](https://z
 
 https://github.com/user-attachments/assets/dcd130c5-28fe-482f-a757-d0fc6550c5b9
 
-> If you are running FastMM on Binance, try [bndesk](https://github.com/ziyangliu-666/bndesk), a real-time dashboard for your accounts.
-
 ## Features
 
 - **Strategies in C++ or Python.** Python hooks marked `@fastmm.hot` compile to machine code with Numba.
@@ -58,6 +56,8 @@ class TouchMM(fastmm.Strategy):
 ## Exchanges
 
 Binance, OKX, Bybit, Gate, Deribit, Gemini and Coinbase. Nasdaq over TotalView-ITCH and OUCH 5.0.
+
+> If you are running FastMM on Binance, try [bndesk](https://github.com/ziyangliu-666/bndesk), a real-time dashboard for your accounts.
 
 ## License
 
