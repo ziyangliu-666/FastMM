@@ -102,6 +102,10 @@ TEST_CASE("integration.params: fastmm-ctl param --wait returns once the engine h
   CHECK(json.find(R"("last_origin": "control", "last_source": "scheduled:drain", )"
                   R"("control_published": 1, "control_applied": 1, "pending": false)") !=
         std::string::npos);
+  // fastmm-top reads the session's process from /proc beside the status file.
+  CHECK(json.find(R"("process": {"ok": true, "pid": )" + std::to_string(live) + ",") !=
+        std::string::npos);
+  CHECK(json.find(R"("name": "fm-engine")") != std::string::npos);
 
   REQUIRE(::kill(live, SIGTERM) == 0);
   CHECK(reap(live) == 0);

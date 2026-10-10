@@ -1,5 +1,6 @@
 #include "metrics_server.hpp"
 
+#include "fastmm/core/process_state.hpp"
 #include "fastmm/core/status_prometheus.hpp"
 #include "fastmm/core/status_segment.hpp"
 #include "fastmm/core/time.hpp"
@@ -165,7 +166,11 @@ void MetricsServer::serve(const std::string& status_path, const std::atomic<int>
         respond(client,
                 "200 OK",
                 "text/plain; version=0.0.4; charset=utf-8",
-                format_status_prometheus(snapshot, wall_now().ns));
+                format_status_prometheus(snapshot, wall_now().ns) +
+                    (snapshot.state == StatusRunState::Stopped
+                         ? std::string()
+                         : process_state_prometheus(read_process_state(
+                               static_cast<std::int32_t>(snapshot.pid), snapshot.started_ns))));
       else
         respond(client, "200 OK", "text/plain; version=0.0.4; charset=utf-8", kDown);
     } else if (path == "/" || path.empty()) {

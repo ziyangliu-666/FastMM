@@ -4,6 +4,7 @@
 #include "command_line.hpp"
 #include "metrics_server.hpp"
 
+#include "fastmm/core/process_state.hpp"
 #include "fastmm/core/status_segment.hpp"
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
@@ -106,6 +107,7 @@ static int run(int argc, char** argv) {
   fastmm::StatusSnapshot snap;
   std::string error;
   bool first = true;
+  fastmm::ProcessState prev_process;
   while (g_signal.load() == 0) {
     // A segment of another version is refused by open() (smaller layout) or fails read() (same
     // size or larger); either way segment_version() names it.
@@ -124,6 +126,17 @@ static int run(int argc, char** argv) {
     if (reader.is_open() && reader.read(snap)) {
       frame = json ? fastmm::format_status_json(snap)
                    : fastmm::format_status(snap, fastmm::wall_now().ns, color);
+      // The process behind a session that still runs, from /proc: what the host did to it.
+      if (snap.state != fastmm::StatusRunState::Stopped) {
+        const fastmm::ProcessState ps =
+            fastmm::read_process_state(static_cast<std::int32_t>(snap.pid), snap.started_ns);
+        if (json) {
+          frame.insert(frame.size() - 2, ", " + fastmm::process_state_json(ps));
+        } else {
+          frame += fastmm::format_process_state(ps, prev_process.ok ? &prev_process : nullptr);
+          prev_process = ps;
+        }
+      }
     } else if (version != 0 && version != fastmm::kStatusVersion) {
       const std::string message = other_build_message(path, version);
       if (once) {
