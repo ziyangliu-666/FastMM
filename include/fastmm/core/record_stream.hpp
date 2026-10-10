@@ -41,6 +41,7 @@ enum class RecordType : std::uint8_t {
   Kill = 4,
   Funding = 5,
   Replayed = 6,
+  Param = 7,
 };
 [[nodiscard]] constexpr std::string_view to_string(RecordType t) noexcept {
   switch (t) {
@@ -56,6 +57,8 @@ enum class RecordType : std::uint8_t {
       return "Funding";
     case RecordType::Replayed:
       return "Replayed";
+    case RecordType::Param:
+      return "Param";
   }
   return "?";
 }
@@ -187,6 +190,36 @@ struct ReplayedRecord {
   RecordHeader hdr;
 };
 static_assert(sizeof(ReplayedRecord) == 64 && std::is_trivially_copyable_v<ReplayedRecord>);
+
+// A strategy parameter update the engine applied (ParamUpdateMsg): after the header, the message's
+// bytes past its own header, so the fields sit at the same offsets. hdr.instrument is the update's
+// target, invalid for every instrument. The store names the fields through the session's
+// parameter table (SessionOpen::param_table).
+struct ParamRecord {
+  RecordHeader hdr;
+  std::uint32_t count;                              // 64  pairs used
+  ParamUpdateMsg::Origin origin;                    // 68
+  std::uint8_t pad0_[3];                            //
+  std::uint64_t publish_seq;                        // 72
+  std::uint16_t field[ParamUpdateMsg::kMaxFields];  // 80  index in the parameter table
+  char source[ParamUpdateMsg::kSourceLen];          // 144 NUL-terminated
+  std::uint8_t pad1_[8];                            //
+  std::int64_t value[ParamUpdateMsg::kMaxFields];   // 192 raw value of each pair
+
+  [[nodiscard]] std::string_view source_view() const noexcept {
+    std::size_t n = 0;
+    while (n < ParamUpdateMsg::kSourceLen && source[n] != '\0') ++n;
+    return {source, n};
+  }
+};
+static_assert(sizeof(ParamRecord) == sizeof(ParamUpdateMsg) &&
+              std::is_trivially_copyable_v<ParamRecord>);
+static_assert(offsetof(ParamRecord, count) == offsetof(ParamUpdateMsg, count) &&
+              offsetof(ParamRecord, origin) == offsetof(ParamUpdateMsg, origin) &&
+              offsetof(ParamRecord, publish_seq) == offsetof(ParamUpdateMsg, publish_seq) &&
+              offsetof(ParamRecord, field) == offsetof(ParamUpdateMsg, field) &&
+              offsetof(ParamRecord, source) == offsetof(ParamUpdateMsg, source) &&
+              offsetof(ParamRecord, value) == offsetof(ParamUpdateMsg, value));
 
 // Engine-side producer. Every method is allocation-free, wait-free and safe to call from the
 // trading thread; a full ring increments dropped() and returns false.

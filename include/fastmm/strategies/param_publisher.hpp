@@ -143,6 +143,23 @@ class ParamPublisher {
     return refused_;
   }
   [[nodiscard]] const ParamSchema& schema() const { return *schema_; }
+  // Every parameter of the copy, in schema order: one instrument's, or the shared set.
+  struct Value {
+    std::string name;
+    ParamType type;
+    std::int64_t raw;  // ParamDesc::get_raw
+    std::string text;  // ParamDesc::format
+  };
+  [[nodiscard]] std::vector<Value> values(InstrumentId inst = kAllInstruments) const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    const std::size_t k =
+        per_instrument_ && inst.valid() && inst.value < blocks_.size() ? inst.value : 0;
+    std::vector<Value> out;
+    out.reserve(schema_->size());
+    for (const ParamDesc& d : *schema_)
+      out.push_back({d.name, d.type, d.get_raw(blocks_[k].get()), d.format(blocks_[k].get())});
+    return out;
+  }
   // `name=value` pairs of the copy: one instrument's, or the shared set.
   [[nodiscard]] std::string describe(InstrumentId inst = kAllInstruments) const {
     const std::lock_guard<std::mutex> lock(mutex_);

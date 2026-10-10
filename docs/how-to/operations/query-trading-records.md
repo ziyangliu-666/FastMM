@@ -48,6 +48,53 @@ build/release/bin/fastmm-pnl funding --engine mm1 --since 2024-03-01 --instrumen
 
 One row per payment: `amount` in `asset` (negative paid), the venue's `funding_id`, the position it was paid on, and `replayed` = 1 for one booked from the venue's history rather than its stream.
 
+## What were the parameters at a time
+
+```bash
+build/release/bin/fastmm-pnl params --engine sim-local --at "2026-10-10 05:10:20"
+```
+
+The values in effect then, in the newest session of the engine that had started by that time (`--session` names one; without `--at`, its last update). One row per parameter and scope: `*` for every instrument, or a symbol that has its own value; `--instrument SYM` shows that instrument's view. `set` is when the value took effect, `origin` is `initial` (the session started with it), `control` (`fastmm-ctl param`) or `strategy` (the strategy's own publisher), `source` the `--source` it was given:
+
+```text
+name                     instrument  value  set                  origin   source  session_id
+half_spread_bps          *           5      2026-10-10 05:10:23  control  manual  1791609012330808010
+level_step_ticks         *           1      2026-10-10 05:10:12  initial          1791609012330808010
+...
+quote_qty                *           0.002  2026-10-10 05:10:23  control  manual  1791609012330808010
+```
+
+`param-changes` lists every value of every update in order, the starting set first (`seq` 0); `changed` is 0 for a value a control update repeated:
+
+```bash
+build/release/bin/fastmm-pnl param-changes --engine sim-local --session 1791609012330808010
+```
+
+```text
+ts                   session_id           seq  origin   source           instrument  name             value  changed
+2026-10-10 05:10:12  1791609012330808010  0    initial                   *           half_spread_bps  5      1
+...
+2026-10-10 05:10:22  1791609012330808010  386  control  scheduled:drain  *           half_spread_bps  9      1
+2026-10-10 05:10:23  1791609012330808010  419  control  manual           *           half_spread_bps  5      1
+2026-10-10 05:10:23  1791609012330808010  419  control  manual           *           quote_qty        0.002  1
+```
+
+## What did a restart change
+
+```bash
+build/release/bin/fastmm-pnl param-diff --engine mm1 --session <new session id>
+```
+
+The parameters the previous session of the engine ended with against those the named one started with, one row per value that differs: a parameter set with `fastmm-ctl param` and not put in the configuration comes back to its configured value. `--against <id>` compares with another session.
+
+## Which configuration did a session run with
+
+```bash
+build/release/bin/fastmm-pnl config --engine mm1 --session <id>
+```
+
+The effective configuration the session started with (the file after `--strategy` and `--param`, secrets left out), as the journal header holds it. Take a backtest's configuration from here rather than from the file on the host, which may have been edited since. `--at <time>` picks the session that was running then.
+
 ## Show me the fills of session X
 
 ```bash

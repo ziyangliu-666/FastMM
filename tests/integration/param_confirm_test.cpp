@@ -4,6 +4,8 @@
 // processes against the in-process simulator.
 #include "process_util.hpp"
 
+#include "fastmm/store/sqlite_store.hpp"
+
 #include <spawn.h>
 #include <unistd.h>
 
@@ -104,6 +106,37 @@ TEST_CASE("integration.params: fastmm-ctl param --wait returns once the engine h
   REQUIRE(::kill(live, SIGTERM) == 0);
   CHECK(reap(live) == 0);
   remove_all_of({ctl});
+
+  // The store kept the history: every parameter the session started with, then the update with
+  // its source.
+  GenericSection section;
+  section.values["path"] = f.journal_dir + "/param-confirm.db";
+  store::BackendOptions o;
+  o.config = &section;
+  o.read_only = true;
+  auto reader = store::make_sqlite_reader();
+  REQUIRE(reader->open(o));
+  store::QueryFilter all;
+  auto changes = reader->param_changes(all);
+  REQUIRE(changes);
+  std::size_t initial = 0;
+  bool drained = false;
+  for (const auto& row : changes->rows) {
+    if (row[3] == "initial") ++initial;
+    if (row[3] == "control" && row[4] == "scheduled:drain" && row[6] == "half_spread_bps" &&
+        row[7] == "7")
+      drained = true;
+  }
+  CHECK(initial >= 8);  // basic_mm's whole parameter set, defaults included
+  CHECK(drained);
+  store::ParamQuery now;
+  auto values = reader->params(now);
+  REQUIRE(values);
+  bool spread = false;
+  for (const auto& row : values->rows) {
+    if (row[0] == "half_spread_bps") spread = row[2] == "7" && row[5] == "scheduled:drain";
+  }
+  CHECK(spread);
 }
 
 #endif

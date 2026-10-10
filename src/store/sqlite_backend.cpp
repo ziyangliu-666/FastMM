@@ -7,9 +7,11 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace fastmm::store {
@@ -19,6 +21,8 @@ namespace {
 using sqlite::decimal;
 using sqlite::error_of;
 using sqlite::exec;
+using sqlite::param_text;
+using sqlite::param_type_name;
 using sqlite::utc_day;
 
 // RAII for a prepared statement.
@@ -61,6 +65,7 @@ class Bind {
                       SQLITE_TRANSIENT);
   }
   void b(bool v) noexcept { sqlite3_bind_int64(st_, ++n_, v ? 1 : 0); }
+  void null() noexcept { sqlite3_bind_null(st_, ++n_); }
 
  private:
   sqlite3_stmt* st_;
@@ -162,7 +167,7 @@ class SqliteBackend final : public Backend {
       n.t(s.venues[v]);
       if (sqlite3_step(ins_venue_.get()) != SQLITE_DONE) return fail(error_of(db_, "insert venue"));
     }
-    return {};
+    return session_params(s);
   }
 
   [[nodiscard]] Result<void, std::string> instruments(std::uint64_t session_id,
@@ -358,6 +363,57 @@ class SqliteBackend final : public Backend {
     step(upd_replayed_.get(), "mark a venue replayed");
   }
 
+  // One update the engine applied. A control update is kept whole; the strategy's own publisher
+  // keeps the values that changed, and an update that changed nothing is only counted.
+  void param(const ParamRecord& r) override {
+    if (db_ == nullptr) return;
+    const bool control = r.origin == ParamUpdateMsg::Origin::Control;
+    const std::size_t n = std::min<std::size_t>(r.count, ParamUpdateMsg::kMaxFields);
+    const bool all = !r.hdr.instrument.valid();
+    const std::uint32_t inst = all ? kAllInstruments : r.hdr.instrument.value;
+    std::size_t changed = 0;
+    bool differs[ParamUpdateMsg::kMaxFields] = {};
+    for (std::size_t k = 0; k < n; ++k) {
+      differs[k] = !same_as_before(inst, r.field[k], r.value[k]);
+      if (differs[k]) ++changed;
+    }
+    if (!control && changed == 0) {
+      ++param_refreshes_;
+      return;
+    }
+    Bind b(ins_param_update_.get());
+    b.u(r.hdr.session_id);
+    b.u(r.hdr.seq);
+    b.i(r.hdr.engine_ts.ns);
+    b.t(utc_day(r.hdr.engine_ts.ns));
+    if (all) {
+      b.null();
+      b.null();
+    } else {
+      b.i(inst);
+      b.t(symbol(inst));
+    }
+    b.t(control ? "control" : "strategy");
+    b.t(r.source_view());
+    b.u(r.publish_seq);
+    b.i(static_cast<std::int64_t>(n));
+    b.i(static_cast<std::int64_t>(changed));
+    b.b(false);
+    step(ins_param_update_.get(), "insert parameter update");
+    for (std::size_t k = 0; k < n; ++k) {
+      if (control || differs[k]) {
+        insert_param_value(r.hdr.session_id,
+                           r.hdr.seq,
+                           r.field[k],
+                           param_text(r.value[k], type_of(r.field[k])),
+                           r.value[k],
+                           true,
+                           differs[k]);
+      }
+      remember(inst, r.field[k], r.value[k]);
+    }
+  }
+
   void kill(const KillRecord& r) override {
     if (db_ == nullptr) return;
     const bool per_venue = (r.hdr.flags & RecordHeader::kVenue) != 0;
@@ -400,6 +456,7 @@ class SqliteBackend final : public Backend {
     b.i(s.stats.unrealized_pnl_raw);
     b.i(s.stats.fees_raw);
     b.i(s.stats.funding_raw);
+    b.u(param_refreshes_);
     b.u(s.session_id);
     if (sqlite3_step(upd_session_.get()) != SQLITE_DONE)
       return fail(error_of(db_, "update session"));
@@ -425,6 +482,9 @@ class SqliteBackend final : public Backend {
     upd_late_.reset();
     ins_position_.reset();
     ins_kill_.reset();
+    ins_param_field_.reset();
+    ins_param_update_.reset();
+    ins_param_value_.reset();
     ins_funding_.reset();
     ins_pnl_.reset();
     if (db_ != nullptr) {
@@ -447,6 +507,116 @@ class SqliteBackend final : public Backend {
     std::int64_t fills = 0;
     std::int64_t funding = 0;
   };
+
+  static constexpr std::uint32_t kAllInstruments = 0xFFFFFFFFU;
+
+  // The parameter table and the starting values (seq 0, origin 'initial').
+  [[nodiscard]] Result<void, std::string> session_params(const SessionOpen& s) {
+    param_names_.clear();
+    param_types_.clear();
+    param_last_.clear();
+    param_refreshes_ = 0;
+    if (s.param_table.empty() && s.params.empty()) return {};
+    if (auto r = exec(db_, "BEGIN"); !r) return fail(r.error());
+    for (std::size_t k = 0; k < s.param_table.size(); ++k) {
+      param_names_.push_back(s.param_table[k].name);
+      param_types_.push_back(s.param_table[k].type);
+      Bind b(ins_param_field_.get());
+      b.u(s.session_id);
+      b.i(static_cast<std::int64_t>(k));
+      b.t(s.param_table[k].name);
+      b.t(param_type_name(s.param_table[k].type));
+      step(ins_param_field_.get(), "insert parameter table");
+    }
+    Bind u(ins_param_update_.get());
+    u.u(s.session_id);
+    u.i(0);
+    u.i(s.started_ns);
+    u.t(utc_day(s.started_ns));
+    u.null();
+    u.null();
+    u.t("initial");
+    u.t("");
+    u.i(0);
+    u.i(static_cast<std::int64_t>(s.params.size()));
+    u.i(static_cast<std::int64_t>(s.params.size()));
+    u.b(s.params_complete);
+    step(ins_param_update_.get(), "insert starting parameters");
+    for (const SessionOpen::ParamValue& v : s.params) {
+      std::uint16_t field = 0;
+      const bool known = field_of(v.name, field);
+      insert_param_value(s.session_id,
+                         0,
+                         known ? field : std::uint16_t{0xFFFF},
+                         v.text,
+                         v.raw,
+                         v.has_raw,
+                         true,
+                         v.name);
+      if (known && v.has_raw) remember(kAllInstruments, field, v.raw);
+    }
+    if (auto r = exec(db_, "COMMIT"); !r) return fail(r.error());
+    return {};
+  }
+
+  void insert_param_value(std::uint64_t session,
+                          std::uint64_t seq,
+                          std::uint16_t field,
+                          const std::string& text,
+                          std::int64_t raw,
+                          bool has_raw,
+                          bool changed,
+                          std::string_view name = {}) {
+    Bind b(ins_param_value_.get());
+    b.u(session);
+    b.u(seq);
+    b.t(!name.empty() ? std::string(name) : name_of(field));
+    b.t(text);
+    if (has_raw) {
+      b.i(raw);
+    } else {
+      b.null();
+    }
+    b.b(changed);
+    step(ins_param_value_.get(), "insert parameter value");
+  }
+
+  [[nodiscard]] bool field_of(std::string_view name, std::uint16_t& out) const {
+    for (std::size_t k = 0; k < param_names_.size(); ++k) {
+      if (param_names_[k] == name) {
+        out = static_cast<std::uint16_t>(k);
+        return true;
+      }
+    }
+    return false;
+  }
+  [[nodiscard]] std::string name_of(std::uint16_t field) const {
+    return field < param_names_.size() ? param_names_[field] : "#" + std::to_string(field);
+  }
+  [[nodiscard]] std::uint8_t type_of(std::uint16_t field) const {
+    return field < param_types_.size() ? param_types_[field] : std::uint8_t{0};
+  }
+  // The value `field` had on `inst` before: its own, else the one every instrument had.
+  [[nodiscard]] bool same_as_before(std::uint32_t inst,
+                                    std::uint16_t field,
+                                    std::int64_t raw) const {
+    auto it = param_last_.find(key(inst, field));
+    if (it == param_last_.end() && inst != kAllInstruments)
+      it = param_last_.find(key(kAllInstruments, field));
+    return it != param_last_.end() && it->second == raw;
+  }
+  void remember(std::uint32_t inst, std::uint16_t field, std::int64_t raw) {
+    if (inst == kAllInstruments) {
+      // An update for every instrument replaces what single instruments had.
+      std::erase_if(param_last_, [&](const auto& e) {
+        return static_cast<std::uint16_t>(e.first & 0xFFFFU) == field;
+      });
+    }
+    param_last_[key(inst, field)] = raw;
+  }
+  [[nodiscard]] static std::uint64_t key(std::uint32_t inst, std::uint16_t field) {
+    return (static_cast<std::uint64_t>(inst) << 16) | field;
+  }
 
   [[nodiscard]] std::string_view symbol(std::uint32_t id) const noexcept {
     return id < symbols_.size() ? std::string_view(symbols_[id]) : std::string_view();
@@ -519,8 +689,8 @@ class SqliteBackend final : public Backend {
          "UPDATE sessions SET stopped_ns=?, clean_shutdown=?, exit_code=?, kill_reason=?,"
          " kill_latched=?, journal_complete=?, journal_bytes=?, events=?, orders_sent=?,"
          " cancels_sent=?, replaces_sent=?, fills=?, risk_rejects=?, venue_rejects=?,"
-         " records_dropped=?, realized_raw=?, unrealized_raw=?, fees_raw=?, funding_raw=?"
-         " WHERE session_id=?"},
+         " records_dropped=?, realized_raw=?, unrealized_raw=?, fees_raw=?, funding_raw=?,"
+         " param_refreshes=? WHERE session_id=?"},
         {&ins_journal_, "INSERT OR REPLACE INTO session_journals VALUES (?,?,?)"},
         {&ins_instrument_, "INSERT OR REPLACE INTO instruments VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"},
         {&ins_fill_,
@@ -551,6 +721,10 @@ class SqliteBackend final : public Backend {
          "INSERT OR IGNORE INTO positions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
          "?,?,?)"},
         {&ins_kill_, "INSERT OR IGNORE INTO kill_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"},
+        {&ins_param_field_, "INSERT OR REPLACE INTO param_schema VALUES (?,?,?,?)"},
+        {&ins_param_update_,
+         "INSERT OR IGNORE INTO param_updates VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"},
+        {&ins_param_value_, "INSERT OR IGNORE INTO param_values VALUES (?,?,?,?,?,?)"},
         {&ins_funding_, "INSERT OR IGNORE INTO funding VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"},
         {&ins_pnl_,
          "INSERT INTO pnl_daily (session_id, day, instrument_id, symbol, settlement_ccy,"
@@ -592,6 +766,15 @@ class SqliteBackend final : public Backend {
   Stmt upd_late_;
   Stmt ins_position_;
   Stmt ins_kill_;
+  Stmt ins_param_field_;
+  Stmt ins_param_update_;
+  Stmt ins_param_value_;
+  // The session's parameter table, the last raw value of each (instrument, field) (the instrument
+  // kAllInstruments for an update to every one), and the strategy's refreshes that changed nothing.
+  std::vector<std::string> param_names_;
+  std::vector<std::uint8_t> param_types_;
+  std::unordered_map<std::uint64_t, std::int64_t> param_last_;
+  std::uint64_t param_refreshes_ = 0;
   Stmt ins_funding_;
   Stmt ins_pnl_;
 };

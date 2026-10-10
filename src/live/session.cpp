@@ -1810,6 +1810,28 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     WatchdogRegistration(const WatchdogRegistration&) = delete;
     WatchdogRegistration& operator=(const WatchdogRegistration&) = delete;
   } const watchdog_registration(&shutdown_watchdog);
+  // The control socket's parameter publisher, made before the store opens so the store records
+  // the parameters the session starts with.
+  std::unique_ptr<ParamPublisher> publisher;
+  struct ControlSinkCtx {
+    MsgRing* ring;
+    RingFeed* feed;
+  } control_sink_ctx{&control_ring, &feed};
+  const ParamSink control_sink{&control_sink_ctx, [](void* c, const ParamUpdateMsg& m) noexcept {
+                                 auto* x = static_cast<ControlSinkCtx*>(c);
+                                 if (!x->ring->try_push(&m.hdr, m.hdr.len)) return false;
+                                 x->feed->notify();
+                                 return true;
+                               }};
+  if (custom == nullptr && strategy != nullptr && strategy->publisher != nullptr) {
+    // The publisher shares the control ring, so a `param` and the `pull` after it reach the
+    // engine in the order the operator typed them. This thread is the ring's only producer.
+    try {
+      publisher = strategy->publisher(control_sink, cfg.strategy.params);
+    } catch (const std::exception& e) {
+      FASTMM_LOG_WARN("parameter updates are not available: {}", std::string_view(e.what()));
+    }
+  }
   // The session's rows: a warm standby's from when it takes over.
   const auto start_store = [&]() -> int {
     if (!store_thread) return 0;
@@ -1829,6 +1851,20 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     so.dry_run = opts.dry_run;
     so.pnl_carry_raw = kill_state.carry().raw;
     so.venues = venue_names;
+    // The parameter table, and the parameters the session starts with: all of them, defaults
+    // included, from the control socket's publisher; the configured ones otherwise.
+    if (param_schema != nullptr) {
+      for (const ParamDesc& d : *param_schema)
+        so.param_table.push_back({d.name, static_cast<std::uint8_t>(d.type)});
+    }
+    if (publisher) {
+      for (const ParamPublisher::Value& v : publisher->values())
+        so.params.push_back({v.name, v.text, v.raw, true});
+      so.params_complete = true;
+    } else {
+      for (const auto& [name, value] : cfg.strategy.params)
+        so.params.push_back({name, value, 0, false});
+    }
     store::Backend& store_backend = store_thread->backend();
     if (auto r = store_backend.session_open(so); !r) {
       std::fprintf(stderr, "%s: [storage] %s\n", prog, r.error().c_str());
@@ -1912,8 +1948,6 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   set_status_name(snap.strategy, strategy_name);
   snap.venue_count =
       static_cast<std::uint8_t>(std::min<std::size_t>(venue_names.size(), kStatusMaxVenues));
-  // The control socket's parameter publisher (made with the control plane, below).
-  std::unique_ptr<ParamPublisher> publisher;
   const auto control_params_published = [&]() -> std::uint64_t {
     return publisher ? publisher->published() : 0;
   };
@@ -2091,25 +2125,6 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     return true;
   };
   // Pushes onto the control ring and wakes an engine blocked while idle (adaptive spin).
-  struct ControlSinkCtx {
-    MsgRing* ring;
-    RingFeed* feed;
-  } control_sink_ctx{&control_ring, &feed};
-  const ParamSink control_sink{&control_sink_ctx, [](void* c, const ParamUpdateMsg& m) noexcept {
-                                 auto* x = static_cast<ControlSinkCtx*>(c);
-                                 if (!x->ring->try_push(&m.hdr, m.hdr.len)) return false;
-                                 x->feed->notify();
-                                 return true;
-                               }};
-  if (custom == nullptr && strategy != nullptr && strategy->publisher != nullptr) {
-    // The publisher shares the control ring, so a `param` and the `pull` after it reach the
-    // engine in the order the operator typed them. This thread is the ring's only producer.
-    try {
-      publisher = strategy->publisher(control_sink, cfg.strategy.params);
-    } catch (const std::exception& e) {
-      FASTMM_LOG_WARN("parameter updates are not available: {}", std::string_view(e.what()));
-    }
-  }
   ControlPlane plane;
   plane.instruments = &instruments;
   plane.limits = cfg.risk_limits();

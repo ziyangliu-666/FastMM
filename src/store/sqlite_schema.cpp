@@ -2,9 +2,12 @@
 
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/store/sqlite_store.hpp"
+#include "fastmm/strategies/params.hpp"
 #include "fastmm/version.hpp"
 
 #include <array>
+#include <bit>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 
@@ -359,13 +362,65 @@ CREATE INDEX fills_exec_any ON fills(exec_id, symbol, side) WHERE exec_id <> '';
 CREATE INDEX funding_id_any ON funding(funding_id, symbol) WHERE funding_id <> '';
 )SQL";
 
-constexpr std::array<Migration, 7> kMigrations{Migration{1, kV1},
+// Version 8: strategy parameters over time. param_schema names a session's parameters (a
+// ParamUpdate's field index); param_updates has one row per update the engine applied, and seq 0
+// the session's starting set (origin 'initial'); param_values the values each carried, `changed`
+// against the value before it. A strategy's own publisher refreshing values that did not change
+// writes no row: sessions.param_refreshes counts those.
+constexpr std::string_view kV8 = R"SQL(
+CREATE TABLE param_schema (
+  session_id INTEGER NOT NULL,
+  field      INTEGER NOT NULL,
+  name       TEXT    NOT NULL,
+  type       TEXT    NOT NULL,
+  PRIMARY KEY (session_id, field)
+);
+
+CREATE TABLE param_updates (
+  session_id    INTEGER NOT NULL,
+  seq           INTEGER NOT NULL,
+  ts_ns         INTEGER NOT NULL,
+  day           TEXT    NOT NULL,
+  instrument_id INTEGER,
+  symbol        TEXT,
+  origin        TEXT    NOT NULL,
+  source        TEXT    NOT NULL,
+  publish_seq   INTEGER NOT NULL,
+  fields        INTEGER NOT NULL,
+  changed       INTEGER NOT NULL,
+  complete      INTEGER NOT NULL,
+  PRIMARY KEY (session_id, seq)
+);
+CREATE INDEX param_updates_time ON param_updates(ts_ns);
+
+CREATE TABLE param_values (
+  session_id INTEGER NOT NULL,
+  seq        INTEGER NOT NULL,
+  name       TEXT    NOT NULL,
+  value      TEXT    NOT NULL,
+  raw        INTEGER,
+  changed    INTEGER NOT NULL,
+  PRIMARY KEY (session_id, seq, name)
+);
+CREATE INDEX param_values_name ON param_values(name, session_id, seq);
+
+ALTER TABLE sessions ADD COLUMN param_refreshes INTEGER;
+
+-- Every value every update carried, newest last.
+CREATE VIEW param_history AS
+  SELECT u.session_id, u.seq, u.ts_ns, u.day, u.instrument_id, u.symbol, u.origin, u.source,
+         u.publish_seq, v.name, v.value, v.changed
+  FROM param_updates u JOIN param_values v ON v.session_id = u.session_id AND v.seq = u.seq;
+)SQL";
+
+constexpr std::array<Migration, 8> kMigrations{Migration{1, kV1},
                                                Migration{2, kV2},
                                                Migration{3, kV3},
                                                Migration{4, kV4},
                                                Migration{5, kV5},
                                                Migration{6, kV6},
-                                               Migration{7, kV7}};
+                                               Migration{7, kV7},
+                                               Migration{8, kV8}};
 
 // days since 1970-01-01 -> y/m/d (Howard Hinnant's civil_from_days).
 void civil_from_days(std::int64_t z, int& y, unsigned& m, unsigned& d) {
@@ -514,6 +569,45 @@ std::string decimal(std::int64_t raw) {
   char buf[kMaxDecimalChars];
   const std::size_t n = Notional::from_raw(raw).to_decimal(buf);
   return std::string(buf, n);
+}
+
+std::string_view param_type_name(std::uint8_t type) {
+  switch (type) {
+    case 0:
+      return "int";
+    case 1:
+      return "double";
+    case 2:
+      return "bool";
+    case 3:
+      return "decimal";
+    case 4:
+      return "bps";
+    case 5:
+      return "ms";
+    default:
+      return "?";
+  }
+}
+
+std::string param_text(std::int64_t raw, std::uint8_t type) {
+  switch (type) {
+    case 1: {
+      char buf[32];
+      const auto r = std::to_chars(buf, buf + sizeof buf, std::bit_cast<double>(raw));
+      return {buf, r.ptr};
+    }
+    case 2:
+      return raw != 0 ? "true" : "false";
+    case 3:
+      return detail::format_scaled(raw, kFixedDecimals);
+    case 4:
+      return detail::format_scaled(raw, kBpsDecimals);
+    case 5:
+      return detail::format_scaled(raw, 6);
+    default:
+      return std::to_string(raw);
+  }
 }
 
 bool day_bounds(std::string_view day, std::int64_t& first_ns, std::int64_t& last_ns) {

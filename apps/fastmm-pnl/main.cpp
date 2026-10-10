@@ -4,6 +4,7 @@
 //   fastmm-pnl fills --session 1700000000     the fills of one session
 //   fastmm-pnl sessions                       what has run
 //   fastmm-pnl audit --exchange trades.json   the stored fills against the venue's export
+//   fastmm-pnl params --at "2026-10-09 14:00"  the strategy parameters in effect then
 //
 // The journal answers "what exactly happened, byte for byte" (fastmm-replay); this answers the
 // daily questions. docs/how-to/operations/query-trading-records.md.
@@ -122,6 +123,41 @@ bool day_start_ms(const std::string& day, std::int64_t& out) {
   return true;
 }
 
+// "YYYY-MM-DD", "YYYY-MM-DD HH:MM" or "YYYY-MM-DD HH:MM:SS" (or with a T, and a trailing Z), UTC,
+// as ns since the epoch; false when it does not parse.
+bool parse_utc(std::string text, std::int64_t& out) {
+  if (!text.empty() && (text.back() == 'Z' || text.back() == 'z')) text.pop_back();
+  for (char& c : text) {
+    if (c == 'T') c = ' ';
+  }
+  std::tm tm{};
+  int hh = 0;
+  int mm = 0;
+  int ss = 0;
+  char tail = 0;
+  const int n = std::sscanf(text.c_str(),
+                            "%4d-%2d-%2d %2d:%2d:%2d%c",
+                            &tm.tm_year,
+                            &tm.tm_mon,
+                            &tm.tm_mday,
+                            &hh,
+                            &mm,
+                            &ss,
+                            &tail);
+  if (n != 3 && n != 5 && n != 6) return false;
+  if (tm.tm_mon < 1 || tm.tm_mon > 12 || tm.tm_mday < 1 || tm.tm_mday > 31 || hh < 0 || hh > 23 ||
+      mm < 0 || mm > 59 || ss < 0 || ss > 60)
+    return false;
+  tm.tm_year -= 1900;
+  tm.tm_mon -= 1;
+  tm.tm_hour = hh;
+  tm.tm_min = mm;
+  tm.tm_sec = ss;
+  const std::int64_t secs = timegm(&tm);
+  out = secs * 1'000'000'000LL;
+  return true;
+}
+
 std::string dec(std::int64_t raw) {
   char buf[fastmm::kMaxDecimalChars];
   return {buf, fastmm::Qty::from_raw(raw).to_decimal(buf)};
@@ -208,6 +244,8 @@ static int run(int argc, char** argv) {
   std::string venue;
   std::int64_t from_ms = 0;
   std::int64_t to_ms = 0;
+  std::string at;
+  std::uint64_t against = 0;
   QueryFilter f;
 
   CLI::App app("What a deployment traded, read from the store.", "fastmm-pnl");
@@ -223,6 +261,12 @@ static int run(int argc, char** argv) {
       {"duplicates", "executions and funding payments stored more than once (booked twice)"},
       {"recover", "what the newest session left behind"},
       {"audit", "the stored fills against a file of the venue's executions (--exchange)"},
+      {"params", "the strategy parameters in effect --at a time (default: now), and their source"},
+      {"param-changes", "every parameter update: the starting set, then each one applied"},
+      {"param-diff",
+       "what a session started with against what --against (default: the one "
+       "before) ended with"},
+      {"config", "the effective configuration a session ran with (TOML, secrets omitted)"},
   };
   for (const auto& [name, description] : commands)
     app.add_subcommand(name, description)->fallthrough();
@@ -251,6 +295,10 @@ static int run(int argc, char** argv) {
       ->option_text("<ms>");
   app.add_option("--to-ms", to_ms, "audit: window end, Unix ms (default: the file's last)")
       ->option_text("<ms>");
+  app.add_option("--at", at, "params, config: a UTC time, YYYY-MM-DD[ HH:MM[:SS]] (default: now)")
+      ->option_text("<time>");
+  app.add_option("--against", against, "param-diff: the earlier session to compare with")
+      ->option_text("<id>");
   if (const auto rc = fastmm::cli::parse(app, argc, argv)) return *rc;
   if (app.get_subcommands().empty()) return fastmm::cli::usage_error(app, "a command is required");
   const std::string command = app.get_subcommands().front()->get_name();
@@ -347,6 +395,20 @@ static int run(int argc, char** argv) {
   if (command == "audit")
     return audit_command(*reader, f, exchange_file, venue, from_ms, to_ms, csv);
 
+  fastmm::store::ParamQuery pq;
+  pq.engine = f.engine;
+  pq.session_id = f.session_id;
+  pq.instrument = f.instrument;
+  if (!at.empty() && !parse_utc(at, pq.at_ns))
+    return bad_usage("--at: not a UTC time (YYYY-MM-DD[ HH:MM[:SS]]): " + at);
+  if (command == "config") {
+    auto toml = reader->session_config(pq);
+    if (!toml) return bad_usage(toml.error());
+    fmt::print("{}", *toml);
+    if (!toml->empty() && toml->back() != '\n') fmt::print("\n");
+    return kOk;
+  }
+
   fastmm::Result<Rows, std::string> rows = fastmm::fail(std::string("no command"));
   if (command == "sessions") {
     rows = reader->sessions(f);
@@ -362,6 +424,13 @@ static int run(int argc, char** argv) {
     rows = reader->positions(f);
   } else if (command == "duplicates") {
     rows = reader->duplicates(f);
+  } else if (command == "params") {
+    rows = reader->params(pq);
+  } else if (command == "param-changes") {
+    rows = reader->param_changes(f);
+  } else if (command == "param-diff") {
+    if (f.session_id == 0) return bad_usage("param-diff needs --session <id>");
+    rows = reader->param_diff(against, f.session_id);
   } else {
     return bad_usage("unknown command '" + command + "' (see --help)");
   }

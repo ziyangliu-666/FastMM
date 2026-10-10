@@ -297,6 +297,9 @@ OPTIONS:
   --venue <name>              audit: the [venues.<name>] the file is from
   --from-ms <ms>              audit: window start, Unix ms (default: the file's first)
   --to-ms <ms>                audit: window end, Unix ms (default: the file's last)
+  --at <time>                 params, config: a UTC time, YYYY-MM-DD[ HH:MM[:SS]] (default:
+                              now)
+  --against <id>              param-diff: the earlier session to compare with
 
 SUBCOMMANDS:
   sessions                    one row per session: when it ran, what it made, how it ended
@@ -311,6 +314,14 @@ SUBCOMMANDS:
   recover                     what the newest session left behind
   audit                       the stored fills against a file of the venue's executions
                               (--exchange)
+  params                      the strategy parameters in effect --at a time (default: now),
+                              and their source
+  param-changes               every parameter update: the starting set, then each one
+                              applied
+  param-diff                  what a session started with against what --against (default:
+                              the one before) ended with
+  config                      the effective configuration a session ran with (TOML, secrets
+                              omitted)
 ```
 <!-- END cli-help -->
 

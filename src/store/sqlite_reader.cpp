@@ -74,6 +74,98 @@ class SqliteReader final : public Reader {
     return {};
   }
 
+  [[nodiscard]] Result<Rows, std::string> params(const ParamQuery& q) override {
+    auto sid = pick_session(q);
+    if (!sid) return fail(sid.error());
+    auto state = param_state(*sid, q.at_ns, false);
+    if (!state) return fail(state.error());
+    Rows out;
+    out.columns = {"name", "instrument", "value", "set", "origin", "source", "session_id"};
+    for (const auto& [key, v] : *state) {
+      if (!q.instrument.empty() && !v.instrument.empty() && v.instrument != q.instrument) continue;
+      // With an instrument, its own value hides the shared one.
+      if (!q.instrument.empty() && v.instrument.empty() &&
+          state->count({key.first, q.instrument}) != 0)
+        continue;
+      out.rows.push_back({key.first,
+                          v.instrument.empty() ? "*" : v.instrument,
+                          v.value,
+                          utc_stamp(v.ts_ns),
+                          v.origin,
+                          v.source,
+                          std::to_string(*sid)});
+    }
+    return out;
+  }
+
+  [[nodiscard]] Result<Rows, std::string> param_changes(const QueryFilter& f) override {
+    if (auto r = need_params(); !r) return fail(r.error());
+    std::string sql =
+        "SELECT ts_ns, session_id, seq, origin, source, COALESCE(symbol, '*') AS instrument, name,"
+        " value, changed FROM param_history";
+    Where w;
+    w.session(f);
+    w.engine_join(f, "param_history");
+    w.day_range(f);
+    w.symbol_or_all(f);
+    return query(sql + w.text() + " ORDER BY session_id, seq, name" + limit(f), w);
+  }
+
+  [[nodiscard]] Result<Rows, std::string> param_diff(std::uint64_t a, std::uint64_t b) override {
+    if (a == 0) {
+      sqlite3_stmt* st = nullptr;
+      const char* sql =
+          "SELECT p.session_id FROM sessions p JOIN sessions s ON s.session_id = ?"
+          " WHERE p.engine = s.engine AND p.started_ns < s.started_ns"
+          " ORDER BY p.started_ns DESC LIMIT 1";
+      if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK)
+        return fail(error_of(db_, sql));
+      sqlite3_bind_int64(st, 1, static_cast<std::int64_t>(b));
+      if (sqlite3_step(st) == SQLITE_ROW)
+        a = static_cast<std::uint64_t>(sqlite3_column_int64(st, 0));
+      sqlite3_finalize(st);
+      if (a == 0)
+        return fail("session " + std::to_string(b) + " has no earlier session to compare");
+    }
+    auto before = param_state(a, 0, false);
+    if (!before) return fail(before.error());
+    auto after = param_state(b, 0, true);
+    if (!after) return fail(after.error());
+    Rows out;
+    out.columns = {
+        "name", "instrument", "ended_" + std::to_string(a), "started_" + std::to_string(b)};
+    std::set<std::pair<std::string, std::string>> keys;
+    for (const auto& [k, v] : *before) keys.insert(k);
+    for (const auto& [k, v] : *after) keys.insert(k);
+    for (const auto& k : keys) {
+      const auto x = before->find(k);
+      const auto y = after->find(k);
+      const std::string va = x == before->end() ? "-" : x->second.value;
+      const std::string vb = y == after->end() ? "-" : y->second.value;
+      if (va == vb) continue;
+      out.rows.push_back({k.first, k.second.empty() ? "*" : k.second, va, vb});
+    }
+    return out;
+  }
+
+  [[nodiscard]] Result<std::string, std::string> session_config(const ParamQuery& q) override {
+    auto sid = pick_session(q);
+    if (!sid) return fail(sid.error());
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(
+            db_, "SELECT config_toml FROM sessions WHERE session_id = ?", -1, &st, nullptr) !=
+        SQLITE_OK)
+      return fail(error_of(db_, "session config"));
+    sqlite3_bind_int64(st, 1, static_cast<std::int64_t>(*sid));
+    std::string out;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+      const auto* p = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
+      if (p != nullptr) out = p;
+    }
+    sqlite3_finalize(st);
+    return out;
+  }
+
   // A column schema 4 added, or zero in an older store.
   [[nodiscard]] std::string v4(std::string_view column, std::string_view as = {}) const {
     const std::string name(as.empty() ? column : as);
@@ -953,6 +1045,13 @@ class SqliteReader final : public Reader {
       texts_.push_back(f.instrument);
       order_.push_back(true);
     }
+    // The rows of the symbol and the ones for every instrument (a NULL symbol).
+    void symbol_or_all(const QueryFilter& f) {
+      if (f.instrument.empty()) return;
+      add("(symbol IS NULL OR symbol = ?)");
+      texts_.push_back(f.instrument);
+      order_.push_back(true);
+    }
     // A `day` text column compares directly.
     void day_text(const QueryFilter& f) {
       if (!f.from.empty()) {
@@ -1016,6 +1115,89 @@ class SqliteReader final : public Reader {
 
   static std::string limit(const QueryFilter& f) {
     return f.limit == 0 ? std::string() : " LIMIT " + std::to_string(f.limit);
+  }
+
+  // A parameter's value in one scope (instrument empty: every instrument) and where it came from.
+  struct ParamState {
+    std::string instrument;
+    std::string value;
+    std::int64_t ts_ns = 0;
+    std::string origin;
+    std::string source;
+  };
+  using ParamMapState = std::map<std::pair<std::string, std::string>, ParamState>;
+
+  [[nodiscard]] Result<void, std::string> need_params() const {
+    if (version_ < 8)
+      return fail(path_ + " predates the parameter history (schema 8): its sessions recorded none");
+    return {};
+  }
+
+  // The session `q` names, else the newest of q.engine that started by q.at_ns.
+  [[nodiscard]] Result<std::uint64_t, std::string> pick_session(const ParamQuery& q) {
+    if (q.session_id != 0) return q.session_id;
+    std::string sql = "SELECT session_id FROM sessions WHERE 1 = 1";
+    if (!q.engine.empty()) sql += " AND engine = ?1";
+    if (q.at_ns != 0) sql += q.engine.empty() ? " AND started_ns <= ?1" : " AND started_ns <= ?2";
+    sql += " ORDER BY started_ns DESC LIMIT 1";
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr) != SQLITE_OK)
+      return fail(error_of(db_, sql));
+    int n = 0;
+    if (!q.engine.empty())
+      sqlite3_bind_text(
+          st, ++n, q.engine.c_str(), static_cast<int>(q.engine.size()), SQLITE_TRANSIENT);
+    if (q.at_ns != 0) sqlite3_bind_int64(st, ++n, q.at_ns);
+    std::uint64_t id = 0;
+    if (sqlite3_step(st) == SQLITE_ROW)
+      id = static_cast<std::uint64_t>(sqlite3_column_int64(st, 0));
+    sqlite3_finalize(st);
+    if (id == 0)
+      return fail(std::string("no session recorded") +
+                  (q.engine.empty() ? "" : " for engine '" + q.engine + "'") +
+                  (q.at_ns != 0 ? " that started by then" : ""));
+    return id;
+  }
+
+  // Every parameter's value per scope in `session` at `at_ns` (0: after its last update), or only
+  // the starting set. An update to every instrument replaces what single instruments had.
+  [[nodiscard]] Result<ParamMapState, std::string> param_state(std::uint64_t session,
+                                                               std::int64_t at_ns,
+                                                               bool initial_only) {
+    if (auto r = need_params(); !r) return fail(r.error());
+    std::string sql =
+        "SELECT name, symbol, value, ts_ns, origin, source FROM param_history"
+        " WHERE session_id = ?1";
+    if (initial_only) sql += " AND seq = 0";
+    if (at_ns != 0) sql += " AND ts_ns <= ?2";
+    sql += " ORDER BY seq";
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr) != SQLITE_OK)
+      return fail(error_of(db_, sql));
+    sqlite3_bind_int64(st, 1, static_cast<std::int64_t>(session));
+    if (at_ns != 0) sqlite3_bind_int64(st, 2, at_ns);
+    ParamMapState out;
+    const auto text = [&](int i) {
+      const auto* p = reinterpret_cast<const char*>(sqlite3_column_text(st, i));
+      return p == nullptr ? std::string() : std::string(p);
+    };
+    int rc = 0;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+      ParamState v;
+      const std::string name = text(0);
+      v.instrument = text(1);
+      v.value = text(2);
+      v.ts_ns = sqlite3_column_int64(st, 3);
+      v.origin = text(4);
+      v.source = text(5);
+      if (v.instrument.empty())
+        std::erase_if(out, [&](const auto& e) { return e.first.first == name; });
+      out[{name, v.instrument}] = std::move(v);
+    }
+    const bool ok = rc == SQLITE_DONE;
+    sqlite3_finalize(st);
+    if (!ok) return fail(error_of(db_, "parameter history"));
+    return out;
   }
 
   Result<Rows, std::string> query(const std::string& sql, const Where& w) {

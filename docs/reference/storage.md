@@ -49,6 +49,7 @@ The engine copies a trivially copyable record into an SPSC ring, as it writes th
 | `FundingRecord` (192 B) | every funding payment the engine books | amount, asset, venue funding id, the venue's time, and the instrument's position, realized PnL and funding after it |
 | `ReplayedRecord` (64 B) | a reconciliation of a venue begins with the venue's executions complete (its execution replay ended whole) | the venue; every execution it made until then is in the records before this one |
 | `KillRecord` (128 B) | every kill switch trip, global or per venue | the reason, the flag word and the PnL at the time |
+| `ParamRecord` (448 B) | every strategy parameter update the engine applies | the update's target instrument, origin (control socket or the strategy's own publisher), source, publisher sequence number and its (field, raw value) pairs, as the `ParamUpdate` carried them ([Journal format](journal-format.md#parameter-updates)) |
 
 Session metadata (`session_open`, `session_close`, the instrument table) is written by the control thread, not through the ring.
 
@@ -171,10 +172,23 @@ One row per `(session_id, day, instrument_id)`, maintained as position records a
 
 A change that straddles midnight lands on the day of the snapshot that reports it. Realised PnL and fees of instruments that settle in different currencies must not be added: group by `settlement_ccy` ([the risk model](../explanation/risk-model.md) says why).
 
+### param_schema, param_updates, param_values
+
+Version 8. The strategy parameters over time: what each session started with and every update the engine applied, so the values in effect at any moment can be read back without the journal.
+
+| Table | Rows |
+|---|---|
+| `param_schema` | one per `(session_id, field)`: the session's parameter table, `name` and `type` (`int`, `double`, `bool`, `decimal`, `bps`, `ms`), by the field index a `ParamRecord` names |
+| `param_updates` | one per `(session_id, seq)`: `seq` 0 is the set the session started with (`origin` `initial`, `complete` 1 when it holds every parameter, defaults included; 0 when the strategy brings its own publisher and only the configured ones are known), then one per update with the record's `seq`, `ts_ns` (when the engine applied it), `instrument_id` and `symbol` (NULL for every instrument), `origin` (`control` or `strategy`), `source` (`fastmm-ctl param --source`), `publish_seq`, and how many `fields` it carried and how many `changed` |
+| `param_values` | one per `(session_id, seq, name)`: the `value` as the parameter formats it, its `raw` value (NULL when not known) and `changed` against the value before it in that scope |
+
+A control update is stored whole, unchanged values included: someone asked for it. An update of the strategy's own publisher keeps only the values that changed, and one that changed nothing writes no row: `sessions.param_refreshes` counts those. An update to every instrument replaces what single instruments had.
+
 ### Views
 
 | View | Rows |
 |---|---|
+| `param_history` | `param_updates` joined with `param_values`: one row per value of every update, with its session, time, scope, origin and source |
 | `pnl_by_day` | `day`, `symbol`, `settlement_ccy`, `realized_raw`, `funding_raw`, `fees_raw`, `net_raw`, `gross_traded_raw`, `fills`, summed over sessions |
 | `pnl_by_currency` | the same by `day` and `settlement_ccy` |
 | `open_orders` | `orders` with `terminal = 0` |

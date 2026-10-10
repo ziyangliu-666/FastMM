@@ -1237,6 +1237,19 @@ class Engine {
     account_record(records_.put(r.hdr));
   }
 
+  // A parameter update the engine applied, for the store's parameter history.
+  void emit_param(const ParamUpdateMsg& m) noexcept {
+    if (!records_.enabled()) return;
+    ParamRecord r;
+    records_.init(r, RecordType::Param, m.hdr.instrument, VenueId::invalid(), now_, now_);
+    static_assert(sizeof(ParamRecord) - sizeof(RecordHeader) ==
+                  sizeof(ParamUpdateMsg) - sizeof(EventHeader));
+    std::memcpy(reinterpret_cast<std::byte*>(&r) + sizeof(RecordHeader),
+                reinterpret_cast<const std::byte*>(&m) + sizeof(EventHeader),
+                sizeof(ParamRecord) - sizeof(RecordHeader));
+    account_record(records_.put(r.hdr));
+  }
+
   // The venue's execution replay ended complete: the records before this one hold every
   // execution it made until now.
   void emit_replayed(VenueId venue) noexcept {
@@ -1814,6 +1827,7 @@ class Engine {
     last_param_ = m;
     last_param_ts_ = now_;
     if (m.origin == ParamUpdateMsg::Origin::Control) control_param_seq_ = m.publish_seq;
+    emit_param(m);
     if constexpr (requires { strategy_.apply_param_update(m); }) strategy_.apply_param_update(m);
     if (cfg_.max_param_age.ns > 0) {
       params_stale_ = false;

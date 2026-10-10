@@ -31,6 +31,14 @@ struct Rows {
 };
 
 // Every query takes the same filter; a backend ignores the fields its query has no use for.
+// Which session, and when in it, for the parameter queries.
+struct ParamQuery {
+  std::string engine;            // [engine] name (empty: every engine)
+  std::uint64_t session_id = 0;  // 0: the newest session that started by at_ns
+  std::int64_t at_ns = 0;        // wall clock; 0: now (the session's last update)
+  std::string instrument;        // symbol: its own values and the shared ones (empty: every scope)
+};
+
 struct QueryFilter {
   std::string engine;            // [engine] name (empty: every engine)
   std::uint64_t session_id = 0;  // 0: every session
@@ -225,6 +233,29 @@ class Reader {
   }
   // The last position snapshot per session and instrument.
   [[nodiscard]] virtual Result<Rows, std::string> positions(const QueryFilter& f) = 0;
+  // The strategy parameters in effect at `q.at_ns` (0: the session's last update) in the session
+  // `q.session_id`, else the newest of `q.engine` that started by then: one row per parameter and
+  // scope (every instrument, or one that has its own value), with when it was set, its origin
+  // (initial, control, strategy) and source. Needs schema 8; the default cannot answer.
+  [[nodiscard]] virtual Result<Rows, std::string> params(const ParamQuery& /*q*/) {
+    return fail(std::string("this store backend keeps no parameter history"));
+  }
+  // Every parameter update, one row per value it carried, in order: the starting set (origin
+  // initial) and each update the engine applied. Filtered by engine, session, day and instrument.
+  [[nodiscard]] virtual Result<Rows, std::string> param_changes(const QueryFilter& /*f*/) {
+    return fail(std::string("this store backend keeps no parameter history"));
+  }
+  // The parameters session `a` ended with against those session `b` started with: one row per
+  // parameter and scope that differs. `a` 0: the session of b's engine that started last before b
+  // (what a restart changed).
+  [[nodiscard]] virtual Result<Rows, std::string> param_diff(std::uint64_t /*a*/,
+                                                             std::uint64_t /*b*/) {
+    return fail(std::string("this store backend keeps no parameter history"));
+  }
+  // The effective configuration (TOML, secrets omitted) of the session `q` picks as params() does.
+  [[nodiscard]] virtual Result<std::string, std::string> session_config(const ParamQuery& /*q*/) {
+    return fail(std::string("this store backend keeps no configuration"));
+  }
   // The newest session of `f.engine`, summarised.
   [[nodiscard]] virtual Result<Recovery, std::string> recovery(const QueryFilter& f) = 0;
 };

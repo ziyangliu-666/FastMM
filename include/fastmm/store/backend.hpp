@@ -62,6 +62,24 @@ struct SessionOpen {
   bool dry_run = false;
   std::int64_t pnl_carry_raw = 0;   // net PnL carried in from earlier sessions
   std::vector<std::string> venues;  // [venues.<name>] by VenueId, so a restart finds its own again
+  // The strategy's parameter table in schema order: a ParamRecord's field index names an entry.
+  // `type` is the journal's parameter type (ParamType: 0 int, 1 double, 2 bool, 3 decimal, 4 bps,
+  // 5 ms).
+  struct ParamField {
+    std::string name;
+    std::uint8_t type = 0;
+  };
+  std::vector<ParamField> param_table;
+  // The parameters the session starts with. Every parameter of the table when params_complete;
+  // otherwise the configured ones only ([strategy.params], --param), with no raw value.
+  struct ParamValue {
+    std::string name;
+    std::string text;
+    std::int64_t raw = 0;
+    bool has_raw = false;
+  };
+  std::vector<ParamValue> params;
+  bool params_complete = false;
 };
 
 // Written once, after the last record.
@@ -105,6 +123,8 @@ class Backend {
   // A venue's execution replay ended complete. The default drops it: a restart from such a store
   // judges a session by whether it placed an order on the venue or shut down (Recovery).
   virtual void replayed(const ReplayedRecord& /*r*/) {}
+  // A strategy parameter update the engine applied. The default drops it.
+  virtual void param(const ParamRecord& /*r*/) {}
   virtual void commit() = 0;
 
   [[nodiscard]] virtual Result<void, std::string> session_close(const SessionClose& s) = 0;

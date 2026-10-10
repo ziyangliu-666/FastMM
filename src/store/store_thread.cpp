@@ -105,6 +105,12 @@ std::size_t StoreThread::drain(bool force_commit) {
         backend_->replayed(r);
         break;
       }
+      case RecordType::Param: {
+        ParamRecord r;
+        std::memcpy(&r, p, sizeof r);
+        backend_->param(r);
+        break;
+      }
       default:
         unknown_.fetch_add(1, std::memory_order_relaxed);
         break;

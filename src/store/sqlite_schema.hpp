@@ -37,6 +37,10 @@ struct Migration {
 [[nodiscard]] std::string utc_stamp(std::int64_t ns);
 // The exact decimal of a raw 1e-8 fixed-point value ("1.5", "-0.00000001", "0").
 [[nodiscard]] std::string decimal(std::int64_t raw);
+// A parameter type of the journal's table (0 int ... 5 ms) by name, and a raw value
+// (ParamUpdateMsg::value) as the strategy's parameter formats it ("0.01", "5", "true", "2000").
+[[nodiscard]] std::string_view param_type_name(std::uint8_t type);
+[[nodiscard]] std::string param_text(std::int64_t raw, std::uint8_t type);
 // Inclusive UTC day bounds as nanoseconds; `day` is "YYYY-MM-DD". Returns false if it does not
 // parse, leaving the outputs alone.
 [[nodiscard]] bool day_bounds(std::string_view day, std::int64_t& first_ns, std::int64_t& last_ns);

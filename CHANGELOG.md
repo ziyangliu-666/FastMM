@@ -5,6 +5,8 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- store: parameter history (schema 8): `fastmm-pnl params --at`, `param-changes`, `param-diff`.
+- store: `fastmm-pnl config` prints the configuration a session ran with, for a backtest of it.
 - live: `fastmm-ctl param` answers `queued seq=N`; `--wait` waits for it; `params` reads them back.
 - live: `param --source` names who changed a parameter, in the journal and the status file (v19).
 - live: `fastmm-live` logs a topology check at start: hot threads sharing a core, and adaptive spin.
