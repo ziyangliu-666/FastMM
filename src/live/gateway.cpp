@@ -2553,6 +2553,7 @@ class Gateway {
       StatusVenue& sv = s.venues[i];
       set_status_name(sv.name, slots_[i]->venue->name());
       fill_status_venue(slots_[i]->venue->status(), sv);
+      fill_status_budget(slots_[i]->venue->budget_source().load(), sv);
       sv.killed = tripped ? 1 : 0;
       sv.kill_reason = tripped ? static_cast<std::uint8_t>(why) : 0;
       const VenueRouter& v = *routers_[i];

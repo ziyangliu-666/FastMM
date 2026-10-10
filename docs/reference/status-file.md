@@ -45,6 +45,7 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The 
 | `quoting_elapsed_ns`, `quoting_two_sided_ns` | i64 | time since the first order rested, and how much of it had a live order on both sides; both summed over the instruments |
 | `param_updates`, `param_last_seq`, `param_last_ns`, `param_last_origin`, `param_last_source` | u64, u64, i64, u8, char[40] | strategy parameter updates the engine has applied, and the last one: its publisher's sequence number, when it was applied (wall clock), its origin (0 the strategy's publisher, 1 the control socket) and its `--source` ([Confirm a parameter change](../how-to/operations/operate-a-running-session.md#confirm-a-parameter-change)) |
 | `param_control_published`, `param_control_applied` | u64, u64 | the sequence number of the last update the control socket sent, and of the last of those the engine has applied; equal once nothing is pending |
+| `risk_tokens`, `risk_token_wait_ns`, `risk_orders_per_sec`, `risk_burst` | i64, i64, u32, u32 | the `[risk] orders_per_sec` bucket every account shares: whole tokens left (-1 with the limit off), how long until the next while it is empty, and its rate and burst as the engine applies them now |
 | `latency` | 7 x {count, p50_ns, p99_ns, p999_ns, max_ns} | engine latency intervals, below |
 | `venues` | 8 x venue entry | below |
 | `underlyings` | 8 x underlying entry | `[risk.underlying]`, in the order of the configuration's base assets: `name` (char[16], empty for an unused entry), `known` (u8: 0 while an inverse contract with a position has no mark), `net_raw` (i64, base units, signed), `max_net_raw` (i64, the limit applied now, 0 none) |
@@ -91,6 +92,9 @@ Index order of `latency`, each from the named stamps ([Architecture](../explanat
 | `orders_sent`, `cancels_sent`, `replaces_sent`, `order_events` | u64 | order traffic on this venue |
 | `reconnects`, `rest_errors`, `rate_limit_cooldowns` | u64 | connection health |
 | `clock_offset_ms` | i64 | venue clock minus local clock, ms |
+| `orders_10s`, `orders_1m`, `orders_1d`, `weight` | {window_ms, used, admits, limit} (i64 each) | the account's order budget as its connector last published it (`ctx.order_budget` without the orders still on their way to it): each window's count, what the connector admits (its cap, below the venue's limit; 0 when the window is not known) and the venue's limit. These count requests in a time window, not open orders |
+| `budget_known`, `budget_paused` | u8, u8 | the connector has published a budget; the venue asked for a pause (429, -1003) or REST is stopped (418) |
+| `refused_weight`, `refused_orders_10s`, `refused_orders_1m`, `refused_orders_1d`, `refused_paused` | u64 | orders and replaces the connector's own limiter refused (`VenueRateLimit`, never sent), by the limit that refused them |
 | `fill_audits`, `fill_audit_failures` | u64 | fill audits done, and not done (a side could not be read) ([Fill audit](configuration.md#fill-audit)) |
 | `fill_audit_missing`, `fill_audit_phantom`, `fill_audit_mismatched`, `fill_audit_duplicates` | u64 | executions the venue has and the engine never booked, the engine booked and the venue does not have, that differ, that the store holds twice; each counted once |
 | `wire_tick_to_trade` | {count, p50_ns, p99_ns, p999_ns, max_ns} | socket read to order write on the network thread (the return of the write that carried the order; one write per drain of the outbound ring) |

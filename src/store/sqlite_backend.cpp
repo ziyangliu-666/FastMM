@@ -2,6 +2,7 @@
 #include "sqlite_schema.hpp"
 
 #include "fastmm/core/log.hpp"
+#include "fastmm/core/order_budget.hpp"
 #include "fastmm/core/strong_id.hpp"
 #include "fastmm/store/sqlite_store.hpp"
 
@@ -160,6 +161,7 @@ class SqliteBackend final : public Backend {
       if (sqlite3_step(ins_journal_.get()) != SQLITE_DONE)
         return fail(error_of(db_, "insert journal"));
     }
+    venue_names_ = s.venues;
     for (std::size_t v = 0; v < s.venues.size(); ++v) {
       Bind n(ins_venue_.get());
       n.u(s.session_id);
@@ -414,6 +416,49 @@ class SqliteBackend final : public Backend {
     }
   }
 
+  void reject(const RejectRecord& r) override {
+    if (db_ == nullptr) return;
+    const std::uint32_t id = r.hdr.instrument.value;
+    Bind b(ins_reject_.get());
+    b.u(r.hdr.session_id);
+    b.u(r.hdr.seq);
+    b.i(r.hdr.engine_ts.ns);
+    b.t(utc_day(r.hdr.engine_ts.ns));
+    b.t(venue_name(r.hdr.venue.value));
+    b.i(r.hdr.venue.value);
+    b.i(id);
+    b.t(symbol(id));
+    b.t(to_string(r.side));
+    b.t((r.flags & RejectRecord::kReplace) != 0 ? "replace" : "new");
+    b.b((r.flags & RejectRecord::kReduces) != 0);
+    b.b((r.flags & RejectRecord::kReduceOnly) != 0);
+    b.t(to_string(r.reason));
+    b.t(to_string(r.source));
+    b.i(static_cast<std::int64_t>(r.folded) + 1);
+    b.i(r.price.raw);
+    b.i(r.qty.raw);
+    b.t(r.cl_ord_id.value == 0 ? std::string_view() : encode_cl_ord_id(r.cl_ord_id).view());
+    b.i(r.venue_code);
+    b.t(r.text.view());
+    b.b(r.budget_known != 0);
+    b.b(r.paused != 0);
+    if (r.local_tokens == OrderBudget::kUnlimited) {
+      b.null();
+    } else {
+      b.i(r.local_tokens);
+    }
+    b.i(r.local_wait_ns / 1000);
+    b.i(r.orders_10s_used);
+    b.i(r.orders_10s_admits);
+    b.i(r.orders_1m_used);
+    b.i(r.orders_1m_admits);
+    b.i(r.orders_1d_used);
+    b.i(r.orders_1d_admits);
+    b.i(r.weight_used);
+    b.i(r.weight_admits);
+    step(ins_reject_.get(), "insert reject");
+  }
+
   void kill(const KillRecord& r) override {
     if (db_ == nullptr) return;
     const bool per_venue = (r.hdr.flags & RecordHeader::kVenue) != 0;
@@ -485,6 +530,7 @@ class SqliteBackend final : public Backend {
     ins_param_field_.reset();
     ins_param_update_.reset();
     ins_param_value_.reset();
+    ins_reject_.reset();
     ins_funding_.reset();
     ins_pnl_.reset();
     if (db_ != nullptr) {
@@ -618,6 +664,10 @@ class SqliteBackend final : public Backend {
     return (static_cast<std::uint64_t>(inst) << 16) | field;
   }
 
+  [[nodiscard]] std::string venue_name(std::uint32_t id) const {
+    return id < venue_names_.size() ? venue_names_[id] : "#" + std::to_string(id);
+  }
+
   [[nodiscard]] std::string_view symbol(std::uint32_t id) const noexcept {
     return id < symbols_.size() ? std::string_view(symbols_[id]) : std::string_view();
   }
@@ -725,6 +775,9 @@ class SqliteBackend final : public Backend {
         {&ins_param_update_,
          "INSERT OR IGNORE INTO param_updates VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"},
         {&ins_param_value_, "INSERT OR IGNORE INTO param_values VALUES (?,?,?,?,?,?)"},
+        {&ins_reject_,
+         "INSERT OR IGNORE INTO rejects VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+         "?,?,?,?,?,?,?,?)"},
         {&ins_funding_, "INSERT OR IGNORE INTO funding VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"},
         {&ins_pnl_,
          "INSERT INTO pnl_daily (session_id, day, instrument_id, symbol, settlement_ccy,"
@@ -769,6 +822,8 @@ class SqliteBackend final : public Backend {
   Stmt ins_param_field_;
   Stmt ins_param_update_;
   Stmt ins_param_value_;
+  Stmt ins_reject_;
+  std::vector<std::string> venue_names_;  // the session's [venues.<name>] by VenueId
   // The session's parameter table, the last raw value of each (instrument, field) (the instrument
   // kAllInstruments for an update to every one), and the strategy's refreshes that changed nothing.
   std::vector<std::string> param_names_;

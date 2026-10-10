@@ -42,7 +42,9 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 18: the pool treasuries' counters.
 // 19: parameter updates: applied, the last one (seq, origin, source, time), the control socket's
 //     published and applied sequence numbers.
-inline constexpr std::uint32_t kStatusVersion = 19;
+// 20: each venue's order budget (order windows and request weight: used, admitted, limit; paused)
+//     and the orders its connector refused by limit; the [risk] bucket's tokens.
+inline constexpr std::uint32_t kStatusVersion = 20;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 inline constexpr std::size_t kStatusMaxUnderlyings = 8;    // kMaxUnderlyings
@@ -102,6 +104,16 @@ struct StatusRejectCount {
   std::uint8_t pad_[7] = {};
 };
 
+// One window of a venue's limits (RateWindow): its length, the count used in it, what the
+// connector admits (its cap, below the venue's limit) and the venue's limit; limit 0: the venue
+// declares no such window. These count requests in a time window, not open orders.
+struct StatusWindow {
+  std::int64_t window_ms = 0;
+  std::int64_t used = 0;
+  std::int64_t admits = 0;
+  std::int64_t limit = 0;
+};
+
 struct StatusVenue {
   char name[24] = {};
   std::uint8_t md = 0;
@@ -130,6 +142,23 @@ struct StatusVenue {
   std::uint64_t fill_audit_phantom = 0;
   std::uint64_t fill_audit_mismatched = 0;
   std::uint64_t fill_audit_duplicates = 0;
+  // The account's order budget as its connector last published it (OrderBudget, which counts
+  // what it has sent; the engine's ctx.order_budget adds the orders on their way to it):
+  // budget_known 0 when none was published (a backtest, a gateway attachment).
+  StatusWindow orders_10s;
+  StatusWindow orders_1m;
+  StatusWindow orders_1d;
+  StatusWindow weight;
+  std::uint8_t budget_known = 0;
+  std::uint8_t budget_paused = 0;  // the venue asked for a pause (429, -1003) or REST stopped (418)
+  std::uint8_t pad1_[6] = {};
+  // Orders and replaces the connector's own limiter refused (VenueRateLimit, never sent), by the
+  // limit that refused them.
+  std::uint64_t refused_weight = 0;
+  std::uint64_t refused_orders_10s = 0;
+  std::uint64_t refused_orders_1m = 0;
+  std::uint64_t refused_orders_1d = 0;
+  std::uint64_t refused_paused = 0;
   StatusLatency wire_tick_to_trade;     // the session's
   StatusLatency wire_tick_to_trade_1m;  // the last minute's (60-70 s)
   StatusLatency wire_tick_to_trade_1h;  // the last hour's (60-70 min)
@@ -356,6 +385,12 @@ struct StatusSnapshot {
   // publisher's sequence number, when it was applied (wall clock in a live session), its origin
   // (ParamUpdateMsg::Origin) and source. The control socket's publisher: the publish_seq of the
   // last update it sent, and of the last the engine has applied; equal once nothing is pending.
+  // The [risk] orders_per_sec bucket every account shares: whole tokens left (-1: no limit), how
+  // long until the next while it is empty, and its rate and burst as the engine applies them now.
+  std::int64_t risk_tokens = -1;
+  std::int64_t risk_token_wait_ns = 0;
+  std::uint32_t risk_orders_per_sec = 0;
+  std::uint32_t risk_burst = 0;
   std::uint64_t param_updates = 0;
   std::uint64_t param_last_seq = 0;
   std::int64_t param_last_ns = 0;

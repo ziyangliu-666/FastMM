@@ -1097,8 +1097,7 @@ void BinanceVenue::send_command(const OrderCommand& cmd) {
   if (cmd.kind == OrderCommandKind::New) {
     if (const RateCheck rc = rate_.check(weight, now, true); !rc.ok()) {
       count_refusal(stats_, rc);
-      emit_reject(
-          cmd.instrument, cmd.cl_ord_id, RejectReason::VenueRateLimit, 0, "local rate limit");
+      emit_reject(cmd.instrument, cmd.cl_ord_id, RejectReason::VenueRateLimit, 0, refusal_text(rc));
       return;
     }
     OrderShadow s{cmd.side, cmd.type, cmd.tif, cmd.instrument, cmd.price, cmd.qty};
@@ -1129,8 +1128,7 @@ void BinanceVenue::send_command(const OrderCommand& cmd) {
     }
     if (const RateCheck rc = rate_.check(weight, now, is_order); !rc.ok()) {
       count_refusal(stats_, rc);
-      emit_reject(
-          cmd.instrument, cmd.cl_ord_id, RejectReason::VenueRateLimit, 0, "local rate limit");
+      emit_reject(cmd.instrument, cmd.cl_ord_id, RejectReason::VenueRateLimit, 0, refusal_text(rc));
       return;
     }
     OrderShadow copy = *shadow;

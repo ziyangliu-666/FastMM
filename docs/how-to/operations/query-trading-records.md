@@ -48,6 +48,23 @@ build/release/bin/fastmm-pnl funding --engine mm1 --since 2024-03-01 --instrumen
 
 One row per payment: `amount` in `asset` (negative paid), the venue's `funding_id`, the position it was paid on, and `replayed` = 1 for one booked from the venue's history rather than its stream.
 
+## Who refused my orders
+
+```bash
+build/release/bin/fastmm-pnl rejects --engine mm1 --day today --summary
+```
+
+One row per account, instrument, side, whether the order only reduced the position, reason and source, with the refusals summed and the first and last time:
+
+```text
+account    symbol   side  reduces  reason          source              rejects  first                last
+binance-b  BTCUSDT  Buy   0        RateLimit       account_orders_10s  6        2024-03-04 00:00:00  2024-03-04 00:00:00
+binance-b  BTCUSDT  Sell  1        RateLimit       risk_bucket         1        2024-03-04 00:00:00  2024-03-04 00:00:00
+binance    BTCUSDT  Buy   0        VenueRateLimit  venue               1        2024-03-04 00:00:00  2024-03-04 00:00:00
+```
+
+`source` keeps the limits apart: `risk_bucket` is the engine's `[risk] orders_per_sec` bucket every account shares, `account_orders_10s` (`_1m`, `_1d`, `account_paused`) one account's window as the engine counts it, `venue_local` the connector's own limiter (never sent), `venue` the exchange's answer. `reduces` 1 is an order that would have taken the position towards zero: an inventory exit, not new risk. Without `--summary`, one row per refusal with the budget then (`tokens`, `orders_10s` as used/admitted, ...); [Storage](../../reference/storage.md#rejects) lists the columns. The live budget is in `fastmm-top` (the `order budget` lines and `risk bucket`) and its `--json`.
+
 ## What were the parameters at a time
 
 ```bash

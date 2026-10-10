@@ -308,7 +308,7 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   CHECK(frame.find("fallback=5") != std::string::npos);
 
   const std::string json = format_status_json(s);
-  CHECK(json.find(R"({"kind": "engine", "version": 19,)") == 0);
+  CHECK(json.find(R"({"kind": "engine", "version": 20,)") == 0);
   CHECK(json.find(R"("engine": "binance-demo")") != std::string::npos);
   CHECK(json.find(R"("tick_to_trade": {"count": 10, "p50_ns": 106495, "p99_ns": 216053, )"
                   R"("p999_ns": 250000, "max_ns": 300000})") != std::string::npos);
@@ -467,7 +467,7 @@ TEST_CASE("core.status_segment: a gateway's snapshot round trips and shows its a
 
   const std::string json = format_status_json(got);
   INFO(json);
-  CHECK(json.find(R"({"kind": "gateway", "version": 19,)") == 0);
+  CHECK(json.find(R"({"kind": "gateway", "version": 20,)") == 0);
   CHECK(json.find(R"("gateway": "gw")") != std::string::npos);
   CHECK(json.find(R"("net_pnl": -0.25, "realized": 1.5)") != std::string::npos);
   CHECK(json.find(R"("engine": "mm-a", "pid": 1001)") != std::string::npos);
@@ -581,6 +581,37 @@ TEST_CASE("core.status_segment: the parameter updates applied, and the control s
   s.param_control_applied = 4;
   CHECK(format_status(s, s.updated_ns, false).find("PENDING") == std::string::npos);
   CHECK(format_status_json(s).find(R"("pending": false})") != std::string::npos);
+}
+
+TEST_CASE("core.status_segment: the order budgets and the risk bucket in the frame and JSON") {
+  StatusSnapshot s;
+  s.state = StatusRunState::Running;
+  s.venue_count = 1;
+  std::memcpy(s.venues[0].name, "binance", 7);
+  CHECK(format_status(s, 0, false).find("order budget") == std::string::npos);
+  s.venues[0].budget_known = 1;
+  s.venues[0].orders_10s = {10'000, 88, 90, 100};
+  s.venues[0].orders_1d = {86'400'000, 1200, 180000, 200000};
+  s.venues[0].weight = {60'000, 40, 5400, 6000};
+  s.venues[0].refused_orders_10s = 7;
+  s.risk_tokens = 0;
+  s.risk_token_wait_ns = 15'000'000;
+  s.risk_orders_per_sec = 49;
+  s.risk_burst = 40;
+  const std::string frame = format_status(s, 0, false);
+  CHECK(frame.find("order budget") != std::string::npos);
+  CHECK(frame.find("88/90 (100)") != std::string::npos);
+  CHECK(frame.find("0/7/0/0/0") != std::string::npos);
+  CHECK(frame.find("risk bucket tokens=0 of burst=40 at 49/s  EMPTY, next in 15.0 ms") !=
+        std::string::npos);
+  s.venues[0].budget_paused = 1;
+  CHECK(format_status(s, 0, false).find("PAUSED") != std::string::npos);
+  const std::string json = format_status_json(s);
+  CHECK(json.find(R"("risk_bucket": {"tokens": 0, "wait_ns": 15000000, "orders_per_sec": 49, )"
+                  R"("burst": 40})") != std::string::npos);
+  CHECK(json.find(R"("budget": {"known": true, "paused": true, "orders_10s": {"window_ms": 10000, )"
+                  R"("used": 88, "admits": 90, "limit": 100})") != std::string::npos);
+  CHECK(json.find(R"("refused": {"weight": 0, "orders_10s": 7, )") != std::string::npos);
 }
 
 TEST_CASE("core.status_segment: the perp table in the frame and the JSON form") {

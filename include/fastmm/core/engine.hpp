@@ -86,6 +86,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -395,6 +396,7 @@ class Engine {
     }
     // The last word on every position, so a store holds the state the session ended in.
     if (records_.enabled()) {
+      flush_reject_folds();
       for (const Instrument& inst : instruments_) {
         const Position& p = positions_.get(inst.id);
         if (p.fills != 0 || !p.qty.is_zero()) emit_position(inst.id);
@@ -1237,6 +1239,144 @@ class Engine {
     account_record(records_.put(r.hdr));
   }
 
+  // RejectRecord folding, per instrument and side (record_reject).
+  struct RejectFold {
+    std::int64_t last_ns = std::numeric_limits<std::int64_t>::min() / 2;
+    std::uint32_t pending = 0;
+    RejectReason reason{};
+    RejectSource source{};
+    VenueId account{};
+    std::uint8_t flags = 0;
+    Price px{};
+    Qty qty{};
+  };
+  // Which of an account's limits leaves no room (no_order_room was true).
+  [[nodiscard]] static RejectSource room_refusal(const OrderBudget& b) noexcept {
+    if (b.venue_paused) return RejectSource::AccountPaused;
+    if (b.orders_10s.remaining() == 0) return RejectSource::AccountOrders10s;
+    if (b.orders_1m.remaining() == 0) return RejectSource::AccountOrders1m;
+    return RejectSource::AccountOrders1d;
+  }
+  // With the open orders on its side, an order of `qty` only takes the position towards zero.
+  [[nodiscard]] bool reduces(InstrumentId id, Side side, Qty qty) const noexcept {
+    if (!instruments_.contains(id)) return false;
+    const std::int64_t q = positions_.get(id).qty.raw;
+    if (q == 0 || (q > 0) == (side == Side::Buy)) return false;
+    return oms_.open_qty(id, side).raw + qty.raw <= (q < 0 ? -q : q);
+  }
+
+  // One refusal for the store (RejectRecord), with the account's budget as the engine sees it
+  // now. Refusals of the instrument and side with the same reason and source within kFoldNs of
+  // the last record are counted, not recorded; a different one first records what was counted.
+  FASTMM_NOINLINE void record_reject(RejectReason reason,
+                                     RejectSource source,
+                                     InstrumentId id,
+                                     VenueId account,
+                                     Side side,
+                                     Price px,
+                                     Qty qty,
+                                     std::uint8_t flags,
+                                     ClientOrderId cl_ord_id = ClientOrderId{},
+                                     std::int32_t venue_code = 0,
+                                     std::string_view text = {}) noexcept {
+    RejectFold* fold = nullptr;
+    std::uint32_t folded = 0;
+    if (id.value < kMaxInstruments) {
+      fold =
+          &reject_folds_[(static_cast<std::size_t>(id.value) * 2) + (side == Side::Sell ? 1U : 0U)];
+      const bool same = fold->reason == reason && fold->source == source;
+      if (same && now_.ns - fold->last_ns < RejectRecord::kFoldNs) {
+        ++fold->pending;
+        return;
+      }
+      if (same) {
+        folded = fold->pending;  // this record stands for the ones counted since the last
+      } else if (fold->pending != 0) {
+        flush_reject_fold(*fold, id, side);
+      }
+      fold->pending = 0;
+    }
+    emit_reject(
+        reason, source, id, account, side, px, qty, flags, cl_ord_id, venue_code, text, folded);
+    if (fold != nullptr) {
+      fold->last_ns = now_.ns;
+      fold->reason = reason;
+      fold->source = source;
+      fold->account = account;
+      fold->flags = flags;
+      fold->px = px;
+      fold->qty = qty;
+    }
+  }
+  // The refusals a fold counted since its last record, as one record (the first of them is the
+  // record, the rest `folded`), with the budget as it is now.
+  void flush_reject_fold(RejectFold& f, InstrumentId id, Side side) noexcept {
+    emit_reject(f.reason,
+                f.source,
+                id,
+                f.account,
+                side,
+                f.px,
+                f.qty,
+                f.flags,
+                ClientOrderId{},
+                0,
+                {},
+                f.pending - 1);
+    f.pending = 0;
+    f.last_ns = now_.ns;
+  }
+  void flush_reject_folds() noexcept {
+    for (std::size_t k = 0; k < static_cast<std::size_t>(kMaxInstruments) * 2; ++k) {
+      if (reject_folds_[k].pending != 0)
+        flush_reject_fold(reject_folds_[k],
+                          InstrumentId{static_cast<std::uint32_t>(k / 2)},
+                          k % 2 == 0 ? Side::Buy : Side::Sell);
+    }
+  }
+  void emit_reject(RejectReason reason,
+                   RejectSource source,
+                   InstrumentId id,
+                   VenueId account,
+                   Side side,
+                   Price px,
+                   Qty qty,
+                   std::uint8_t flags,
+                   ClientOrderId cl_ord_id,
+                   std::int32_t venue_code,
+                   std::string_view text,
+                   std::uint32_t folded) noexcept {
+    RejectRecord r;
+    records_.init(r, RecordType::Reject, id, account, now_, now_);
+    r.reason = reason;
+    r.source = source;
+    r.side = side;
+    r.flags = flags;
+    r.folded = folded;
+    r.price = px;
+    r.qty = qty;
+    r.cl_ord_id = cl_ord_id;
+    const OrderBudget b = account.valid() ? order_budget(account) : OrderBudget{};
+    r.local_tokens = b.local_tokens;
+    r.local_wait_ns = b.local_wait_ns;
+    const auto admits = [](const RateWindow& w) { return w.known() ? w.admits() : 0; };
+    r.orders_10s_used = b.orders_10s.used;
+    r.orders_10s_admits = admits(b.orders_10s);
+    r.orders_1m_used = b.orders_1m.used;
+    r.orders_1m_admits = admits(b.orders_1m);
+    r.orders_1d_used = b.orders_1d.used;
+    r.orders_1d_admits = admits(b.orders_1d);
+    r.weight_used = b.weight.used;
+    r.weight_admits = admits(b.weight);
+    r.venue_code = venue_code;
+    r.budget_known = b.venue_known ? 1 : 0;
+    r.paused = b.venue_paused ? 1 : 0;
+    std::memset(r.pad0_, 0, sizeof r.pad0_);
+    std::memset(r.pad_, 0, sizeof r.pad_);
+    r.text = FixedString<40>(text);
+    account_record(records_.put(r.hdr));
+  }
+
   // A parameter update the engine applied, for the store's parameter history.
   void emit_param(const ParamUpdateMsg& m) noexcept {
     if (!records_.enabled()) return;
@@ -1510,6 +1650,24 @@ class Engine {
       stats_.venue_rejects_by_reason.add(m.reason);
       FASTMM_LOG_WARN(
           "order {} rejected: {} ({})", encode_cl_ord_id(m.cl_ord_id), m.reason, m.venue_code);
+      if (FASTMM_UNLIKELY(records_.enabled()) && u.order.instrument.valid()) {
+        const Order& o = u.order;
+        const bool local = m.text.view().starts_with("local rate limit");
+        std::uint8_t flags = RejectRecord::kFromVenue;
+        if (o.has(Order::kReduceOnly)) flags |= RejectRecord::kReduceOnly;
+        if (reduces(o.instrument, o.side, o.qty)) flags |= RejectRecord::kReduces;
+        record_reject(m.reason,
+                      local ? RejectSource::VenueLocal : RejectSource::Venue,
+                      o.instrument,
+                      o.venue,
+                      o.side,
+                      o.price,
+                      o.qty,
+                      flags,
+                      m.cl_ord_id,
+                      m.venue_code,
+                      m.text.view());
+      }
     }
     after_oms_update(u, m.hdr);
   }
@@ -2567,6 +2725,7 @@ class Engine {
     VenueId account = inst.venue;
     bool window_full = false;
     bool budget_known = false;
+    RejectSource window_source = RejectSource::RiskBucket;
     if (FASTMM_UNLIKELY(pools_on_)) {
       account = choose_account(req, inst);
       if (!account.valid()) return fail(RejectReason::InvalidAccount);
@@ -2577,6 +2736,7 @@ class Engine {
       const OrderBudget b = order_budget(account);
       window_full = no_order_room(b);
       budget_known = b.venue_known;
+      if (FASTMM_UNLIKELY(window_full)) window_source = room_refusal(b);
     } else if (FASTMM_UNLIKELY(req.account.valid() && req.account != inst.venue)) {
       return fail(RejectReason::InvalidAccount);
     }
@@ -2612,6 +2772,14 @@ class Engine {
       if constexpr (has_hook(Hook::RiskReject)) {
         queue_risk_reject(
             rr, inst, req.side, req.type, req.price, req.qty, ClientOrderId{}, req.user_tag, false);
+      }
+      if (FASTMM_UNLIKELY(records_.enabled())) {
+        RejectSource source = RejectSource::Risk;
+        if (rr == RejectReason::RateLimit)
+          source = in.account_full ? window_source : RejectSource::RiskBucket;
+        std::uint8_t flags = req.reduce_only ? RejectRecord::kReduceOnly : 0;
+        if (reduces(req.instrument, req.side, req.qty)) flags |= RejectRecord::kReduces;
+        record_reject(rr, source, req.instrument, account, req.side, req.price, req.qty, flags);
       }
       return fail(rr);
     }
@@ -2772,6 +2940,20 @@ class Engine {
       log_risk_reject(rr, inst, o.side, px, qty, true);
       if constexpr (has_hook(Hook::RiskReject))
         queue_risk_reject(rr, inst, o.side, o.type, px, qty, o.cl_ord_id, o.user_tag, true);
+      if (FASTMM_UNLIKELY(records_.enabled())) {
+        std::uint8_t flags = RejectRecord::kReplace;
+        if (o.has(Order::kReduceOnly)) flags |= RejectRecord::kReduceOnly;
+        if (reduces(o.instrument, o.side, qty)) flags |= RejectRecord::kReduces;
+        record_reject(rr,
+                      rr == RejectReason::RateLimit ? RejectSource::RiskBucket : RejectSource::Risk,
+                      o.instrument,
+                      o.venue,
+                      o.side,
+                      px,
+                      qty,
+                      flags,
+                      o.cl_ord_id);
+      }
       return fail(rr);
     }
     const ClientOrderId new_id = oms_.next_cl_ord_id();
@@ -3121,6 +3303,13 @@ class Engine {
     live.quoting_elapsed_ns = presence.elapsed_ns;
     live.quoting_two_sided_ns = presence.two_sided_ns;
     live.max_loss_raw = risk_.limits().max_loss.raw;
+    {
+      const TokenBucket& bucket = risk_.bucket();
+      live.risk_tokens = bucket.enabled() ? bucket.available(now_) : -1;
+      live.risk_token_wait_ns = bucket.wait_ns(now_);
+      live.risk_orders_per_sec = risk_.limits().orders_per_sec;
+      live.risk_burst = risk_.limits().burst;
+    }
     live.param_updates = stats_.param_updates;
     live.param_control_seq = control_param_seq_;
     live.param_last_seq = last_param_.publish_seq;
@@ -3201,6 +3390,9 @@ class Engine {
   Timestamp last_publish_{};
   // The last ParamUpdate applied (its fields are not read: the strategy holds the values), the
   // engine time of it, and the publish_seq of the last from the control socket (EngineLiveStats).
+  // RejectRecord folding, per instrument and side (record_reject).
+  std::unique_ptr<RejectFold[]> reject_folds_ =
+      std::make_unique<RejectFold[]>(static_cast<std::size_t>(kMaxInstruments) * 2);
   ParamUpdateMsg last_param_{};
   Timestamp last_param_ts_{};
   std::uint64_t control_param_seq_ = 0;

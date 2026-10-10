@@ -5,6 +5,8 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- store: refused orders with the limit that refused them and the budget then (schema 9).
+- live: the status shows each account's order windows, refusals by limit and the risk bucket.
 - store: parameter history (schema 8): `fastmm-pnl params --at`, `param-changes`, `param-diff`.
 - store: `fastmm-pnl config` prints the configuration a session ran with, for a backtest of it.
 - live: `fastmm-ctl param` answers `queued seq=N`; `--wait` waits for it; `params` reads them back.

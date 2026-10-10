@@ -387,11 +387,33 @@ void fill_status_venue(const venues::VenueStatus& st, StatusVenue& sv) noexcept 
   sv.reconnects = st.reconnects;
   sv.rest_errors = st.rest_errors;
   sv.rate_limit_cooldowns = st.rate_limit_cooldowns;
+  sv.refused_weight = st.refused_weight;
+  sv.refused_orders_10s = st.refused_orders_10s;
+  sv.refused_orders_1m = st.refused_orders_1m;
+  sv.refused_orders_1d = st.refused_orders_1d;
+  sv.refused_paused = st.refused_paused;
   sv.clock_offset_ms = st.clock_offset_ms;
   sv.wire_tick_to_trade = wire_status_latency(st.wire_tick_to_trade);
   sv.wire_tick_to_trade_1m = wire_status_latency(st.wire_1m.tick_to_trade);
   sv.wire_tick_to_trade_1h = wire_status_latency(st.wire_1h.tick_to_trade);
   copy_feed_status(st.feed, sv.feed);
+}
+
+void fill_status_budget(const OrderBudget& b, StatusVenue& sv) noexcept {
+  const auto window = [](const RateWindow& w) {
+    StatusWindow out;
+    out.window_ms = w.window_ms;
+    out.used = w.used;
+    out.admits = w.known() ? w.admits() : 0;
+    out.limit = w.limit;
+    return out;
+  };
+  sv.budget_known = b.venue_known ? 1 : 0;
+  sv.budget_paused = b.venue_paused ? 1 : 0;
+  sv.orders_10s = window(b.orders_10s);
+  sv.orders_1m = window(b.orders_1m);
+  sv.orders_1d = window(b.orders_1d);
+  sv.weight = window(b.weight);
 }
 
 }  // namespace fastmm::live

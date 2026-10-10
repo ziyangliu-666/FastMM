@@ -449,6 +449,16 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                  money(s.fees_raw),
                  money(s.pnl_carry_raw),
                  money(s.pnl_carry_raw + s.realized_pnl_raw + s.unrealized_pnl_raw - s.fees_raw));
+  if (s.risk_tokens >= 0) {
+    fmt::format_to(std::back_inserter(out),
+                   "risk bucket tokens={} of burst={} at {}/s{}\n\n",
+                   s.risk_tokens,
+                   s.risk_burst != 0 ? s.risk_burst : s.risk_orders_per_sec,
+                   s.risk_orders_per_sec,
+                   s.risk_tokens == 0 ? fmt::format("  EMPTY, next in {:.1f} ms",
+                                                    static_cast<double>(s.risk_token_wait_ns) / 1e6)
+                                      : std::string());
+  }
   if (s.param_updates != 0 || s.param_control_published != 0) {
     const std::string_view source = name_of(s.param_last_source, sizeof s.param_last_source);
     fmt::format_to(std::back_inserter(out),
@@ -563,6 +573,46 @@ void append_venues(std::string& out, const StatusSnapshot& s, bool color) {
                    fmt_ns(v.wire_tick_to_trade_1m.p99_ns),
                    fmt_ns(v.wire_tick_to_trade_1h.p99_ns),
                    venue_kill);
+  }
+  // Order budgets: one line per venue whose connector published one or refused an order. These
+  // are request counts in a time window against what the connector admits (and the venue's limit
+  // in parentheses), not open orders.
+  bool budget_header = false;
+  for (std::size_t i = 0; i < n; ++i) {
+    const StatusVenue& v = s.venues[i];
+    const std::uint64_t refused = v.refused_weight + v.refused_orders_10s + v.refused_orders_1m +
+                                  v.refused_orders_1d + v.refused_paused;
+    if (v.budget_known == 0 && refused == 0) continue;
+    if (!budget_header) {
+      budget_header = true;
+      fmt::format_to(std::back_inserter(out),
+                     "\n{:<14} {:>16} {:>16} {:>18} {:>18}  {}\n",
+                     "order budget",
+                     "orders 10s",
+                     "orders 1m",
+                     "orders 1d",
+                     "weight",
+                     "refused weight/10s/1m/1d/paused");
+    }
+    const auto win = [](const StatusWindow& w) {
+      if (w.limit == 0) return std::string("-");
+      return fmt::format("{}/{} ({})", w.used, w.admits, w.limit);
+    };
+    fmt::format_to(std::back_inserter(out),
+                   "{}{:<14} {:>16} {:>16} {:>18} {:>18}  {}/{}/{}/{}/{}{}{}\n",
+                   v.budget_paused != 0 && color ? "\x1b[31m" : "",
+                   name_of(v.name, sizeof v.name),
+                   win(v.orders_10s),
+                   win(v.orders_1m),
+                   win(v.orders_1d),
+                   win(v.weight),
+                   v.refused_weight,
+                   v.refused_orders_10s,
+                   v.refused_orders_1m,
+                   v.refused_orders_1d,
+                   v.refused_paused,
+                   v.budget_paused != 0 ? "  PAUSED" : "",
+                   v.budget_paused != 0 ? reset(color) : "");
   }
   // Fill audits: one line per venue that ran one.
   bool audit_header = false;
@@ -1017,6 +1067,8 @@ std::string format_status_json(const StatusSnapshot& s) {
                  "\"kill_reason\": \"{}\", \"kill_latched\": {}, \"pnl_carry_raw\": {}, "
                  "\"flatten_state\": \"{}\", \"flatten_instruments_left\": {}, "
                  "\"flatten_orders\": {}, "
+                 "\"risk_bucket\": {{\"tokens\": {}, \"wait_ns\": {}, \"orders_per_sec\": {}, "
+                 "\"burst\": {}}}, "
                  "\"params\": {{\"applied\": {}, \"last_seq\": {}, \"last_ns\": {}, "
                  "\"last_origin\": \"{}\", \"last_source\": {}, \"control_published\": {}, "
                  "\"control_applied\": {}, \"pending\": {}}}, \"latency\": {{",
@@ -1042,6 +1094,10 @@ std::string format_status_json(const StatusSnapshot& s) {
                  to_string(static_cast<FlattenState>(s.flatten_state)),
                  s.flatten_instruments_left,
                  s.flatten_orders,
+                 s.risk_tokens,
+                 s.risk_token_wait_ns,
+                 s.risk_orders_per_sec,
+                 s.risk_burst,
                  s.param_updates,
                  s.param_last_seq,
                  s.param_last_ns,
@@ -1116,6 +1172,29 @@ void json_venues(std::string& out, const StatusSnapshot& s) {
                    v.fill_audit_phantom,
                    v.fill_audit_mismatched,
                    v.fill_audit_duplicates);
+    const auto window = [](const StatusWindow& w) {
+      return fmt::format("{{\"window_ms\": {}, \"used\": {}, \"admits\": {}, \"limit\": {}}}",
+                         w.window_ms,
+                         w.used,
+                         w.admits,
+                         w.limit);
+    };
+    fmt::format_to(it,
+                   "\"budget\": {{\"known\": {}, \"paused\": {}, \"orders_10s\": {}, "
+                   "\"orders_1m\": {}, \"orders_1d\": {}, \"weight\": {}}}, "
+                   "\"refused\": {{\"weight\": {}, \"orders_10s\": {}, \"orders_1m\": {}, "
+                   "\"orders_1d\": {}, \"paused\": {}}}, ",
+                   v.budget_known != 0,
+                   v.budget_paused != 0,
+                   window(v.orders_10s),
+                   window(v.orders_1m),
+                   window(v.orders_1d),
+                   window(v.weight),
+                   v.refused_weight,
+                   v.refused_orders_10s,
+                   v.refused_orders_1m,
+                   v.refused_orders_1d,
+                   v.refused_paused);
     json_latency(out, "wire_tick_to_trade", v.wire_tick_to_trade);
     out += ", ";
     json_latency(out, "wire_tick_to_trade_1m", v.wire_tick_to_trade_1m);

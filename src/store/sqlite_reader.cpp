@@ -34,7 +34,7 @@ bool is_raw(std::string_view name) {
 // Columns holding a nanosecond wall clock, rendered as "YYYY-MM-DD HH:MM:SS".
 bool is_ns(std::string_view name) {
   return name == "ts_ns" || name == "started_ns" || name == "stopped_ns" || name == "created_ns" ||
-         name == "updated_ns" || name == "last_ns";
+         name == "updated_ns" || name == "last_ns" || name == "first_ns";
 }
 
 std::string cell(sqlite3_stmt* st, int i, std::string_view name) {
@@ -146,6 +146,42 @@ class SqliteReader final : public Reader {
       out.rows.push_back({k.first, k.second.empty() ? "*" : k.second, va, vb});
     }
     return out;
+  }
+
+  [[nodiscard]] Result<Rows, std::string> rejects(const QueryFilter& f) override {
+    if (version_ < 9)
+      return fail(path_ + " predates the reject records (schema 9): its sessions recorded none");
+    std::string sql =
+        "SELECT ts_ns, account, symbol, side, kind, reduces, reason, source, count, price_raw,"
+        " qty_raw, tokens, token_wait_us, paused,"
+        " orders_10s_used || '/' || orders_10s_admits AS orders_10s,"
+        " orders_1m_used || '/' || orders_1m_admits AS orders_1m,"
+        " orders_1d_used || '/' || orders_1d_admits AS orders_1d,"
+        " venue_code, text, session_id FROM rejects";
+    Where w;
+    w.session(f);
+    w.symbol(f);
+    w.day_range(f);
+    w.engine_join(f, "rejects");
+    return query(sql + w.text() + " ORDER BY ts_ns, seq" + limit(f), w);
+  }
+
+  [[nodiscard]] Result<Rows, std::string> reject_summary(const QueryFilter& f) override {
+    if (version_ < 9)
+      return fail(path_ + " predates the reject records (schema 9): its sessions recorded none");
+    std::string sql =
+        "SELECT account, symbol, side, reduces, reason, source, SUM(count) AS rejects,"
+        " MIN(ts_ns) AS first_ns, MAX(ts_ns) AS last_ns FROM rejects";
+    Where w;
+    w.session(f);
+    w.symbol(f);
+    w.day_range(f);
+    w.engine_join(f, "rejects");
+    return query(sql + w.text() +
+                     " GROUP BY account, symbol, side, reduces, reason, source"
+                     " ORDER BY rejects DESC" +
+                     limit(f),
+                 w);
   }
 
   [[nodiscard]] Result<std::string, std::string> session_config(const ParamQuery& q) override {

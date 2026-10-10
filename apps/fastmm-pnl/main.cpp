@@ -246,6 +246,7 @@ static int run(int argc, char** argv) {
   std::int64_t to_ms = 0;
   std::string at;
   std::uint64_t against = 0;
+  bool summary = false;
   QueryFilter f;
 
   CLI::App app("What a deployment traded, read from the store.", "fastmm-pnl");
@@ -267,6 +268,9 @@ static int run(int argc, char** argv) {
        "what a session started with against what --against (default: the one "
        "before) ended with"},
       {"config", "the effective configuration a session ran with (TOML, secrets omitted)"},
+      {"rejects",
+       "refused orders: who refused them (source), and the account's budget then; "
+       "--summary sums them"},
   };
   for (const auto& [name, description] : commands)
     app.add_subcommand(name, description)->fallthrough();
@@ -299,6 +303,7 @@ static int run(int argc, char** argv) {
       ->option_text("<time>");
   app.add_option("--against", against, "param-diff: the earlier session to compare with")
       ->option_text("<id>");
+  app.add_flag("--summary", summary, "rejects: one row per account, instrument, side and source");
   if (const auto rc = fastmm::cli::parse(app, argc, argv)) return *rc;
   if (app.get_subcommands().empty()) return fastmm::cli::usage_error(app, "a command is required");
   const std::string command = app.get_subcommands().front()->get_name();
@@ -426,6 +431,8 @@ static int run(int argc, char** argv) {
     rows = reader->duplicates(f);
   } else if (command == "params") {
     rows = reader->params(pq);
+  } else if (command == "rejects") {
+    rows = summary ? reader->reject_summary(f) : reader->rejects(f);
   } else if (command == "param-changes") {
     rows = reader->param_changes(f);
   } else if (command == "param-diff") {

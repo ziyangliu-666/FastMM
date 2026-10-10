@@ -138,6 +138,11 @@ struct EngineLiveStats {
   // Parameter updates (ParamUpdateMsg) the engine has applied; the last one (its publisher's
   // sequence number, origin and source, and the engine time it was applied at); and the
   // publish_seq of the last one from the control socket, which fastmm-ctl param --wait waits on.
+  // The [risk] bucket: whole tokens left (-1: no limit), the wait for the next, rate and burst.
+  std::int64_t risk_tokens = -1;
+  std::int64_t risk_token_wait_ns = 0;
+  std::uint32_t risk_orders_per_sec = 0;
+  std::uint32_t risk_burst = 0;
   std::uint64_t param_updates = 0;
   std::uint64_t param_control_seq = 0;
   std::uint64_t param_last_seq = 0;

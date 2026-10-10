@@ -9,6 +9,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <span>
 #include <string_view>
@@ -87,6 +88,7 @@ struct Fixture {
   PoolOutbox transport;
   InlineFeed feed{1 << 20};
   Mute strategy;
+  MsgRing records{1U << 20};
   std::unique_ptr<EngineType> engine;
 
   // `orders_per_sec`, `burst`: the [risk] token bucket every account's orders share (0: off).
@@ -106,9 +108,24 @@ struct Fixture {
     cfg.risk.burst = burst;
     REQUIRE(cfg.pools.add(kMember1, kPrimary));
     REQUIRE(cfg.pools.add(kMember2, kPrimary));
-    engine = std::make_unique<EngineType>(cfg, table, clock, transport, feed, strategy, nullptr);
+    engine = std::make_unique<EngineType>(
+        cfg, table, clock, transport, feed, strategy, nullptr, &records);
     engine->warm_up();
     engine->start();
+  }
+  // The RejectRecords the engine has written so far, in order (other records are skipped).
+  std::vector<RejectRecord> rejects() {
+    std::vector<RejectRecord> out;
+    while (const std::byte* p = records.try_peek()) {
+      const auto* h = reinterpret_cast<const RecordHeader*>(p);
+      if (h->type == RecordType::Reject) {
+        RejectRecord r;
+        std::memcpy(&r, p, sizeof r);
+        out.push_back(r);
+      }
+      records.release();
+    }
+    return out;
   }
   [[nodiscard]] static LimitOrder buy(const char* price = "99.50") {
     return NewOrderRequest::limit(kBtc, Side::Buy, px(price), qt("0.01"));
@@ -350,4 +367,92 @@ TEST_CASE("core.engine pool: a full account's order still gets the other checks'
   f.engine->risk().reset_venue(kPrimary);
   REQUIRE(ctx.send(Fixture::buy().account(kMember2)));
   CHECK(ctx.order_budget(kMember2).local_tokens == 4);
+}
+
+TEST_CASE("core.engine pool: a refusal is recorded with the limit that refused it and the budget") {
+  Fixture f(49, 3);
+  auto& ctx = f.engine->context();
+  f.transport.publish(kPrimary, 0, 100, 0, 90);
+  f.transport.publish(kMember1, 90, 100, 0, 90);  // at its connector's cap
+  f.transport.publish(kMember2, 0, 100, 0, 90);
+  // Member 1's window: refused by the account, with its count against the cap.
+  CHECK(ctx.send(Fixture::buy().account(kMember1)).error() == RejectReason::RateLimit);
+  std::vector<RejectRecord> r = f.rejects();
+  REQUIRE(r.size() == 1);
+  CHECK(r[0].source == RejectSource::AccountOrders10s);
+  CHECK(r[0].reason == RejectReason::RateLimit);
+  CHECK(r[0].hdr.venue == kMember1);
+  CHECK(r[0].side == Side::Buy);
+  CHECK(r[0].folded == 0);
+  CHECK(r[0].budget_known == 1);
+  CHECK(r[0].orders_10s_used == 90);
+  CHECK(r[0].orders_10s_admits == 90);
+  CHECK(r[0].local_tokens == 3);
+  CHECK((r[0].flags & RejectRecord::kFromVenue) == 0);
+  // Four more at once: counted into the fold, not recorded one by one.
+  for (int k = 0; k < 4; ++k)
+    CHECK(ctx.send(Fixture::buy().account(kMember1)).error() == RejectReason::RateLimit);
+  CHECK(f.rejects().empty());
+  // The bucket: three orders spend it, the fourth is the bucket's refusal on another account. A
+  // different reason on the same instrument and side first records what the fold counted.
+  for (int k = 0; k < 3; ++k) REQUIRE(ctx.send(Fixture::buy().account(kMember2)));
+  CHECK(ctx.send(Fixture::buy().account(kMember2)).error() == RejectReason::RateLimit);
+  r = f.rejects();
+  REQUIRE(r.size() == 2);
+  CHECK(r[0].source == RejectSource::AccountOrders10s);
+  CHECK(r[0].folded + 1 == 4);  // the four counted
+  CHECK(r[1].source == RejectSource::RiskBucket);
+  CHECK(r[1].hdr.venue == kMember2);
+  CHECK(r[1].local_tokens == 0);
+  CHECK(r[1].local_wait_ns > 0);
+  // Another check's refusal is the risk's, whatever the budget.
+  auto big = NewOrderRequest::limit(kBtc, Side::Sell, px("100.50"), qt("2")).account(kMember2);
+  CHECK(ctx.send(big).error() == RejectReason::MaxOrderQty);
+  r = f.rejects();
+  REQUIRE(r.size() == 1);
+  CHECK(r[0].source == RejectSource::Risk);
+  CHECK(r[0].side == Side::Sell);
+  // Two more bucket refusals on the buy side: finish() records what is still counted.
+  CHECK(ctx.send(Fixture::buy().account(kMember2)).error() == RejectReason::RateLimit);
+  CHECK(ctx.send(Fixture::buy().account(kMember2)).error() == RejectReason::RateLimit);
+  f.engine->finish();
+  r = f.rejects();
+  REQUIRE(r.size() == 1);
+  CHECK(r[0].source == RejectSource::RiskBucket);
+  CHECK(r[0].folded + 1 == 2);
+}
+
+TEST_CASE("core.engine pool: a venue's refusal is recorded as the connector's or the venue's") {
+  Fixture f;
+  auto& ctx = f.engine->context();
+  for (const VenueId v : {kPrimary, kMember1, kMember2}) f.transport.publish(v, 0, 100, 0, 90);
+  const auto reject = [&](ClientOrderId id, std::int32_t code, std::string_view text) {
+    OrderRejectMsg m{};
+    init_header(m, EventType::OrderReject, kBtc, kMember1);
+    m.hdr.recv_ts = f.clock.now();
+    m.cl_ord_id = id;
+    m.reason = RejectReason::VenueRateLimit;
+    m.venue_code = code;
+    m.text = FixedString<40>(text);
+    REQUIRE(f.feed.push(m.hdr));
+    while (f.engine->step() != 0) {
+    }
+  };
+  const auto first = ctx.send(Fixture::buy().account(kMember1));
+  REQUIRE(first);
+  reject(*first, 0, "local rate limit: orders 10s");
+  const auto second = ctx.send(
+      NewOrderRequest::limit(kBtc, Side::Sell, px("100.50"), qt("0.01")).account(kMember1));
+  REQUIRE(second);
+  reject(*second, -1015, "Too many new orders");
+  const std::vector<RejectRecord> r = f.rejects();
+  REQUIRE(r.size() == 2);
+  CHECK(r[0].source == RejectSource::VenueLocal);
+  CHECK(r[0].text.view() == "local rate limit: orders 10s");
+  CHECK(r[0].cl_ord_id == *first);
+  CHECK(r[0].hdr.venue == kMember1);
+  CHECK((r[0].flags & RejectRecord::kFromVenue) != 0);
+  CHECK(r[1].source == RejectSource::Venue);
+  CHECK(r[1].venue_code == -1015);
+  CHECK(r[1].side == Side::Sell);
 }

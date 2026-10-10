@@ -111,6 +111,12 @@ std::size_t StoreThread::drain(bool force_commit) {
         backend_->param(r);
         break;
       }
+      case RecordType::Reject: {
+        RejectRecord r;
+        std::memcpy(&r, p, sizeof r);
+        backend_->reject(r);
+        break;
+      }
       default:
         unknown_.fetch_add(1, std::memory_order_relaxed);
         break;

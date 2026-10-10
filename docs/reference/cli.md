@@ -300,6 +300,7 @@ OPTIONS:
   --at <time>                 params, config: a UTC time, YYYY-MM-DD[ HH:MM[:SS]] (default:
                               now)
   --against <id>              param-diff: the earlier session to compare with
+  --summary                   rejects: one row per account, instrument, side and source
 
 SUBCOMMANDS:
   sessions                    one row per session: when it ran, what it made, how it ended
@@ -322,6 +323,8 @@ SUBCOMMANDS:
                               the one before) ended with
   config                      the effective configuration a session ran with (TOML, secrets
                               omitted)
+  rejects                     refused orders: who refused them (source), and the account's
+                              budget then; --summary sums them
 ```
 <!-- END cli-help -->
 

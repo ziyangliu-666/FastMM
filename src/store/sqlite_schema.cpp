@@ -413,14 +413,67 @@ CREATE VIEW param_history AS
   FROM param_updates u JOIN param_values v ON v.session_id = u.session_id AND v.seq = u.seq;
 )SQL";
 
-constexpr std::array<Migration, 8> kMigrations{Migration{1, kV1},
+// Version 9: refused orders (RejectRecord). One row per refusal the engine recorded; `count` is
+// 1 plus the refusals of the same instrument, side, reason and source folded into it (within
+// 100 ms of the row before), so SUM(count) is exact. `source` says which limit or side refused
+// it; the budget columns are the account's as the engine saw it then (ctx.order_budget): the
+// [risk] bucket's tokens (NULL: no limit) and each order window's count against what the
+// connector admits (0: the window is not known).
+constexpr std::string_view kV9 = R"SQL(
+CREATE TABLE rejects (
+  session_id        INTEGER NOT NULL,
+  seq               INTEGER NOT NULL,
+  ts_ns             INTEGER NOT NULL,
+  day               TEXT    NOT NULL,
+  account           TEXT    NOT NULL,
+  venue_id          INTEGER NOT NULL,
+  instrument_id     INTEGER NOT NULL,
+  symbol            TEXT    NOT NULL,
+  side              TEXT    NOT NULL,
+  kind              TEXT    NOT NULL,
+  reduces           INTEGER NOT NULL,
+  reduce_only       INTEGER NOT NULL,
+  reason            TEXT    NOT NULL,
+  source            TEXT    NOT NULL,
+  count             INTEGER NOT NULL,
+  price_raw         INTEGER NOT NULL,
+  qty_raw           INTEGER NOT NULL,
+  cl_ord_id         TEXT    NOT NULL,
+  venue_code        INTEGER NOT NULL,
+  text              TEXT    NOT NULL,
+  budget_known      INTEGER NOT NULL,
+  paused            INTEGER NOT NULL,
+  tokens            INTEGER,
+  token_wait_us     INTEGER NOT NULL,
+  orders_10s_used   INTEGER NOT NULL,
+  orders_10s_admits INTEGER NOT NULL,
+  orders_1m_used    INTEGER NOT NULL,
+  orders_1m_admits  INTEGER NOT NULL,
+  orders_1d_used    INTEGER NOT NULL,
+  orders_1d_admits  INTEGER NOT NULL,
+  weight_used       INTEGER NOT NULL,
+  weight_admits     INTEGER NOT NULL,
+  PRIMARY KEY (session_id, seq)
+);
+CREATE INDEX rejects_day ON rejects(day, account, source);
+
+-- Who refused what: one row per day, account, instrument, side, whether the order only reduced
+-- the position, reason and source.
+CREATE VIEW reject_summary AS
+  SELECT day, account, symbol, side, reduces, reason, source, SUM(count) AS rejects
+  FROM rejects
+  GROUP BY day, account, symbol, side, reduces, reason, source;
+)SQL";
+
+constexpr std::array<Migration, 9> kMigrations{Migration{1, kV1},
                                                Migration{2, kV2},
                                                Migration{3, kV3},
                                                Migration{4, kV4},
                                                Migration{5, kV5},
                                                Migration{6, kV6},
                                                Migration{7, kV7},
-                                               Migration{8, kV8}};
+                                               Migration{8, kV8},
+                                               Migration{9, kV9}};
 
 // days since 1970-01-01 -> y/m/d (Howard Hinnant's civil_from_days).
 void civil_from_days(std::int64_t z, int& y, unsigned& m, unsigned& d) {

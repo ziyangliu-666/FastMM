@@ -252,6 +252,17 @@ class Reader {
                                                              std::uint64_t /*b*/) {
     return fail(std::string("this store backend keeps no parameter history"));
   }
+  // One row per refused order the engine recorded (`count` with the ones folded into it): when,
+  // which account, instrument and side, whether it only reduced the position, the reason, the
+  // limit or side that refused it (source) and the account's budget then. Filtered by engine,
+  // session, day and instrument. Needs schema 9.
+  [[nodiscard]] virtual Result<Rows, std::string> rejects(const QueryFilter& /*f*/) {
+    return fail(std::string("this store backend keeps no rejects"));
+  }
+  // The same summed: one row per account, instrument, side, reduces, reason and source.
+  [[nodiscard]] virtual Result<Rows, std::string> reject_summary(const QueryFilter& /*f*/) {
+    return fail(std::string("this store backend keeps no rejects"));
+  }
   // The effective configuration (TOML, secrets omitted) of the session `q` picks as params() does.
   [[nodiscard]] virtual Result<std::string, std::string> session_config(const ParamQuery& /*q*/) {
     return fail(std::string("this store backend keeps no configuration"));

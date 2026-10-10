@@ -162,6 +162,25 @@ struct IdText {
 }
 
 // One order the rate limiter refused (RateLimiter::check), counted by the limit that refused it.
+// The text of a VenueRateLimit reject the connector's own limiter made (OrderRejectMsg::text):
+// "local rate limit" and the limit that refused it, so a reject names its window. The engine
+// tells a connector's refusal from the venue's by the prefix (RejectSource::VenueLocal).
+[[nodiscard]] inline const char* refusal_text(const RateCheck& c) noexcept {
+  switch (c.refusal) {
+    case RateRefusal::Paused:
+      return "local rate limit: paused";
+    case RateRefusal::Weight:
+      return "local rate limit: weight";
+    case RateRefusal::Orders:
+      if (c.window_ns <= 10'000'000'000) return "local rate limit: orders 10s";
+      if (c.window_ns <= 60'000'000'000) return "local rate limit: orders 1m";
+      return "local rate limit: orders 1d";
+    case RateRefusal::None:
+      break;
+  }
+  return "local rate limit";
+}
+
 inline void count_refusal(VenueStatus& st, const RateCheck& c) noexcept {
   switch (c.refusal) {
     case RateRefusal::None:

@@ -125,6 +125,8 @@ class Backend {
   virtual void replayed(const ReplayedRecord& /*r*/) {}
   // A strategy parameter update the engine applied. The default drops it.
   virtual void param(const ParamRecord& /*r*/) {}
+  // An order refused by the pre-trade checks or by its venue. The default drops it.
+  virtual void reject(const RejectRecord& /*r*/) {}
   virtual void commit() = 0;
 
   [[nodiscard]] virtual Result<void, std::string> session_close(const SessionClose& s) = 0;

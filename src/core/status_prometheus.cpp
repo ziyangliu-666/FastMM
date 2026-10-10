@@ -304,6 +304,10 @@ void engine_metrics(Exposition& e, const StatusSnapshot& s) {
       "fastmm_quotes_withheld_balance_total",
       "quote orders held back after their old order ended: the balance no longer covered them",
       s.balance_withheld);
+  if (s.risk_tokens >= 0)
+    e.gauge("fastmm_risk_tokens",
+            "[risk] orders_per_sec bucket: whole tokens left, shared by every account",
+            static_cast<double>(s.risk_tokens));
   e.counter("fastmm_param_updates_total",
             "strategy parameter updates the engine has applied",
             s.param_updates);
@@ -449,6 +453,46 @@ void venue_metrics(Exposition& e, const StatusSnapshot& s) {
             "counter",
             "rate-limit cooldowns",
             [](const StatusVenue& v) { return v.rate_limit_cooldowns; });
+  per_venue("fastmm_venue_orders_10s_used",
+            "gauge",
+            "orders counted in the venue's 10 s window (a request count, not open orders)",
+            [](const StatusVenue& v) { return static_cast<std::uint64_t>(v.orders_10s.used); });
+  per_venue("fastmm_venue_orders_10s_admits",
+            "gauge",
+            "orders the connector admits in the 10 s window (its cap below the venue's limit)",
+            [](const StatusVenue& v) { return static_cast<std::uint64_t>(v.orders_10s.admits); });
+  per_venue("fastmm_venue_orders_1d_used",
+            "gauge",
+            "orders counted in the venue's 1 d window",
+            [](const StatusVenue& v) { return static_cast<std::uint64_t>(v.orders_1d.used); });
+  per_venue("fastmm_venue_orders_1d_admits",
+            "gauge",
+            "orders the connector admits in the 1 d window",
+            [](const StatusVenue& v) { return static_cast<std::uint64_t>(v.orders_1d.admits); });
+  per_venue("fastmm_venue_budget_paused",
+            "gauge",
+            "1 while the venue asked for a pause (429, -1003) or REST is stopped (418)",
+            [](const StatusVenue& v) { return static_cast<std::uint64_t>(v.budget_paused); });
+  per_venue("fastmm_venue_refused_orders_10s_total",
+            "counter",
+            "orders the connector's limiter refused on the 10 s window, never sent",
+            [](const StatusVenue& v) { return v.refused_orders_10s; });
+  per_venue("fastmm_venue_refused_orders_1m_total",
+            "counter",
+            "orders the connector's limiter refused on the 1 m window, never sent",
+            [](const StatusVenue& v) { return v.refused_orders_1m; });
+  per_venue("fastmm_venue_refused_orders_1d_total",
+            "counter",
+            "orders the connector's limiter refused on the 1 d window, never sent",
+            [](const StatusVenue& v) { return v.refused_orders_1d; });
+  per_venue("fastmm_venue_refused_weight_total",
+            "counter",
+            "orders the connector's limiter refused on the request weight, never sent",
+            [](const StatusVenue& v) { return v.refused_weight; });
+  per_venue("fastmm_venue_refused_paused_total",
+            "counter",
+            "orders the connector refused while paused, never sent",
+            [](const StatusVenue& v) { return v.refused_paused; });
   per_venue("fastmm_venue_fill_audits_total",
             "counter",
             "fill audits that compared the venue's executions with the store's",

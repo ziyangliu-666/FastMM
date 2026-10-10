@@ -15,6 +15,7 @@
 #include "fastmm/config/config.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/msg_ring.hpp"
+#include "fastmm/core/order_budget.hpp"
 #include "fastmm/core/seqlock.hpp"
 #include "fastmm/core/status_segment.hpp"
 #include "fastmm/core/strong_id.hpp"
@@ -143,5 +144,7 @@ void log_feed(std::string_view venue, const venues::VenueFeedStatus& f, bool fin
 
 // A venue's status in a status segment's venue entry (all but its name and kill state).
 void fill_status_venue(const venues::VenueStatus& st, StatusVenue& sv) noexcept;
+// The order budget a connector published (Venue::budget_source) into its status entry.
+void fill_status_budget(const OrderBudget& b, StatusVenue& sv) noexcept;
 
 }  // namespace fastmm::live

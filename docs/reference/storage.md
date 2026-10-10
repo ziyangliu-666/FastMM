@@ -49,6 +49,7 @@ The engine copies a trivially copyable record into an SPSC ring, as it writes th
 | `FundingRecord` (192 B) | every funding payment the engine books | amount, asset, venue funding id, the venue's time, and the instrument's position, realized PnL and funding after it |
 | `ReplayedRecord` (64 B) | a reconciliation of a venue begins with the venue's executions complete (its execution replay ended whole) | the venue; every execution it made until then is in the records before this one |
 | `KillRecord` (128 B) | every kill switch trip, global or per venue | the reason, the flag word and the PnL at the time |
+| `RejectRecord` (256 B) | every order the pre-trade checks or its venue refused, repeats folded (below) | the account, instrument, side, whether it only reduced the position, the reason, the limit or side that refused it (`RejectSource`) and the account's budget then: the `[risk]` bucket's tokens and each order window's count against what the connector admits |
 | `ParamRecord` (448 B) | every strategy parameter update the engine applies | the update's target instrument, origin (control socket or the strategy's own publisher), source, publisher sequence number and its (field, raw value) pairs, as the `ParamUpdate` carried them ([Journal format](journal-format.md#parameter-updates)) |
 
 Session metadata (`session_open`, `session_close`, the instrument table) is written by the control thread, not through the ring.
@@ -184,10 +185,26 @@ Version 8. The strategy parameters over time: what each session started with and
 
 A control update is stored whole, unchanged values included: someone asked for it. An update of the strategy's own publisher keeps only the values that changed, and one that changed nothing writes no row: `sessions.param_refreshes` counts those. An update to every instrument replaces what single instruments had.
 
+### rejects
+
+Version 9. One row per refused order the engine recorded, keyed `(session_id, seq)`: `ts_ns`, `account` (the `[venues.<name>]` the order went to or was routed to), `instrument_id`, `symbol`, `side`, `kind` (`new` or `replace`), `reduces` (with the open orders on its side it only took the position towards zero), `reduce_only`, `reason` ([`RejectReason`](errors.md)), `source`, `count`, `price_raw`, `qty_raw`, `cl_ord_id` (a venue's refusal), `venue_code` and `text` (the venue's), and the budget the engine saw: `budget_known`, `paused`, `tokens` (the `[risk]` bucket's, NULL with the limit off), `token_wait_us`, and `orders_10s_used`/`orders_10s_admits`, `orders_1m_*`, `orders_1d_*`, `weight_*` (0 admits: the window is not known).
+
+| `source` | Refused by |
+|---|---|
+| `risk` | a pre-trade check other than the rate limits (`reason` says which) |
+| `risk_bucket` | the `[risk] orders_per_sec` bucket, shared by every account |
+| `account_paused` | the account's connector is paused (429, 418) |
+| `account_orders_10s`, `account_orders_1m`, `account_orders_1d` | the account's order window at the connector's cap, as the engine counts it ([account pools](configuration.md#account-pools)) |
+| `venue_local` | the connector's own limiter, before sending (`text` names the window: `local rate limit: orders 10s`) |
+| `venue` | the venue (`venue_code`, `text`) |
+
+Refusals of the same instrument, side, reason and source within 100 ms of the last row recorded are counted, not written one by one: `count` is 1 plus those folded into the row, so `SUM(count)` is exact. The budget of a folded row is the one at the row's time.
+
 ### Views
 
 | View | Rows |
 |---|---|
+| `reject_summary` | `day`, `account`, `symbol`, `side`, `reduces`, `reason`, `source` and `rejects`, the summed `count` |
 | `param_history` | `param_updates` joined with `param_values`: one row per value of every update, with its session, time, scope, origin and source |
 | `pnl_by_day` | `day`, `symbol`, `settlement_ccy`, `realized_raw`, `funding_raw`, `fees_raw`, `net_raw`, `gross_traded_raw`, `fills`, summed over sessions |
 | `pnl_by_currency` | the same by `day` and `settlement_ccy` |

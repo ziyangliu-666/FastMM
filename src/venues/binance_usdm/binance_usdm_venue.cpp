@@ -1405,7 +1405,7 @@ void BinanceUsdmVenue::send_command(const OrderCommand& cmd) {
     case OrderCommandKind::New:
       if (const RateCheck rc = rate_.check(weight, now, true); !rc.ok()) {
         count_refusal(stats_, rc);
-        return refuse(cmd, RejectReason::VenueRateLimit, "local rate limit");
+        return refuse(cmd, RejectReason::VenueRateLimit, refusal_text(rc));
       }
       if (FASTMM_UNLIKELY(shadows_.assign(cmd.cl_ord_id,
                                           OrderShadow{cmd.instrument,
@@ -1429,7 +1429,7 @@ void BinanceUsdmVenue::send_command(const OrderCommand& cmd) {
         return refuse(cmd, RejectReason::UnknownOrder, "modify: original unknown");
       if (const RateCheck rc = rate_.check(weight, now, true); !rc.ok()) {
         count_refusal(stats_, rc);
-        return refuse(cmd, RejectReason::VenueRateLimit, "local rate limit");
+        return refuse(cmd, RejectReason::VenueRateLimit, refusal_text(rc));
       }
       OrderShadow copy = *orig;
       copy.replaces = cmd.orig_cl_ord_id;

@@ -1969,6 +1969,10 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     set_status_rejects(snap.venue_reject_reasons, live.stats.venue_rejects_by_reason);
     snap.quoting_elapsed_ns = live.quoting_elapsed_ns;
     snap.quoting_two_sided_ns = live.quoting_two_sided_ns;
+    snap.risk_tokens = live.risk_tokens;
+    snap.risk_token_wait_ns = live.risk_token_wait_ns;
+    snap.risk_orders_per_sec = live.risk_orders_per_sec;
+    snap.risk_burst = live.risk_burst;
     snap.param_updates = live.param_updates;
     snap.param_last_seq = live.param_last_seq;
     snap.param_last_ns = live.param_last_ns;
@@ -2026,6 +2030,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
           static_cast<std::uint8_t>(live.venue_kill_reasons[RiskEngine::venue_slot(vid)]);
       if (i >= slots.size()) continue;  // the venue runs in the gateway
       fill_status_venue(slots[i]->venue->status(), sv);
+      fill_status_budget(slots[i]->venue->budget_source().load(), sv);
       if (auditor && audit_index[i] != SIZE_MAX) {
         const FillAuditCounters c = auditor->counters(audit_index[i]);
         sv.fill_audits = c.audits;

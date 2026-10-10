@@ -42,6 +42,7 @@ enum class RecordType : std::uint8_t {
   Funding = 5,
   Replayed = 6,
   Param = 7,
+  Reject = 8,
 };
 [[nodiscard]] constexpr std::string_view to_string(RecordType t) noexcept {
   switch (t) {
@@ -59,6 +60,8 @@ enum class RecordType : std::uint8_t {
       return "Replayed";
     case RecordType::Param:
       return "Param";
+    case RecordType::Reject:
+      return "Reject";
   }
   return "?";
 }
@@ -220,6 +223,85 @@ static_assert(offsetof(ParamRecord, count) == offsetof(ParamUpdateMsg, count) &&
               offsetof(ParamRecord, field) == offsetof(ParamUpdateMsg, field) &&
               offsetof(ParamRecord, source) == offsetof(ParamUpdateMsg, source) &&
               offsetof(ParamRecord, value) == offsetof(ParamUpdateMsg, value));
+
+// What refused an order (RejectRecord::source): the limit behind a rate-limit refusal, or the
+// side that refused it otherwise. Rate limits stay apart by where they are counted: the engine's
+// [risk] bucket, the engine's view of an account's order windows (ctx.order_budget, pool routing),
+// the connector's own limiter (never sent), and the venue's answer.
+enum class RejectSource : std::uint8_t {
+  Risk = 0,              // a pre-trade check other than the rate limits (`reason` says which)
+  RiskBucket = 1,        // the [risk] orders_per_sec token bucket, shared by every account
+  AccountPaused = 2,     // the account's connector is paused (429 Retry-After, 418)
+  AccountOrders10s = 3,  // the account's order window at the connector's cap
+  AccountOrders1m = 4,
+  AccountOrders1d = 5,
+  VenueLocal = 6,  // the connector's own limiter refused it before sending (OrderReject text)
+  Venue = 7,       // the venue refused it (venue_code, text)
+};
+[[nodiscard]] constexpr std::string_view to_string(RejectSource s) noexcept {
+  switch (s) {
+    case RejectSource::Risk:
+      return "risk";
+    case RejectSource::RiskBucket:
+      return "risk_bucket";
+    case RejectSource::AccountPaused:
+      return "account_paused";
+    case RejectSource::AccountOrders10s:
+      return "account_orders_10s";
+    case RejectSource::AccountOrders1m:
+      return "account_orders_1m";
+    case RejectSource::AccountOrders1d:
+      return "account_orders_1d";
+    case RejectSource::VenueLocal:
+      return "venue_local";
+    case RejectSource::Venue:
+      return "venue";
+  }
+  return "?";
+}
+
+// One order refused: by the pre-trade checks (the engine's) or by its venue (an OrderReject),
+// with the account's order budget as the engine saw it then (ctx.order_budget). hdr.venue is the
+// account the order went to or was routed to, hdr.instrument its instrument. Refusals of the
+// same instrument, side, reason and source within RejectRecord::kFoldNs of the last one recorded
+// are counted into the next record's `folded` rather than recorded one by one: the counts stay
+// exact, a strategy retrying on every event does not fill the store.
+struct RejectRecord {
+  static constexpr std::int64_t kFoldNs = 100'000'000;
+  enum Flags : std::uint8_t {
+    kReplace = 1U << 0,  // a replace, not a new order
+    kReduces = 1U << 1,  // with the open orders on its side, it only takes the position to zero
+    kReduceOnly = 1U << 2,
+    kFromVenue = 1U << 3,  // an OrderReject, not a pre-trade check
+  };
+  RecordHeader hdr;
+  RejectReason reason;         // 64
+  RejectSource source;         // 65
+  Side side;                   // 66
+  std::uint8_t flags;          // 67
+  std::uint32_t folded;        // 68  refusals of the same key folded in since the last record
+  Price price;                 // 72
+  Qty qty;                     // 80
+  ClientOrderId cl_ord_id;     // 88  the venue's refusals; 0 for a pre-trade one
+  std::int64_t local_tokens;   // 96  [risk] bucket tokens left (OrderBudget::kUnlimited: off)
+  std::int64_t local_wait_ns;  // 104
+  // The account's windows: used and what the connector admits (RateWindow::admits; 0 unknown).
+  std::int64_t orders_10s_used;    // 112
+  std::int64_t orders_10s_admits;  // 120
+  std::int64_t orders_1m_used;     // 128
+  std::int64_t orders_1m_admits;   // 136
+  std::int64_t orders_1d_used;     // 144
+  std::int64_t orders_1d_admits;   // 152
+  std::int64_t weight_used;        // 160
+  std::int64_t weight_admits;      // 168
+  std::int32_t venue_code;         // 176 the venue's error code (OrderRejectMsg::venue_code)
+  std::uint8_t budget_known;       // 180 the account's connector has published a budget
+  std::uint8_t paused;             // 181
+  std::uint8_t pad0_[2];           //
+  FixedString<40> text;            // 184 the venue's text (OrderRejectMsg::text)
+  std::uint8_t pad_[31];           // -> 256
+};
+static_assert(sizeof(RejectRecord) == 256 && std::is_trivially_copyable_v<RejectRecord>);
 
 // Engine-side producer. Every method is allocation-free, wait-free and safe to call from the
 // trading thread; a full ring increments dropped() and returns false.
