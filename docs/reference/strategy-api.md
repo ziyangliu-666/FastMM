@@ -207,6 +207,8 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().rng()), Xoshiro256ss&>);
 | `every(period, tag)`, `once(delay, tag)` | timers; `on_timer` receives the id and tag. They fire in engine time and are journaled |
 | `cancel_timer(id)` | false when the timer no longer exists |
 | `quoting_enabled()`, `killed()`, `venue_killed(venue)` | quoting state, the global kill switch and one venue's kill switch (new orders to that venue are refused and `set_quotes` ignores its instruments) |
+| `note_quote(id, side, reason, budget = {})` | why the strategy asks what it asks on a side (`"inventory_cap"`, `"model_off"`; empty: none, up to 23 bytes) and the budget it gave the side, for the quote table of `fastmm-top` ([Monitoring](../how-to/operations/monitor-with-fastmm-top.md)); kept until the next note on the side |
+| `metric(name, value)` | publishes a number by name (a budget split, a model state) in the status file, `fastmm-top` and `fastmm_strategy_metric`; the first 32 names, up to 23 bytes each |
 | `request_stop()` | sets the engine's stop flag: a backtest ends after the current engine step; replay always drains the journal |
 | `trip_kill(reason)` | trips the global kill switch with a `KillReason`: quoting stops, quotes are pulled and every working order is cancelled |
 | `rng()` | a `Xoshiro256ss` seeded from `[engine] rng_seed`, identical in replay |

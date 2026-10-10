@@ -326,6 +326,16 @@ class QuoteManager {
     return state_[id.value].slots[static_cast<std::size_t>(s)][level].handle;
   }
   [[nodiscard]] bool pulled(InstrumentId id) const noexcept { return state_[id.value].pulled; }
+  // The last ladder reconcile() applied to the instrument (empty after a pull).
+  [[nodiscard]] const DesiredQuotes& desired(InstrumentId id) const noexcept {
+    return state_[id.value].desired;
+  }
+  // The instrument waits for an order token (a New or Replace was rate-limited).
+  [[nodiscard]] bool starved(InstrumentId id) const noexcept { return state_[id.value].starved; }
+  // The side is in its venue-reject backoff at `now`.
+  [[nodiscard]] bool backing_off(InstrumentId id, Side s, Timestamp now) const noexcept {
+    return backing_off(state_[id.value], s, now);
+  }
 
  private:
   struct Slot {

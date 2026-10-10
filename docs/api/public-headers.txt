@@ -39,6 +39,7 @@ tier1 fastmm/core/oms.hpp
 tier1 fastmm/core/session_state.hpp
 tier1 fastmm/core/position.hpp
 tier1 fastmm/core/quote_manager.hpp
+tier1 fastmm/core/quote_diag.hpp
 tier1 fastmm/core/engine_config.hpp
 tier1 fastmm/core/fees.hpp
 tier1 fastmm/core/risk_limits.hpp

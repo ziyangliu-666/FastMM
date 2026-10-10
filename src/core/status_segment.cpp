@@ -74,6 +74,65 @@ const char* reset(bool color) {
   return color ? "\x1b[0m" : "";
 }
 
+// The quote table of an engine's frame: one line per side that asks for something, works, or
+// carries a note; what the strategy asked for (price x quantity), what works and in how many
+// orders, the first obstacle and how long it has held, and the strategy's reason and budget.
+void append_quotes(std::string& out, const StatusSnapshot& s, std::int64_t now_ns, bool color) {
+  bool header = false;
+  for (std::uint32_t k = 0; k < s.quote_count && k < kStatusMaxQuotes; ++k) {
+    const StatusQuote& sq = s.quotes[k];
+    for (std::size_t sd = 0; sd < 2; ++sd) {
+      const LiveQuoteSide& q = sq.q.sides[sd];
+      const std::string_view note = q.note.reason_view();
+      if (q.desired_qty_raw == 0 && q.working_qty_raw == 0 && note.empty()) continue;
+      if (!header) {
+        header = true;
+        fmt::format_to(std::back_inserter(out),
+                       "\n{:<14} {:<4} {:>24} {:>28} {:<16} {:>9}  {}\n",
+                       "quotes",
+                       "side",
+                       "asked px x qty",
+                       "working px x qty (orders)",
+                       "obstacle",
+                       "for",
+                       "note (budget)");
+      }
+      const bool stuck = q.block != QuoteBlock::Quoting && q.block != QuoteBlock::NotWanted;
+      std::string obstacle(to_string(q.block));
+      if (q.block == QuoteBlock::Refused) obstacle += ":" + std::string(to_string(q.reason));
+      std::string budget;
+      if (q.note.budget_raw != 0) budget = " (" + money(q.note.budget_raw) + ")";
+      fmt::format_to(
+          std::back_inserter(out),
+          "{}{:<14} {:<4} {:>24} {:>28} {:<16} {:>9}  {}{}{}\n",
+          stuck && color ? "\x1b[33m" : "",
+          name_of(sq.symbol, sizeof sq.symbol),
+          sd == 0 ? "buy" : "sell",
+          q.desired_qty_raw == 0 ? std::string("-")
+                                 : money(q.desired_px_raw) + " x " + money(q.desired_qty_raw),
+          q.working_qty_raw == 0 ? std::string("-")
+                                 : fmt::format("{} x {} ({})",
+                                               money(q.working_px_raw),
+                                               money(q.working_qty_raw),
+                                               q.working_orders),
+          obstacle,
+          q.block_since_ns == 0 ? std::string("-") : fmt_duration_s(now_ns - q.block_since_ns),
+          note.empty() ? std::string_view("-") : note,
+          budget,
+          stuck ? reset(color) : "");
+    }
+  }
+  if (s.metric_count != 0) {
+    out += "\nmetrics   ";
+    for (std::uint32_t k = 0; k < s.metric_count && k < kMaxStrategyMetrics; ++k)
+      fmt::format_to(std::back_inserter(out),
+                     " {}={}",
+                     name_of(s.metrics[k].name, sizeof s.metrics[k].name),
+                     s.metrics[k].value);
+    out += "\n";
+  }
+}
+
 std::string_view feed_state_name(std::uint8_t s) noexcept {
   switch (s) {
     case 1:
@@ -511,6 +570,7 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                    fmt_ns(l.max_ns));
   }
   append_venues(out, s, color);
+  append_quotes(out, s, now_ns, color);
   return out;
 }
 
@@ -1051,6 +1111,62 @@ std::string format_gateway_status(const StatusSnapshot& s, std::int64_t now_ns, 
   return out;
 }
 
+void json_quotes(std::string& out, const StatusSnapshot& s) {
+  const auto it = std::back_inserter(out);
+  out += "\"quotes\": [";
+  for (std::uint32_t k = 0; k < s.quote_count && k < kStatusMaxQuotes; ++k) {
+    const StatusQuote& sq = s.quotes[k];
+    const LiveQuoteInstrument& q = sq.q;
+    if (k != 0) out += ", ";
+    fmt::format_to(it,
+                   "{{\"symbol\": {}, \"venue\": {}, \"position\": \"{}\", \"avg_px\": \"{}\", "
+                   "\"realized\": \"{}\", \"unrealized\": \"{}\", \"mid\": \"{}\"",
+                   json_string(name_of(sq.symbol, sizeof sq.symbol)),
+                   q.venue,
+                   money(q.position_raw),
+                   money(q.avg_px_raw),
+                   money(q.realized_raw),
+                   money(q.unrealized_raw),
+                   money(q.mid_raw));
+    for (std::size_t sd = 0; sd < 2; ++sd) {
+      const LiveQuoteSide& x = q.sides[sd];
+      fmt::format_to(
+          it,
+          ", \"{}\": {{\"asked_px\": \"{}\", \"asked_qty\": \"{}\", \"asked_levels\": {}, "
+          "\"working_px\": \"{}\", \"working_qty\": \"{}\", \"working_orders\": {}, "
+          "\"account_qty\": [",
+          sd == 0 ? "buy" : "sell",
+          money(x.desired_px_raw),
+          money(x.desired_qty_raw),
+          x.desired_levels,
+          money(x.working_px_raw),
+          money(x.working_qty_raw),
+          x.working_orders);
+      for (std::size_t a = 0; a < kQuoteDiagAccounts; ++a)
+        fmt::format_to(it, "{}\"{}\"", a == 0 ? "" : ", ", money(x.account_qty_raw[a]));
+      fmt::format_to(it,
+                     "], \"obstacle\": \"{}\", \"refusal\": \"{}\", \"since_ns\": {}, "
+                     "\"note\": {}, \"budget\": \"{}\", \"note_ns\": {}}}",
+                     to_string(x.block),
+                     to_string(x.reason),
+                     x.block_since_ns,
+                     json_string(x.note.reason_view()),
+                     money(x.note.budget_raw),
+                     x.note.set_ns);
+    }
+    out += "}";
+  }
+  out += "], \"metrics\": {";
+  for (std::uint32_t k = 0; k < s.metric_count && k < kMaxStrategyMetrics; ++k) {
+    if (k != 0) out += ", ";
+    fmt::format_to(it,
+                   "{}: {}",
+                   json_string(name_of(s.metrics[k].name, sizeof s.metrics[k].name)),
+                   s.metrics[k].value);
+  }
+  out += "}";
+}
+
 }  // namespace
 
 std::string format_status_json(const StatusSnapshot& s) {
@@ -1132,6 +1248,8 @@ std::string format_status_json(const StatusSnapshot& s) {
   json_perps(out, s);
   out += ", ";
   json_venues(out, s);
+  out += ", ";
+  json_quotes(out, s);
   out += "}\n";
   return out;
 }

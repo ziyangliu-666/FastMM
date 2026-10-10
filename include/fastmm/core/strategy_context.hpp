@@ -88,6 +88,19 @@ class StrategyContext {
     e_->mark_decision();
     e_->pull_quotes(id);
   }
+  // Why the strategy asks what it asks on a side, for the operator: a short reason
+  // ("inventory_cap", "model_off"; empty clears it, at most 23 bytes kept) and the budget it gave
+  // the side in the settlement currency. The status file shows it next to what the engine finds
+  // in the way (core/quote_diag.hpp); the store records each change. No allocation.
+  void note_quote(InstrumentId id,
+                  Side side,
+                  std::string_view reason,
+                  Notional budget = {}) noexcept {
+    e_->note_quote(id, side, reason, budget);
+  }
+  // A number the strategy publishes by name, for the status file (a budget split, a model's
+  // state): the first 32 names are kept, a name at most 23 bytes. No allocation.
+  void metric(std::string_view name, double value) noexcept { e_->metric(name, value); }
   void pull_all_quotes() noexcept {
     e_->mark_decision();
     e_->pull_all_quotes();

@@ -6,6 +6,7 @@
 #include "fastmm/core/latency.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/perp_book.hpp"
+#include "fastmm/core/quote_diag.hpp"
 #include "fastmm/core/reject_counters.hpp"
 #include "fastmm/core/underlying.hpp"
 
@@ -138,6 +139,13 @@ struct EngineLiveStats {
   // Parameter updates (ParamUpdateMsg) the engine has applied; the last one (its publisher's
   // sequence number, origin and source, and the engine time it was applied at); and the
   // publish_seq of the last one from the control socket, which fastmm-ctl param --wait waits on.
+  // Every instrument of the table in id order (the first kMaxInstruments): its position, mid and,
+  // per side, what the strategy asked for against what works there and why (core/quote_diag.hpp).
+  std::uint32_t quote_count = 0;
+  std::array<LiveQuoteInstrument, kMaxInstruments> quotes{};
+  // The strategy's named numbers (ctx.metric), in the order it first set them.
+  std::uint32_t metric_count = 0;
+  std::array<LiveMetric, kMaxStrategyMetrics> metrics{};
   // The [risk] bucket: whole tokens left (-1: no limit), the wait for the next, rate and burst.
   std::int64_t risk_tokens = -1;
   std::int64_t risk_token_wait_ns = 0;

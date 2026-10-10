@@ -5,6 +5,8 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- live: `fastmm-top` shows per side what is asked, what works and the first obstacle (v21).
+- api: `ctx.note_quote` and `ctx.metric` publish the strategy's reasons and numbers live.
 - store: refused orders with the limit that refused them and the budget then (schema 9).
 - live: the status shows each account's order windows, refusals by limit and the risk bucket.
 - store: parameter history (schema 8): `fastmm-pnl params --at`, `param-changes`, `param-diff`.

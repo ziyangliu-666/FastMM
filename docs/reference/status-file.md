@@ -51,6 +51,8 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The 
 | `underlyings` | 8 x underlying entry | `[risk.underlying]`, in the order of the configuration's base assets: `name` (char[16], empty for an unused entry), `known` (u8: 0 while an inverse contract with a position has no mark), `net_raw` (i64, base units, signed), `max_net_raw` (i64, the limit applied now, 0 none) |
 | `balance_count`, `balances` | u32, 32 x balance entry | the balance table ([Balance check](../explanation/risk-model.md#balance-check)); a gateway's is the account's over every strategy: `asset` (char[12]), `venue` (u8, index into `venues`), `account` (u8: the venue's account-wide margin), `known` (u8: the venue has reported it), `free_raw`, `locked_raw`, `total_raw`, `equity_raw`, `maintenance_raw` (i64, asset units), `as_of_ns` (i64, venue time of the last report) |
 | `perp_count`, `perps` | u32, 32 x perp entry | the venues' mark, index and funding per derivative that has reported ([Perpetuals](strategy-api.md#perpetuals)); a gateway's is the account's: `symbol` (char[24]), `venue` (u8), `valued_at_mark` (u8: the position is valued at the mark now), `mark_stale`, `funding_stale` (u8), `mark_raw`, `index_raw` (i64), `funding_rate` (f64, per interval), `funding_interval_ns`, `next_funding_ns` (venue time, 0 continuous), `open_interest_raw` (contracts), `mark_age_ns`, `funding_age_ns` (-1 never) (i64), `reports` (u64) |
+| `quote_count`, `quotes` | u32, 256 x quote entry | the quote table, one entry per instrument in the table's order ([below](#quote-entry)) |
+| `metric_count`, `metrics` | u32, 32 x {name char[24], value f64} | the numbers the strategy publishes with `ctx.metric`, in the order it first named them |
 | `gateway` | gateway block | `kind` 1 only, zero otherwise ([below](#gateway-block)) |
 
 A `fastmm-top` session is `STALE` when `state` is running and `updated_ns` is more than 3 s old.
@@ -79,6 +81,30 @@ Index order of `latency`, each from the named stamps ([Architecture](../explanat
 | 4 | send | T4 to T5 (push into the outbound ring; with `spin_mode = "adaptive"` also the eventfd write that wakes the network thread) |
 | 5 | tick to trade | T0 to T5 |
 | 6 | wire to book | T0 to T2 |
+
+### Quote entry
+
+What each side of an instrument asks for, what works there and what is in the way, as the engine published it (`core/quote_diag.hpp`). Prices and quantities are raw fixed point (divide by 1e8).
+
+| Field | Type | Meaning |
+|---|---|---|
+| `symbol` | char[24] | the instrument |
+| `instrument`, `venue` | u32, u8 | its id and its venue's index |
+| `position_raw`, `avg_px_raw`, `realized_raw`, `unrealized_raw` | i64 | the position, its average price and PnL, settlement currency |
+| `mid_raw` | i64 | the book's mid, 0 without a two-sided book |
+| `sides` | 2 x side entry | buy, then sell |
+
+Side entry:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `desired_px_raw`, `desired_qty_raw`, `desired_levels` | i64, i64, u8 | what the last `set_quotes` asked for: level 0's price, the quantity over every level, the levels; asked even when the engine ignored it |
+| `working_px_raw`, `working_qty_raw`, `working_orders` | i64, i64, u16 | the best working quote price, the leaves of the side's quotes, how many |
+| `account_qty_raw` | 8 x i64 | those leaves by pool account (0 the primary) |
+| `block` | u8 | the first obstacle: 0 quoting, 1 not wanted, 2 quoting off, 3 pulled, 4 venue killed, 5 feed lag, 6 backoff, 7 starved, 8 refused, 9 pending ([Monitoring](../how-to/operations/monitor-with-fastmm-top.md)) |
+| `reason` | u8 | with `block` 8, the `RejectReason` of the refusal |
+| `block_since_ns` | i64 | when `block` began (wall clock) |
+| `note` | {reason char[24], budget_raw i64, set_ns i64} | the strategy's last `ctx.note_quote` on the side: its reason, the budget it gave (settlement currency, 0 none) and when |
 
 ### Venue entry
 

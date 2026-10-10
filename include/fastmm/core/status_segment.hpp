@@ -11,6 +11,7 @@
 // magic and the version sit at the same offsets in every version, so a reader of another version
 // refuses the file instead of misreading it.
 #include "fastmm/core/latency.hpp"
+#include "fastmm/core/quote_diag.hpp"
 #include "fastmm/core/reject_counters.hpp"
 
 #include <atomic>
@@ -44,7 +45,10 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 //     published and applied sequence numbers.
 // 20: each venue's order budget (order windows and request weight: used, admitted, limit; paused)
 //     and the orders its connector refused by limit; the [risk] bucket's tokens.
-inline constexpr std::uint32_t kStatusVersion = 20;
+// 21: the quote table (per instrument: position, mid, and per side what the strategy asked for,
+//     what works there, the obstacle and since when, the strategy's note) and the strategy's
+//     metrics.
+inline constexpr std::uint32_t kStatusVersion = 21;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 inline constexpr std::size_t kStatusMaxUnderlyings = 8;    // kMaxUnderlyings
@@ -328,6 +332,13 @@ struct StatusGateway {
   StatusUnderlying underlyings[kStatusMaxUnderlyings];
 };
 
+// One instrument of the quote table (kind Engine): LiveQuoteInstrument with its symbol.
+struct StatusQuote {
+  char symbol[24] = {};
+  LiveQuoteInstrument q;
+};
+inline constexpr std::size_t kStatusMaxQuotes = 256;  // kMaxInstruments
+
 struct StatusSnapshot {
   std::uint64_t magic = kStatusMagic;
   std::uint32_t version = kStatusVersion;
@@ -417,6 +428,11 @@ struct StatusSnapshot {
   StatusGateway gateway;
   // kind Engine: the pool treasuries of fastmm-live.
   StatusTreasury treasury;
+  // kind Engine: every instrument in id order, and the strategy's metrics (ctx.metric).
+  std::uint32_t quote_count = 0;
+  std::uint32_t metric_count = 0;
+  StatusQuote quotes[kStatusMaxQuotes];
+  LiveMetric metrics[kMaxStrategyMetrics];
 };
 static_assert(std::is_trivially_copyable_v<StatusSnapshot>);
 // Every version keeps the magic and the version at these offsets (after the 8-byte sequence).

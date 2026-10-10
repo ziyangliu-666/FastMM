@@ -308,7 +308,7 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   CHECK(frame.find("fallback=5") != std::string::npos);
 
   const std::string json = format_status_json(s);
-  CHECK(json.find(R"({"kind": "engine", "version": 20,)") == 0);
+  CHECK(json.find(R"({"kind": "engine", "version": 21,)") == 0);
   CHECK(json.find(R"("engine": "binance-demo")") != std::string::npos);
   CHECK(json.find(R"("tick_to_trade": {"count": 10, "p50_ns": 106495, "p99_ns": 216053, )"
                   R"("p999_ns": 250000, "max_ns": 300000})") != std::string::npos);
@@ -467,7 +467,7 @@ TEST_CASE("core.status_segment: a gateway's snapshot round trips and shows its a
 
   const std::string json = format_status_json(got);
   INFO(json);
-  CHECK(json.find(R"({"kind": "gateway", "version": 20,)") == 0);
+  CHECK(json.find(R"({"kind": "gateway", "version": 21,)") == 0);
   CHECK(json.find(R"("gateway": "gw")") != std::string::npos);
   CHECK(json.find(R"("net_pnl": -0.25, "realized": 1.5)") != std::string::npos);
   CHECK(json.find(R"("engine": "mm-a", "pid": 1001)") != std::string::npos);
@@ -641,4 +641,45 @@ TEST_CASE("core.status_segment: the perp table in the frame and the JSON form") 
                   R"("mark_age_ns": 200000000, "funding_age_ns": 30000000000, "mark_stale": )"
                   R"(false, "funding_stale": false, "valued_at_mark": true, "reports": 7}])") !=
         std::string::npos);
+}
+
+TEST_CASE("core.status_segment: the quote table and the strategy's metrics in the frame and JSON") {
+  StatusSnapshot s;
+  s.state = StatusRunState::Running;
+  CHECK(format_status(s, 0, false).find("quotes") == std::string::npos);
+  s.quote_count = 1;
+  set_status_name(s.quotes[0].symbol, "BTCUSDT");
+  LiveQuoteInstrument& q = s.quotes[0].q;
+  q.position_raw = 2'000'000;  // 0.02
+  LiveQuoteSide& bid = q.sides[0];
+  bid.desired_px_raw = 9'990'000'000;  // 99.9
+  bid.desired_qty_raw = 1'000'000;     // 0.01
+  bid.desired_levels = 1;
+  bid.block = QuoteBlock::Refused;
+  bid.reason = RejectReason::RateLimit;
+  bid.block_since_ns = 5'000'000'000;
+  LiveQuoteSide& ask = q.sides[1];
+  std::memcpy(ask.note.reason, "inventory_cap", 13);
+  ask.note.budget_raw = 50'000'000'000;  // 500
+  s.metric_count = 1;
+  set_status_name(s.metrics[0].name, "alloc_btc");
+  s.metrics[0].value = 0.4;
+
+  const std::string frame = format_status(s, 65'000'000'000, false);
+  CHECK(frame.find("quotes") != std::string::npos);
+  CHECK(frame.find("99.9 x 0.01") != std::string::npos);
+  CHECK(frame.find("refused:RateLimit") != std::string::npos);
+  CHECK(frame.find("1m00s") != std::string::npos);
+  CHECK(frame.find("inventory_cap (500)") != std::string::npos);
+  CHECK(frame.find("metrics    alloc_btc=0.4") != std::string::npos);
+
+  const std::string json = format_status_json(s);
+  CHECK(json.find(R"("quotes": [{"symbol": "BTCUSDT", "venue": 0, "position": "0.02", )") !=
+        std::string::npos);
+  CHECK(json.find(R"("buy": {"asked_px": "99.9", "asked_qty": "0.01", "asked_levels": 1, )") !=
+        std::string::npos);
+  CHECK(json.find(R"("obstacle": "refused", "refusal": "RateLimit", "since_ns": 5000000000, )") !=
+        std::string::npos);
+  CHECK(json.find(R"("note": "inventory_cap", "budget": "500", )") != std::string::npos);
+  CHECK(json.find(R"("metrics": {"alloc_btc": 0.4})") != std::string::npos);
 }

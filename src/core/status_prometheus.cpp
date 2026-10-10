@@ -96,6 +96,7 @@ void gateway_metrics(Exposition& e, const StatusSnapshot& s);
 void venue_metrics(Exposition& e, const StatusSnapshot& s);
 void balance_metrics(Exposition& e, const StatusSnapshot& s);
 void perp_metrics(Exposition& e, const StatusSnapshot& s);
+void quote_metrics(Exposition& e, const StatusSnapshot& s);
 
 }  // namespace
 
@@ -167,6 +168,73 @@ void underlying_metrics(Exposition& e,
     if (x.name[0] != '\0')
       e.value_of(max, labels(x), static_cast<double>(x.max_net_raw) * kRawToQuote);
   }
+}
+
+// The quote table, per instrument and side: fastmm_quote_obstacle (the QuoteBlock code: 0 quoting,
+// 1 not wanted, 2 quoting off, 3 pulled, 4 venue killed, 5 feed lag, 6 backoff, 7 starved,
+// 8 refused, 9 pending) and its age, the asked and working quantities and the strategy's budget;
+// fastmm_position per instrument; fastmm_strategy_metric{name} for each ctx.metric.
+void quote_metrics(Exposition& e, const StatusSnapshot& s) {
+  const std::uint32_t n = std::min<std::uint32_t>(s.quote_count, kStatusMaxQuotes);
+  if (n != 0) {
+    const auto labels = [&](std::uint32_t k, std::size_t sd) {
+      return fmt::format("symbol=\"{}\",side=\"{}\"",
+                         label(name_of(s.quotes[k].symbol, sizeof s.quotes[k].symbol)),
+                         sd == 0 ? "buy" : "sell");
+    };
+    struct Field {
+      const char* name;
+      const char* help;
+      double (*value)(const LiveQuoteSide&, std::int64_t);
+    };
+    static constexpr Field fields[] = {
+        {"fastmm_quote_obstacle",
+         "first obstacle to the side's quotes: 0 quoting, 1 not wanted, 2 quoting off, 3 pulled, "
+         "4 venue killed, 5 feed lag, 6 backoff, 7 starved, 8 refused, 9 pending",
+         [](const LiveQuoteSide& q, std::int64_t) { return static_cast<double>(q.block); }},
+        {"fastmm_quote_obstacle_seconds",
+         "how long the side's obstacle has held, seconds",
+         [](const LiveQuoteSide& q, std::int64_t now) {
+           return q.block_since_ns == 0 ? 0.0
+                                        : static_cast<double>(now - q.block_since_ns) * kNsToS;
+         }},
+        {"fastmm_quote_asked_qty",
+         "quantity the strategy asks for on the side over every level, base units",
+         [](const LiveQuoteSide& q, std::int64_t) {
+           return static_cast<double>(q.desired_qty_raw) * kRawToQuote;
+         }},
+        {"fastmm_quote_working_qty",
+         "leaves of the side's open orders, base units",
+         [](const LiveQuoteSide& q, std::int64_t) {
+           return static_cast<double>(q.working_qty_raw) * kRawToQuote;
+         }},
+        {"fastmm_quote_budget",
+         "budget the strategy gave the side (ctx.note_quote), quote currency; 0 when none",
+         [](const LiveQuoteSide& q, std::int64_t) {
+           return static_cast<double>(q.note.budget_raw) * kRawToQuote;
+         }},
+    };
+    for (const Field& f : fields) {
+      e.family(f.name, "gauge", f.help);
+      for (std::uint32_t k = 0; k < n; ++k)
+        for (std::size_t sd = 0; sd < 2; ++sd)
+          e.value_of(f.name, labels(k, sd), f.value(s.quotes[k].q.sides[sd], s.updated_ns));
+    }
+    e.family("fastmm_position", "gauge", "position in the instrument, base units");
+    for (std::uint32_t k = 0; k < n; ++k)
+      e.value_of("fastmm_position",
+                 fmt::format("symbol=\"{}\"",
+                             label(name_of(s.quotes[k].symbol, sizeof s.quotes[k].symbol))),
+                 static_cast<double>(s.quotes[k].q.position_raw) * kRawToQuote);
+  }
+  const std::uint32_t m = std::min<std::uint32_t>(s.metric_count, kMaxStrategyMetrics);
+  if (m == 0) return;
+  e.family("fastmm_strategy_metric", "gauge", "a number the strategy publishes (ctx.metric)");
+  for (std::uint32_t k = 0; k < m; ++k)
+    e.value_of(
+        "fastmm_strategy_metric",
+        fmt::format("name=\"{}\"", label(name_of(s.metrics[k].name, sizeof s.metrics[k].name))),
+        s.metrics[k].value);
 }
 
 // fastmm_balance_{free,locked,total,equity,maintenance}{venue,asset,account}: the balance table's
@@ -291,6 +359,7 @@ void engine_metrics(Exposition& e, const StatusSnapshot& s) {
           "net PnL of earlier sessions that max_loss is measured against as well, quote currency",
           static_cast<double>(s.pnl_carry_raw) * kRawToQuote);
   underlying_metrics(e, "fastmm", s.underlyings);
+  quote_metrics(e, s);
 
   e.counter("fastmm_events_total", "events the engine consumed", s.events);
   e.counter("fastmm_book_updates_total", "book updates applied", s.book_updates);

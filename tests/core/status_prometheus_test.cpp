@@ -335,3 +335,25 @@ TEST_CASE("core.status_prometheus: the perp table per venue and symbol") {
   const StatusSnapshot none = sample();
   CHECK_FALSE(has(format_status_prometheus(none, none.updated_ns), "fastmm_perp"));
 }
+
+TEST_CASE("core.status_prometheus: the quote table and the strategy's metrics") {
+  StatusSnapshot s = sample();
+  CHECK_FALSE(has(format_status_prometheus(s, s.updated_ns), "fastmm_quote_obstacle"));
+  s.quote_count = 1;
+  set_status_name(s.quotes[0].symbol, "BTCUSDT");
+  LiveQuoteSide& bid = s.quotes[0].q.sides[0];
+  bid.desired_qty_raw = 1'000'000;
+  bid.block = QuoteBlock::Starved;
+  bid.block_since_ns = s.updated_ns - 3'000'000'000;
+  s.quotes[0].q.position_raw = -2'000'000;
+  s.metric_count = 1;
+  set_status_name(s.metrics[0].name, "alloc_btc");
+  s.metrics[0].value = 0.4;
+  const std::string text = format_status_prometheus(s, s.updated_ns);
+  CHECK(has(text, "fastmm_quote_obstacle{symbol=\"BTCUSDT\",side=\"buy\"} 7\n"));
+  CHECK(has(text, "fastmm_quote_obstacle{symbol=\"BTCUSDT\",side=\"sell\"} 1\n"));
+  CHECK(has(text, "fastmm_quote_obstacle_seconds{symbol=\"BTCUSDT\",side=\"buy\"} 3\n"));
+  CHECK(has(text, "fastmm_quote_asked_qty{symbol=\"BTCUSDT\",side=\"buy\"} 0.01\n"));
+  CHECK(has(text, "fastmm_position{symbol=\"BTCUSDT\"} -0.02\n"));
+  CHECK(has(text, "fastmm_strategy_metric{name=\"alloc_btc\"} 0.4\n"));
+}

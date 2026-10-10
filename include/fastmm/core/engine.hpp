@@ -64,6 +64,7 @@
 #include "fastmm/core/perp_book.hpp"
 #include "fastmm/core/position.hpp"
 #include "fastmm/core/queue_tracker.hpp"
+#include "fastmm/core/quote_diag.hpp"
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/quote_presence.hpp"
 #include "fastmm/core/record_stream.hpp"
@@ -764,7 +765,9 @@ class Engine {
   // or its venue (an operator pull, a flatten), the instrument is not in the table, its venue's
   // kill switch is engaged (its quotes were pulled when it tripped) or the feed-lag gate holds it.
   bool set_quotes(InstrumentId id, const DesiredQuotes& q) noexcept {
-    if (!quoting_enabled() || FASTMM_UNLIKELY(!instruments_.contains(id))) return false;
+    if (FASTMM_UNLIKELY(!instruments_.contains(id))) return false;
+    note_asked(id, q);
+    if (!quoting_enabled()) return false;
     if (FASTMM_UNLIKELY(inst_pulled_[id.value])) return false;
     const Instrument& inst = instruments_.get(id);
     if (FASTMM_UNLIKELY(risk_.venue_killed(inst.venue) || venue_is_pulled(inst.venue) ||
@@ -775,6 +778,32 @@ class Engine {
     quotes_.reconcile(inst, q, oms_, now_, place);
     flush_out();
     return true;
+  }
+  // ctx.note_quote: the strategy's reason for what it asks on a side (empty: none) and the budget
+  // it gave the side (core/quote_diag.hpp). Cut to kQuoteNoteLen - 1 bytes.
+  void note_quote(InstrumentId id, Side side, std::string_view reason, Notional budget) noexcept {
+    if (FASTMM_UNLIKELY(!instruments_.contains(id))) return;
+    QuoteNote& n = quote_track_[track_index(id, side)].note;
+    const std::size_t len = std::min(reason.size(), kQuoteNoteLen - 1);
+    for (std::size_t i = 0; i < kQuoteNoteLen; ++i) n.reason[i] = i < len ? reason[i] : '\0';
+    n.budget_raw = budget.raw;
+    n.set_ns = now_.ns;
+  }
+  // ctx.metric: a number the strategy publishes by name (the first kMaxStrategyMetrics names;
+  // later ones are dropped). Cut to kStrategyMetricNameLen - 1 bytes.
+  void metric(std::string_view name, double value) noexcept {
+    name = name.substr(0, kStrategyMetricNameLen - 1);
+    for (std::size_t k = 0; k < metric_count_; ++k) {
+      if (std::string_view(metrics_[k].name) == name) {
+        metrics_[k].value = value;
+        return;
+      }
+    }
+    if (metric_count_ == kMaxStrategyMetrics) return;
+    LiveMetric& m = metrics_[metric_count_++];
+    for (std::size_t i = 0; i < kStrategyMetricNameLen; ++i)
+      m.name[i] = i < name.size() ? name[i] : '\0';
+    m.value = value;
   }
   void pull_quotes(InstrumentId id) noexcept {
     enter_api();
@@ -1250,6 +1279,119 @@ class Engine {
     Price px{};
     Qty qty{};
   };
+  // ---- quote diagnostics (core/quote_diag.hpp) --------------------------------------------------
+
+  // Quote diagnostics per instrument and side (publish_quotes): what set_quotes was asked, the
+  // last refusal, the strategy's note, and the obstacle last published with when it began.
+  static constexpr std::int64_t kRefusedNs = 2'000'000'000;
+  struct QuoteTrack {
+    std::int64_t asked_px_raw = 0;
+    std::int64_t asked_qty_raw = 0;
+    std::int64_t refused_ns = 0;
+    std::int64_t since_ns = 0;
+    std::uint8_t asked_levels = 0;
+    RejectReason refused = RejectReason::None;
+    QuoteBlock block = QuoteBlock::NotWanted;
+    QuoteNote note;
+  };
+
+  [[nodiscard]] static std::size_t track_index(InstrumentId id, Side side) noexcept {
+    return (static_cast<std::size_t>(id.value) * 2) + (side == Side::Sell ? 1U : 0U);
+  }
+  // What set_quotes was asked on each side, whether or not it could apply it.
+  void note_asked(InstrumentId id, const DesiredQuotes& q) noexcept {
+    for (const Side side : {Side::Buy, Side::Sell}) {
+      QuoteTrack& t = quote_track_[track_index(id, side)];
+      const auto& levels = q.side(side);
+      t.asked_levels = static_cast<std::uint8_t>(levels.size());
+      t.asked_px_raw = levels.empty() ? 0 : levels[0].price.raw;
+      std::int64_t qty = 0;
+      for (const Level& l : levels) qty += l.qty.raw;
+      t.asked_qty_raw = qty;
+    }
+  }
+  void note_refusal(InstrumentId id, Side side, RejectReason reason) noexcept {
+    if (id.value >= kMaxInstruments) return;
+    QuoteTrack& t = quote_track_[track_index(id, side)];
+    t.refused_ns = now_.ns;
+    t.refused = reason;
+  }
+  // The first obstacle between what the strategy asked for on the side and orders working there.
+  [[nodiscard]] QuoteBlock quote_block(const Instrument& inst,
+                                       Side side,
+                                       const QuoteTrack& t,
+                                       std::int64_t working_qty) const noexcept {
+    const InstrumentId id = inst.id;
+    if (t.asked_qty_raw <= 0) return QuoteBlock::NotWanted;
+    if (!quoting_enabled()) return QuoteBlock::QuotingOff;
+    // A venue kill pulls the venue's quotes too; the kill is the cause to report.
+    if (risk_.venue_killed(inst.venue)) return QuoteBlock::VenueKilled;
+    if (inst_pulled_[id.value] || quotes_.pulled(id) || venue_is_pulled(inst.venue))
+      return QuoteBlock::Pulled;
+    if (health_.gated(inst.venue, now_)) return QuoteBlock::FeedLag;
+    // The QuoteManager keeps an order whose leaves cover min_qty_bps of the target.
+    if (static_cast<Int128>(working_qty) * 10'000 >=
+        static_cast<Int128>(t.asked_qty_raw) * quotes_.params().min_qty_bps)
+      return QuoteBlock::Quoting;
+    if (quotes_.backing_off(id, side, now_)) return QuoteBlock::Backoff;
+    if (quotes_.starved(id)) return QuoteBlock::Starved;
+    if (t.refused != RejectReason::None && now_.ns - t.refused_ns < kRefusedNs)
+      return QuoteBlock::Refused;
+    return QuoteBlock::Pending;
+  }
+  // Fills live.quotes; a side's obstacle keeps the time it began until it changes.
+  void publish_quotes(EngineLiveStats& live) noexcept {
+    std::uint32_t n = 0;
+    for (const Instrument& inst : instruments_) {
+      if (n == kMaxInstruments) break;
+      LiveQuoteInstrument& q = live.quotes[n++];
+      const Position& p = positions_.get(inst.id);
+      q.instrument = inst.id.value;
+      q.venue = inst.venue.value;
+      q.position_raw = p.qty.raw;
+      q.avg_px_raw = p.avg_px.raw;
+      q.realized_raw = p.realized.raw;
+      q.unrealized_raw = p.unrealized.raw;
+      q.mid_raw = books_[inst.id.value].mid().raw;
+      for (const Side side : {Side::Buy, Side::Sell}) {
+        QuoteTrack& t = quote_track_[track_index(inst.id, side)];
+        LiveQuoteSide& out = q.sides[static_cast<std::size_t>(side)];
+        out.desired_px_raw = t.asked_px_raw;
+        out.desired_qty_raw = t.asked_qty_raw;
+        out.desired_levels = t.asked_levels;
+        std::int64_t working = 0;
+        std::int64_t best = 0;
+        std::uint16_t orders = 0;
+        for (std::size_t k = 0; k < kQuoteDiagAccounts; ++k) out.account_qty_raw[k] = 0;
+        for (std::uint32_t lvl = 0; lvl < kMaxQuoteLevels; ++lvl) {
+          const Handle<Order> h = quotes_.slot_handle(inst.id, side, lvl);
+          if (!h.valid() || !oms_.is_live(h)) continue;
+          const Order& o = oms_.get(h);
+          const std::int64_t leaves = o.leaves_qty().raw;
+          if (leaves <= 0) continue;
+          working += leaves;
+          ++orders;
+          if (best == 0 || (side == Side::Buy ? o.price.raw > best : o.price.raw < best))
+            best = o.price.raw;
+          const std::size_t a = pools_on_ ? pool_index(inst.venue, o.venue) : 0;
+          if (a < kQuoteDiagAccounts) out.account_qty_raw[a] += leaves;
+        }
+        out.working_qty_raw = working;
+        out.working_px_raw = best;
+        out.working_orders = orders;
+        const QuoteBlock block = quote_block(inst, side, t, working);
+        out.reason = block == QuoteBlock::Refused ? t.refused : RejectReason::None;
+        if (block != t.block || t.since_ns == 0) {
+          t.since_ns = now_.ns;
+          t.block = block;
+        }
+        out.block = block;
+        out.block_since_ns = t.since_ns;
+        out.note = t.note;
+      }
+    }
+    live.quote_count = n;
+  }
   // Which of an account's limits leaves no room (no_order_room was true).
   [[nodiscard]] static RejectSource room_refusal(const OrderBudget& b) noexcept {
     if (b.venue_paused) return RejectSource::AccountPaused;
@@ -1650,6 +1792,7 @@ class Engine {
       stats_.venue_rejects_by_reason.add(m.reason);
       FASTMM_LOG_WARN(
           "order {} rejected: {} ({})", encode_cl_ord_id(m.cl_ord_id), m.reason, m.venue_code);
+      if (u.order.instrument.valid()) note_refusal(u.order.instrument, u.order.side, m.reason);
       if (FASTMM_UNLIKELY(records_.enabled()) && u.order.instrument.valid()) {
         const Order& o = u.order;
         const bool local = m.text.view().starts_with("local rate limit");
@@ -2773,6 +2916,7 @@ class Engine {
         queue_risk_reject(
             rr, inst, req.side, req.type, req.price, req.qty, ClientOrderId{}, req.user_tag, false);
       }
+      note_refusal(req.instrument, req.side, rr);
       if (FASTMM_UNLIKELY(records_.enabled())) {
         RejectSource source = RejectSource::Risk;
         if (rr == RejectReason::RateLimit)
@@ -2940,6 +3084,7 @@ class Engine {
       log_risk_reject(rr, inst, o.side, px, qty, true);
       if constexpr (has_hook(Hook::RiskReject))
         queue_risk_reject(rr, inst, o.side, o.type, px, qty, o.cl_ord_id, o.user_tag, true);
+      note_refusal(o.instrument, o.side, rr);
       if (FASTMM_UNLIKELY(records_.enabled())) {
         std::uint8_t flags = RejectRecord::kReplace;
         if (o.has(Order::kReduceOnly)) flags |= RejectRecord::kReduceOnly;
@@ -3310,6 +3455,9 @@ class Engine {
       live.risk_orders_per_sec = risk_.limits().orders_per_sec;
       live.risk_burst = risk_.limits().burst;
     }
+    publish_quotes(live);
+    live.metric_count = static_cast<std::uint32_t>(metric_count_);
+    for (std::size_t k = 0; k < metric_count_; ++k) live.metrics[k] = metrics_[k];
     live.param_updates = stats_.param_updates;
     live.param_control_seq = control_param_seq_;
     live.param_last_seq = last_param_.publish_seq;
@@ -3390,6 +3538,10 @@ class Engine {
   Timestamp last_publish_{};
   // The last ParamUpdate applied (its fields are not read: the strategy holds the values), the
   // engine time of it, and the publish_seq of the last from the control socket (EngineLiveStats).
+  std::unique_ptr<QuoteTrack[]> quote_track_ =
+      std::make_unique<QuoteTrack[]>(static_cast<std::size_t>(kMaxInstruments) * 2);
+  std::array<LiveMetric, kMaxStrategyMetrics> metrics_{};
+  std::size_t metric_count_ = 0;
   // RejectRecord folding, per instrument and side (record_reject).
   std::unique_ptr<RejectFold[]> reject_folds_ =
       std::make_unique<RejectFold[]>(static_cast<std::size_t>(kMaxInstruments) * 2);

@@ -295,3 +295,62 @@ TEST_CASE("core.engine: the first global kill reason is kept and published, a re
   CHECK(to_string(KillReason::AllVenuesKilled) == "AllVenuesKilled");
   CHECK(to_string(ControlCommand::TripVenueKill) == "TripVenueKill");
 }
+
+TEST_CASE("core.engine: the quote table says what each side asks for, works and is held by") {
+  TwoVenues f;
+  DesiredQuotes bid_only;
+  bid_only.bid(px("99.90"), qt("0.01"));
+  REQUIRE(f.engine->set_quotes(kBtc, bid_only));
+  REQUIRE(f.engine->set_quotes(kEth, quotes("99.90", "100.10")));
+  f.ack_all();
+  f.engine->context().note_quote(
+      kBtc, Side::Sell, "inventory_cap_and_more_than_fits", Notional::from_decimal("500").value());
+  f.engine->context().metric("alloc_btc", 0.25);
+  f.engine->context().metric("alloc_btc", 0.4);
+  f.engine->context().metric("regime", 2);
+
+  f.clock.advance(seconds(3));
+  f.control(ControlCommand::TripVenueKill, kVenue1, KillReason::VenueFatal);
+  const EngineLiveStats live = f.engine->live_stats();
+  REQUIRE(live.quote_count == 2);
+  const LiveQuoteInstrument& btc = live.quotes[kBtc.value];
+  const LiveQuoteInstrument& eth = live.quotes[kEth.value];
+  CHECK(btc.instrument == kBtc.value);
+  CHECK(btc.mid_raw == px("100.01").raw);
+
+  const LiveQuoteSide& bid = btc.sides[static_cast<std::size_t>(Side::Buy)];
+  CHECK(bid.block == QuoteBlock::Quoting);
+  CHECK(bid.desired_px_raw == px("99.90").raw);
+  CHECK(bid.desired_qty_raw == qt("0.01").raw);
+  CHECK(bid.desired_levels == 1);
+  CHECK(bid.working_px_raw == px("99.90").raw);
+  CHECK(bid.working_qty_raw == qt("0.01").raw);
+  CHECK(bid.working_orders == 1);
+  CHECK(bid.account_qty_raw[0] == qt("0.01").raw);
+
+  // Nothing asked: not wanted, and the strategy's note says why (cut to fit).
+  const LiveQuoteSide& ask = btc.sides[static_cast<std::size_t>(Side::Sell)];
+  CHECK(ask.block == QuoteBlock::NotWanted);
+  CHECK(ask.working_qty_raw == 0);
+  CHECK(ask.note.reason_view() == "inventory_cap_and_more_");
+  CHECK(ask.note.budget_raw == Notional::from_decimal("500").value().raw);
+
+  // Venue 1 is killed: its quotes are cancelled, and both sides say so from the kill on.
+  for (const LiveQuoteSide& s : eth.sides) {
+    CHECK(s.block == QuoteBlock::VenueKilled);
+    CHECK(s.desired_qty_raw == qt("0.01").raw);
+    CHECK(s.block_since_ns == f.clock.now().ns);
+  }
+
+  REQUIRE(live.metric_count == 2);
+  CHECK(std::string_view(live.metrics[0].name) == "alloc_btc");
+  CHECK(live.metrics[0].value == 0.4);
+  CHECK(std::string_view(live.metrics[1].name) == "regime");
+
+  // The strategy stops asking on venue 1: no obstacle left to report.
+  f.control(ControlCommand::ResetKill, kVenue1);
+  REQUIRE(f.engine->set_quotes(kEth, DesiredQuotes{}));
+  f.control(ControlCommand::ResetKill, kVenue1);
+  for (const LiveQuoteSide& s : f.engine->live_stats().quotes[kEth.value].sides)
+    CHECK(s.block == QuoteBlock::NotWanted);
+}

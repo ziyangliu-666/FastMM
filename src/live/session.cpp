@@ -1969,6 +1969,17 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     set_status_rejects(snap.venue_reject_reasons, live.stats.venue_rejects_by_reason);
     snap.quoting_elapsed_ns = live.quoting_elapsed_ns;
     snap.quoting_two_sided_ns = live.quoting_two_sided_ns;
+    snap.quote_count = std::min<std::uint32_t>(live.quote_count, kStatusMaxQuotes);
+    for (std::uint32_t k = 0; k < snap.quote_count; ++k) {
+      StatusQuote& sq = snap.quotes[k];
+      sq.q = live.quotes[k];
+      const InstrumentId qid{live.quotes[k].instrument};
+      set_status_name(
+          sq.symbol,
+          instruments.contains(qid) ? instruments.get(qid).symbol.view() : std::string_view());
+    }
+    snap.metric_count = std::min<std::uint32_t>(live.metric_count, kMaxStrategyMetrics);
+    for (std::uint32_t k = 0; k < snap.metric_count; ++k) snap.metrics[k] = live.metrics[k];
     snap.risk_tokens = live.risk_tokens;
     snap.risk_token_wait_ns = live.risk_token_wait_ns;
     snap.risk_orders_per_sec = live.risk_orders_per_sec;
