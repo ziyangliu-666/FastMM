@@ -569,24 +569,44 @@ static_assert(sizeof(EngineTimeMsg) == 128);
 // of the parameter in the strategy's schema; the journal header records the schema, so a replay
 // resolves indices by name. A raw value is the field's int64 form (ParamDesc::get_raw): the value
 // of an integer or bool, the raw fixed-point value of Price, Qty, Notional and Ratio, the
-// nanoseconds of a Duration and the IEEE-754 bits of a double.
+// nanoseconds of a Duration and the IEEE-754 bits of a double. `origin` names the publisher (the
+// control socket's sequence is the one fastmm-ctl waits on) and `source` who asked for the change
+// (`fastmm-ctl param --source`), both zero in journals written before they existed.
 struct ParamUpdateMsg {
   static constexpr std::size_t kMaxFields = 32;
+  static constexpr std::size_t kSourceLen = 40;  // `source`, NUL-terminated
   // hdr.instrument of an update for every instrument: the invalid id.
   static constexpr InstrumentId kAllInstruments{};
+  enum class Origin : std::uint8_t {
+    Strategy = 0,  // the strategy's own publisher (a slow tier, a model), or not recorded
+    Control = 1,   // the control socket (fastmm-ctl param)
+  };
 
   EventHeader hdr;
   std::uint32_t count;              // pairs used
-  std::uint32_t pad0_;              //
+  Origin origin;                    //
+  std::uint8_t pad0_[3];            //
   std::uint64_t publish_seq;        // the publisher's sequence number, from 1
   std::uint16_t field[kMaxFields];  // schema index of each pair
-  std::uint8_t pad1_[48];           //
+  char source[kSourceLen];          // who asked for it, e.g. "manual", "scheduled:drain"
+  std::uint8_t pad1_[8];            //
   std::int64_t value[kMaxFields];   // raw value of each pair
 
   [[nodiscard]] bool all_instruments() const noexcept { return !hdr.instrument.valid(); }
+  [[nodiscard]] std::string_view source_view() const noexcept {
+    std::size_t n = 0;
+    while (n < kSourceLen && source[n] != '\0') ++n;
+    return {source, n};
+  }
+  // Copies `s` into `source`, cut to kSourceLen - 1 bytes.
+  void set_source(std::string_view s) noexcept {
+    const std::size_t n = s.size() < kSourceLen - 1 ? s.size() : kSourceLen - 1;
+    for (std::size_t i = 0; i < kSourceLen; ++i) source[i] = i < n ? s[i] : '\0';
+  }
 };
 static_assert(sizeof(ParamUpdateMsg) == 448 && std::is_trivially_copyable_v<ParamUpdateMsg>);
-static_assert(offsetof(ParamUpdateMsg, count) == 64 && offsetof(ParamUpdateMsg, field) == 80 &&
+static_assert(offsetof(ParamUpdateMsg, count) == 64 && offsetof(ParamUpdateMsg, origin) == 68 &&
+              offsetof(ParamUpdateMsg, field) == 80 && offsetof(ParamUpdateMsg, source) == 144 &&
               offsetof(ParamUpdateMsg, value) == 192);
 
 // ---- outbound (engine -> venue) --------------------------------------------------------

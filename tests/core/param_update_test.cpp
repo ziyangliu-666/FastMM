@@ -285,6 +285,75 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "core.params: a control update carries its source, is journaled with it, and the engine "
+    "reports its sequence number once applied") {
+  const InstrumentTable table = one_instrument();
+  SimClock clock{Timestamp{seconds(1000).ns}};
+  CountingTransport transport;
+  MsgRing param_ring(1U << 16);
+  MsgRing journal_ring(1U << 20);
+  RingFeed feed;
+  REQUIRE(feed.add_ring(&param_ring));
+  ParamSpy strategy;
+  ParamPublisher control(ParamSink::to_ring(param_ring), strategy.params());
+  using E = Engine<ParamSpy, SimClock, CountingTransport, RingFeed>;
+  auto engine =
+      std::make_unique<E>(EngineConfig{}, table, clock, transport, feed, strategy, &journal_ring);
+  engine->warm_up();
+  engine->start();
+
+  const std::uint64_t seq = control.publish_as({{"half_spread_bps", "8"}},
+                                               ParamPublisher::kAllInstruments,
+                                               ParamUpdateMsg::Origin::Control,
+                                               "scheduled:drain");
+  CHECK(seq == 1);
+  CHECK(control.published() == 1);
+  // Queued, not applied: the engine reports nothing until it has consumed the update.
+  CHECK(engine->live_stats().param_control_seq == 0);
+  clock.advance(milliseconds(1));
+  CHECK(engine->step() == 1);
+  EngineLiveStats live = engine->live_stats();
+  CHECK(live.param_updates == 1);
+  CHECK(live.param_control_seq == 1);
+  CHECK(live.param_last_seq == 1);
+  CHECK(live.param_last_origin == ParamUpdateMsg::Origin::Control);
+  CHECK(std::string_view(live.param_last_source) == "scheduled:drain");
+  CHECK(live.param_last_ns == clock.now().ns);
+
+  // An update of the strategy's own publisher is counted but leaves the control socket's sequence
+  // (and is published with the next latency publication, not at once).
+  ParamPublisher own(ParamSink::to_ring(param_ring), strategy.params());
+  REQUIRE(own.publish({{"levels", "2"}}));
+  engine->step();
+  CHECK(engine->live_stats().param_updates == 1);
+  // A source longer than the field is cut, never refused.
+  CHECK(control.publish_as({{"levels", "3"}},
+                           ParamPublisher::kAllInstruments,
+                           ParamUpdateMsg::Origin::Control,
+                           std::string(60, 'x')) == 2);
+  engine->step();
+  live = engine->live_stats();
+  CHECK(live.param_updates == 3);
+  CHECK(live.param_control_seq == 2);
+  CHECK(std::string_view(live.param_last_source) ==
+        std::string(ParamUpdateMsg::kSourceLen - 1, 'x'));
+
+  std::vector<std::pair<ParamUpdateMsg::Origin, std::string>> journaled;
+  while (const EventHeader* h = front(journal_ring)) {
+    if (h->type == EventType::ParamUpdate) {
+      const auto& m = msg_cast<ParamUpdateMsg>(h);
+      journaled.emplace_back(m.origin, std::string(m.source_view()));
+    }
+    journal_ring.release();
+  }
+  REQUIRE(journaled.size() == 3);
+  CHECK(journaled[0].first == ParamUpdateMsg::Origin::Control);
+  CHECK(journaled[0].second == "scheduled:drain");
+  CHECK(journaled[1].first == ParamUpdateMsg::Origin::Strategy);
+  CHECK(journaled[1].second.empty());
+}
+
+TEST_CASE(
     "core.params: max_param_age disables quoting before the first update and on an event past the "
     "deadline") {
   const InstrumentTable table = one_instrument();

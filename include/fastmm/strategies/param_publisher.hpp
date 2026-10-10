@@ -33,6 +33,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -88,20 +89,30 @@ class ParamPublisher {
   // Validates and sends one update. Throws std::invalid_argument when it is invalid; returns false
   // when the sink refused it (ring full) or the publisher is closed.
   bool publish(const std::vector<ParamValue>& values, InstrumentId inst = kAllInstruments) {
+    return publish_as(values, inst, ParamUpdateMsg::Origin::Strategy, {}) != 0;
+  }
+  // publish() with the update's origin and source (ParamUpdateMsg::source, cut to 39 bytes).
+  // The update's publish_seq, 0 when the sink refused it or the publisher is closed.
+  std::uint64_t publish_as(const std::vector<ParamValue>& values,
+                           InstrumentId inst,
+                           ParamUpdateMsg::Origin origin,
+                           std::string_view source) {
     const std::lock_guard<std::mutex> lock(mutex_);
-    if (closed_) return false;
+    if (closed_) return 0;
     ParamUpdateMsg m{};
     std::vector<std::pair<std::size_t, Block>> next;
     if (auto err = build_locked(values, inst, m, &next)) throw std::invalid_argument(*err);
     m.publish_seq = seq_ + 1;
+    m.origin = origin;
+    m.set_source(source);
     m.hdr.recv_ts = wall_now();
     if (!sink_.push(sink_.ctx, m)) {
       ++refused_;
-      return false;
+      return 0;
     }
     ++seq_;
     for (auto& [k, block] : next) blocks_[k] = std::move(block);
-    return true;
+    return seq_;
   }
 
   // The update publish() would send, without sending it or changing the copy; the error message

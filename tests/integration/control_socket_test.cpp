@@ -49,7 +49,7 @@ InstrumentTable make_table() {
 struct Fake {
   InstrumentTable table = make_table();
   std::vector<std::vector<std::byte>> sent;
-  std::vector<std::pair<ControlPlane::ParamValues, InstrumentId>> params;
+  std::vector<ControlPlane::ParamRequest> params;
   std::string param_error;
   bool ring_full = false;
   bool stopped = false;
@@ -66,10 +66,14 @@ struct Fake {
       sent.emplace_back(b, b + h.len);
       return true;
     };
-    plane.params = [this](const ControlPlane::ParamValues& v, InstrumentId i) {
-      if (!param_error.empty()) return param_error;
-      params.emplace_back(v, i);
-      return std::string();
+    plane.params = [this](const ControlPlane::ParamRequest& r) {
+      if (!param_error.empty()) return ControlPlane::ParamResult{param_error, 0};
+      params.push_back(r);
+      return ControlPlane::ParamResult{{}, params.size()};
+    };
+    plane.describe_params = [](InstrumentId i) {
+      return std::string(i.valid() ? "published=2 applied=1 pending=1\nvalues=published\nq=2"
+                                   : "published=2 applied=1 pending=1\nvalues=published\nq=1");
     };
     plane.status = [] { return std::string("state      RUNNING\n"); };
     plane.request_stop = [this] { stopped = true; };
@@ -193,21 +197,40 @@ TEST_CASE(
 
 TEST_CASE("integration.control: param is validated on the control thread, never on the ring") {
   Fake f;
-  CHECK(f.run("param half_spread_bps=8 quote_qty=0.01").starts_with("ok"));
+  // Queued, not applied: the reply carries the publisher's sequence number to wait on.
+  CHECK(f.run("param half_spread_bps=8 quote_qty=0.01") ==
+        "ok param queued seq=1 (every instrument)\n");
   REQUIRE(f.params.size() == 1);
-  CHECK(f.params[0].first.size() == 2);
-  CHECK(f.params[0].first[0].first == "half_spread_bps");
-  CHECK(f.params[0].first[0].second == "8");
-  CHECK_FALSE(f.params[0].second.valid());
-  CHECK(f.run("param half_spread_bps=8 --instrument ETHUSDT").starts_with("ok"));
-  CHECK(f.params[1].second == InstrumentId{1});
+  CHECK(f.params[0].values.size() == 2);
+  CHECK(f.params[0].values[0].first == "half_spread_bps");
+  CHECK(f.params[0].values[0].second == "8");
+  CHECK_FALSE(f.params[0].instrument.valid());
+  CHECK(f.params[0].source.empty());
+  CHECK(f.run("param half_spread_bps=8 --instrument ETHUSDT --source scheduled:drain") ==
+        "ok param queued seq=2 source=scheduled:drain (instrument ETHUSDT)\n");
+  CHECK(f.params[1].instrument == InstrumentId{1});
+  CHECK(f.params[1].source == "scheduled:drain");
   CHECK(f.sent.empty());  // a parameter update is not a control message
+  CHECK(f.run("param a=1 --source").starts_with("error"));
+  CHECK(f.run("param a=1 --source " + std::string(ParamUpdateMsg::kSourceLen, 'x'))
+            .starts_with("error"));
+  CHECK(f.run("pull --source manual").starts_with("error"));  // param's flag only
+  CHECK(f.params.size() == 2);
 
   f.param_error = "unknown parameter 'nope'";
   const std::string reply = f.run("param nope=1");
   CHECK(reply.starts_with("error"));
   CHECK(reply.find("unknown parameter") != std::string::npos);
   CHECK(f.run("param").starts_with("error"));
+}
+
+TEST_CASE("integration.control: params reports the sequence numbers and the values") {
+  Fake f;
+  CHECK(f.run("params") == "ok published=2 applied=1 pending=1\nvalues=published\nq=1\n");
+  CHECK(f.run("params --instrument ETHUSDT").ends_with("q=2\n"));
+  CHECK(f.run("params a=1").starts_with("error"));
+  f.plane.describe_params = nullptr;
+  CHECK(f.run("params").starts_with("error"));
 }
 
 TEST_CASE("integration.control: kill, unkill, stop, status and the refusals") {

@@ -304,6 +304,14 @@ void engine_metrics(Exposition& e, const StatusSnapshot& s) {
       "fastmm_quotes_withheld_balance_total",
       "quote orders held back after their old order ended: the balance no longer covered them",
       s.balance_withheld);
+  e.counter("fastmm_param_updates_total",
+            "strategy parameter updates the engine has applied",
+            s.param_updates);
+  e.gauge("fastmm_param_control_pending",
+          "parameter updates the control socket sent that the engine has not applied yet",
+          s.param_control_published > s.param_control_applied
+              ? static_cast<double>(s.param_control_published - s.param_control_applied)
+              : 0.0);
   e.gauge("fastmm_flatten_state",
           "FlattenState of the operator flatten: 0 off, 1 working, 2 flat, 3 timed out, 4 stopped",
           static_cast<double>(s.flatten_state));

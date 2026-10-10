@@ -5,6 +5,8 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- live: `fastmm-ctl param` answers `queued seq=N`; `--wait` waits for it; `params` reads them back.
+- live: `param --source` names who changed a parameter, in the journal and the status file (v19).
 - live: `fastmm-live` logs a topology check at start: hot threads sharing a core, and adaptive spin.
 - python: `fastmm init --profile production` adds `production.toml`, tuned for a dedicated host.
 - python: `fastmm sim` runs the simulated exchange; `fastmm init` writes `sim.toml` to trade it live.

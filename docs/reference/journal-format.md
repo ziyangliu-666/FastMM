@@ -162,9 +162,13 @@ A `ParamUpdate` message (448 bytes) is an engine input with new strategy paramet
 |---:|---:|---|---|
 | 8 | 4 | `instrument` | the target instrument; `0xFFFFFFFF` for all instruments |
 | 64 | 4 | `count` | pairs used, at most 32 |
+| 68 | 1 | `origin` | 0 the strategy's own publisher (or not recorded), 1 the control socket (`fastmm-ctl param`) |
 | 72 | 8 | `publish_seq` | the publisher's sequence number, from 1 |
 | 80 | 64 | `field` | `uint16` each: the parameter's index in the parameter table |
+| 144 | 40 | `source` | who asked for it (`fastmm-ctl param --source`), NUL-terminated; empty when not given |
 | 192 | 256 | `value` | `int64` each: the raw value |
+
+`origin` and `source` sit in bytes that were padding before, so a journal written before them reads with origin 0 and an empty source.
 
 A raw value is the value of an `int` or `bool`, raw fixed point for `decimal` and `bps` (1 bp = 10000), nanoseconds for `ms` and the IEEE-754 bits of a `double`. Replay maps each field through the parameter table to the replaying strategy's parameter with the same name and type, and drops a field that has none.
 

@@ -8,7 +8,7 @@ fastmm-ctl --name sim-local pull --instrument BTCUSDT
 fastmm-ctl --name sim-local flatten --max-slippage-bps 30
 ```
 
-Every command except `param`, `status`, `stop` and `handoff` becomes a message on the engine's control ring, so the journal records it and a replay reproduces the session exactly ([Determinism](../../explanation/determinism.md)). `param` is validated against the strategy's schema on the control thread and reaches the engine as a `ParamUpdate`, which the journal records too.
+Every command except `param`, `status`, `stop` and `handoff` becomes a message on the engine's control ring, so the journal records it and a replay reproduces the session exactly ([Determinism](../../explanation/determinism.md)). `param` is validated against the strategy's schema on the control thread and reaches the engine as a `ParamUpdate`, which the journal records too, with its `--source`.
 
 ## The socket
 
@@ -32,7 +32,8 @@ The control thread reads the socket every 50 ms. A command reaches the engine at
 |---|---|
 | `pull [--instrument SYM \| --venue NAME]` | Stops quoting and pulls the quotes. Without a scope the whole session stops quoting; with one only that instrument or venue does, and the rest keeps trading. Working orders that are not quotes stay. |
 | `resume [--instrument SYM \| --venue NAME]` | Quotes again. Without a scope it also clears every scoped pull and stops a running flatten. |
-| `param <name>=<value> ... [--instrument SYM]` | New strategy parameters. Validated here first: an unknown name, a value out of range or a failed `validate()` is refused and nothing is published ([Strategy parameters](../../reference/strategy-api.md#parameters)). |
+| `param <name>=<value> ... [--instrument SYM] [--source WHO]` | New strategy parameters. Validated here first: an unknown name, a value out of range or a failed `validate()` is refused and nothing is published ([Strategy parameters](../../reference/strategy-api.md#parameters)). The reply `ok param queued seq=N` means the update is on the engine's ring, not that the engine has applied it ([below](#confirm-a-parameter-change)). `--source` records who asked for it (`manual`, `scheduled:drain`, at most 39 bytes) in the journal and the status. |
+| `params [--instrument SYM]` | The control socket's sequence numbers, published and applied, the source of the last update, then the parameters' values, one `name=value` per line ([below](#confirm-a-parameter-change)). |
 | `limits <key>=<value> ...` | New risk limits. The keys are the `[risk]` keys and `underlying.<BASE>.max_net` for a base asset with a `[risk.underlying.<BASE>]` section; the ones you do not name keep the values the session started with. |
 | `flatten [--instrument SYM] [--max-slippage-bps N]` | The engine works the position off itself ([below](#flatten)). |
 | `kill` | Trips the global kill switch: quoting off, every quote pulled, every working order cancelled. The position stays. |
@@ -63,6 +64,42 @@ ok limits queued (2 key(s))
 ```
 
 New limits take effect on the next pre-trade check, except `price_collar_bps` and `fat_finger_bps`, whose bands are recomputed on the next book or trade update of each instrument.
+
+## Confirm a parameter change
+
+`param` answers once the update is queued. The engine applies it at its next step and then reports the update's sequence number as applied; `--wait <ms>` makes `fastmm-ctl` wait for that, and exit 4 when it does not come in time:
+
+```bash
+fastmm-ctl --name sim-local --wait 5000 param half_spread_bps=7 --source scheduled:drain
+```
+
+```text
+ok param queued seq=1 source=scheduled:drain (every instrument)
+ok param applied seq=1
+```
+
+`params` reads the values back:
+
+```bash
+fastmm-ctl --name sim-local params
+```
+
+```text
+ok published=1 applied=1 pending=0 engine_updates=1 last_seq=1 last_origin=control last_source=scheduled:drain
+values=applied
+half_spread_bps=7
+skew_bps_per_unit=1
+quote_qty=0.001
+max_inventory=0.01
+requote_threshold_ticks=1
+pull_on_stale_ms=2000
+levels=1
+level_step_ticks=1
+```
+
+`published` counts the updates the control socket sent, `applied` is the sequence number of the last one the engine has applied. While they differ, the values are the ones the engine is about to apply (`values=published`). The status file carries the same numbers and the source of the last update (`fastmm-top`, `--json` under `params`; [Status file](../../reference/status-file.md)), and the journal records each update with its origin and source ([Journal format](../../reference/journal-format.md#parameter-updates)).
+
+A strategy that brings its own publisher (`LiveStrategy::set_params`) numbers its updates itself: its replies carry no `seq`, `--wait` cannot confirm them and `params` shows no values.
 
 ## Flatten
 

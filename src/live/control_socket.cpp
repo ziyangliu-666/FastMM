@@ -24,7 +24,11 @@ constexpr std::string_view kUsage =
     "  pull [--instrument SYM | --venue NAME]   stop quoting: everywhere, or in that scope\n"
     "  resume [--instrument SYM | --venue NAME] quote again; without a scope it also clears\n"
     "                                           every scoped pull and stops a running flatten\n"
-    "  param <name>=<value> ... [--instrument SYM]  new strategy parameters, validated here\n"
+    "  param <name>=<value> ... [--instrument SYM] [--source WHO]\n"
+    "                                           new strategy parameters, validated here; the\n"
+    "                                           reply's seq is applied once `params` shows it\n"
+    "  params [--instrument SYM]                the parameters' values, and the sequence\n"
+    "                                           numbers published and applied\n"
     "  limits <key>=<value> ...                 new risk limits (the [risk] keys, and\n"
     "                                           underlying.<BASE>.max_net)\n"
     "  flatten [--instrument SYM] [--max-slippage-bps N]  work the position off, reduce-only\n"
@@ -105,6 +109,7 @@ struct Scope {
   VenueId venue = VenueId::invalid();
   std::int64_t slippage_bps = 0;
   ControlPlane::ParamValues values;
+  std::string source;
 };
 
 // Parses the flags of `args`; `key=value` pairs go into scope.values. The error message, empty on
@@ -114,7 +119,8 @@ std::string parse_args(const ControlPlane& plane,
                        bool allow_venue,
                        bool allow_slippage,
                        bool allow_values,
-                       Scope& scope) {
+                       Scope& scope,
+                       bool allow_source = false) {
   for (std::size_t i = 0; i < args.size(); ++i) {
     const std::string_view a = args[i];
     const auto value = [&](std::string_view& out) {
@@ -138,6 +144,12 @@ std::string parse_args(const ControlPlane& plane,
       const auto r = std::from_chars(v.data(), v.data() + v.size(), scope.slippage_bps);
       if (r.ec != std::errc{} || r.ptr != v.data() + v.size() || scope.slippage_bps <= 0)
         return "--max-slippage-bps needs whole basis points > 0";
+    } else if (a == "--source") {
+      if (!allow_source) return "--source is not a flag of this command";
+      if (!value(v)) return "--source needs a name, e.g. manual or scheduled:drain";
+      if (v.size() >= ParamUpdateMsg::kSourceLen)
+        return "--source is at most " + std::to_string(ParamUpdateMsg::kSourceLen - 1) + " bytes";
+      scope.source = std::string(v);
     } else if (allow_values && a.find('=') != std::string_view::npos) {
       const std::size_t eq = a.find('=');
       if (eq == 0 || eq + 1 == a.size()) return "'" + std::string(a) + "' is not name=value";
@@ -262,13 +274,26 @@ std::string control_command(std::string_view request, ControlPlane& plane) {
   }
   if (verb == "param") {
     Scope scope;
-    if (const std::string err = parse_args(plane, args, false, false, true, scope); !err.empty())
+    if (const std::string err = parse_args(plane, args, false, false, true, scope, true);
+        !err.empty())
       return error(err);
     if (scope.values.empty()) return error("param needs at least one name=value");
     if (!plane.params) return error("this session takes no parameter updates");
-    const std::string err = plane.params(scope.values, scope.instrument);
-    if (!err.empty()) return error(err);
-    return ok("param applied" + scope_text(plane, scope));
+    const ControlPlane::ParamResult r =
+        plane.params({std::move(scope.values), scope.instrument, scope.source});
+    if (!r.error.empty()) return error(r.error);
+    // Queued, not applied: the engine applies it at its next step and `params` then shows the seq.
+    std::string what = "param queued";
+    if (r.seq != 0) what += " seq=" + std::to_string(r.seq);
+    if (!scope.source.empty()) what += " source=" + scope.source;
+    return ok(what + scope_text(plane, scope));
+  }
+  if (verb == "params") {
+    Scope scope;
+    if (const std::string err = parse_args(plane, args, false, false, false, scope); !err.empty())
+      return error(err);
+    if (!plane.describe_params) return error("this session takes no parameter updates");
+    return ok(plane.describe_params(scope.instrument));
   }
   if (verb == "limits") {
     Scope scope;

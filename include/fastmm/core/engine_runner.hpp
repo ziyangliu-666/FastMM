@@ -4,6 +4,7 @@
 // hot path. EngineRunner<E> adapts a concrete Engine instantiation.
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/latency.hpp"
+#include "fastmm/core/messages.hpp"
 #include "fastmm/core/perp_book.hpp"
 #include "fastmm/core/reject_counters.hpp"
 #include "fastmm/core/underlying.hpp"
@@ -134,6 +135,15 @@ struct EngineLiveStats {
   std::int64_t quoting_two_sided_ns = 0;
   // [risk] max_loss as the engine applies it now (fastmm-ctl limits changes it); zero when off.
   std::int64_t max_loss_raw = 0;
+  // Parameter updates (ParamUpdateMsg) the engine has applied; the last one (its publisher's
+  // sequence number, origin and source, and the engine time it was applied at); and the
+  // publish_seq of the last one from the control socket, which fastmm-ctl param --wait waits on.
+  std::uint64_t param_updates = 0;
+  std::uint64_t param_control_seq = 0;
+  std::uint64_t param_last_seq = 0;
+  std::int64_t param_last_ns = 0;
+  ParamUpdateMsg::Origin param_last_origin = ParamUpdateMsg::Origin::Strategy;
+  char param_last_source[ParamUpdateMsg::kSourceLen] = {};
   // [risk.underlying], by the index of the session's UnderlyingPlan: the net position in base units
   // (raw Qty; not known while an inverse contract with a position has no current mark) and the
   // limit the engine applies now (0: none).

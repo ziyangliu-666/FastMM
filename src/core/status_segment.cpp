@@ -58,6 +58,12 @@ std::string_view name_of(const char* buf, std::size_t cap) {
   return std::string_view(buf, strnlen(buf, cap));
 }
 
+// StatusSnapshot::param_last_origin (ParamUpdateMsg::Origin).
+std::string_view param_origin_name(std::uint8_t origin) {
+  return origin == static_cast<std::uint8_t>(ParamUpdateMsg::Origin::Control) ? "control"
+                                                                              : "strategy";
+}
+
 const char* paint(bool color, std::string_view state) {
   if (!color) return "";
   if (state == "live" || state == "running") return "\x1b[32m";
@@ -443,6 +449,20 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                  money(s.fees_raw),
                  money(s.pnl_carry_raw),
                  money(s.pnl_carry_raw + s.realized_pnl_raw + s.unrealized_pnl_raw - s.fees_raw));
+  if (s.param_updates != 0 || s.param_control_published != 0) {
+    const std::string_view source = name_of(s.param_last_source, sizeof s.param_last_source);
+    fmt::format_to(std::back_inserter(out),
+                   "params     applied={} last_seq={} origin={} source={} {:.1f}s ago  "
+                   "control published={} applied={}{}\n\n",
+                   s.param_updates,
+                   s.param_last_seq,
+                   param_origin_name(s.param_last_origin),
+                   source.empty() ? std::string_view("-") : source,
+                   s.param_last_ns == 0 ? 0.0 : static_cast<double>(now_ns - s.param_last_ns) / 1e9,
+                   s.param_control_published,
+                   s.param_control_applied,
+                   s.param_control_published > s.param_control_applied ? "  PENDING" : "");
+  }
   if (s.treasury.pools != 0) {
     const StatusTreasury& t = s.treasury;
     fmt::format_to(std::back_inserter(out),
@@ -996,7 +1016,10 @@ std::string format_status_json(const StatusSnapshot& s) {
                  "\"kill_flags\": {}, "
                  "\"kill_reason\": \"{}\", \"kill_latched\": {}, \"pnl_carry_raw\": {}, "
                  "\"flatten_state\": \"{}\", \"flatten_instruments_left\": {}, "
-                 "\"flatten_orders\": {}, \"latency\": {{",
+                 "\"flatten_orders\": {}, "
+                 "\"params\": {{\"applied\": {}, \"last_seq\": {}, \"last_ns\": {}, "
+                 "\"last_origin\": \"{}\", \"last_source\": {}, \"control_published\": {}, "
+                 "\"control_applied\": {}, \"pending\": {}}}, \"latency\": {{",
                  s.version,
                  s.pid,
                  s.session_id,
@@ -1018,7 +1041,15 @@ std::string format_status_json(const StatusSnapshot& s) {
                  s.pnl_carry_raw,
                  to_string(static_cast<FlattenState>(s.flatten_state)),
                  s.flatten_instruments_left,
-                 s.flatten_orders);
+                 s.flatten_orders,
+                 s.param_updates,
+                 s.param_last_seq,
+                 s.param_last_ns,
+                 param_origin_name(s.param_last_origin),
+                 json_string(name_of(s.param_last_source, sizeof s.param_last_source)),
+                 s.param_control_published,
+                 s.param_control_applied,
+                 s.param_control_published > s.param_control_applied);
   for (std::size_t i = 0; i < static_cast<std::size_t>(LatencyInterval::Count); ++i) {
     if (i != 0) out += ", ";
     json_latency(out, to_string(static_cast<LatencyInterval>(i)), s.latency[i]);

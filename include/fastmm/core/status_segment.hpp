@@ -40,7 +40,9 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 16: each venue's wire tick-to-trade over the last minute and the last hour.
 // 17: each venue's fill audit counters.
 // 18: the pool treasuries' counters.
-inline constexpr std::uint32_t kStatusVersion = 18;
+// 19: parameter updates: applied, the last one (seq, origin, source, time), the control socket's
+//     published and applied sequence numbers.
+inline constexpr std::uint32_t kStatusVersion = 19;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 inline constexpr std::size_t kStatusMaxUnderlyings = 8;    // kMaxUnderlyings
@@ -350,6 +352,18 @@ struct StatusSnapshot {
   // live order on both sides. A market-maker programme's rebate is measured this way.
   std::int64_t quoting_elapsed_ns = 0;
   std::int64_t quoting_two_sided_ns = 0;
+  // Strategy parameter updates (ParamUpdateMsg) the engine has applied, and the last one: its
+  // publisher's sequence number, when it was applied (wall clock in a live session), its origin
+  // (ParamUpdateMsg::Origin) and source. The control socket's publisher: the publish_seq of the
+  // last update it sent, and of the last the engine has applied; equal once nothing is pending.
+  std::uint64_t param_updates = 0;
+  std::uint64_t param_last_seq = 0;
+  std::int64_t param_last_ns = 0;
+  std::uint64_t param_control_published = 0;
+  std::uint64_t param_control_applied = 0;
+  std::uint8_t param_last_origin = 0;
+  std::uint8_t pad3_[7] = {};
+  char param_last_source[40] = {};
   StatusLatency latency[static_cast<std::size_t>(LatencyInterval::Count)];
   StatusVenue venues[kStatusMaxVenues];
   // [risk.underlying]: the session's net position per underlying (kind Engine).

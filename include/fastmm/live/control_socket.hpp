@@ -40,9 +40,26 @@ struct ControlPlane {
 
   // Puts one message (hdr.len bytes) on the engine's control ring. False: the ring is full.
   std::function<bool(const EventHeader&)> submit;
-  // Validates the values against the strategy's schema and publishes them; the error message, or
-  // an empty string on success. Unset when the session takes no parameter updates.
-  std::function<std::string(const ParamValues&, InstrumentId)> params;
+  // `param`: the values, the instrument (invalid: every instrument) and who asked for it
+  // (`--source`, at most ParamUpdateMsg::kSourceLen - 1 bytes; empty when not given).
+  struct ParamRequest {
+    ParamValues values;
+    InstrumentId instrument{};
+    std::string source;
+  };
+  // The error message (empty on success) and the update's publish_seq, which the engine reports
+  // once it has applied it (`params`); 0 when the strategy's publisher gives none.
+  struct ParamResult {
+    std::string error;
+    std::uint64_t seq = 0;
+  };
+  // Validates the values against the strategy's schema and publishes them. Unset when the session
+  // takes no parameter updates.
+  std::function<ParamResult(const ParamRequest&)> params;
+  // `params`: the control socket's published and applied sequence numbers, then the values the
+  // strategy's parameters have once those are equal (of one instrument, or the shared set), one
+  // `name=value` per line. Unset: `params` is refused.
+  std::function<std::string(InstrumentId)> describe_params;
   // The answer to `status`, one topic per line.
   std::function<std::string()> status;
   // Runs the shutdown SIGTERM runs (kill switch, cancel-all on every venue, stop).

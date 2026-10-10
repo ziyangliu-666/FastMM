@@ -13,11 +13,14 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <charconv>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <exception>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -27,7 +30,8 @@ constexpr const char* kExamples =
     "examples:\n"
     "  fastmm-ctl --name mm status\n"
     "  fastmm-ctl --name mm pull --instrument BTCUSDT\n"
-    "  fastmm-ctl --name mm param half_spread_bps=8\n"
+    "  fastmm-ctl --name mm --wait 5000 param half_spread_bps=8 --source manual\n"
+    "  fastmm-ctl --name mm params\n"
     "  fastmm-ctl --name mm limits max_position=0.5 orders_per_sec=10\n"
     "  fastmm-ctl --name mm flatten --max-slippage-bps 15\n"
     "  fastmm-ctl --gateway gw attachments\n"
@@ -35,12 +39,29 @@ constexpr const char* kExamples =
     "  fastmm-ctl --gateway gw clear-kill\n"
     "\n"
     "Exit codes: 0 the session answered ok, 1 it answered error, 2 bad command line,\n"
-    "3 no session answered (no socket, or it is not running).";
+    "3 no session answered (no socket, or it is not running), 4 with --wait: the update was\n"
+    "queued but the engine did not report it applied in time.";
 
 constexpr int kExitOk = 0;
 constexpr int kExitError = 1;
 constexpr int kExitUsage = 2;
 constexpr int kExitUnreachable = 3;
+constexpr int kExitNotApplied = 4;
+
+// The number after `key=` in `text`, 0 when absent.
+std::uint64_t field_u64(std::string_view text, std::string_view key) {
+  std::size_t at = 0;
+  while ((at = text.find(key, at)) != std::string_view::npos) {
+    // A whole word: at the start or after a blank.
+    if (at == 0 || text[at - 1] == ' ' || text[at - 1] == '\n') break;
+    at += key.size();
+  }
+  if (at == std::string_view::npos) return 0;
+  std::uint64_t v = 0;
+  const char* first = text.data() + at + key.size();
+  static_cast<void>(std::from_chars(first, text.data() + text.size(), v));
+  return v;
+}
 
 }  // namespace
 
@@ -51,6 +72,7 @@ static int run(int argc, char** argv) {
   std::string dir = "runs";
   std::string config;
   int timeout_ms = 2000;
+  int wait_ms = 0;
 
   CLI::App app(
       "Sends one command to a running fastmm-live session or fastmm-gateway and prints the reply.",
@@ -78,6 +100,12 @@ static int run(int argc, char** argv) {
          "--config", config, "take the engine name and journal_dir from a configuration file")
       ->option_text("<file>");
   app.add_option("--timeout", timeout_ms, "how long to wait for the reply, default 2000")
+      ->option_text("<ms>")
+      ->check(CLI::Range(1, 3'600'000));
+  app.add_option("--wait",
+                 wait_ms,
+                 "after `param`, wait up to <ms> until the engine reports the update applied "
+                 "(exit 4 if it does not)")
       ->option_text("<ms>")
       ->check(CLI::Range(1, 3'600'000));
   if (const auto rc = fastmm::cli::parse(app, argc, argv)) return *rc;
@@ -155,7 +183,33 @@ static int run(int argc, char** argv) {
   const std::string_view reply(buf, static_cast<std::size_t>(n));
   std::fwrite(reply.data(), 1, reply.size(), stdout);
   if (!reply.empty() && reply.back() != '\n') std::fputc('\n', stdout);
-  return reply.starts_with("error") ? kExitError : kExitOk;
+  if (reply.starts_with("error")) return kExitError;
+  if (wait_ms == 0 || !(command == "param" || command.starts_with("param "))) return kExitOk;
+  // --wait: poll `params` until the engine's applied sequence number reaches the update's.
+  const std::uint64_t seq = field_u64(reply, "seq=");
+  if (seq == 0) {
+    std::fprintf(stderr,
+                 "fastmm-ctl: the session's reply carries no sequence number (its strategy "
+                 "publishes its own updates); cannot wait for it\n");
+    return kExitNotApplied;
+  }
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(wait_ms);
+  for (;;) {
+    std::string state;
+    if (fastmm::live::control_request(path, "params", timeout_ms, state) ==
+            fastmm::live::ControlReply::Answered &&
+        state.starts_with("ok") && field_u64(state, "applied=") >= seq) {
+      std::printf("ok param applied seq=%llu\n", static_cast<unsigned long long>(seq));
+      return kExitOk;
+    }
+    if (std::chrono::steady_clock::now() >= deadline) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  std::fprintf(stderr,
+               "fastmm-ctl: param seq=%llu was queued but not reported applied within %d ms\n",
+               static_cast<unsigned long long>(seq),
+               wait_ms);
+  return kExitNotApplied;
 }
 
 int main(int argc, char** argv) {

@@ -2,9 +2,12 @@
 
 #include "test_support.hpp"
 
+#include "fastmm/core/messages.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 using namespace fastmm;
@@ -305,7 +308,7 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   CHECK(frame.find("fallback=5") != std::string::npos);
 
   const std::string json = format_status_json(s);
-  CHECK(json.find(R"({"kind": "engine", "version": 18,)") == 0);
+  CHECK(json.find(R"({"kind": "engine", "version": 19,)") == 0);
   CHECK(json.find(R"("engine": "binance-demo")") != std::string::npos);
   CHECK(json.find(R"("tick_to_trade": {"count": 10, "p50_ns": 106495, "p99_ns": 216053, )"
                   R"("p999_ns": 250000, "max_ns": 300000})") != std::string::npos);
@@ -464,7 +467,7 @@ TEST_CASE("core.status_segment: a gateway's snapshot round trips and shows its a
 
   const std::string json = format_status_json(got);
   INFO(json);
-  CHECK(json.find(R"({"kind": "gateway", "version": 18,)") == 0);
+  CHECK(json.find(R"({"kind": "gateway", "version": 19,)") == 0);
   CHECK(json.find(R"("gateway": "gw")") != std::string::npos);
   CHECK(json.find(R"("net_pnl": -0.25, "realized": 1.5)") != std::string::npos);
   CHECK(json.find(R"("engine": "mm-a", "pid": 1001)") != std::string::npos);
@@ -549,6 +552,35 @@ TEST_CASE("core.status_segment: the pool treasuries' counters in the frame and t
   CHECK(format_status_json(s).find(R"("treasury": {"pools": 1, "in_flight": 1, "plans": 0, )"
                                    R"("dry_run_plans": 0, "sent": 3, "done": 2, "failed": 0, )") !=
         std::string::npos);
+}
+
+TEST_CASE("core.status_segment: the parameter updates applied, and the control socket's pending") {
+  StatusSnapshot s;
+  s.state = StatusRunState::Running;
+  s.updated_ns = 10'000'000'000;
+  CHECK(format_status(s, s.updated_ns, false).find("params") == std::string::npos);
+  CHECK(format_status_json(s).find(
+            R"("params": {"applied": 0, "last_seq": 0, "last_ns": 0, "last_origin": "strategy", )"
+            R"("last_source": "", "control_published": 0, "control_applied": 0, )"
+            R"("pending": false})") != std::string::npos);
+  s.param_updates = 4;
+  s.param_last_seq = 3;
+  s.param_last_ns = 8'000'000'000;
+  s.param_last_origin = static_cast<std::uint8_t>(ParamUpdateMsg::Origin::Control);
+  std::memcpy(s.param_last_source, "scheduled:drain", 15);
+  s.param_control_published = 4;
+  s.param_control_applied = 3;
+  const std::string frame = format_status(s, s.updated_ns, false);
+  CHECK(frame.find("params     applied=4 last_seq=3 origin=control source=scheduled:drain 2.0s ago"
+                   "  control published=4 applied=3  PENDING\n") != std::string::npos);
+  CHECK(format_status_json(s).find(
+            R"("params": {"applied": 4, "last_seq": 3, "last_ns": 8000000000, )"
+            R"("last_origin": "control", "last_source": "scheduled:drain", )"
+            R"("control_published": 4, "control_applied": 3, "pending": true})") !=
+        std::string::npos);
+  s.param_control_applied = 4;
+  CHECK(format_status(s, s.updated_ns, false).find("PENDING") == std::string::npos);
+  CHECK(format_status_json(s).find(R"("pending": false})") != std::string::npos);
 }
 
 TEST_CASE("core.status_segment: the perp table in the frame and the JSON form") {

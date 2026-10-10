@@ -1912,6 +1912,11 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   set_status_name(snap.strategy, strategy_name);
   snap.venue_count =
       static_cast<std::uint8_t>(std::min<std::size_t>(venue_names.size(), kStatusMaxVenues));
+  // The control socket's parameter publisher (made with the control plane, below).
+  std::unique_ptr<ParamPublisher> publisher;
+  const auto control_params_published = [&]() -> std::uint64_t {
+    return publisher ? publisher->published() : 0;
+  };
   const auto publish_status = [&](StatusRunState state, const EngineLiveStats& live) {
     snap.state = state;
     snap.updated_ns = wall_now().ns;
@@ -1930,6 +1935,13 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     set_status_rejects(snap.venue_reject_reasons, live.stats.venue_rejects_by_reason);
     snap.quoting_elapsed_ns = live.quoting_elapsed_ns;
     snap.quoting_two_sided_ns = live.quoting_two_sided_ns;
+    snap.param_updates = live.param_updates;
+    snap.param_last_seq = live.param_last_seq;
+    snap.param_last_ns = live.param_last_ns;
+    snap.param_last_origin = static_cast<std::uint8_t>(live.param_last_origin);
+    std::memcpy(snap.param_last_source, live.param_last_source, sizeof snap.param_last_source);
+    snap.param_control_published = control_params_published();
+    snap.param_control_applied = live.param_control_seq;
     snap.kills = live.kills;
     snap.venue_kills = static_cast<std::uint32_t>(live.venue_kills);
     snap.kill_flags = live.kill_flags;
@@ -2078,7 +2090,6 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     reported_venue_kills = 0;
     return true;
   };
-  std::unique_ptr<ParamPublisher> publisher;
   // Pushes onto the control ring and wakes an engine blocked while idle (adaptive spin).
   struct ControlSinkCtx {
     MsgRing* ring;
@@ -2159,18 +2170,61 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
       out += fmt::format("limits     underlying.{}.max_net={}\n", name, dec(max_net));
     return out;
   };
+  // `params`: the control socket's sequence numbers as the engine reports them now, then the
+  // values.
+  const auto describe_params = [&](InstrumentId inst) {
+    const EngineLiveStats live = runner->live_stats();
+    const std::uint64_t published = publisher ? publisher->published() : 0;
+    const std::uint64_t applied = live.param_control_seq;
+    const std::string_view source(live.param_last_source,
+                                  strnlen(live.param_last_source, sizeof live.param_last_source));
+    std::string out = fmt::format(
+        "published={} applied={} pending={} engine_updates={} last_seq={} last_origin={} "
+        "last_source={}",
+        published,
+        applied,
+        published > applied ? published - applied : 0,
+        live.param_updates,
+        live.param_last_seq,
+        live.param_last_origin == ParamUpdateMsg::Origin::Control ? "control" : "strategy",
+        source.empty() ? std::string_view("-") : source);
+    if (!publisher) return out + "\n(this strategy's publisher does not report its values)";
+    // The publisher's copy follows every update it sent: what the engine holds once nothing is
+    // pending, and the values it is about to apply while something is.
+    out += published > applied ? "\nvalues=published (not yet applied)" : "\nvalues=applied";
+    std::string values = publisher->describe(inst.valid() ? inst : ParamPublisher::kAllInstruments);
+    for (char& c : values) {
+      if (c == ' ') c = '\n';
+    }
+    if (!values.empty()) out += "\n" + values;
+    return out;
+  };
   if (publisher) {
-    plane.params = [&](const ControlPlane::ParamValues& values, InstrumentId inst) {
+    plane.params = [&](const ControlPlane::ParamRequest& req) {
+      ControlPlane::ParamResult r;
       try {
-        if (!publisher->publish(values, inst.valid() ? inst : ParamPublisher::kAllInstruments))
-          return std::string("the control ring is full; try again");
+        r.seq = publisher->publish_as(
+            req.values,
+            req.instrument.valid() ? req.instrument : ParamPublisher::kAllInstruments,
+            ParamUpdateMsg::Origin::Control,
+            req.source);
+        if (r.seq == 0) r.error = "the control ring is full; try again";
       } catch (const std::invalid_argument& e) {
-        return std::string(e.what());
+        r.error = e.what();
       }
-      return std::string();
+      if (r.error.empty())
+        FASTMM_LOG_INFO("control socket: param seq={} source={}",
+                        r.seq,
+                        req.source.empty() ? std::string_view("-") : std::string_view(req.source));
+      return r;
     };
+    plane.describe_params = describe_params;
   } else if (custom != nullptr && custom->set_params) {
-    plane.params = custom->set_params;
+    plane.params = [&](const ControlPlane::ParamRequest& req) {
+      // The caller's publisher numbers its own updates: no sequence to confirm against.
+      return ControlPlane::ParamResult{custom->set_params(req.values, req.instrument), 0};
+    };
+    plane.describe_params = describe_params;
   }
   ControlSocket control_socket;
   // A warm standby's from when it takes over: until then the path is the running session's.

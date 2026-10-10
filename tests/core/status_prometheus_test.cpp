@@ -107,6 +107,17 @@ TEST_CASE("core.status_prometheus: the pool treasuries' counters, only with a tr
   CHECK(has(text, "fastmm_treasury_failed_total 0\n"));
 }
 
+TEST_CASE("core.status_prometheus: parameter updates applied and pending") {
+  StatusSnapshot s = sample();
+  s.param_updates = 5;
+  s.param_control_published = 3;
+  s.param_control_applied = 2;
+  CHECK(has(format_status_prometheus(s, s.updated_ns), "fastmm_param_updates_total 5\n"));
+  CHECK(has(format_status_prometheus(s, s.updated_ns), "fastmm_param_control_pending 1\n"));
+  s.param_control_applied = 3;
+  CHECK(has(format_status_prometheus(s, s.updated_ns), "fastmm_param_control_pending 0\n"));
+}
+
 TEST_CASE("core.status_prometheus: the net position per underlying, only when configured") {
   StatusSnapshot s = sample();
   CHECK_FALSE(has(format_status_prometheus(s, s.updated_ns), "underlying"));

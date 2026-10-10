@@ -142,8 +142,10 @@ def param_value(raw: int, type_name: str) -> str:
 
 
 def param_update_fields(body: bytes, params) -> str:
-    """ParamUpdateMsg body: count, publish_seq and the (field, raw value) pairs by name."""
-    count, _pad, publish_seq = struct.unpack_from("<IIQ", body, 0)
+    """ParamUpdateMsg body: count, origin, publish_seq, source and the (field, raw value) pairs by
+    name."""
+    count, origin, publish_seq = struct.unpack_from("<IB3xQ", body, 0)
+    source = body[80:120].split(b"\0", 1)[0].decode("utf-8", "replace")
     fields = struct.unpack_from("<32H", body, 16)
     values = struct.unpack_from("<32q", body, 128)
     out = []
@@ -154,7 +156,10 @@ def param_update_fields(body: bytes, params) -> str:
             out.append(f"{name}={param_value(values[i], type_name)}")
         else:
             out.append(f"#{idx}=raw {values[i]}")
-    return f"publish_seq={publish_seq} " + (" ".join(out) if out else "(no fields)")
+    head = f"publish_seq={publish_seq} origin={'control' if origin == 1 else 'strategy'} "
+    if source:
+        head += f"source={source} "
+    return head + (" ".join(out) if out else "(no fields)")
 
 
 def decode_body(type_name: str, body: bytes, params=()) -> str:

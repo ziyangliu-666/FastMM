@@ -43,6 +43,8 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The 
 | `pnl_carry_raw` | i64 | net PnL of earlier sessions that `[risk] max_loss` is measured against, from `[engine] kill_file` |
 | `max_loss_raw` | i64 | `[risk] max_loss` as the engine applies it now (`fastmm-ctl limits` changes it), 0 when off; a gateway's is `gateway.max_loss_raw` |
 | `quoting_elapsed_ns`, `quoting_two_sided_ns` | i64 | time since the first order rested, and how much of it had a live order on both sides; both summed over the instruments |
+| `param_updates`, `param_last_seq`, `param_last_ns`, `param_last_origin`, `param_last_source` | u64, u64, i64, u8, char[40] | strategy parameter updates the engine has applied, and the last one: its publisher's sequence number, when it was applied (wall clock), its origin (0 the strategy's publisher, 1 the control socket) and its `--source` ([Confirm a parameter change](../how-to/operations/operate-a-running-session.md#confirm-a-parameter-change)) |
+| `param_control_published`, `param_control_applied` | u64, u64 | the sequence number of the last update the control socket sent, and of the last of those the engine has applied; equal once nothing is pending |
 | `latency` | 7 x {count, p50_ns, p99_ns, p999_ns, max_ns} | engine latency intervals, below |
 | `venues` | 8 x venue entry | below |
 | `underlyings` | 8 x underlying entry | `[risk.underlying]`, in the order of the configuration's base assets: `name` (char[16], empty for an unused entry), `known` (u8: 0 while an inverse contract with a position has no mark), `net_raw` (i64, base units, signed), `max_net_raw` (i64, the limit applied now, 0 none) |

@@ -437,12 +437,18 @@ OPTIONS:
   --path <socket>             talk to this socket (fastmm-live --control <path>)
   --config <file>             take the engine name and journal_dir from a configuration file
   --timeout <ms>              how long to wait for the reply, default 2000
+  --wait <ms>                 after `param`, wait up to <ms> until the engine reports the
+                              update applied (exit 4 if it does not)
 
 commands (one per datagram; the reply starts with ok or error)
   pull [--instrument SYM | --venue NAME]   stop quoting: everywhere, or in that scope
   resume [--instrument SYM | --venue NAME] quote again; without a scope it also clears
                                            every scoped pull and stops a running flatten
-  param <name>=<value> ... [--instrument SYM]  new strategy parameters, validated here
+  param <name>=<value> ... [--instrument SYM] [--source WHO]
+                                           new strategy parameters, validated here; the
+                                           reply's seq is applied once `params` shows it
+  params [--instrument SYM]                the parameters' values, and the sequence
+                                           numbers published and applied
   limits <key>=<value> ...                 new risk limits (the [risk] keys, and
                                            underlying.<BASE>.max_net)
   flatten [--instrument SYM] [--max-slippage-bps N]  work the position off, reduce-only
@@ -471,7 +477,8 @@ gateway commands (one per datagram; the reply starts with ok or error)
 examples:
   fastmm-ctl --name mm status
   fastmm-ctl --name mm pull --instrument BTCUSDT
-  fastmm-ctl --name mm param half_spread_bps=8
+  fastmm-ctl --name mm --wait 5000 param half_spread_bps=8 --source manual
+  fastmm-ctl --name mm params
   fastmm-ctl --name mm limits max_position=0.5 orders_per_sec=10
   fastmm-ctl --name mm flatten --max-slippage-bps 15
   fastmm-ctl --gateway gw attachments
@@ -479,7 +486,8 @@ examples:
   fastmm-ctl --gateway gw clear-kill
 
 Exit codes: 0 the session answered ok, 1 it answered error, 2 bad command line,
-3 no session answered (no socket, or it is not running).
+3 no session answered (no socket, or it is not running), 4 with --wait: the update was
+queued but the engine did not report it applied in time.
 ```
 <!-- END cli-help -->
 
@@ -489,6 +497,7 @@ Exit codes: 0 the session answered ok, 1 it answered error, 2 bad command line,
 | 1 | the session answered `error` (an unknown command, a bad argument, a parameter the schema refuses, a full control ring) |
 | 2 | bad command line |
 | 3 | no session answered: no socket at that path, nobody listening, or no reply within `--timeout` |
+| 4 | with `--wait`: the `param` was queued but the engine did not report it applied within `<ms>`, or the session's strategy publishes its own updates and gives no sequence number to wait on |
 
 ## fastmm-top
 

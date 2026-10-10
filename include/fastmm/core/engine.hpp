@@ -1811,6 +1811,9 @@ class Engine {
 
   void on_param_update(const ParamUpdateMsg& m) noexcept {
     ++stats_.param_updates;
+    last_param_ = m;
+    last_param_ts_ = now_;
+    if (m.origin == ParamUpdateMsg::Origin::Control) control_param_seq_ = m.publish_seq;
     if constexpr (requires { strategy_.apply_param_update(m); }) strategy_.apply_param_update(m);
     if (cfg_.max_param_age.ns > 0) {
       params_stale_ = false;
@@ -1822,6 +1825,9 @@ class Engine {
     }
     if constexpr (has_hook(Hook::Params)) strategy_.on_params(ctx_);
     flush_out();
+    // A control update at once rather than with the next latency publication: fastmm-ctl param
+    // --wait reads it. A strategy's own updates (a model, every event in a backtest) wait.
+    if (m.origin == ParamUpdateMsg::Origin::Control) publish_live(latency_pub_.load());
   }
 
   FASTMM_FORCE_INLINE void check_param_age() noexcept {
@@ -3101,6 +3107,12 @@ class Engine {
     live.quoting_elapsed_ns = presence.elapsed_ns;
     live.quoting_two_sided_ns = presence.two_sided_ns;
     live.max_loss_raw = risk_.limits().max_loss.raw;
+    live.param_updates = stats_.param_updates;
+    live.param_control_seq = control_param_seq_;
+    live.param_last_seq = last_param_.publish_seq;
+    live.param_last_ns = last_param_ts_.ns;
+    live.param_last_origin = last_param_.origin;
+    std::memcpy(live.param_last_source, last_param_.source, sizeof(live.param_last_source));
     for (std::size_t u = 0; u < cfg_.underlying.count; ++u) {
       auto& e = live.underlyings[u];
       e.known = risk_.underlying_net(
@@ -3173,6 +3185,11 @@ class Engine {
   std::unique_ptr<Seqlocked<EngineLiveStats>> live_pub_ =
       std::make_unique<Seqlocked<EngineLiveStats>>();
   Timestamp last_publish_{};
+  // The last ParamUpdate applied (its fields are not read: the strategy holds the values), the
+  // engine time of it, and the publish_seq of the last from the control socket (EngineLiveStats).
+  ParamUpdateMsg last_param_{};
+  Timestamp last_param_ts_{};
+  std::uint64_t control_param_seq_ = 0;
   Timestamp now_{};  // valid while latched_
 
   alignas(kCacheLine) std::byte out_storage_[kOutBatch * kOutSlotBytes] = {};
