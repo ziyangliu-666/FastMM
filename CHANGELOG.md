@@ -5,6 +5,7 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- replay: `fastmm-replay --check [--json]` lists what a replay needs, without replaying.
 - store: `fastmm-pnl ledger` gives one row per execution across sessions, with its flags.
 - store: `fastmm-pnl order --order <id>` shows one order's sends, refusals, fills and state.
 - live: `fastmm-top` shows per side what is asked, what works and the first obstacle (v21).

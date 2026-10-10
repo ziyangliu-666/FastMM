@@ -78,6 +78,26 @@ Journals written before format version 2 carry no configuration, session setting
 ./build/release/bin/fastmm-replay --journal tests/fixtures/journals/sample_1000.fmj --verify
 ```
 
+### Check before replaying
+
+`--check` says whether a replay can run, and with what, without replaying: the journal (readable, closed by its writer), the configuration (embedded, given and matching the recording, or the market-data default), the strategy registered in this build, its parameters known to it, and for a market-data journal an expected hash.
+
+```bash
+./build/release/bin/fastmm-replay --journal tests/fixtures/journals/sample_1000.fmj --check
+```
+
+```text
+journal        ok   market-data journal, format v1, 1000 messages
+complete       ok   closed by its writer
+config         ok   configs/backtest-example.toml (default for a market-data journal)
+strategy       ok   basic_mm
+params         ok   8 set
+expected_hash  ok   tests/fixtures/journals/sample_1000.sha256
+ready to replay
+```
+
+A `warn` line runs but proves less (a what-if configuration, no engine clock, an unclosed journal with `--allow-incomplete`); a `fail` line stops the replay, and the exit code is 3. `--json` prints one object, `{"ready": ..., "checks": [{"check", "status", "detail"}, ...]}`, for a script.
+
 Exit codes: [Command lines](../../reference/cli.md#fastmm-replay).
 
 A mismatch with the embedded configuration and the same binary is a determinism bug, and the journal reproduces it ([Determinism](../../explanation/determinism.md)). A different binary need not match.

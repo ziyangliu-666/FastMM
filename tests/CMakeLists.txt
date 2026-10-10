@@ -413,6 +413,19 @@ if(TARGET fastmm-backtest)
     fastmm_cli_test(apps.fastmm-replay.unknown_config_keys EXPECT_RC 3
       CMD $<TARGET_FILE:fastmm-replay> --journal ${PROJECT_SOURCE_DIR}/tests/fixtures/journals/sample_1000.fmj --config ${_bt_typos_file}
       EXPECT_REGEX "${_bt_typos_regex}")
+    # --check replays nothing: each prerequisite on a line, exit 3 when one fails.
+    set(_sample ${PROJECT_SOURCE_DIR}/tests/fixtures/journals/sample_1000.fmj)
+    set(_example ${PROJECT_SOURCE_DIR}/configs/backtest-example.toml)
+    fastmm_cli_test(apps.fastmm-replay.check_ready EXPECT_RC 0
+      CMD $<TARGET_FILE:fastmm-replay> --journal ${_sample} --config ${_example} --check
+      EXPECT_REGEX "strategy +ok +basic_mm.*expected_hash +ok .*ready to replay"
+      REJECT_REGEX "replay +(MATCH|MISMATCH)")
+    fastmm_cli_test(apps.fastmm-replay.check_unknown_strategy EXPECT_RC 3
+      CMD $<TARGET_FILE:fastmm-replay> --journal ${_sample} --config ${_example} --check --json --strategy nope
+      EXPECT_REGEX "\\{\"ready\": false, .*\"check\": \"strategy\", \"status\": \"fail\"")
+    fastmm_cli_test(apps.fastmm-replay.check_bad_config EXPECT_RC 3
+      CMD $<TARGET_FILE:fastmm-replay> --journal ${_sample} --config ${_bt_typos_file} --check
+      EXPECT_REGEX "config +fail +.*${_bt_typos_regex}")
   endif()
 endif()
 if(TARGET fastmm-pnl)

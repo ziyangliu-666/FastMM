@@ -19,6 +19,10 @@
 //   the backtest's outbound hash must also equal the sidecar <journal>.sha256 (or
 //   --expect <hex>).
 //
+// --check lists what a replay needs (the journal complete, a configuration, the strategy and its
+// parameters registered, an expected hash) as ok / warn / fail lines, or one JSON object with
+// --json, and replays nothing: exit 0 ready, 3 not.
+//
 // Exit codes: 0 match (or no verification requested), 1 mismatch, 2 bad command line,
 // 3 unreadable config / journal / unknown strategy (including a strategy name registered twice by
 // different code).
@@ -26,6 +30,7 @@
 
 #include "fastmm/backtest/backtest_runner.hpp"
 #include "fastmm/backtest/journal_source.hpp"
+#include "fastmm/backtest/registrations.hpp"
 #include "fastmm/backtest/replay.hpp"
 #include "fastmm/cli/modules.hpp"
 #include "fastmm/cli/replay.hpp"
@@ -41,6 +46,7 @@
 #include <fstream>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace fastmm::cli {
 
@@ -89,6 +95,160 @@ std::string read_expected(const std::string& path) {
   return s;
 }
 
+// --check: what a replay of the journal needs, each found ok, worth a warning or missing, without
+// replaying anything.
+struct Check {
+  std::string name;
+  std::string status;  // ok, warn, fail
+  std::string detail;
+};
+
+std::string json_text(std::string_view v) {
+  std::string out = "\"";
+  for (const char c : v) {
+    if (c == '"' || c == '\\') {
+      out += '\\';
+      out += c;
+    } else if (static_cast<unsigned char>(c) < 0x20) {
+      char buf[8];
+      std::snprintf(buf, sizeof buf, "\\u%04x", static_cast<unsigned>(c));
+      out += buf;
+    } else {
+      out += c;
+    }
+  }
+  return out + "\"";
+}
+
+std::vector<Check> precheck(const std::string& journal,
+                            const std::string& config_path,
+                            const std::string& strategy_arg,
+                            const std::string& expect,
+                            bool allow_incomplete) {
+  std::vector<Check> out;
+  const auto add = [&](std::string name, std::string status, std::string detail) {
+    out.push_back({std::move(name), std::move(status), std::move(detail)});
+  };
+  bt::JournalInfo info;
+  try {
+    info = bt::inspect_journal(journal);
+  } catch (const std::exception& e) {
+    add("journal", "fail", e.what());
+    return out;
+  }
+  const bool session = info.outbound_messages > 0;
+  add("journal",
+      "ok",
+      std::string(session ? "session" : "market-data") + " journal, format v" +
+          std::to_string(info.version) + ", " + std::to_string(info.messages) + " messages");
+  if (info.complete)
+    add("complete", "ok", "closed by its writer");
+  else
+    add("complete",
+        allow_incomplete ? "warn" : "fail",
+        "not closed by its writer: the tail is missing" +
+            std::string(allow_incomplete ? "; the outbound comparison proves nothing"
+                                         : " (--allow-incomplete replays what is there)"));
+  if (session) {
+    if (info.engine_time)
+      add("engine_clock", "ok", "the events carry the engine clock");
+    else
+      add("engine_clock", "warn", "no engine clock recorded: replayed at the receive times");
+    if (info.dropped_outbound > 0)
+      add("outbound",
+          "warn",
+          std::to_string(info.dropped_outbound) + " outbound message(s) the transport refused");
+  }
+
+  bt::BacktestConfig cfg;
+  bool have_cfg = false;
+  try {
+    if (!config_path.empty()) {
+      const Config raw = load_config(config_path);
+      cfg = bt::BacktestConfig::from_config(raw);
+      have_cfg = true;
+      if (session && !info.config_toml.empty() && raw.effective_hash() != info.config_hash)
+        add("config", "warn", config_path + " differs from the recording: a what-if replay");
+      else
+        add("config", "ok", config_path);
+      for (const std::string& w : cfg.warnings) add("config", "warn", w);
+    } else if (session) {
+      if (info.config_toml.empty()) {
+        add("config", "fail", "the journal embeds no configuration: pass --config");
+      } else {
+        cfg = bt::journal_config(journal);
+        have_cfg = true;
+        add("config", "ok", "embedded in the journal");
+      }
+    } else if (std::filesystem::exists("configs/backtest-example.toml")) {
+      cfg = bt::BacktestConfig::from_config(load_config("configs/backtest-example.toml"));
+      have_cfg = true;
+      add("config", "ok", "configs/backtest-example.toml (default for a market-data journal)");
+    } else {
+      add("config", "fail", "a market-data journal needs --config");
+    }
+  } catch (const std::exception& e) {
+    add("config", "fail", e.what());
+  }
+
+  std::string name = strategy_arg;
+  if (name.empty()) name = session ? info.strategy : (have_cfg ? cfg.strategy : std::string());
+  if (name.empty() && have_cfg) name = cfg.strategy;
+  bt::register_builtin_strategies();
+  const StrategyEntry* entry = name.empty() ? nullptr : StrategyRegistry::instance().find(name);
+  const TransportKind kind = session ? TransportKind::Replay : TransportKind::Sim;
+  if (entry == nullptr || !entry->supports(kind)) {
+    add("strategy",
+        "fail",
+        name.empty() ? std::string("no strategy named") : "'" + name + "' is not registered here");
+  } else {
+    add("strategy", "ok", name);
+    // A strategy given on the command line other than the recorded one starts from its defaults.
+    const bool own_params = strategy_arg.empty() || strategy_arg == info.strategy ||
+                            (have_cfg && strategy_arg == cfg.strategy);
+    if (have_cfg && own_params && entry->schema != nullptr) {
+      std::string unknown;
+      for (const auto& [key, value] : cfg.params) {
+        if (entry->schema->find(key) == nullptr) unknown += (unknown.empty() ? "" : ", ") + key;
+      }
+      if (unknown.empty())
+        add("params", "ok", std::to_string(cfg.params.size()) + " set");
+      else
+        add("params", "fail", "unknown to " + name + ": " + unknown);
+    }
+  }
+  if (!session) {
+    std::filesystem::path side(journal);
+    side.replace_extension(".sha256");
+    if (!expect.empty() || std::filesystem::exists(side))
+      add("expected_hash", "ok", expect.empty() ? side.string() : "--expect");
+    else
+      add("expected_hash", "warn", "none: --verify checks the replay against the backtest only");
+  }
+  return out;
+}
+
+int print_precheck(const std::vector<Check>& checks, bool json) {
+  bool failed = false;
+  for (const Check& c : checks) failed = failed || c.status == "fail";
+  if (json) {
+    std::string s = std::string("{\"ready\": ") + (failed ? "false" : "true") + ", \"checks\": [";
+    for (std::size_t i = 0; i < checks.size(); ++i) {
+      if (i != 0) s += ", ";
+      s += "{\"check\": " + json_text(checks[i].name) +
+           ", \"status\": " + json_text(checks[i].status) +
+           ", \"detail\": " + json_text(checks[i].detail) + "}";
+    }
+    s += "]}\n";
+    std::fputs(s.c_str(), stdout);
+  } else {
+    for (const Check& c : checks)
+      std::printf("%-14s %-4s %s\n", c.name.c_str(), c.status.c_str(), c.detail.c_str());
+    std::printf("%s\n", failed ? "not ready: fix the fail lines" : "ready to replay");
+  }
+  return failed ? kExitInput : 0;
+}
+
 }  // namespace
 
 int replay(int argc, char** argv, std::span<const StrategyModule> modules) {
@@ -101,6 +261,8 @@ int replay(int argc, char** argv, std::span<const StrategyModule> modules) {
   std::string expect;
   bool verify = false;
   bool allow_incomplete = false;
+  bool check = false;
+  bool json = false;
   CLI::App app("Replays a journal through the same engine and strategy.", program);
   setup(app);
   app.add_option("--journal", journal, "session or market-data journal to replay (required)")
@@ -121,10 +283,17 @@ int replay(int argc, char** argv, std::span<const StrategyModule> modules) {
                allow_incomplete,
                "replay a journal the writer never closed; its tail is missing, so the outbound "
                "comparison proves nothing");
+  app.add_flag("--check",
+               check,
+               "check what the replay needs (journal, configuration, strategy, parameters) "
+               "without replaying; exit 3 when something is missing");
+  app.add_flag("--json", json, "--check: one JSON object instead of lines");
   if (const std::optional<int> rc = parse(app, argc, argv)) return *rc;
   // Checked here rather than with required(): an unknown flag is the better message.
   if (journal.empty()) return usage_error(app, "--journal is required");
   if (!register_strategy_modules(program, modules)) return kExitInput;
+  if (check)
+    return print_precheck(precheck(journal, config_path, strategy, expect, allow_incomplete), json);
   bt::JournalInfo info;
   try {
     info = bt::inspect_journal(journal);

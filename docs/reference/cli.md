@@ -257,6 +257,10 @@ OPTIONS:
   --verify                    fail (exit 1) unless every hash and message matches
   --allow-incomplete          replay a journal the writer never closed; its tail is missing,
                               so the outbound comparison proves nothing
+  --check                     check what the replay needs (journal, configuration, strategy,
+                              parameters) without replaying; exit 3 when something is
+                              missing
+  --json                      --check: one JSON object instead of lines
 ```
 <!-- END cli-help -->
 
@@ -265,7 +269,7 @@ OPTIONS:
 | 0 | the replay matched, or no verification was requested |
 | 1 | mismatch: the first differing message is printed |
 | 2 | bad command line, including a session journal without an embedded configuration and no `--config` |
-| 3 | unreadable configuration or journal, unknown strategy |
+| 3 | unreadable configuration or journal, unknown strategy; with `--check`, a check failed |
 
 [Journals, replay and PnL](../how-to/operations/journals-replay-pnl.md#replay) explains what-if replays and journals without outbound copies.
 
