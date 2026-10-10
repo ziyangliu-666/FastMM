@@ -5,6 +5,8 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- store: `fastmm-pnl ledger` gives one row per execution across sessions, with its flags.
+- store: `fastmm-pnl order --order <id>` shows one order's sends, refusals, fills and state.
 - live: `fastmm-top` shows per side what is asked, what works and the first obstacle (v21).
 - api: `ctx.note_quote` and `ctx.metric` publish the strategy's reasons and numbers live.
 - store: refused orders with the limit that refused them and the budget then (schema 9).

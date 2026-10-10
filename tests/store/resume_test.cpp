@@ -814,3 +814,133 @@ TEST_CASE("store.resume: a venue with no stored fill replays from the newest cle
   CHECK(r.fallback_since_ms == 0);
   CHECK(r.unbooked_since_ms == (start5 - Recovery::kFallbackOverlapNs) / kMs);
 }
+
+// The economic ledger keeps one row per execution however many sessions stored it, as the first
+// one did; --raw lists every copy. An execution that traded before the session that booked it
+// started came in through the restart's replay.
+TEST_CASE("store.ledger: one row per execution, its copies and flags; every copy with raw") {
+  const std::string path = fresh("ledger.db");
+  const std::int64_t minute = 60'000 * kMs;
+  {
+    Writer w(path, 5, kDay1Ns);
+    w.fill(1, kT1, "2966124872");
+  }
+  {
+    Writer w(path, 6, kDay1Ns + minute);
+    w.fill(0, kT0, "2966124872");  // binance's id: another execution
+  }
+  {
+    Writer w(path, 7, kDay1Ns + 2 * minute);
+    w.fill(1, kT1, "2966124872");  // bybit's again: a copy
+  }
+  {
+    // Started two hours in: this fill traded before, the replay brought it.
+    Writer w(path, 8, kDay1Ns + 120 * minute);
+    w.fill(1, kT1 + 60, "2966124877");
+  }
+  GenericSection section;
+  section.values["path"] = path;
+  BackendOptions o;
+  o.config = &section;
+  o.read_only = true;
+  auto reader = make_sqlite_reader();
+  REQUIRE(reader->open(o));
+  QueryFilter f;
+  auto ledger = reader->ledger(f, false);
+  REQUIRE(ledger);
+  const auto col = [&](const Rows& r, std::string_view name) {
+    for (std::size_t i = 0; i < r.columns.size(); ++i)
+      if (r.columns[i] == name) return i;
+    FAIL("no column " << name);
+    return std::size_t{0};
+  };
+  REQUIRE(ledger->rows.size() == 3);
+  std::vector<std::string> seen;
+  for (const auto& row : ledger->rows) {
+    const std::string id = row[col(*ledger, "account")] + "/" + row[col(*ledger, "exec_id")];
+    seen.push_back(id + " " + row[col(*ledger, "copies")] + " " + row[col(*ledger, "flags")] + " " +
+                   row[col(*ledger, "session_id")]);
+  }
+  std::sort(seen.begin(), seen.end());
+  CHECK(seen == std::vector<std::string>{"binance/2966124872 1  6",
+                                         "bybit/2966124872 2 repeated 5",
+                                         "bybit/2966124877 1 before_start 8"});
+  CHECK_FALSE(ledger->rows[0][col(*ledger, "venue_time")].empty());  // the venue's time
+
+  auto raw = reader->ledger(f, true);
+  REQUIRE(raw);
+  CHECK(raw->rows.size() == 4);
+  // Session 7 booked first nothing: its one row is the second copy.
+  f.session_id = 7;
+  auto mine = reader->ledger(f, false);
+  REQUIRE(mine);
+  CHECK(mine->empty());
+  auto mine_raw = reader->ledger(f, true);
+  REQUIRE(mine_raw);
+  REQUIRE(mine_raw->rows.size() == 1);
+  CHECK(mine_raw->rows[0][col(*mine_raw, "copy")] == "2");
+  // The symbol is part of the key, so filtering on it keeps the copies together.
+  f.session_id = 0;
+  f.instrument = "ETHUSDT";
+  auto eth = reader->ledger(f, false);
+  REQUIRE(eth);
+  REQUIRE(eth->rows.size() == 2);
+}
+
+TEST_CASE("store.order_timeline: sent, refused, filled and its last state, in time order") {
+  const std::string path = fresh("timeline.db");
+  ClientOrderId id{};
+  {
+    Writer w(path, 5, kDay1Ns);
+    w.order(1);  // seq 3: two replay records came first
+    id = make_cl_ord_id(7, 3);
+    RejectRecord rj{};
+    rj.hdr.len = sizeof rj;
+    rj.hdr.type = RecordType::Reject;
+    rj.hdr.session_id = 5;
+    rj.hdr.seq = ++w.seq;
+    rj.hdr.engine_ts = Timestamp{kDay1Ns + 1'000};
+    rj.hdr.instrument = InstrumentId{1};
+    rj.hdr.venue = VenueId{1};
+    rj.side = Side::Buy;
+    rj.reason = RejectReason::VenueRateLimit;
+    rj.source = RejectSource::Venue;
+    rj.flags = RejectRecord::kFromVenue;
+    rj.cl_ord_id = id;
+    rj.text = FixedString<40>("busy");
+    w.backend->reject(rj);
+    FillRecord fl =
+        fastmm::test::store_fill(5, ++w.seq, kDay1Ns + 2'000, Side::Buy, 100, 1, 0, 0, "E1");
+    fl.hdr.instrument = InstrumentId{1};
+    fl.hdr.venue = VenueId{1};
+    fl.cl_ord_id = id;
+    w.backend->fill(fl);
+    w.fill(1, kT1, "E2");  // another order's
+  }
+  GenericSection section;
+  section.values["path"] = path;
+  BackendOptions o;
+  o.config = &section;
+  o.read_only = true;
+  auto reader = make_sqlite_reader();
+  REQUIRE(reader->open(o));
+  QueryFilter f;
+  CHECK_FALSE(reader->order_timeline(f));  // which order?
+  auto orders = reader->orders(f);
+  REQUIRE(orders);
+  REQUIRE(orders->rows.size() == 1);
+  f.order = orders->rows[0][2];
+  auto t = reader->order_timeline(f);
+  REQUIRE(t);
+  REQUIRE(t->rows.size() == 4);
+  CHECK(t->rows[0][1] == "sent");
+  CHECK(t->rows[1][1] == "refused");
+  CHECK(t->rows[1][7] == "VenueRateLimit by venue: busy");
+  CHECK(t->rows[2][1] == "fill");
+  CHECK(t->rows[2][7] == "Maker exec E1");
+  CHECK(t->rows[3][1] == "state");
+  f.session_id = 6;
+  auto none = reader->order_timeline(f);
+  REQUIRE(none);
+  CHECK(none->empty());
+}

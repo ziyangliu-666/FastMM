@@ -301,6 +301,8 @@ OPTIONS:
                               now)
   --against <id>              param-diff: the earlier session to compare with
   --summary                   rejects: one row per account, instrument, side and source
+  --raw                       ledger: every stored row, with its copy number
+  --order <id>                order: the client order id
 
 SUBCOMMANDS:
   sessions                    one row per session: when it ran, what it made, how it ended
@@ -325,6 +327,10 @@ SUBCOMMANDS:
                               omitted)
   rejects                     refused orders: who refused them (source), and the account's
                               budget then; --summary sums them
+  ledger                      one row per execution however many sessions stored it, with
+                              its flags; --raw lists every stored copy
+  order                       everything stored about one order (--order <id>), in time
+                              order
 ```
 <!-- END cli-help -->
 

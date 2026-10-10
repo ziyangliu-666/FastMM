@@ -34,7 +34,8 @@ bool is_raw(std::string_view name) {
 // Columns holding a nanosecond wall clock, rendered as "YYYY-MM-DD HH:MM:SS".
 bool is_ns(std::string_view name) {
   return name == "ts_ns" || name == "started_ns" || name == "stopped_ns" || name == "created_ns" ||
-         name == "updated_ns" || name == "last_ns" || name == "first_ns";
+         name == "updated_ns" || name == "last_ns" || name == "first_ns" || name == "received_ns" ||
+         name == "venue_time_ns";
 }
 
 std::string cell(sqlite3_stmt* st, int i, std::string_view name) {
@@ -232,6 +233,90 @@ class SqliteReader final : public Reader {
     w.day_range(f);
     w.engine_join(f, "fills");
     return query(sql + w.text() + " ORDER BY ts_ns" + limit(f), w);
+  }
+
+  // An execution is grouped as duplicates() groups it: engine, venue name, symbol, side and the
+  // venue's id; a synthetic fill (no id) is its own. The engine and symbol filters apply before
+  // the grouping (they are part of the key), the session and day filters after it.
+  [[nodiscard]] Result<Rows, std::string> ledger(const QueryFilter& f, bool raw) override {
+    const std::string account =
+        version_ >= 3 ? "COALESCE(v.name, '#' || f.venue_id)" : "'#' || f.venue_id";
+    const std::string venue_ns = version_ >= 3 ? "NULLIF(f.exch_ns, 0)" : "NULL";
+    const std::string venue_join = version_ >= 3 ? " LEFT JOIN session_venues v ON v.session_id = "
+                                                   "f.session_id AND v.venue_id = f.venue_id"
+                                                 : "";
+    std::string sql =
+        "WITH r AS (SELECT f.*, s.engine AS engine, s.started_ns AS session_started_ns, " +
+        account + " AS account, " + venue_ns +
+        " AS venue_time_ns FROM fills f JOIN sessions s ON s.session_id = f.session_id" +
+        venue_join;
+    Where inner;
+    inner.engine(f);
+    inner.symbol(f, "f.symbol");
+    sql += inner.text();
+    sql +=
+        "), c AS (SELECT r.*, ROW_NUMBER() OVER w AS copy, COUNT(*) OVER k AS copies FROM r"
+        " WINDOW k AS (PARTITION BY engine, account, symbol, side,"
+        " CASE WHEN exec_id = '' THEN session_id || ':' || seq ELSE exec_id END),"
+        " w AS (k ORDER BY ts_ns, session_id, seq))"
+        " SELECT ts_ns AS received_ns, venue_time_ns, account, symbol, side, liquidity, price_raw,"
+        " qty_raw, booked_qty_raw, fee_raw, fee_asset, cl_ord_id, exec_id,"
+        " TRIM(CASE WHEN synthetic <> 0 THEN 'synthetic ' ELSE '' END ||"
+        " CASE WHEN late <> 0 THEN 'late ' ELSE '' END ||"
+        " CASE WHEN venue_time_ns IS NOT NULL AND venue_time_ns < session_started_ns"
+        " THEN 'before_start ' ELSE '' END ||"
+        " CASE WHEN copies > 1 THEN 'repeated' ELSE '' END) AS flags, ";
+    sql += raw ? "copy, copies" : "copies";
+    sql += ", session_id FROM c";
+    Where outer;
+    if (!raw) outer.raw("copy = 1");
+    outer.session(f);
+    outer.day_range(f);
+    // Both Where objects bind in order: the inner clause's values come first in the statement.
+    Where all = inner;
+    all.append(outer);
+    return query(sql + outer.text() + " ORDER BY ts_ns, session_id, seq" + limit(f), all);
+  }
+
+  [[nodiscard]] Result<Rows, std::string> order_timeline(const QueryFilter& f) override {
+    if (f.order.empty()) return fail(std::string("which order? --order <client order id>"));
+    // Each part binds the order id, then the session (0: any).
+    const std::string match = " WHERE cl_ord_id = ? AND (? = 0 OR session_id = ?)";
+    std::string sql =
+        "SELECT created_ns AS ts_ns, 'sent' AS event, symbol, side, price_raw, qty_raw,"
+        " NULL AS cum_qty_raw, type || ' ' || tif AS detail, session_id, 0 AS k FROM orders" +
+        match;
+    std::size_t parts = 1;
+    if (version_ >= 9) {
+      sql +=
+          " UNION ALL SELECT ts_ns, 'refused', symbol, side, price_raw, qty_raw, NULL,"
+          " reason || ' by ' || source || CASE WHEN text <> '' THEN ': ' || text ELSE '' END ||"
+          " CASE WHEN count > 1 THEN ' (x' || count || ')' ELSE '' END, session_id, 1"
+          " FROM rejects" +
+          match;
+      ++parts;
+    }
+    sql +=
+        " UNION ALL SELECT ts_ns, CASE WHEN synthetic <> 0 THEN 'fill (synthetic)'"
+        " WHEN late <> 0 THEN 'fill (late)' ELSE 'fill' END, symbol, side, price_raw, qty_raw,"
+        " cum_qty_raw, liquidity || ' exec ' || exec_id, session_id, 2 FROM fills" +
+        match +
+        " UNION ALL SELECT updated_ns, 'state', symbol, side, price_raw, qty_raw, cum_qty_raw,"
+        " state || CASE WHEN reject_reason NOT IN ('', 'None') THEN ' ' || reject_reason"
+        " ELSE '' END || ' after ' || updates || ' update(s)', session_id, 3 FROM orders" +
+        match;
+    parts += 2;
+    sql =
+        "SELECT ts_ns, event, symbol, side, price_raw, qty_raw, cum_qty_raw, detail, session_id"
+        " FROM (" +
+        sql + ") ORDER BY k = 3, ts_ns, k";  // the last known state closes it
+    Where w;
+    for (std::size_t i = 0; i < parts; ++i) {
+      w.value(f.order);
+      w.value(static_cast<std::int64_t>(f.session_id));
+      w.value(static_cast<std::int64_t>(f.session_id));
+    }
+    return query(sql + limit(f), w);
   }
 
   [[nodiscard]] Result<std::vector<AuditFill>, std::string> booked_fills(
@@ -1131,6 +1216,24 @@ class SqliteReader final : public Reader {
           sqlite3_bind_int64(st, n, ints_[ii++]);
         }
       }
+    }
+
+    // A clause without a value.
+    void raw(const std::string& clause) { add(clause); }
+    // A value for a placeholder written into the statement by hand.
+    void value(const std::string& v) {
+      texts_.push_back(v);
+      order_.push_back(true);
+    }
+    void value(std::int64_t v) {
+      ints_.push_back(v);
+      order_.push_back(false);
+    }
+    // Another Where's values after these (its clause text is the caller's to place).
+    void append(const Where& o) {
+      texts_.insert(texts_.end(), o.texts_.begin(), o.texts_.end());
+      ints_.insert(ints_.end(), o.ints_.begin(), o.ints_.end());
+      order_.insert(order_.end(), o.order_.begin(), o.order_.end());
     }
 
    private:

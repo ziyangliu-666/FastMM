@@ -46,6 +46,7 @@ struct QueryFilter {
   std::string from;              // inclusive UTC day, "YYYY-MM-DD" (empty: from the beginning)
   std::string to;                // inclusive UTC day (empty: to the end)
   std::size_t limit = 0;         // 0: no limit
+  std::string order;             // client order id (order_timeline; empty: none)
 };
 
 // What the previous session left behind, for the operator who is about to start a new one.
@@ -222,6 +223,22 @@ class Reader {
   // sound store; the default has none. Filtered by engine and instrument.
   [[nodiscard]] virtual Result<Rows, std::string> duplicates(const QueryFilter& /*f*/) {
     return Rows{};
+  }
+  // The economic fill ledger: one row per execution (the venue's id of it on an account, symbol
+  // and side, within an engine) however many sessions stored it, as the first one did, with when
+  // it was first received, the venue's time, the quantity the position took (booked), how many
+  // copies there are and its flags (synthetic: booked from a cum_qty jump, no venue report; late:
+  // for an order already ended; before_start: traded before the session that booked it started,
+  // so it came in through the restart's replay; repeated: stored more than once). `raw` lists
+  // every stored row instead, with its copy number. A session filter keeps the executions it
+  // booked first (raw: its rows). The default cannot answer.
+  [[nodiscard]] virtual Result<Rows, std::string> ledger(const QueryFilter& /*f*/, bool /*raw*/) {
+    return fail(std::string("this store backend has no fill ledger"));
+  }
+  // Everything stored about one client order (`f.order`), in time order: sent, each refusal, each
+  // execution, and its last known state. The default cannot answer.
+  [[nodiscard]] virtual Result<Rows, std::string> order_timeline(const QueryFilter& /*f*/) {
+    return fail(std::string("this store backend has no order timeline"));
   }
   // The executions stored for `q.venue`, of every session of `q.engine`, by the venue's time of the
   // trade: the venue's trade id, order ids, side, price, quantity and the commission as reported

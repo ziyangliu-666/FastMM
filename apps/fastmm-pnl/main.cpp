@@ -247,6 +247,7 @@ static int run(int argc, char** argv) {
   std::string at;
   std::uint64_t against = 0;
   bool summary = false;
+  bool raw = false;
   QueryFilter f;
 
   CLI::App app("What a deployment traded, read from the store.", "fastmm-pnl");
@@ -271,6 +272,10 @@ static int run(int argc, char** argv) {
       {"rejects",
        "refused orders: who refused them (source), and the account's budget then; "
        "--summary sums them"},
+      {"ledger",
+       "one row per execution however many sessions stored it, with its flags; --raw lists "
+       "every stored copy"},
+      {"order", "everything stored about one order (--order <id>), in time order"},
   };
   for (const auto& [name, description] : commands)
     app.add_subcommand(name, description)->fallthrough();
@@ -304,6 +309,8 @@ static int run(int argc, char** argv) {
   app.add_option("--against", against, "param-diff: the earlier session to compare with")
       ->option_text("<id>");
   app.add_flag("--summary", summary, "rejects: one row per account, instrument, side and source");
+  app.add_flag("--raw", raw, "ledger: every stored row, with its copy number");
+  app.add_option("--order", f.order, "order: the client order id")->option_text("<id>");
   if (const auto rc = fastmm::cli::parse(app, argc, argv)) return *rc;
   if (app.get_subcommands().empty()) return fastmm::cli::usage_error(app, "a command is required");
   const std::string command = app.get_subcommands().front()->get_name();
@@ -433,6 +440,10 @@ static int run(int argc, char** argv) {
     rows = reader->params(pq);
   } else if (command == "rejects") {
     rows = summary ? reader->reject_summary(f) : reader->rejects(f);
+  } else if (command == "ledger") {
+    rows = reader->ledger(f, raw);
+  } else if (command == "order") {
+    rows = reader->order_timeline(f);
   } else if (command == "param-changes") {
     rows = reader->param_changes(f);
   } else if (command == "param-diff") {

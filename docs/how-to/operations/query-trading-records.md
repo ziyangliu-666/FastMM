@@ -156,6 +156,41 @@ build/release/bin/fastmm-pnl duplicates --engine mm1
 
 One row per venue execution or funding payment that more than one session stored (same venue, symbol and venue id): a restart booked it again. The columns are the kind (`fill` or `funding`), engine, venue, symbol, id, the number of copies, side, quantity (the amount of a funding payment), the time of the first copy and the sessions holding it, oldest first. Exit code 0 with no row, 4 with some. Every other command prints a warning on stderr when the rows it read from hold one: the positions, fees and PnL of those sessions count it twice. Nothing is rewritten; correct the figures from the listed rows. `store.duplicates()` returns the same rows in Python.
 
+## The economic ledger
+
+```bash
+build/release/bin/fastmm-pnl ledger --engine mm1 --day today
+```
+
+`fills` lists the rows the store holds; after a restart that booked an execution again, or a replay that brought in what traded while the process was down, those are not the same as what happened. `ledger` gives one row per execution (the venue's id of it on an account, symbol and side) however many sessions stored it, as the first one did:
+
+```text
+received             venue_time           account  symbol   side  liquidity  price     qty    booked_qty  fee      fee_asset  cl_ord_id       exec_id     flags         copies  session_id
+2024-03-04 09:14:02  2024-03-04 09:14:02  bybit    ETHUSDT  Buy   Maker      3412.55   0.05   0.05        0.00085  quote      fm000700000003  2966124872  repeated      2       5
+2024-03-04 09:20:41  2024-03-04 09:16:30  bybit    ETHUSDT  Buy   Maker      3411.90   0.05   0.05        0.00085  quote      fm000700000005  2966124877  before_start  1       8
+2024-03-04 09:14:09  2024-03-04 09:14:09  binance  BTCUSDT  Buy   Maker      61250.10  0.002  0.002       0.00061  quote      fm000700000004  2966124872                1       6
+```
+
+`received` is when FastMM first had it, `venue_time` when the venue says it traded, `booked_qty` what the position took. `flags`: `repeated` (stored by more than one session; `copies` says how many), `before_start` (traded before the session that booked it started: the restart's replay brought it), `late` (for an order that had already ended), `synthetic` (booked from a jump in the order's filled quantity, without a venue report). `--session` keeps the executions that session booked first. `--raw` lists every stored row instead, with its `copy` number. The positions and PnL tables are computed from the raw rows; a `repeated` execution is counted twice there ([below](#executions-stored-twice)).
+
+## What happened to an order
+
+```bash
+build/release/bin/fastmm-pnl order --engine mm1 --order fm000700000003
+```
+
+Everything the store has about one client order, in time order, its last known state at the end:
+
+```text
+ts                   event    symbol   side  price    qty   cum_qty  detail                                 session_id
+2024-03-04 09:14:01  sent     ETHUSDT  Buy   3412.55  0.05           Limit GTC                              5
+2024-03-04 09:14:01  refused  ETHUSDT  Buy   3412.55  0.05           VenueRateLimit by venue: Too many new orders  5
+2024-03-04 09:14:02  fill     ETHUSDT  Buy   3412.55  0.05  0.05     Maker exec 2966124872                  5
+2024-03-04 09:14:02  state    ETHUSDT  Buy   3412.55  0.05  0.05     Filled after 3 update(s)               5
+```
+
+`refused` rows (schema 9) name the limit that refused it, as `rejects` does. The store keeps an order's last state, not each transition; the journal has every message ([Journal format](../../reference/journal-format.md)). `--session` narrows it to one session.
+
 ## Check the stored fills against the venue
 
 Export the account's executions from the venue and compare them with what the store holds:

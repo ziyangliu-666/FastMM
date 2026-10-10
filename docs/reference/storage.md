@@ -248,6 +248,7 @@ The loss budget `[risk] max_loss` is carried across restarts by the kill-state f
 
 ## Tools
 
+- `fastmm-pnl ledger` reads `fills` as one row per execution across sessions (by engine, venue name, symbol, side and exec id; a synthetic fill is its own), with its copies and flags; `fastmm-pnl order --order <id>` joins `orders`, `rejects` and `fills` for one client order ([Query what you traded](../how-to/operations/query-trading-records.md#the-economic-ledger)). Both are queries over the tables above, not tables of their own.
 - `fastmm-pnl` ([command lines](cli.md), [the daily questions](../how-to/operations/query-trading-records.md)).
 - `fastmm.open_store(path)` returns pandas DataFrames ([Python API](python-api.md)).
 - `sqlite3 runs/mm1.db` for anything the two do not cover; the schema above is the contract.
