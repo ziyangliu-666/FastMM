@@ -198,7 +198,7 @@ Version 9. One row per refused order the engine recorded, keyed `(session_id, se
 | `venue_local` | the connector's own limiter, before sending (`text` names the window: `local rate limit: orders 10s`) |
 | `venue` | the venue (`venue_code`, `text`) |
 
-Refusals of the same instrument, side, reason and source within 100 ms of the last row recorded are counted, not written one by one: `count` is 1 plus those folded into the row, so `SUM(count)` is exact. The budget of a folded row is the one at the row's time.
+Refusals of the same instrument, side, account, reason, source and flags (`reduces`, `reduce_only`) within 100 ms of the last row recorded for them are counted, not written one by one: `count` is 1 plus those folded into the row, so `SUM(count)` is exact per account. A count no further refusal follows is written with the next once-a-second publication, or at the end of the session. The budget of a folded row is the one at the row's time.
 
 ### Views
 

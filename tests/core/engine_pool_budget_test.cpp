@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <span>
 #include <string_view>
@@ -393,18 +394,16 @@ TEST_CASE("core.engine pool: a refusal is recorded with the limit that refused i
   for (int k = 0; k < 4; ++k)
     CHECK(ctx.send(Fixture::buy().account(kMember1)).error() == RejectReason::RateLimit);
   CHECK(f.rejects().empty());
-  // The bucket: three orders spend it, the fourth is the bucket's refusal on another account. A
-  // different reason on the same instrument and side first records what the fold counted.
+  // The bucket: three orders spend it, the fourth is the bucket's refusal on another account,
+  // recorded under that account; member 1's count stays its own.
   for (int k = 0; k < 3; ++k) REQUIRE(ctx.send(Fixture::buy().account(kMember2)));
   CHECK(ctx.send(Fixture::buy().account(kMember2)).error() == RejectReason::RateLimit);
   r = f.rejects();
-  REQUIRE(r.size() == 2);
-  CHECK(r[0].source == RejectSource::AccountOrders10s);
-  CHECK(r[0].folded + 1 == 4);  // the four counted
-  CHECK(r[1].source == RejectSource::RiskBucket);
-  CHECK(r[1].hdr.venue == kMember2);
-  CHECK(r[1].local_tokens == 0);
-  CHECK(r[1].local_wait_ns > 0);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0].source == RejectSource::RiskBucket);
+  CHECK(r[0].hdr.venue == kMember2);
+  CHECK(r[0].local_tokens == 0);
+  CHECK(r[0].local_wait_ns > 0);
   // Another check's refusal is the risk's, whatever the budget.
   auto big = NewOrderRequest::limit(kBtc, Side::Sell, px("100.50"), qt("2")).account(kMember2);
   CHECK(ctx.send(big).error() == RejectReason::MaxOrderQty);
@@ -412,14 +411,74 @@ TEST_CASE("core.engine pool: a refusal is recorded with the limit that refused i
   REQUIRE(r.size() == 1);
   CHECK(r[0].source == RejectSource::Risk);
   CHECK(r[0].side == Side::Sell);
-  // Two more bucket refusals on the buy side: finish() records what is still counted.
+  // Two more bucket refusals on the buy side: finish() records what is still counted, member 1's
+  // four and member 2's two.
   CHECK(ctx.send(Fixture::buy().account(kMember2)).error() == RejectReason::RateLimit);
   CHECK(ctx.send(Fixture::buy().account(kMember2)).error() == RejectReason::RateLimit);
   f.engine->finish();
   r = f.rejects();
+  REQUIRE(r.size() == 2);
+  CHECK(r[0].source == RejectSource::AccountOrders10s);
+  CHECK(r[0].hdr.venue == kMember1);
+  CHECK(r[0].folded + 1 == 4);
+  CHECK(r[1].source == RejectSource::RiskBucket);
+  CHECK(r[1].hdr.venue == kMember2);
+  CHECK(r[1].folded + 1 == 2);
+}
+
+TEST_CASE("core.engine pool: refusals a fold counted are recorded by the next publication") {
+  Fixture f;
+  auto& ctx = f.engine->context();
+  for (const VenueId v : {kPrimary, kMember1, kMember2}) f.transport.publish(v, 90, 100, 0, 90);
+  for (int k = 0; k < 3; ++k)
+    CHECK(ctx.send(Fixture::buy().account(kMember1)).error() == RejectReason::RateLimit);
+  REQUIRE(f.rejects().size() == 1);  // the first; the other two are counted
+  // Refused no more: the next periodic publication records them, not the end of the session.
+  f.clock.advance(seconds(1));
+  static_cast<void>(f.engine->step());
+  const std::vector<RejectRecord> r = f.rejects();
   REQUIRE(r.size() == 1);
-  CHECK(r[0].source == RejectSource::RiskBucket);
+  CHECK(r[0].hdr.venue == kMember1);
   CHECK(r[0].folded + 1 == 2);
+}
+
+TEST_CASE("core.engine pool: two accounts' refusals are never counted into one account's record") {
+  Fixture f;
+  auto& ctx = f.engine->context();
+  f.transport.publish(kPrimary, 0, 100, 0, 90);
+  f.transport.publish(kMember1, 90, 100, 0, 90);  // both at their connectors' caps
+  f.transport.publish(kMember2, 90, 100, 0, 90);
+  // Refused in turn, within the fold window, same instrument, side, reason and source: each
+  // account's refusals are counted under it, and each account's still fold.
+  for (int k = 0; k < 5; ++k) {
+    CHECK(ctx.send(Fixture::buy().account(kMember1)).error() == RejectReason::RateLimit);
+    CHECK(ctx.send(Fixture::buy().account(kMember2)).error() == RejectReason::RateLimit);
+  }
+  f.engine->finish();
+  const std::vector<RejectRecord> records = f.rejects();
+  CHECK(records.size() == 4);  // each account's first, then what it counted
+  std::map<std::uint8_t, std::uint32_t> by_account;
+  for (const RejectRecord& r : records) {
+    CHECK(r.source == RejectSource::AccountOrders10s);
+    by_account[r.hdr.venue.value] += r.folded + 1;
+  }
+  CHECK(by_account ==
+        std::map<std::uint8_t, std::uint32_t>{{kMember1.value, 5}, {kMember2.value, 5}});
+}
+
+TEST_CASE("core.engine pool: a refusal that only reduces is not counted into one that adds") {
+  Fixture f;
+  auto& ctx = f.engine->context();
+  for (const VenueId v : {kPrimary, kMember1, kMember2}) f.transport.publish(v, 90, 100, 0, 90);
+  CHECK(ctx.send(Fixture::buy().account(kMember1)).error() == RejectReason::RateLimit);
+  CHECK(ctx.send(Fixture::buy().account(kMember1).reduce_only()).error() ==
+        RejectReason::RateLimit);
+  f.engine->finish();
+  const std::vector<RejectRecord> r = f.rejects();
+  REQUIRE(r.size() == 2);
+  CHECK(r[0].folded == 0);
+  CHECK(r[1].folded == 0);
+  CHECK(r[0].flags != r[1].flags);
 }
 
 TEST_CASE("core.engine pool: a venue's refusal is recorded as the connector's or the venue's") {

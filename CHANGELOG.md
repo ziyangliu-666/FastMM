@@ -27,6 +27,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - venues: a pool's accounts take their IP's shared weight without a kernel wait on each order.
 
 ### Fixed
+- store: refusals of a pool's accounts in turn were counted under the first account's record.
 - core: a pool order refused because its account is full or paused takes no `[risk]` token.
 
 ### Documentation

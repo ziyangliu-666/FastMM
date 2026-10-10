@@ -1268,7 +1268,7 @@ class Engine {
     account_record(records_.put(r.hdr));
   }
 
-  // RejectRecord folding, per instrument and side (record_reject).
+  // RejectRecord folding, per instrument, side and account (record_reject).
   struct RejectFold {
     std::int64_t last_ns = std::numeric_limits<std::int64_t>::min() / 2;
     std::uint32_t pending = 0;
@@ -1408,8 +1408,11 @@ class Engine {
   }
 
   // One refusal for the store (RejectRecord), with the account's budget as the engine sees it
-  // now. Refusals of the instrument and side with the same reason and source within kFoldNs of
-  // the last record are counted, not recorded; a different one first records what was counted.
+  // now. Refusals of the instrument, side and account with the same reason, source and flags
+  // within kFoldNs of the last record are counted, not recorded; a different one first records
+  // what was counted. Each account folds on its own (reject_fold_index): a pool's accounts refused
+  // in turn would otherwise all be counted under the first one, and an exit under an order that
+  // adds.
   FASTMM_NOINLINE void record_reject(RejectReason reason,
                                      RejectSource source,
                                      InstrumentId id,
@@ -1423,12 +1426,12 @@ class Engine {
                                      std::string_view text = {}) noexcept {
     RejectFold* fold = nullptr;
     std::uint32_t folded = 0;
-    if (id.value < kMaxInstruments) {
-      fold =
-          &reject_folds_[(static_cast<std::size_t>(id.value) * 2) + (side == Side::Sell ? 1U : 0U)];
-      const bool same = fold->reason == reason && fold->source == source;
+    if (id.value < kMaxInstruments && account.value < kMaxVenues) {
+      fold = &reject_folds_[reject_fold_index(id, side, account)];
+      const bool same = fold->reason == reason && fold->source == source && fold->flags == flags;
       if (same && now_.ns - fold->last_ns < RejectRecord::kFoldNs) {
         ++fold->pending;
+        reject_folds_pending_ = true;
         return;
       }
       if (same) {
@@ -1468,12 +1471,38 @@ class Engine {
     f.pending = 0;
     f.last_ns = now_.ns;
   }
+  [[nodiscard]] static std::size_t reject_fold_index(InstrumentId id,
+                                                     Side side,
+                                                     VenueId account) noexcept {
+    return (((static_cast<std::size_t>(id.value) * 2) + (side == Side::Sell ? 1U : 0U)) *
+            kMaxVenues) +
+           account.value;
+  }
+  // Folds that have counted refusals and seen none for kFoldNs by `now`: recorded with each
+  // periodic publication (publish_latency), rather than when that account is refused again or the
+  // session ends. `now` is the publication's clock: engine time (now_) moves only with events.
+  void flush_stale_reject_folds(Timestamp now) noexcept {
+    if (!reject_folds_pending_) return;
+    bool left = false;
+    for (std::size_t k = 0; k < kRejectFolds; ++k) {
+      RejectFold& f = reject_folds_[k];
+      if (f.pending == 0) continue;
+      if (now.ns - f.last_ns < RejectRecord::kFoldNs) {
+        left = true;
+        continue;
+      }
+      flush_reject_fold(f,
+                        InstrumentId{static_cast<std::uint32_t>(k / (2 * kMaxVenues))},
+                        (k / kMaxVenues) % 2 == 0 ? Side::Buy : Side::Sell);
+    }
+    reject_folds_pending_ = left;
+  }
   void flush_reject_folds() noexcept {
-    for (std::size_t k = 0; k < static_cast<std::size_t>(kMaxInstruments) * 2; ++k) {
+    for (std::size_t k = 0; k < kRejectFolds; ++k) {
       if (reject_folds_[k].pending != 0)
         flush_reject_fold(reject_folds_[k],
-                          InstrumentId{static_cast<std::uint32_t>(k / 2)},
-                          k % 2 == 0 ? Side::Buy : Side::Sell);
+                          InstrumentId{static_cast<std::uint32_t>(k / (2 * kMaxVenues))},
+                          (k / kMaxVenues) % 2 == 0 ? Side::Buy : Side::Sell);
     }
   }
   void emit_reject(RejectReason reason,
@@ -3412,6 +3441,7 @@ class Engine {
   }
   void publish_latency(Timestamp now) noexcept {
     last_publish_ = now;
+    flush_stale_reject_folds(now);
     const LatencySnapshot s = latency_.snapshot(now.ns);
     latency_pub_.store(s);
     publish_live(s);
@@ -3543,8 +3573,9 @@ class Engine {
   std::array<LiveMetric, kMaxStrategyMetrics> metrics_{};
   std::size_t metric_count_ = 0;
   // RejectRecord folding, per instrument and side (record_reject).
-  std::unique_ptr<RejectFold[]> reject_folds_ =
-      std::make_unique<RejectFold[]>(static_cast<std::size_t>(kMaxInstruments) * 2);
+  static constexpr std::size_t kRejectFolds = kMaxInstruments * 2 * kMaxVenues;
+  std::unique_ptr<RejectFold[]> reject_folds_ = std::make_unique<RejectFold[]>(kRejectFolds);
+  bool reject_folds_pending_ = false;  // a fold may hold counted refusals
   ParamUpdateMsg last_param_{};
   Timestamp last_param_ts_{};
   std::uint64_t control_param_seq_ = 0;

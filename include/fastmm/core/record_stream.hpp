@@ -263,9 +263,10 @@ enum class RejectSource : std::uint8_t {
 // One order refused: by the pre-trade checks (the engine's) or by its venue (an OrderReject),
 // with the account's order budget as the engine saw it then (ctx.order_budget). hdr.venue is the
 // account the order went to or was routed to, hdr.instrument its instrument. Refusals of the
-// same instrument, side, reason and source within RejectRecord::kFoldNs of the last one recorded
-// are counted into the next record's `folded` rather than recorded one by one: the counts stay
-// exact, a strategy retrying on every event does not fill the store.
+// same instrument, side, account, reason, source and flags within RejectRecord::kFoldNs of the
+// last one recorded for them are counted into the next record's `folded` rather than recorded one
+// by one: the counts stay exact per account, a strategy retrying on every event does not fill the
+// store.
 struct RejectRecord {
   static constexpr std::int64_t kFoldNs = 100'000'000;
   enum Flags : std::uint8_t {
