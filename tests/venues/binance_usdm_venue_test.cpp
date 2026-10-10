@@ -795,8 +795,8 @@ TEST_CASE("binance_usdm.venue: an exchangeInfo larger than the streaming client'
 
 TEST_CASE("binance_usdm.venue: the start's depth snapshots wait for the bulk share of the weight") {
   // 170 symbols at a start used to send every snapshot and history query within a second, past
-  // the minute's weight, and the 429 then the 418 followed. Here: a 16-weight window of 3 s,
-  // snapshots of weight 5 at limit 100, two symbols; the bulk share (0.5 of 0.9) takes one a
+  // the minute's weight, and the 429 then the 418 followed. Here: a 20-weight window of 3 s,
+  // snapshots of weight 5 at limit 100, two symbols; the bulk share (0.5 of 0.9: 9) takes one a
   // window.
   Harness h;
   const std::string minute =
@@ -806,7 +806,7 @@ TEST_CASE("binance_usdm.venue: the start's depth snapshots wait for the bulk sha
   h.exchange_info.replace(
       at,
       minute.size(),
-      R"("rateLimitType":"REQUEST_WEIGHT","interval":"SECOND","intervalNum":3,"limit":16)");
+      R"("rateLimitType":"REQUEST_WEIGHT","interval":"SECOND","intervalNum":3,"limit":20)");
   InstrumentTable instruments;
   REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
   REQUIRE(instruments.add(make_instrument("ETHUSDT", 0, "ETH", "USDT")));
@@ -823,9 +823,13 @@ TEST_CASE("binance_usdm.venue: the start's depth snapshots wait for the bulk sha
   venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
   const InstrumentId ids[] = {InstrumentId{0}, InstrumentId{1}};
   venue.subscribe(ids);
-  // The share is paced over the window (RateLimiter::kBulkPaceFloor): the first snapshot fits
-  // from 2.1 s into a window, and the second not before the next window's 2.1 s. The windows roll
-  // on the venue clock, so where the start falls in one sets how long the first waits.
+  // The share is paced over the window (RateLimiter::kBulkPaceFloor): a snapshot fits from 5/9 of
+  // a window (1.67 s) on, so the second not before the next window's 1.67 s. A refused snapshot is
+  // asked again on the 1 s housekeeping timer, 2 s apart at least (the depth sync's interval), and
+  // the windows roll on whole seconds of the venue clock: the retries see the same three points of
+  // a window over and over. The slot is wider than the 1 s between them, so one of the three falls
+  // in it; with a 16-weight window the slot was 0.92 s and a start whose three points all missed it
+  // never sent a snapshot.
   venue.connect(reactor);
   REQUIRE(pump_until(reactor, [&] { return h.depth_requests.load() == 1; }, 12000));
   const auto first = std::chrono::steady_clock::now();
@@ -836,7 +840,7 @@ TEST_CASE("binance_usdm.venue: the start's depth snapshots wait for the bulk sha
   const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::steady_clock::now() - first)
                           .count();
-  CHECK(waited >= 2000);
+  CHECK(waited >= 1500);
   CHECK(h.srv.frames("depth")[0].find("limit=100") != std::string::npos);
   REQUIRE(pump_until(reactor, [&] { return venue.md_feed()->synced_count() >= 1; }));
   CHECK(venue.status().rate_limit_cooldowns == 0);  // a deferral is not a cooldown
