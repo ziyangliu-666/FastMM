@@ -818,7 +818,7 @@ TEST_CASE("store.resume: a venue with no stored fill replays from the newest cle
 // The economic ledger keeps one row per execution however many sessions stored it, as the first
 // one did; --raw lists every copy. An execution that traded before the session that booked it
 // started came in through the restart's replay.
-TEST_CASE("store.ledger: one row per execution, its copies and flags; every copy with raw") {
+TEST_CASE("store.ledger: one row per execution, its copies and flags, every copy with raw") {
   const std::string path = fresh("ledger.db");
   const std::int64_t minute = 60'000 * kMs;
   {
