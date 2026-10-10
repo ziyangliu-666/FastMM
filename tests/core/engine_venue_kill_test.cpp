@@ -351,6 +351,7 @@ TEST_CASE("core.engine: the quote table says what each side asks for, works and 
   f.control(ControlCommand::ResetKill, kVenue1);
   REQUIRE(f.engine->set_quotes(kEth, DesiredQuotes{}));
   f.control(ControlCommand::ResetKill, kVenue1);
-  for (const LiveQuoteSide& s : f.engine->live_stats().quotes[kEth.value].sides)
+  const EngineLiveStats after = f.engine->live_stats();
+  for (const LiveQuoteSide& s : after.quotes[kEth.value].sides)
     CHECK(s.block == QuoteBlock::NotWanted);
 }
