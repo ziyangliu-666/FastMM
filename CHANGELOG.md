@@ -5,6 +5,7 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- data: `fastmm-data analyze <live.fmj> [--json]` marks a live session's fills against its mids.
 - replay: `fastmm-replay --check [--json]` lists what a replay needs, without replaying.
 - store: `fastmm-pnl ledger` gives one row per execution across sessions, with its flags.
 - store: `fastmm-pnl order --order <id>` shows one order's sends, refusals, fills and state.

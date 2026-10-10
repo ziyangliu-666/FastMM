@@ -370,6 +370,12 @@ if(TARGET fastmm-data)
   fastmm_cli_test(apps.fastmm-data.fill_check_missing EXPECT_RC 4
     CMD $<TARGET_FILE:fastmm-data> fill-check /nonexistent/session.fmj
     EXPECT_REGEX "fastmm-data: cannot open /nonexistent/session.fmj")
+  fastmm_cli_test(apps.fastmm-data.analyze_missing_journal EXPECT_RC 4
+    CMD $<TARGET_FILE:fastmm-data> analyze /nonexistent/session.fmj
+    EXPECT_REGEX "cannot open /nonexistent/session.fmj")
+  fastmm_cli_test(apps.fastmm-data.analyze_json EXPECT_RC 0
+    CMD $<TARGET_FILE:fastmm-data> analyze ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/journals/sample_1000.fmj --json
+    EXPECT_REGEX "^\\{\"strategy\": .*\"horizons\": \\[\\{\"horizon_ns\": 1000000000, ")
   fastmm_cli_test(apps.fastmm-data.fill_check_bad_conservatism EXPECT_RC 2
     CMD $<TARGET_FILE:fastmm-data> fill-check x.fmj --conservatism 0,2
     EXPECT_REGEX "fastmm-data: .*--conservatism")

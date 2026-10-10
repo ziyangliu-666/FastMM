@@ -219,6 +219,8 @@ SUBCOMMANDS:
                               replays fastest
   fill-check                  how many of a live session's resting orders the l2_queue fill
                               model would have filled
+  analyze                     what a live session's fills were worth: maker share, spread
+                              captured and markouts per horizon, from its journal
   calibrate                   fit queue_conservatism and the latencies to live sessions,
                               cross-validated, and print the [backtest] keys
 

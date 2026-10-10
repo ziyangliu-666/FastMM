@@ -102,6 +102,30 @@ Exit codes: [Command lines](../../reference/cli.md#fastmm-replay).
 
 A mismatch with the embedded configuration and the same binary is a determinism bug, and the journal reproduces it ([Determinism](../../explanation/determinism.md)). A different binary need not match.
 
+## What the fills were worth
+
+```bash
+./build/release/bin/fastmm-data analyze runs/mm1-1789370000000000000.fmj
+./build/release/bin/fastmm-data analyze runs/mm1-1789370000000000000.fmj --json --horizons-ms 1000,10000,60000
+```
+
+Reads a live session's journal alone (no store, no configuration, nothing replayed) and marks each fill against the venue mid the session recorded (its BookTicker stream): what it captured against the mid at the fill, what it was still worth after each horizon (the markout) and the difference (adverse selection), in basis points of the traded notional, overall, by maker and taker, and by instrument; with the order traffic and the maker share beside them:
+
+```text
+session  strategy 'basic_mm', 1 s of venue time
+orders   2 sent, 1 cancels, 0 replaces, 0 refused by the venue
+fills    1 (1 maker, 100.0%), 1 repeated report(s) counted once
+
+instrument       fills   maker         bought           sold         notional
+BTCUSDT              1       1              1              0           100.00
+
+horizon  fills of         marked  capture_bps  markout_bps  adverse_bps  excluded
+1s       all                  1         1.00        -1.00         2.00         0
+10s      all                  0         0.00         0.00         0.00         1
+```
+
+An execution reported twice (the replay after a reconnect) is counted once. A fill whose horizon falls after the last mid, or that had no mid, is left out and counted under `excluded`, never marked at a stale price. A session without a BookTicker stream has the counts and no markouts. The definitions are those of a backtest's markouts ([Backtesting](../../explanation/backtesting.md)), so the two compare directly.
+
 ## Check the fill model against live fills
 
 `fastmm-data fill-check` measures how well `[backtest] fill_model = "l2_queue"` predicts the passive fills of a live session. It does not re-run the strategy. It takes the orders the session had resting, each from its ack until its cancel ack, last fill or expiry in venue time, puts each one behind the quantity displayed at its price at the ack's venue time, and feeds the queue model the journal's book deltas, trades and book tickers in venue time order, the way a backtest does. A book ticker newer than the depth (by the venue's update id when both carry one, else by venue time) sets the queue at its touch: an order priced better than the touch has nothing ahead, an order at the touch joins behind the touch's quantity less ours and never has more ahead than it shows later. Trades printed after the depth update or the ticker take their quantity from its levels until the next update shows it. A replace follows the new order id. Orders that crossed the book at the ack, market, IOC and FOK orders are left out.

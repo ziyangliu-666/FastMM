@@ -18,6 +18,7 @@
 #include "fastmm/backtest/calibrate.hpp"
 #include "fastmm/backtest/data_registry.hpp"
 #include "fastmm/backtest/fill_check.hpp"
+#include "fastmm/backtest/live_analysis.hpp"
 #include "fastmm/cli/data.hpp"
 #include "fastmm/cli/modules.hpp"
 #include "fastmm/config/config.hpp"
@@ -55,6 +56,7 @@ int data(int argc, char** argv) {
   bool backtest = false;
   bool from_live_state = false;
   std::vector<double> horizons_ms;
+  bool json = false;
   double pre_ms = 100;
   std::string market;
 
@@ -90,6 +92,20 @@ int data(int argc, char** argv) {
                    "replay this journal's market data (the same period, instruments matched by "
                    "venue and symbol) instead of the session's own")
       ->option_text("<file.fmj>");
+  CLI::App* analyze = app.add_subcommand(
+      "analyze",
+      "what a live session's fills were worth: maker share, spread captured and markouts per "
+      "horizon, from its journal");
+  analyze->add_option("journal", journal, "journal recorded by fastmm-live")
+      ->option_text("<file.fmj>")
+      ->required();
+  analyze
+      ->add_option(
+          "--horizons-ms", horizons_ms, "markout horizons, in ms (default 1000,10000,60000)")
+      ->option_text("<ms,...>")
+      ->delimiter(',')
+      ->check(CLI::PositiveNumber);
+  analyze->add_flag("--json", json, "one JSON object instead of tables");
   CLI::App* calibrate = app.add_subcommand(
       "calibrate",
       "fit queue_conservatism and the latencies to live sessions, cross-validated, and print the "
@@ -133,7 +149,24 @@ int data(int argc, char** argv) {
       ->option_text("<file.csv>");
   if (const std::optional<int> rc = parse(app, argc, argv)) return *rc;
 
-  if (!list->parsed() && !convert->parsed() && !fill_check->parsed() && !calibrate->parsed())
+  if (analyze->parsed()) {
+    std::vector<std::int64_t> horizons;
+    for (const double h : horizons_ms) horizons.push_back(std::llround(h * 1e6));
+    if (horizons.empty())
+      horizons.assign(std::begin(bt::kDefaultMarkoutHorizonsNs),
+                      std::end(bt::kDefaultMarkoutHorizonsNs));
+    bt::LiveAnalysis a;
+    try {
+      a = bt::analyze_live(journal, horizons);
+    } catch (const std::exception& e) {
+      std::fprintf(stderr, "%s: %s\n", prog, e.what());
+      return kExitData;
+    }
+    std::fputs((json ? bt::live_analysis_json(a) : bt::format_live_analysis(a)).c_str(), stdout);
+    return 0;
+  }
+  if (!list->parsed() && !convert->parsed() && !fill_check->parsed() && !calibrate->parsed() &&
+      !analyze->parsed())
     return usage_error(app, "a command is required: list, convert, fill-check or calibrate");
   const auto write_csv = [&](const std::string& text) {
     std::ofstream f(csv, std::ios::trunc);
