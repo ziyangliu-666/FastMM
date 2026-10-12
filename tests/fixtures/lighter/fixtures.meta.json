@@ -1,0 +1,16 @@
+{
+ "_source": "mixed",
+ "_recorded_from": "wss://mainnet.zklighter.elliot.ai/stream (subscribe order_book / ticker / trade of market 110 (NVDA); account_all_trades of a public account; account_all_orders with a bad token; jsonapi/sendtx of a transaction signed for an account index that does not exist; ping) and https://mainnet.zklighter.elliot.ai/api/v1 (orderBookDetails, account, apikeys, nextNonce, accountActiveOrders without auth, trades, sendTx refused) from WSL2 in Singapore",
+ "_recorded_at": "2026-10-13T03:27Z",
+ "files": {
+  "md_order_book_snapshot.json": "recorded, trimmed to 5 levels a side",
+  "md_order_book_update.json, md_order_book_update2.json, md_order_book_update_gap.json": "recorded: the first, second and third update after the snapshot (the third skips the second)",
+  "md_ticker.json, md_trade.json, md_trade_snapshot.json": "recorded (trades trimmed)",
+  "ws_connected.json, ws_pong.json, ws_error_auth.json": "recorded",
+  "tx_reply_refused.json, rest_send_tx_refused.json": "recorded: a CreateOrder signed for account 99999999999, which does not exist, over the WebSocket and over REST",
+  "private_account_all_trades.json, private_account_all_trades_snapshot.json": "recorded for a public account, trimmed",
+  "private_account_all_orders.json": "synthesised in the Order shape of the REST reference (account_all_orders needs the account's token)",
+  "rest_order_book_details.json, rest_account.json, rest_apikeys.json, rest_next_nonce.json, rest_active_orders_noauth.json, rest_trades_noauth.json": "recorded, trimmed",
+  "signing_golden.json, gen_signing.go": "golden vectors of lighter-go (signer, types/txtypes) and poseidon_crypto v0.0.15: gen_signing.go writes signing_golden.json with a fixed private key and nonce that control no account"
+ }
+}

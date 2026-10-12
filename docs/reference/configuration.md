@@ -236,6 +236,7 @@ knows only the generic keys above. A project can register its own connector and 
 | `gate_usdt` | `gate`, `gate_futures` | Gate APIv4 USDT-settled perpetual futures | yes | yes | yes | yes |
 | `gemini` |  | Gemini perpetuals and spot (sandbox) | yes | yes | no | yes |
 | `hyperliquid` | `hl` | Hyperliquid perpetuals, main and builder-deployed dexes | yes | yes | yes | yes |
+| `lighter` | `zklighter` | Lighter (zkLighter) perpetuals | yes | yes | yes | yes |
 | `nasdaq_itch` |  | Nasdaq TotalView-ITCH market data, with OUCH order entry to fastmm-sim-itch | no | yes | yes | no |
 | `okx` |  | OKX v5 USDT-margined perpetual swaps and spot (demo trading) | yes | yes | yes | yes |
 <!-- END config-keys -->
@@ -472,6 +473,35 @@ Perpetuals on the main dex and the builder-deployed (HIP-3) dexes, such as xyz's
 | `allow_offline_reference_data` | boolean |  | start without metaAndAssetCtxs, using the configured tick and lot (default false) |
 | `dead_mans_switch_s` | integer |  | scheduleCancel window in seconds, at least 10, refreshed at a third of it; each refresh spends one request of the address budget and the venue allows 10 triggers a day. 0 disables it (default 0) |
 | `latency_log_s` | integer |  | log the post reply round trip and the order open lag (block time - send time) this often, s; 0 off (default 60) |
+<!-- END config-keys -->
+
+#### `lighter`
+
+Lighter (zkLighter) perpetuals. `api_key` is the account index, `api_secret` the API key's private key (80 hex digits) and `api_key_index` the slot it is registered in; `testnet = true` selects the testnet hosts and chain id 300 ([Venue connectors](venues.md#lighter-perpetuals-lighter)).
+
+<!-- BEGIN config-keys venue:lighter -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `api_key_index` | integer |  | the slot the API key is registered in, 4 to 254 (tools/lighter_api_key.py registers one); needed with api_secret |
+| `order_api` | string |  | order entry: ws (default, jsonapi/sendtx) \| rest |
+| `order_book` | boolean |  | subscribe order_book, the whole book (default true) |
+| `ticker` | boolean |  | subscribe ticker, the touch (default true) |
+| `trades` | boolean |  | subscribe trade (default true) |
+| `skip_nonce` | boolean |  | sign every transaction with the SkipNonce attribute, so one the venue refuses does not fail the ones after it (default true) |
+| `stale_ms` | integer |  | no traffic for this long marks the feed stale and pulls the venue's quotes, ms (default 5000) |
+| `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms; raised to at least 2 x ping_interval_ms + 5000 (default 60000) |
+| `ping_interval_ms` | integer |  | {"type":"ping"} interval on every connection, ms, 1000 to 110000 (default 30000; the venue closes a connection that sent nothing for 2 minutes) |
+| `orders_per_second` | integer |  | client-side cap on new orders and modifies per second (default 20) |
+| `tx_per_minute` | integer |  | client-side cap on transactions sent per minute (default 3600; the venue allows 4000 on a Premium account with no LIT staked, 60 on a Standard one) |
+| `quota_reserve` | integer |  | refuse new orders and modifies when no more than this much of the volume quota would remain (default 50) |
+| `order_expiry_s` | integer |  | lifetime of a resting order, s, 300 to 2592000 (default 2419200, 28 days) |
+| `auth_ttl_s` | integer |  | lifetime of the auth token of the account channel and the authenticated REST calls, s, 600 to 28740; the account channel reconnects with a new one at 90 % of it (default 25200) |
+| `terminal_wait_ms` | integer |  | hold an order's cancel or expiry this long for the fills it counts, ms (default 2000) |
+| `emit_ack_from_response` | boolean |  | acknowledge orders from the sendtx reply (accepted) rather than their open on account_all_orders (default false) |
+| `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
+| `allow_offline_reference_data` | boolean |  | start without orderBookDetails; no market can be traded then (default false) |
+| `dead_mans_switch_s` | integer |  | scheduled CancelAll window in seconds, 310 to 1296000, refreshed at a third of it over the trade connection; each refresh is one transaction. 0 disables it (default 0) |
+| `latency_log_s` | integer |  | log the sendtx reply round trip and the order open lag (venue time - send time) this often, s; 0 off (default 60) |
 <!-- END config-keys -->
 
 #### `nasdaq_itch`
