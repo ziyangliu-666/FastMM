@@ -119,7 +119,7 @@ struct HyperliquidVenueConfig {
 
 // The account's request budget (userRateLimit) and what was sent since it was read.
 struct AddressBudget {
-  std::int64_t cap = 0;   // nRequestsCap
+  std::int64_t cap = 0;   // nRequestsCap + nRequestsSurplus (reserved with reserveRequestWeight)
   std::int64_t used = 0;  // nRequestsUsed when read, plus the requests counted since
   bool known = false;
   [[nodiscard]] std::int64_t remaining() const noexcept { return cap - used; }

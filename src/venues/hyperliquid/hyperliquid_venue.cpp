@@ -273,7 +273,7 @@ Result<void, std::string> HyperliquidVenue::load_reference_data(InstrumentTable&
       const HttpReply rl = post(info_body("userRateLimit", cfg_.account_address, {}));
       RateLimitState st;
       if (rl.ok() && decode_rate_limit(rl.body, st).empty()) {
-        set_address_budget(st.used, st.cap);
+        set_address_budget(st.used, st.cap + st.surplus);
         FASTMM_LOG_INFO("{}: account {} (signer {}): request budget {} of {} used, volume {:.2f}",
                         cfg_.name,
                         cfg_.account_address,
@@ -1260,7 +1260,7 @@ void HyperliquidVenue::refresh_rate_limit() {
                              RateLimitState st;
                              if (!ok || !decode_rate_limit(body, st).empty()) return;
                              const bool first = !budget_.known;
-                             set_address_budget(st.used, st.cap);
+                             set_address_budget(st.used, st.cap + st.surplus);
                              if (first || budget_.remaining() <= cfg_.address_reserve * 2)
                                FASTMM_LOG_INFO("{}: request budget {} of {} used ({} left)",
                                                cfg_.name,
