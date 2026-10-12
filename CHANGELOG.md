@@ -8,6 +8,9 @@ All notable changes are recorded here (Keep a Changelog format).
 - venues: `hyperliquid` connector for perpetuals, main and builder-deployed (HIP-3) dexes.
 - venues: Hyperliquid order signing with libsecp256k1 0.6.0, pinned and built in-tree.
 - configs: `hyperliquid.toml`, BasicMM on the Hyperliquid BTC perpetual; a Hyperliquid section in Run on testnet.
+- venues: `lighter` connector for Lighter (zkLighter) perpetuals.
+- venues: Lighter transaction signing (Poseidon2, Schnorr over ECgFp5), a native port checked against the official Go signer.
+- configs: `lighter.toml`, BasicMM on the Lighter NVDA perpetual; a Lighter section in Run on testnet; `tools/lighter_api_key.py` registers an API key.
 - live: `fastmm-top` shows the session's threads from `/proc`: CPU, core, context switches, faults.
 - data: `fastmm-data analyze <live.fmj> [--json]` marks a live session's fills against its mids.
 - replay: `fastmm-replay --check [--json]` lists what a replay needs, without replaying.

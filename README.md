@@ -55,7 +55,7 @@ class TouchMM(fastmm.Strategy):
 
 ## Exchanges
 
-Binance, OKX, Bybit, Gate, Hyperliquid, Deribit, Gemini and Coinbase. Nasdaq over TotalView-ITCH and OUCH 5.0.
+Binance, OKX, Bybit, Gate, Hyperliquid, Lighter, Deribit, Gemini and Coinbase. Nasdaq over TotalView-ITCH and OUCH 5.0.
 
 > If you are running FastMM on Binance, try [bndesk](https://github.com/ziyangliu-666/bndesk), a real-time dashboard for your accounts.
 

@@ -86,6 +86,14 @@ The shipped configs raise `stale_ms` for quiet feeds ([Venue connectors](../../r
 - Dead man's switch: `scheduleCancel` is refused until the address has traded enough; the connector logs the reason once and runs without it.
 - After a session, flatten with `fastmm-ctl flatten` (reduce-only) and check `openOrders` and `clearinghouseState` of each dex.
 
+### Lighter perpetuals
+
+- Account: a Lighter account belongs to an Ethereum address. Connect a wallet at app.lighter.xyz and deposit USDC (from Ethereum or a supported L2 through the app's bridge); the first deposit creates the account and its index. On the testnet (`testnet = true`) the faucet funds it.
+- API key: `tools/lighter_api_key.py` makes a key pair and registers it in a slot (4 to 254) with a ChangePubKey that the wallet's key signs. It runs on the trading host after `pip install lighter-sdk eth-account` and reads the wallet key from the environment, never from the command line. Without `--send` it only prints what it would register. Keep the printed private key as `FASTMM_LIGHTER_API_KEY`.
+- Endpoints (from `configs/lighter.toml`): `wss://mainnet.zklighter.elliot.ai/stream` carries the market data, the account channels and the transactions on three connections, and REST is `https://mainnet.zklighter.elliot.ai`. The testnet hosts are `testnet.zklighter.elliot.ai`.
+- Tier: a Standard account trades free, but its orders and cancels wait 300 ms and it may send 60 transactions a minute. Premium (`/api/v1/changeAccountTier`, once a day per address, for every sub-account at once) has no wait for makers and cancels and allows 4000 transactions a minute, but each order spends volume quota; the connector stops at `quota_reserve`.
+- After a session, flatten with `fastmm-ctl flatten` (reduce-only) and check `accountActiveOrders` and the positions of `account`.
+
 ### Bybit v5 spot testnet
 
 - Keys: create a system-generated (HMAC) API key on the Bybit testnet site (testnet.bybit.com, API Management) with spot trading permission.
