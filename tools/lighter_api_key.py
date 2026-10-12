@@ -21,6 +21,7 @@ import asyncio
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 
 HOSTS = {
@@ -30,8 +31,12 @@ HOSTS = {
 
 
 def get(url: str) -> dict:
-    with urllib.request.urlopen(url, timeout=10) as r:
-        return json.loads(r.read())
+    # An empty slot is an HTTP 400 {"code":21109,"message":"api key not found"}: read the body anyway.
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return json.loads(e.read() or b"{}")
 
 
 async def main() -> int:
