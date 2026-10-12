@@ -262,3 +262,139 @@ TEST_CASE("live.hyperliquid: one ALO far from the market, its status and its can
                       venue.address_budget().cap));
   venue.disconnect();
 }
+
+// Latency matrix (opt-in on top of the order test: FASTMM_HL_LATENCY_ROUNDS=N). Each round places
+// one ALO far from the market, modifies it (batchModify, a new client id) after FASTMM_HL_GAP_MS,
+// then cancels it either right after the modify's ack or FASTMM_HL_GAP_MS later (alternating
+// rounds). Prints one "LAT <kind> <cl_ord_id> <sent_ms> <ack_ms>" line per action; the block times
+// come from the orderUpdates frames recorded under FASTMM_HL_RECORD_DIR (statusTimestamp per
+// cloid). Spends three address requests per round.
+TEST_CASE("live.hyperliquid: latency matrix of place, modify and cancel") {
+  const char* rounds_env = std::getenv("FASTMM_HL_LATENCY_ROUNDS");
+  if (!live_tests_enabled() || env_or_empty("FASTMM_HL_PLACE_ORDER") != "1" ||
+      rounds_env == nullptr) {
+    MESSAGE(
+        "skipped: set FASTMM_LIVE_TESTS=1, FASTMM_HL_PLACE_ORDER=1 and FASTMM_HL_LATENCY_ROUNDS");
+    return;
+  }
+  const int rounds = std::atoi(rounds_env);
+  const std::string gap_env = env_or_empty("FASTMM_HL_GAP_MS");
+  const std::int64_t gap_ms = gap_env.empty() ? 2000 : std::atoll(gap_env.c_str());
+  const VenueSection s = live_section();
+  REQUIRE_FALSE(s.api_key.empty());
+  REQUIRE_FALSE(s.api_secret.empty());
+  HyperliquidVenueConfig cfg = make_hyperliquid_config(s, false);
+  cfg.record_raw_dir = env_or_empty("FASTMM_HL_RECORD_DIR");
+  cfg.channels.trades = false;
+  cfg.supports_replace = true;
+  HyperliquidVenue venue(VenueId{0}, cfg);
+  InstrumentTable instruments;
+  const std::string coin = coin_under_test();
+  REQUIRE(instruments.add(make_instrument(coin.c_str(), 0, "X", "USDC")));
+  REQUIRE(venue.load_reference_data(instruments));
+  RecordingSink md(16U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  REQUIRE(symbols.build(instruments));
+  venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+  const InstrumentId ids[] = {InstrumentId{0}};
+  venue.subscribe(ids);
+  venue.connect(reactor);
+  Price best_bid{};
+  REQUIRE(pump_until(
+      reactor,
+      [&] {
+        for (const auto& m : md.drain()) {
+          if (RecordingSink::type_of(m) == EventType::BookTicker)
+            best_bid = RecordingSink::as<BookTickerMsg>(m).bid_px;
+        }
+        venue.on_timer(net::Reactor::now_ns());
+        return best_bid.is_positive() && venue.order_channel_live() &&
+               venue.status().user == ChannelState::Live;
+      },
+      30'000));
+  const Instrument& inst = instruments.get(InstrumentId{0});
+  Collected oc;
+  auto idle = [&](std::int64_t ms) {
+    pump_until(
+        reactor,
+        [&] {
+          oc.take(orders);
+          for (const auto& m : md.drain()) {
+            if (RecordingSink::type_of(m) == EventType::BookTicker)
+              best_bid = RecordingSink::as<BookTickerMsg>(m).bid_px;
+          }
+          venue.on_timer(net::Reactor::now_ns());
+          return false;
+        },
+        static_cast<int>(ms));
+  };
+  idle(1000);
+  auto wait_ack = [&](ClientOrderId id, EventType t) -> std::int64_t {
+    std::int64_t at = 0;
+    pump_until(
+        reactor,
+        [&] {
+          oc.take(orders);
+          venue.on_timer(net::Reactor::now_ns());
+          if (t == EventType::OrderAck) {
+            if (const auto* a = oc.first_if<OrderAckMsg>(
+                    t, [&](const OrderAckMsg& m) { return m.cl_ord_id == id; }))
+              at = a->hdr.recv_ts.ns / 1'000'000;
+          } else if (const auto* a = oc.first_if<OrderCancelAckMsg>(
+                         t, [&](const OrderCancelAckMsg& m) { return m.cl_ord_id == id; })) {
+            at = a->hdr.recv_ts.ns / 1'000'000;
+          }
+          if (oc.first_if<OrderRejectMsg>(EventType::OrderReject, [&](const OrderRejectMsg& m) {
+                return m.cl_ord_id == id;
+              }))
+            at = -1;
+          return at != 0;
+        },
+        15'000);
+    return at;
+  };
+  for (int r = 0; r < rounds; ++r) {
+    const auto base = (std::uint64_t{0x7f} << 32) | (static_cast<std::uint64_t>(r) << 8);
+    OutNewOrderMsg n = far_passive_buy(inst, best_bid, ClientOrderId{base | 1});
+    std::int64_t t0 = wall_now().ns / 1'000'000;
+    REQUIRE(outbound.try_push(&n, n.hdr.len));
+    venue.on_wake();
+    std::int64_t a0 = wait_ack(n.cl_ord_id, EventType::OrderAck);
+    MESSAGE(fmt::format("LAT place {} {} {}", n.cl_ord_id.value, t0, a0));
+    if (a0 <= 0) break;
+    idle(gap_ms);
+    OutReplaceMsg rp{};
+    init_header(rp, EventType::OutReplace, inst.id, inst.venue);
+    rp.cl_ord_id = ClientOrderId{base | 2};
+    rp.orig_cl_ord_id = n.cl_ord_id;
+    rp.price = inst.round_price(Price::from_raw(best_bid.raw / 100 * 79), Side::Buy);
+    rp.qty = n.qty;
+    std::int64_t t1 = wall_now().ns / 1'000'000;
+    REQUIRE(outbound.try_push(&rp, rp.hdr.len));
+    venue.on_wake();
+    std::int64_t a1 = wait_ack(rp.cl_ord_id, EventType::OrderAck);
+    MESSAGE(fmt::format("LAT modify {} {} {}", rp.cl_ord_id.value, t1, a1));
+    if (a1 <= 0) break;
+    const bool delayed = (r % 2) == 1;
+    idle(delayed ? gap_ms : 50);
+    OutCancelMsg c{};
+    init_header(c, EventType::OutCancel, inst.id, inst.venue);
+    c.cl_ord_id = rp.cl_ord_id;
+    std::int64_t t2 = wall_now().ns / 1'000'000;
+    REQUIRE(outbound.try_push(&c, c.hdr.len));
+    venue.on_wake();
+    std::int64_t a2 = wait_ack(c.cl_ord_id, EventType::OrderCancelAck);
+    MESSAGE(fmt::format(
+        "LAT {} {} {} {}", delayed ? "cancel_late" : "cancel_quick", c.cl_ord_id.value, t2, a2));
+    idle(500);
+  }
+  idle(3000);
+  CHECK(venue.shadow_count() == 0);
+  MESSAGE(fmt::format("address budget after: {} of {} used",
+                      venue.address_budget().used,
+                      venue.address_budget().cap));
+  venue.disconnect();
+}
