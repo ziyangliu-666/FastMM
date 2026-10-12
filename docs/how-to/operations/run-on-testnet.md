@@ -77,6 +77,15 @@ The shipped configs raise `stale_ms` for quiet feeds ([Venue connectors](../../r
 
 `configs/gate-usdt.toml` points at production (`wss://fx-ws.gateio.ws/v4/ws/usdt`, `https://fx-api.gateio.ws`); Gate's futures TestNet is `wss://ws-testnet.gate.com/v4/ws/futures/usdt` and `https://fx-api-testnet.gateio.ws`, with keys from the "Futures TestNet APIKeys" tab (production keys are refused there). `FASTMM_GATE_API_KEY` / `FASTMM_GATE_API_SECRET`; the account must be in single position mode and hold USDT in its futures account ([Venue connectors](../../reference/venues.md#gate-usdt-perpetual-futures-gate_usdt)).
 
+### Hyperliquid perpetuals
+
+- Keys: the account's address (`api_key`) and a signing key (`api_secret`): an agent wallet the account approved (app.hyperliquid.xyz, More > API: Generate, then Authorize API Wallet) or the account's own key. An agent can place, modify and cancel orders but cannot move funds; the connector checks it against the account's `extraAgents` at start-up.
+- Endpoints (from `configs/hyperliquid.toml`): `wss://api.hyperliquid.xyz/ws` (market data, the account streams and the order posts on three connections), REST `https://api.hyperliquid.xyz`. The testnet is `wss://api.hyperliquid-testnet.xyz/ws` and `https://api.hyperliquid-testnet.xyz` with `testnet = true`; its USDC comes from the testnet faucet, and a mainnet agent is not valid there.
+- Account: in a unified account the spot USDC is the collateral of every dex (main and HIP-3); otherwise USDC has to be moved to the perp balance. Builder-deployed dexes (xyz's US equities) are named with their prefix, `xyz:NVDA`.
+- Request budget: each new order and modify spends one request of the address budget, 10000 plus one per USDC traded (growth-mode volume counts 10 %). The account itself (not an agent) can reserve more with `reserveRequestWeight` at 0.0005 USDC a request, paid from the perp balance; the connector counts the reserved requests and stops new orders and modifies at `address_reserve`.
+- Dead man's switch: `scheduleCancel` is refused until the address has traded enough; the connector logs the reason once and runs without it.
+- After a session, flatten with `fastmm-ctl flatten` (reduce-only) and check `openOrders` and `clearinghouseState` of each dex.
+
 ### Bybit v5 spot testnet
 
 - Keys: create a system-generated (HMAC) API key on the Bybit testnet site (testnet.bybit.com, API Management) with spot trading permission.

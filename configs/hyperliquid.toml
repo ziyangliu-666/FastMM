@@ -1,0 +1,94 @@
+# FastMM: BasicMM on Hyperliquid perpetuals (mainnet hosts; the testnet is wss://api.hyperliquid-testnet.xyz/ws
+# and https://api.hyperliquid-testnet.xyz with testnet = true, funded from the testnet faucet).
+#   ./build/release/bin/fastmm-live --config configs/hyperliquid.toml --dry-run --duration 60s
+# With keys: the account's address and the key of an agent wallet the account approved (app.hyperliquid.xyz,
+# More > API), or the account's own key:
+#   export FASTMM_HL_ACCOUNT=0x... FASTMM_HL_AGENT_KEY=0x...
+#   ./build/release/bin/fastmm-live --config configs/hyperliquid.toml
+# Coins of a builder-deployed (HIP-3) dex carry its prefix (symbol "xyz:NVDA"), or set dex = "xyz" and
+# name them without it. Each new order and modify spends one request of the address budget
+# (userRateLimit); leverage and margin mode are account settings the connector does not touch.
+[engine]
+name = "hyperliquid"
+cpu = -1
+net_cpus = []
+spin_mode = "adaptive"
+journal = true
+journal_dir = "runs"
+epoch_file = "runs/session_epoch"
+rng_seed = 42
+md_ring_bytes = 4194304
+order_ring_bytes = 1048576
+journal_ring_bytes = 16777216
+max_events_per_step = 64
+crossed_grace_ms = 100
+latency_publish_ms = 1000
+min_requote_ticks = 2
+min_requote_interval_ms = 250
+min_qty_bps = 8000
+post_only = true
+# A modify (batchModify) lands as a new order with a new id and spends one request, like a new order.
+supports_replace = true
+
+[venues.hl]
+kind = "hyperliquid"
+ws_url = "wss://api.hyperliquid.xyz/ws"
+rest_url = "https://api.hyperliquid.xyz"
+api_key = "${FASTMM_HL_ACCOUNT}"
+api_secret = "${FASTMM_HL_AGENT_KEY}"
+testnet = false
+supports_replace = true
+stale_ms = 10000
+# New orders and modifies stop while no more than this many requests of the address budget remain.
+address_reserve = 500
+# scheduleCancel: the venue cancels every order of the account when no refresh arrives in time. The
+# venue refuses it until the address has traded enough; the connector then runs without it. 0 = off.
+dead_mans_switch_s = 60
+
+[venues.hl.fees]
+maker_bps = 1.5              # tier 0 perpetuals: 0.015 % maker, 0.045 % taker
+taker_bps = 4.5
+
+# Tick (5 significant figures at the mark), lot (10^-szDecimals) and the 10 USDC minimum come from
+# the venue's meta at startup; quote = USDC.
+[[instruments]]
+venue = "hl"
+symbol = "BTC"
+base = "BTC"
+quote = "USDC"
+asset_class = "perpetual"
+tick = "1"
+lot = "0.00001"
+min_qty = "0.00001"
+max_qty = "1000"
+enabled = true
+
+[strategy]
+name = "basic_mm"
+
+[strategy.params]
+half_spread_bps = 5.0
+skew_bps_per_unit = 0.5
+quote_qty = 0.0002
+max_inventory = 0.0006
+requote_threshold_ticks = 3
+pull_on_stale_ms = 2000
+levels = 1
+
+[risk]
+max_order_qty = "0.0004"
+max_order_notional = "50"
+max_position = "0.0006"
+max_open_orders = 4
+price_collar_bps = 50
+fat_finger_bps = 200
+stale_md_ms = 2000
+max_loss = "5"
+orders_per_sec = 5
+burst = 5
+stp = true
+
+[logging]
+level = "info"
+file = ""
+mirror_level = "warn"
