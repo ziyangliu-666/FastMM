@@ -406,7 +406,7 @@ void HyperliquidVenue::disconnect() {
     reactor_->cancel_timer(housekeeping_timer_);
     housekeeping_timer_ = net::kInvalidTimer;
   }
-  if (dms_.needs_stop() && signer_.usable()) {
+  if (dms_.needs_stop() && signer_.usable() && !dms_refused_) {
     // Remove the scheduled cancel: a clean stop has cancelled what it wanted to.
     ActionBuilder a;
     if (a.schedule_cancel(0)) {
@@ -1576,6 +1576,16 @@ void HyperliquidVenue::send_schedule_cancel(std::int64_t time_ms) {
           return;
         }
         ++stats_.rest_errors;
+        if (r.ok()) {
+          // Refused by the venue, not lost: the reason, once; no more refreshes (each would
+          // spend a request of the address budget for the same refusal) and no lapse.
+          if (!dms_refused_)
+            FASTMM_LOG_WARN("{}: scheduleCancel refused: {}; going on without it",
+                            cfg_.name,
+                            std::string_view(r.body).substr(0, 400));
+          dms_refused_ = true;
+          return;
+        }
         FASTMM_LOG_ERROR(
             "{}: scheduleCancel failed: HTTP {} {}", cfg_.name, r.status, r.body.substr(0, 160));
       });
@@ -1612,7 +1622,7 @@ void HyperliquidVenue::on_timer(std::int64_t now) {
   if (stale) reconcile_.request();
   reconcile_.on_timer(now);
   fill_replay_.on_timer(now);
-  if (!cfg_.dry_run && signer_.usable()) {
+  if (!cfg_.dry_run && signer_.usable() && !dms_refused_) {
     switch (dms_.poll(now)) {
       case CountdownDriver::Step::Lapsed:
         FASTMM_LOG_ERROR(

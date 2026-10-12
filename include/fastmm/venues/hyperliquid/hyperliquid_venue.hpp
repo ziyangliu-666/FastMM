@@ -376,6 +376,9 @@ class HyperliquidVenue final : public Venue, private ReconcileHooks {
   BatchedOrders batch_;
   ReconcileDriver reconcile_{*this, sent_};
   CountdownDriver dms_;
+  // The venue refused scheduleCancel ("Cannot set scheduled cancel time ...": it needs the
+  // account to have traded first): logged once, and the session goes on without the switch.
+  bool dms_refused_ = false;
 
   ReplayScheduler<FillRow> fill_replay_;
 
