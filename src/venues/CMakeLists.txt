@@ -5,3 +5,5 @@ add_library(fastmm::venues ALIAS fastmm_venues)
 set_target_properties(fastmm_venues PROPERTIES EXPORT_NAME venues)
 fastmm_target_defaults(fastmm_venues)
 target_link_libraries(fastmm_venues PUBLIC fastmm::net fastmm::codecs PRIVATE simdjson::simdjson)
+# libsecp256k1: Hyperliquid's order signatures only; its headers stay out of the public ones.
+target_link_libraries(fastmm_venues PRIVATE secp256k1)

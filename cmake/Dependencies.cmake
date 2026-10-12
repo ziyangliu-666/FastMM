@@ -104,6 +104,38 @@ if(FASTMM_BUILD_NET)
   endif()
 endif()
 
+# --- libsecp256k1 (venues: Hyperliquid order signing) ------------------------
+# ECDSA on secp256k1 with RFC 6979 nonces and public-key recovery, which Hyperliquid's EIP-712
+# signatures need (r, s, v). The system OpenSSL (3.0 on Ubuntu 24.04) has the curve but neither
+# deterministic nonces nor recovery. Built here as a static library from the pinned release (the
+# library's own CMake installs and exports targets of its own): the signing code, the
+# precomputed tables and the recovery module, no other module, no assembly.
+if(FASTMM_BUILD_NET)
+  enable_language(C)
+  CPMAddPackage(
+    NAME secp256k1
+    VERSION 0.6.0
+    URL https://github.com/bitcoin-core/secp256k1/archive/refs/tags/v0.6.0.tar.gz
+    URL_HASH SHA256=785bb98e7d6705c51c8dfa8ac3af6aa2ccfa3774714d51c0b9e28fac1146e9f1
+    DOWNLOAD_ONLY YES)
+  if(secp256k1_ADDED AND NOT TARGET secp256k1)
+    add_library(secp256k1 STATIC
+      ${secp256k1_SOURCE_DIR}/src/secp256k1.c
+      ${secp256k1_SOURCE_DIR}/src/precomputed_ecmult.c
+      ${secp256k1_SOURCE_DIR}/src/precomputed_ecmult_gen.c)
+    set_target_properties(secp256k1 PROPERTIES
+      C_STANDARD 90 C_EXTENSIONS OFF EXPORT_NAME secp256k1
+      OUTPUT_NAME fastmm_secp256k1  # installed next to the fastmm libraries
+      POSITION_INDEPENDENT_CODE ${FASTMM_PIC})
+    # SYSTEM: its headers are not held to fastmm::warnings in the files that include them.
+    target_include_directories(secp256k1 SYSTEM PUBLIC $<BUILD_INTERFACE:${secp256k1_SOURCE_DIR}/include>)
+    # The library's CMake defaults (ECMULT_WINDOW_SIZE 15, an 86 KiB signing table).
+    target_compile_definitions(secp256k1 PRIVATE
+      ENABLE_MODULE_RECOVERY=1 ECMULT_WINDOW_SIZE=15 COMB_BLOCKS=43 COMB_TEETH=6)
+    target_compile_options(secp256k1 PRIVATE -w)
+  endif()
+endif()
+
 # --- SQLite (store: the queryable record of a session) ----------------------
 # The amalgamation, pinned and fetched by CPM like every other dependency (ADR-0005): a trading
 # host needs no -dev package, and the WAL and UPSERT behaviour the store relies on is the version
