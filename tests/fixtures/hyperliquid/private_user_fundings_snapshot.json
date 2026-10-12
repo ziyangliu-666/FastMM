@@ -1,0 +1,1 @@
+{"channel":"userFundings","data":{"isSnapshot":true,"user":"0x0000000000000000000000000000000000000001","fundings":[{"time":1791777600001,"coin":"xyz:NATGAS","usdc":"-208.903504","szi":"123920.1","fundingRate":"0.0005021722","nSamples":null},{"time":1791777600001,"coin":"xyz:SMSN","usdc":"-13.632971","szi":"11522.241","fundingRate":"0.00000625","nSamples":null}]}}

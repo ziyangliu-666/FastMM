@@ -17,6 +17,7 @@ void register_coinbase_venue(VenueRegistry& r);
 void register_deribit_venue(VenueRegistry& r);
 void register_gate_usdt_venue(VenueRegistry& r);
 void register_gemini_venue(VenueRegistry& r);
+void register_hyperliquid_venue(VenueRegistry& r);
 void register_nasdaq_itch_venue(VenueRegistry& r);
 void register_okx_venue(VenueRegistry& r);
 
@@ -194,6 +195,7 @@ void register_builtin_venues(VenueRegistry& r) {
   register_deribit_venue(r);
   register_gate_usdt_venue(r);
   register_gemini_venue(r);
+  register_hyperliquid_venue(r);
   register_nasdaq_itch_venue(r);
   register_okx_venue(r);
 }

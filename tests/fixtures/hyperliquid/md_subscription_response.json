@@ -1,0 +1,1 @@
+{"channel":"subscriptionResponse","data":{"method":"subscribe","subscription":{"type":"l2Book","coin":"xyz:NVDA","nSigFigs":null,"mantissa":null,"fast":false}}}

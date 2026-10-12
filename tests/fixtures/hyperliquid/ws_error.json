@@ -1,0 +1,1 @@
+{"channel":"error","data":"Error parsing JSON into valid websocket request: {\"method\": \"post\", \"id\": 201, \"request\": {\"type\": \"action\", \"payload\": {\"action\": {\"type\": \"cancel\"}, \"nonce\": 1}}}"}

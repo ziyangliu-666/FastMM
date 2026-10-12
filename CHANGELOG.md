@@ -5,6 +5,8 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- venues: `hyperliquid` connector for perpetuals, main and builder-deployed (HIP-3) dexes.
+- venues: Hyperliquid order signing with libsecp256k1 0.6.0, pinned and built in-tree.
 - live: `fastmm-top` shows the session's threads from `/proc`: CPU, core, context switches, faults.
 - data: `fastmm-data analyze <live.fmj> [--json]` marks a live session's fills against its mids.
 - replay: `fastmm-replay --check [--json]` lists what a replay needs, without replaying.

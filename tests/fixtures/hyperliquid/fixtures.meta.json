@@ -1,0 +1,17 @@
+{
+ "_source": "mixed",
+ "_recorded_from": "wss://api.hyperliquid.xyz/ws (subscribe l2Book / bbo / trades of xyz:NVDA and xyz:XYZ100; orderUpdates, userFills, userEvents, userFundings of a public maker address; ping) and https://api.hyperliquid.xyz/info (perpDexs, meta and metaAndAssetCtxs of dex xyz, clearinghouseState, spotClearinghouseState, frontendOpenOrders, userFillsByTime, userRateLimit, orderStatus) from WSL2 in Singapore",
+ "_recorded_at": "2026-10-12T13:08Z",
+ "files": {
+  "md_l2book.json, md_bbo.json, md_trades.json, md_subscription_response.json, md_pong.json": "recorded (xyz:NVDA)",
+  "ws_error.json, post_err_wallet.json, post_info_rate_limit.json": "recorded: posts from a throwaway key with no account (a malformed request, an order the venue refused because the signer has no account, a userRateLimit info post)",
+  "private_order_updates.json": "recorded orderUpdates entries of a public address (open, canceled, badAloPxRejected, filled, iocCancelRejected) moved to xyz:NVDA with FastMM cloids; the marginCanceled entry is the canceled one with a part filled, in the same shape",
+  "private_user_fills.json": "a recorded userFills push rewritten to two xyz:NVDA fills (a maker one with a FastMM cloid, a taker one without), the user replaced",
+  "private_user_fills_snapshot.json, private_user_fundings_snapshot.json": "recorded snapshots, trimmed, the user replaced",
+  "private_user_fundings.json": "synthesised in the shape of the recorded userFundings entries",
+  "post_order_statuses.json, post_cancel_statuses.json, post_schedule_cancel.json, exchange_order_resting.json": "docs-example (exchange endpoint docs, read 2026-10-12) inside the recorded post reply envelope",
+  "rest_perp_dexs.json, rest_meta_xyz.json, rest_meta_and_ctxs_xyz.json, rest_clearinghouse_xyz.json, rest_spot_clearinghouse.json, rest_open_orders_xyz.json, rest_user_fills_by_time.json": "recorded, trimmed to a few rows",
+  "rest_user_rate_limit.json, rest_order_status.json, rest_order_status_unknown.json": "recorded",
+  "signing_golden.json, gen_signing.py": "golden vectors of hyperliquid-python-sdk 0.24.0 (gen_signing.py writes signing_golden.json; a throwaway key)"
+ }
+}
