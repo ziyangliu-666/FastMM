@@ -4,13 +4,26 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-13
+
+Connectors for Hyperliquid and Lighter, both signing natively. The store and `fastmm-top` show why
+an order went out or did not, and parameter changes are confirmed and kept as history.
+
+Highlights:
+- `hyperliquid` connector, main and HIP-3 dexes (Added, venues)
+- `lighter` connector for Lighter perpetuals (Added, venues)
+- `fastmm-top` shows per side what is asked, what works and the first obstacle (Added, live)
+- every refused order is stored with the limit that refused it (Added, store)
+- `fastmm-ctl param --wait`, with parameter history in the store (Added, live, store)
+
 ### Added
 - venues: `hyperliquid` connector for perpetuals, main and builder-deployed (HIP-3) dexes.
 - venues: Hyperliquid order signing with libsecp256k1 0.6.0, pinned and built in-tree.
-- configs: `hyperliquid.toml`, BasicMM on the Hyperliquid BTC perpetual; a Hyperliquid section in Run on testnet.
+- configs: `hyperliquid.toml`, BasicMM on the Hyperliquid BTC perpetual.
 - venues: `lighter` connector for Lighter (zkLighter) perpetuals.
-- venues: Lighter transaction signing (Poseidon2, Schnorr over ECgFp5), a native port checked against the official Go signer.
-- configs: `lighter.toml`, BasicMM on the Lighter NVDA perpetual; a Lighter section in Run on testnet; `tools/lighter_api_key.py` registers an API key.
+- venues: Lighter transaction signing, native and checked against the official Go signer.
+- configs: `lighter.toml`, BasicMM on the Lighter NVDA perpetual.
+- tools: `tools/lighter_api_key.py` registers a Lighter API key.
 - live: `fastmm-top` shows the session's threads from `/proc`: CPU, core, context switches, faults.
 - data: `fastmm-data analyze <live.fmj> [--json]` marks a live session's fills against its mids.
 - replay: `fastmm-replay --check [--json]` lists what a replay needs, without replaying.
@@ -26,7 +39,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - live: `param --source` names who changed a parameter, in the journal and the status file (v19).
 - live: `fastmm-live` logs a topology check at start: hot threads sharing a core, and adaptive spin.
 - python: `fastmm init --profile production` adds `production.toml`, tuned for a dedicated host.
-- python: `fastmm sim` runs the simulated exchange; `fastmm init` writes `sim.toml` to trade it live.
+- python: `fastmm sim` runs the simulated exchange; `fastmm init` writes `sim.toml` to trade it.
 
 ### Changed
 - live: the network thread sends queued orders between one socket's event and the next.
@@ -34,11 +47,12 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ### Fixed
 - store: refusals of a pool's accounts in turn were counted under the first account's record.
-- core: a pool order refused because its account is full or paused takes no `[risk]` token.
+- core: a pool order refused for a full or paused account takes no `[risk]` token.
 
 ### Documentation
 - docs: the economics page, the tutorials and the `fastmm init` README give the numbers alone.
 - docs: the README and Install name Linux x86-64 and run the quick start in Docker elsewhere.
+- docs: Run on testnet has Hyperliquid and Lighter sections.
 - docs: the README and the home page open on a two-minute film; the home page lists all three.
 
 ## [0.5.1] - 2026-10-07
