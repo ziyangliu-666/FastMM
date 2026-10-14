@@ -305,7 +305,7 @@ Result<std::vector<VenueFee>, std::string> BinanceVenue::account_fees(
       });
       const HttpReply reply = http.request(
           "GET", std::string(rr.path) + "?" + std::string(rr.query.view()), api_headers());
-      rate_.on_sent(rr.weight, now_ns());
+      rate_.on_bulk_sent(rr.weight, now_ns());
       if (!reply.ok())
         return fail(fmt::format(
             "{}: account/commission for {} failed: {}",
@@ -666,7 +666,7 @@ void BinanceVenue::request_snapshot(InstrumentId id) {
     md_feed_->on_snapshot_failed(id, now_ns());
     return;
   }
-  rate_.on_sent(weight, now_ns());
+  rate_.on_bulk_sent(weight, now_ns());
 }
 
 // ---- user data channel --------------------------------------------------------------------
@@ -1653,7 +1653,7 @@ bool BinanceVenue::query_executions(const ReplayQuery& q, bool audit) {
     FASTMM_LOG_ERROR("{}: no room to ask for the account's executions", cfg_.name);
     return false;
   }
-  rate_.on_sent(rr.weight, now_ns());
+  rate_.on_bulk_sent(rr.weight, now_ns());
   return true;
 }
 
@@ -1734,7 +1734,7 @@ bool BinanceVenue::lookup_order(const ReplayLookup& l) {
         exec_replay_.looked_up(l, LookupResult::Named);
       });
   if (!queued) return false;
-  rate_.on_sent(rr.weight, now_ns());
+  rate_.on_bulk_sent(rr.weight, now_ns());
   return true;
 }
 

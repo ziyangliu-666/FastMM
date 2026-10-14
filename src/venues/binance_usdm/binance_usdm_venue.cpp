@@ -412,7 +412,7 @@ std::string BinanceUsdmVenue::account_checks(const std::vector<Instrument*>& min
         std::this_thread::sleep_for(std::chrono::nanoseconds(ns));
       });
       HttpReply reply = http.request(rr.method, target, api_headers());
-      rate_.on_sent(rr.weight, now_ns());
+      rate_.on_bulk_sent(rr.weight, now_ns());
       return reply;
     };
     auto signed_get = [&](std::string_view path, std::string_view symbol, std::uint32_t weight) {
@@ -935,7 +935,7 @@ void BinanceUsdmVenue::request_snapshot(InstrumentId id) {
     md_feed_->on_snapshot_failed(id, now_ns());
     return;
   }
-  rate_.on_sent(weight, now_ns());
+  rate_.on_bulk_sent(weight, now_ns());
 }
 
 // ---- user data channel --------------------------------------------------------------------
@@ -1965,7 +1965,7 @@ bool BinanceUsdmVenue::query_executions(const ReplayQuery& q, bool audit) {
     FASTMM_LOG_ERROR("{}: no room to ask for the account's executions", cfg_.name);
     return false;
   }
-  rate_.on_sent(rr.weight, now_ns());
+  rate_.on_bulk_sent(rr.weight, now_ns());
   return true;
 }
 
@@ -2039,7 +2039,7 @@ bool BinanceUsdmVenue::lookup_order(const ReplayLookup& l) {
         exec_replay_.looked_up(l, LookupResult::Named);
       });
   if (!queued) return false;
-  rate_.on_sent(rr.weight, now_ns());
+  rate_.on_bulk_sent(rr.weight, now_ns());
   return true;
 }
 
@@ -2095,7 +2095,7 @@ bool BinanceUsdmVenue::query_funding(const ReplayQuery& q) {
     FASTMM_LOG_ERROR("{}: no room to ask for the account's funding", cfg_.name);
     return false;
   }
-  rate_.on_sent(rr.weight, now_ns());
+  rate_.on_bulk_sent(rr.weight, now_ns());
   return true;
 }
 

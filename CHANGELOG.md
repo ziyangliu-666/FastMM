@@ -17,6 +17,7 @@ All notable changes are recorded here (Keep a Changelog format).
   `docs.reference_output` runs every documented command and fails when its output no longer
   matches the page. `compatibility.md`, `storage.md` and `status-file.md` give the current status
   file (21), store schema (9) and gateway protocol (7) versions.
+- venues: Binance orders early in a minute no longer hold the depth snapshots and reconciliations.
 
 ## [0.6.0] - 2026-10-13
 

@@ -110,7 +110,7 @@ TEST_CASE("venues.rate_limiter: a bulk request fits its share of the window, pac
   CHECK_FALSE(rl.can_send(251, 30 * kSec, false, RateLimiter::kBulkShare));
   const std::int64_t now = 45 * kSec;
   CHECK(rl.can_send(375, now, false, RateLimiter::kBulkShare));
-  rl.on_sent(375, now);
+  rl.on_bulk_sent(375, now);
   CHECK_FALSE(rl.can_send(1, now, false, RateLimiter::kBulkShare));  // the snapshots wait
   CHECK(rl.can_send(625, now));                                      // an order does not
   CHECK(rl.check(626, now).refusal == RateRefusal::Weight);
@@ -128,9 +128,9 @@ TEST_CASE("venues.rate_limiter: the bulk pace counts this limiter's weight, not 
   rl.on_headers(588, -1, now);
   REQUIRE(rl.weight_bucket(0)->used == 588);
   CHECK(rl.can_send(50, now, false, RateLimiter::kBulkShare));
-  rl.on_sent(50, now);
-  // Its own weight is still paced: 540 at the window's start.
-  rl.on_sent(450, now);
+  rl.on_bulk_sent(50, now);
+  // Its own bulk weight is still paced: 540 at the window's start.
+  rl.on_bulk_sent(450, now);
   CHECK(rl.can_send(40, now, false, RateLimiter::kBulkShare));
   CHECK_FALSE(rl.can_send(41, now, false, RateLimiter::kBulkShare));
   // And the IP's count is held to the whole share (2700): at 2700, another process's 2200 and
@@ -138,6 +138,64 @@ TEST_CASE("venues.rate_limiter: the bulk pace counts this limiter's weight, not 
   rl.on_headers(2200 + 500, -1, now + kSec);
   CHECK_FALSE(rl.can_send(1, 59 * kSec, false, RateLimiter::kBulkShare));
   CHECK(rl.can_send(1, 59 * kSec));  // an order is not bulk
+}
+
+// A market maker sends 120 orders and 120 cancels a few times early in a minute: with them in the
+// pace (540 of 6000 at the minute's start), its depth snapshots, its execution replay and the
+// reconciliation waiting for that replay were held until some 15 to 20 s into the minute. The pace
+// is the bulk requests'; the orders count in the total, which a bulk request is held to as well.
+TEST_CASE("venues.rate_limiter: orders do not spend the bulk pace, only the total") {
+  RateLimiter rl;  // threshold 0.9: the bulk share is 2700, paced from 540
+  REQUIRE(rl.add_weight_bucket(6000, 60 * kSec));
+  REQUIRE(rl.add_order_bucket(1000, 10 * kSec));
+  const std::int64_t now = kSec;
+  for (int round = 0; round < 3; ++round) {
+    for (int k = 0; k < 120; ++k) rl.on_sent(1, now, true);  // a place
+    for (int k = 0; k < 120; ++k) rl.on_sent(1, now);        // a cancel
+  }
+  REQUIRE(rl.weight_bucket(0)->used == 720);
+  CHECK(rl.weight_bucket(0)->bulk == 0);
+  // A depth snapshot and a myTrades query go at once.
+  CHECK(rl.check(50, now, false, RateLimiter::kBulkShare).ok());
+  rl.on_bulk_sent(50, now);
+  CHECK(rl.check(20, now, false, RateLimiter::kBulkShare).ok());
+  rl.on_bulk_sent(20, now);
+  CHECK(rl.weight_bucket(0)->used == 790);
+  CHECK(rl.weight_bucket(0)->bulk == 70);
+  // The bulk requests are still paced: 540 of their own at the window's start.
+  rl.on_bulk_sent(450, now);
+  CHECK(rl.check(20, now, false, RateLimiter::kBulkShare).ok());
+  CHECK(rl.check(21, now, false, RateLimiter::kBulkShare).refusal == RateRefusal::Weight);
+  // And the total, orders included, is held to the share: at 2700 no bulk request goes until the
+  // window rolls, while an order still does.
+  for (int k = 0; k < 1500; ++k) rl.on_sent(1, now + 30 * kSec);
+  REQUIRE(rl.weight_bucket(0)->used == 2740);
+  CHECK(rl.check(1, 59 * kSec, false, RateLimiter::kBulkShare).refusal == RateRefusal::Weight);
+  CHECK(rl.check(1, 59 * kSec).ok());
+  CHECK(rl.check(50, 61 * kSec, false, RateLimiter::kBulkShare).ok());
+  CHECK(rl.weight_bucket(0)->bulk == 0);  // rolled
+}
+
+// The same through a shared IP: every account's orders count in the IP's total, none in its pace;
+// every account's bulk requests count in both.
+TEST_CASE("venues.rate_limiter: on a shared IP the bulk pace leaves the orders out too") {
+  const auto ip = shared_rate("test-host-bulk-pace");
+  RateLimiter a;  // threshold 0.9
+  RateLimiter b;
+  a.share_ip(ip);
+  b.share_ip(ip);
+  REQUIRE(a.add_weight_bucket(6000, 60 * kSec));
+  REQUIRE(b.add_weight_bucket(6000, 60 * kSec));
+  const std::int64_t now = kSec;
+  for (int k = 0; k < 600; ++k) a.on_sent(1, now, true);
+  for (int k = 0; k < 600; ++k) b.on_sent(1, now);
+  CHECK(a.weight_bucket(0)->used == 1200);
+  CHECK(b.check(50, now, false, RateLimiter::kBulkShare).ok());
+  a.on_bulk_sent(500, now);
+  CHECK(b.weight_bucket(0)->bulk == 500);
+  CHECK(b.check(40, now, false, RateLimiter::kBulkShare).ok());
+  CHECK(b.check(41, now, false, RateLimiter::kBulkShare).refusal == RateRefusal::Weight);
+  CHECK(a.check(41, now).ok());  // an order is not bulk
 }
 
 TEST_CASE("venues.rate_limiter: pauses asked in a row wait longer each time") {
