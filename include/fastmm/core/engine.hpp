@@ -726,6 +726,9 @@ class Engine {
     r.risk_rejects_by_reason = stats_.risk_rejects_by_reason;
     r.venue_rejects_by_reason = stats_.venue_rejects_by_reason;
     r.balance_withheld = quotes_.stats().kept_balance;
+    r.estimated_fills = stats_.synthetic_fills;
+    r.estimates_pending = oms_.stats().synthetic_pending;
+    r.estimates_forgotten = oms_.stats().synthetic_forgotten;
     r.kill_reason = kill_reason_;
     r.kill_ts_ns = kill_ts_.ns;
     return r;
@@ -1766,6 +1769,20 @@ class Engine {
                            "short by that much");
   }
 
+  // An estimate (book_missed_fill) outlived the OMS's memory of its order: kRecentlyTerminal orders
+  // ended after it and no execution named it. Its price and fee stay estimates, and an execution
+  // of that order the venue replays from now on would add its quantity to the position again.
+  // OmsStats::synthetic_forgotten counts these (the status file, the metrics export).
+  void report_forgotten(const OmsUpdate& u) noexcept {
+    if (FASTMM_LIKELY(u.forgotten_qty.is_zero())) return;
+    FASTMM_LOG_WARN(
+        "order {}: {} booked as an estimate was never named by an execution, and the order is no "
+        "longer remembered; an execution of it the venue replays from now on would be booked "
+        "again",
+        encode_cl_ord_id(u.forgotten_id),
+        u.forgotten_qty);
+  }
+
   // `hold_done`: on_fill moved the order's hold already.
   void after_oms_update(const OmsUpdate& u, const EventHeader& h, bool hold_done = false) noexcept {
     if (FASTMM_UNLIKELY(balances_live_) && !hold_done && u.changed && u.slot.valid())
@@ -1778,6 +1795,7 @@ class Engine {
     }
     book_missed_fill(u);
     report_unresolved(u);
+    report_forgotten(u);
     if (u.action == OmsAction::CancelUnknown) {
       cancel_unknown(h, u);
     }

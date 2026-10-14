@@ -373,6 +373,17 @@ void engine_metrics(Exposition& e, const StatusSnapshot& s) {
       "fastmm_quotes_withheld_balance_total",
       "quote orders held back after their old order ended: the balance no longer covered them",
       s.balance_withheld);
+  e.counter("fastmm_estimated_fills_total",
+            "fills booked from a cumulative quantity no fill message reported, at the order's "
+            "price with no fee",
+            s.estimated_fills);
+  e.gauge("fastmm_estimates_pending",
+          "orders whose estimated fill no execution has named yet",
+          static_cast<double>(s.estimates_pending));
+  e.counter("fastmm_estimates_forgotten_total",
+            "estimated fills whose order was forgotten before an execution named them: one "
+            "replayed later would be booked again",
+            s.estimates_forgotten);
   if (s.risk_tokens >= 0)
     e.gauge("fastmm_risk_tokens",
             "[risk] orders_per_sec bucket: whole tokens left, shared by every account",

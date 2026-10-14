@@ -48,7 +48,8 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 21: the quote table (per instrument: position, mid, and per side what the strategy asked for,
 //     what works there, the obstacle and since when, the strategy's note) and the strategy's
 //     metrics.
-inline constexpr std::uint32_t kStatusVersion = 21;
+// 22: estimated fills: booked, pending (no execution has named them yet), forgotten.
+inline constexpr std::uint32_t kStatusVersion = 22;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 inline constexpr std::size_t kStatusMaxUnderlyings = 8;    // kMaxUnderlyings
@@ -384,6 +385,11 @@ struct StatusSnapshot {
   std::uint64_t venue_rejects = 0;
   // Quote News held back because the balance no longer covered them (RunnerStats).
   std::uint64_t balance_withheld = 0;
+  // Fills booked as estimates from a cum_qty no fill message reported, the orders whose estimate
+  // no execution has named yet, and estimates the OMS forgot before one did (RunnerStats).
+  std::uint64_t estimated_fills = 0;
+  std::uint64_t estimates_pending = 0;
+  std::uint64_t estimates_forgotten = 0;
   // The most frequent reasons, most frequent first; the totals above include reasons that did not
   // fit (set_status_rejects).
   StatusRejectCount risk_reject_reasons[kStatusMaxRejectReasons];

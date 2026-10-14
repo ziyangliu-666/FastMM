@@ -89,6 +89,17 @@ TEST_CASE("core.status_prometheus: the snapshot becomes metrics in base units") 
   CHECK_FALSE(has(text, "fastmm_feed_"));  // no multicast venue in this snapshot
 }
 
+TEST_CASE("core.status_prometheus: estimated fills, those still pending and those forgotten") {
+  StatusSnapshot s = sample();
+  s.estimated_fills = 7;
+  s.estimates_pending = 2;
+  s.estimates_forgotten = 1;
+  const std::string text = format_status_prometheus(s, s.updated_ns);
+  CHECK(has(text, "fastmm_estimated_fills_total 7\n"));
+  CHECK(has(text, "fastmm_estimates_pending 2\n"));
+  CHECK(has(text, "fastmm_estimates_forgotten_total 1\n"));
+}
+
 TEST_CASE("core.status_prometheus: an engine exports the max_loss it applies") {
   StatusSnapshot s = sample();
   s.max_loss_raw = 25'000'000'000;  // 250

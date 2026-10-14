@@ -683,6 +683,81 @@ TEST_CASE("core.balance: an execution that names a synthetic fill moves the asse
   CHECK(usdt.free == nt("800.02"));
 }
 
+// The same over a longer user-stream outage: 80 orders end on cancel acks that report a partial
+// fill the stream never delivered, and the replay at the reconnect names all 80 executions. The OMS
+// used to remember only the last 64 estimates, so the replay booked the first 16 again: the
+// position, the base asset and the realized PnL counted 0.0016 BTC that was never bought.
+TEST_CASE("core.balance: an execution replay after a long outage books each estimate once") {
+  constexpr int kOrders = 80;
+  Rig r;
+  r.balance(report(kSpotVenue, "USDT", "1000", "0", 100));
+  r.balance(report(kSpotVenue, "BTC", "0", "0", 100));
+  std::vector<ClientOrderId> ids;
+  for (int i = 0; i < kOrders; ++i) {
+    auto id = r.send(kSpot, Side::Buy, "50000", "0.0002");
+    REQUIRE(id.has_value());
+    r.ack(kSpot, *id, 110);
+    REQUIRE(r.engine->cancel_order(*id).has_value());
+    r.cancel_ack(kSpot, *id, 120, "0.0001");
+    ids.push_back(*id);
+  }
+  CHECK(r.engine->stats().synthetic_fills == kOrders);
+  CHECK(r.engine->position(kSpot).qty == qt("0.008"));
+  CHECK(r.engine->runner_stats().estimated_fills == kOrders);  // status, metrics
+  CHECK(r.engine->runner_stats().estimates_pending == kOrders);
+  for (int i = 0; i < kOrders; ++i) {
+    OrderFillMsg m{};
+    init_header(m, EventType::OrderFill, kSpot, kSpotVenue);
+    m.cl_ord_id = ids[static_cast<std::size_t>(i)];
+    m.side = Side::Buy;
+    m.price = px("49990");
+    m.qty = qt("0.0001");
+    m.fee = nt("0.001");
+    m.fee_asset = FeeAsset::Quote;
+    m.exec_id.assign("t" + std::to_string(i));
+    m.flags = OrderFillMsg::kReplayed;
+    m.hdr.exch_ts = Timestamp{115'000'000};
+    r.push(m);
+  }
+  CHECK(r.engine->stats().replayed_fills == kOrders);
+  CHECK(r.engine->stats().corrected_fills == kOrders);
+  CHECK(r.engine->oms().stats().synthetic_forgotten == 0);
+  CHECK(r.engine->position(kSpot).qty == qt("0.008"));
+  CHECK(r.engine->position(kSpot).fees == nt("0.08"));
+  CHECK(r.engine->position(kSpot).realized == nt("0.08"));  // each bought 10 below its estimate
+  CHECK(r.bal(kSpotVenue, "BTC").free == nt("0.008"));
+  CHECK(r.bal(kSpotVenue, "USDT").free == nt("600.0"));  // 1000 - 80 * (4.999 + 0.001)
+  CHECK(r.engine->runner_stats().estimates_pending == 0);
+  CHECK(r.engine->runner_stats().estimates_forgotten == 0);
+}
+
+// Where the OMS still loses an estimate - its order's terminal record ages out, kRecentlyTerminal
+// ended orders later, with no execution having named it - the engine says so: a WARN, and the
+// counter the status file and the metrics export show.
+TEST_CASE("core.balance: an estimate whose order the OMS forgets is counted") {
+  Rig r;
+  auto id = r.send(kSpot, Side::Buy, "50000", "0.0002");
+  REQUIRE(id.has_value());
+  r.ack(kSpot, *id, 110);
+  REQUIRE(r.engine->cancel_order(*id).has_value());
+  r.cancel_ack(kSpot, *id, 120, "0.0001");
+  CHECK(r.engine->runner_stats().estimates_pending == 1);
+  for (std::size_t i = 0; i < kRecentlyTerminal; ++i) {
+    auto other = r.send(kSpot, Side::Buy, "49000", "0.0001");
+    REQUIRE(other.has_value());
+    OrderRejectMsg m{};
+    init_header(m, EventType::OrderReject, kSpot, kSpotVenue);
+    m.cl_ord_id = *other;
+    m.reason = RejectReason::VenueReject;
+    r.push(m);
+  }
+  const RunnerStats rs = r.engine->runner_stats();
+  CHECK(rs.estimated_fills == 1);
+  CHECK(rs.estimates_pending == 0);
+  CHECK(rs.estimates_forgotten == 1);
+  CHECK(r.engine->position(kSpot).qty == qt("0.0001"));  // the estimate itself stays booked
+}
+
 // Found live (Binance spot, account pool): the WS API acks an order 1-5 ms before the user stream
 // pushes the account, so a push the venue made before the order (after the cancel of the one it
 // replaces) can come after its ack. The push replaced the estimate and dropped the new order's

@@ -159,6 +159,22 @@ TEST_CASE("core.status_segment: reject reasons round trip and show on the dashbo
   CHECK(frame.find("risk_rejects=17 (MaxPosition 12, RateLimit 5) venue_rejects=3 "
                    "(PostOnlyWouldCross 3) balance_withheld=2") != std::string::npos);
   CHECK(format_status_json(got).find("\"balance_withheld\": 2") != std::string::npos);
+  // No estimated fill: no line for them.
+  CHECK(frame.find("estimates") == std::string::npos);
+  CHECK(format_status_json(got).find(
+            R"("estimates": {"fills": 0, "pending": 0, "forgotten": 0})") != std::string::npos);
+  s.estimated_fills = 5;
+  s.estimates_pending = 3;
+  s.estimates_forgotten = 1;
+  w.publish(s);
+  REQUIRE(r.read(got));
+  CHECK(got.estimated_fills == 5);
+  CHECK(got.estimates_pending == 3);
+  CHECK(got.estimates_forgotten == 1);
+  CHECK(format_status(got, got.updated_ns, false)
+            .find("estimates  fills=5 pending=3 forgotten=1\n") != std::string::npos);
+  CHECK(format_status_json(got).find(
+            R"("estimates": {"fills": 5, "pending": 3, "forgotten": 1})") != std::string::npos);
   w.close();
   std::remove(path.c_str());
 
@@ -308,7 +324,7 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   CHECK(frame.find("fallback=5") != std::string::npos);
 
   const std::string json = format_status_json(s);
-  CHECK(json.find(R"({"kind": "engine", "version": 21,)") == 0);
+  CHECK(json.find(R"({"kind": "engine", "version": 22,)") == 0);
   CHECK(json.find(R"("engine": "binance-demo")") != std::string::npos);
   CHECK(json.find(R"("tick_to_trade": {"count": 10, "p50_ns": 106495, "p99_ns": 216053, )"
                   R"("p999_ns": 250000, "max_ns": 300000})") != std::string::npos);
@@ -467,7 +483,7 @@ TEST_CASE("core.status_segment: a gateway's snapshot round trips and shows its a
 
   const std::string json = format_status_json(got);
   INFO(json);
-  CHECK(json.find(R"({"kind": "gateway", "version": 21,)") == 0);
+  CHECK(json.find(R"({"kind": "gateway", "version": 22,)") == 0);
   CHECK(json.find(R"("gateway": "gw")") != std::string::npos);
   CHECK(json.find(R"("net_pnl": -0.25, "realized": 1.5)") != std::string::npos);
   CHECK(json.find(R"("engine": "mm-a", "pid": 1001)") != std::string::npos);

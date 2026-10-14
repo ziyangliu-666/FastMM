@@ -891,3 +891,187 @@ TEST_CASE("core.oms: an order's end agrees with its fills whichever message arri
     CHECK_FALSE(u.changed);
   }
 }
+
+namespace {
+// Replayed execution `exec` of `q` at `p` naming `id` (the venue's trade history: no cum_qty).
+OrderFillMsg replayed_fill(ClientOrderId id,
+                           std::int64_t p,
+                           std::int64_t q,
+                           std::string_view exec) {
+  OrderFillMsg m = fill(id, p, q, 0, "");
+  m.exec_id.assign(exec);
+  m.flags = OrderFillMsg::kReplayed;
+  return m;
+}
+}  // namespace
+
+// A private-stream outage while cancel acks still arrive (Binance answers a cancel on the WS API
+// with the order's executedQty): every order the outage covers ends with a cum_qty no fill message
+// reported, and the engine books it as an estimate. The replay at the reconnect then names those
+// executions. The OMS kept the estimates in a 64-entry list and dropped the oldest past that, so
+// from the 65th order on, the replay booked the dropped estimates' quantity a second time.
+TEST_CASE("core.oms: every estimate an execution replay names is corrected, however many") {
+  constexpr int kOrders = 200;
+  Oms oms;
+  std::vector<ClientOrderId> ids;
+  for (int i = 0; i < kOrders; ++i) {
+    const ClientOrderId id = oms.next_cl_ord_id();
+    const Handle<Order> h = *oms.submit(req(Side::Buy, 100, 3), id, Timestamp{1});
+    static_cast<void>(oms.on_ack(ack(id)));
+    REQUIRE(oms.request_cancel(h));
+    REQUIRE(oms.on_cancel_ack(cancel_ack(id, 2)).missed_qty == qt(2));
+    ids.push_back(id);
+  }
+  Qty booked{};
+  for (int i = 0; i < kOrders; ++i) {
+    const OrderFillMsg m =
+        replayed_fill(ids[static_cast<std::size_t>(i)], 99, 2, "r" + std::to_string(i));
+    const OmsUpdate u = oms.on_fill(m);
+    CHECK(u.action == OmsAction::LateFill);
+    CHECK(u.corrected_qty == qt(2));
+    CHECK(u.synthetic_px == px(100));
+    booked += m.qty - u.corrected_qty;
+  }
+  CHECK(booked.is_zero());  // the estimates hold the whole quantity already
+  CHECK(oms.stats().corrected_fills == kOrders);
+  CHECK(oms.stats().synthetic_forgotten == 0);
+  CHECK(oms.stats().synthetic_pending == 0);
+}
+
+TEST_CASE("core.oms: open orders keep their estimates until an execution names them") {
+  constexpr int kOrders = 150;
+  Oms oms;
+  std::vector<ClientOrderId> ids;
+  for (int i = 0; i < kOrders; ++i) {
+    const ClientOrderId id = oms.next_cl_ord_id();
+    REQUIRE(oms.submit(req(Side::Sell, 100, 5), id, Timestamp{1}));
+    static_cast<void>(oms.on_ack(ack(id)));
+    ids.push_back(id);
+  }
+  // A snapshot after an outage: every order is still working, with 1 filled that no fill reported.
+  oms.reconcile_begin();
+  for (const ClientOrderId id : ids) {
+    ReconcileMsg m{};
+    init_header(m, EventType::Reconcile);
+    m.kind = ReconcileMsg::Kind::OpenOrder;
+    m.cl_ord_id = id;
+    m.cum_qty = qt(1);
+    REQUIRE(oms.reconcile_open_order(m).missed_qty == qt(1));
+  }
+  oms.reconcile_end([](const OmsUpdate&) {});
+  CHECK(oms.stats().synthetic_pending == kOrders);
+  for (int i = 0; i < kOrders; ++i) {
+    const ClientOrderId id = ids[static_cast<std::size_t>(i)];
+    const OmsUpdate u = oms.on_fill(replayed_fill(id, 101, 1, "x" + std::to_string(i)));
+    CHECK(u.corrected_qty == qt(1));
+    CHECK(u.order.cum_qty == qt(1));  // the execution moves nothing the estimate did not
+  }
+  CHECK(oms.stats().synthetic_pending == 0);
+  CHECK(oms.open_qty(InstrumentId{0}, Side::Sell) == qt(std::int64_t{4} * kOrders));
+  // A later execution of the same order is new quantity.
+  CHECK(oms.on_fill(fill(ids[0], 100, 1, 2, "y")).corrected_qty.is_zero());
+}
+
+// The estimate goes with the order's terminal record, and only that record's own end - after
+// kRecentlyTerminal more orders have ended - loses it. That is said, not hidden: an execution the
+// venue replays for the order from then on is indistinguishable from a foreign one.
+TEST_CASE("core.oms: an estimate lasts as long as the OMS remembers its order") {
+  Oms oms;
+  const auto estimated = [&](std::int64_t cum) {
+    const ClientOrderId id = oms.next_cl_ord_id();
+    const Handle<Order> h = *oms.submit(req(Side::Buy, 100, 5), id, Timestamp{1});
+    static_cast<void>(oms.on_ack(ack(id)));
+    REQUIRE(oms.request_cancel(h));
+    REQUIRE(oms.on_cancel_ack(cancel_ack(id, cum)).missed_qty == qt(cum));
+    return id;
+  };
+  const auto rejected = [&] {
+    const ClientOrderId id = oms.next_cl_ord_id();
+    REQUIRE(oms.submit(req(Side::Buy, 100, 1), id, Timestamp{1}));
+    return oms.on_reject(reject(id));
+  };
+  const ClientOrderId a = estimated(2);
+  const ClientOrderId b = estimated(3);
+  CHECK(oms.stats().synthetic_pending == 2);
+  for (std::size_t i = 0; i + 2 < kRecentlyTerminal; ++i) CHECK(rejected().forgotten_qty.is_zero());
+  // `a` is the oldest record the OMS still holds: its execution still names the estimate.
+  CHECK(oms.classify(a) == OrderClass::RecentlyTerminal);
+  const OmsUpdate named = oms.on_fill(replayed_fill(a, 99, 2, "ea"));
+  CHECK(named.corrected_qty == qt(2));
+  CHECK(rejected().forgotten_qty.is_zero());  // `a` leaves with nothing left to name
+  // `b` is next, still holding 3 that no execution named.
+  const OmsUpdate gone = rejected();
+  CHECK(gone.forgotten_qty == qt(3));
+  CHECK(gone.forgotten_id == b);
+  CHECK(oms.stats().synthetic_forgotten == 1);
+  CHECK(oms.stats().synthetic_pending == 0);
+  CHECK(oms.classify(b) == OrderClass::Unknown);
+  const OmsUpdate late = oms.on_fill(replayed_fill(b, 99, 3, "eb"));
+  CHECK(late.action == OmsAction::UnknownFill);
+  CHECK(late.corrected_qty.is_zero());  // what the counter above warned about
+}
+
+// A cancel-then-new replace whose old leg's cancel ack reports a fill no fill message covered: the
+// estimate is the old leg's, and its executions name the old id after the new leg has taken over
+// the order. The old id stays known so that they correct the estimate; before, a live one was an
+// unknown fill booked on top of it.
+TEST_CASE("core.oms: the old leg of a replace keeps its estimate for its executions") {
+  const auto replaced = [](Oms& oms) {
+    const ClientOrderId old_id = oms.next_cl_ord_id();
+    const Handle<Order> h = *oms.submit(req(Side::Buy, 100, 5), old_id, Timestamp{1});
+    static_cast<void>(oms.on_ack(ack(old_id)));
+    const ClientOrderId new_id = oms.next_cl_ord_id();
+    REQUIRE(oms.request_replace(h, new_id, px(101), qt(5)));
+    const OmsUpdate c = oms.on_cancel_ack(cancel_ack(old_id, 2));
+    REQUIRE(c.missed_qty == qt(2));
+    const OmsUpdate r = oms.on_ack(ack(new_id, "V2"));
+    REQUIRE(r.replaced_cl_ord_id == old_id);
+    CHECK(r.order.cum_qty.is_zero());  // the new leg is a new order on the venue
+    CHECK(oms.classify(old_id) == OrderClass::RecentlyTerminal);
+    CHECK(oms.stats().synthetic_pending == 1);
+    return std::pair{old_id, new_id};
+  };
+  SUBCASE("a live execution of the old leg") {
+    Oms oms;
+    const auto [old_id, new_id] = replaced(oms);
+    const OmsUpdate u = oms.on_fill(fill(old_id, 100, 2, 2, "e1"));
+    CHECK(u.action == OmsAction::LateFill);
+    CHECK(u.corrected_qty == qt(2));
+    CHECK(oms.stats().synthetic_pending == 0);
+    CHECK(oms.get(oms.find(new_id)).cum_qty.is_zero());  // the new leg did not trade
+  }
+  SUBCASE("a replayed one") {
+    Oms oms;
+    const auto [old_id, new_id] = replaced(oms);
+    const OmsUpdate u = oms.on_fill(replayed_fill(old_id, 100, 2, "e1"));
+    CHECK(u.corrected_qty == qt(2));
+    CHECK(oms.get(oms.find(new_id)).cum_qty.is_zero());
+  }
+  // An amend in place (Binance keepPriority) keeps the venue's order under the new id, and the
+  // venue's trade history names it by its order id, which the connector pairs with the latest
+  // client id: the estimate stays with the order, not with the id it had.
+  SUBCASE("an amend in place keeps the estimate on the order") {
+    Oms oms;
+    const ClientOrderId old_id = oms.next_cl_ord_id();
+    const Handle<Order> h = *oms.submit(req(Side::Buy, 100, 5), old_id, Timestamp{1});
+    static_cast<void>(oms.on_ack(ack(old_id)));
+    oms.reconcile_begin();
+    ReconcileMsg m{};
+    init_header(m, EventType::Reconcile);
+    m.kind = ReconcileMsg::Kind::OpenOrder;
+    m.cl_ord_id = old_id;
+    m.cum_qty = qt(1);
+    REQUIRE(oms.reconcile_open_order(m).missed_qty == qt(1));
+    oms.reconcile_end([](const OmsUpdate&) {});
+    const ClientOrderId new_id = oms.next_cl_ord_id();
+    REQUIRE(oms.request_replace(h, new_id, px(100), qt(4)));
+    OrderAckMsg amended = ack(new_id);
+    amended.flags = OrderAckMsg::kAmendedInPlace;
+    REQUIRE(oms.on_ack(amended).order.cum_qty == qt(1));
+    CHECK(oms.classify(old_id) == OrderClass::Unknown);
+    const OmsUpdate u = oms.on_fill(replayed_fill(new_id, 100, 1, "e1"));
+    CHECK(u.corrected_qty == qt(1));
+    CHECK(u.order.cum_qty == qt(1));
+    CHECK(oms.stats().synthetic_pending == 0);
+  }
+}

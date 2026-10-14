@@ -501,6 +501,15 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                  rejects(s.risk_rejects, s.risk_reject_reasons),
                  rejects(s.venue_rejects, s.venue_reject_reasons),
                  s.balance_withheld);
+  // Only after a private-stream outage: fills booked from a cumulative quantity at the order's
+  // price, until an execution names them.
+  if (s.estimated_fills != 0 || s.estimates_forgotten != 0) {
+    fmt::format_to(std::back_inserter(out),
+                   "estimates  fills={} pending={} forgotten={}\n",
+                   s.estimated_fills,
+                   s.estimates_pending,
+                   s.estimates_forgotten);
+  }
   fmt::format_to(std::back_inserter(out),
                  "pnl        realized={} unrealized={} fees={} carried={} budget_used={}\n\n",
                  money(s.realized_pnl_raw),
@@ -1179,6 +1188,7 @@ std::string format_status_json(const StatusSnapshot& s) {
                  "\"engine\": {}, \"strategy\": {}, \"events\": {}, \"book_updates\": {}, "
                  "\"orders_sent\": {}, \"cancels_sent\": {}, \"replaces_sent\": {}, \"fills\": {}, "
                  "\"risk_rejects\": {}, \"venue_rejects\": {}, \"balance_withheld\": {}, "
+                 "\"estimates\": {{\"fills\": {}, \"pending\": {}, \"forgotten\": {}}}, "
                  "\"kill_flags\": {}, "
                  "\"kill_reason\": \"{}\", \"kill_latched\": {}, \"pnl_carry_raw\": {}, "
                  "\"flatten_state\": \"{}\", \"flatten_instruments_left\": {}, "
@@ -1203,6 +1213,9 @@ std::string format_status_json(const StatusSnapshot& s) {
                  s.risk_rejects,
                  s.venue_rejects,
                  s.balance_withheld,
+                 s.estimated_fills,
+                 s.estimates_pending,
+                 s.estimates_forgotten,
                  s.kill_flags,
                  to_string(static_cast<KillReason>(s.kill_reason)),
                  s.kill_latched != 0,

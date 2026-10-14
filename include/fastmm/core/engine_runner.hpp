@@ -42,6 +42,13 @@ struct RunnerStats {
   // Quote News held back after their old order ended: the balance no longer covered them
   // (QuoteStats::kept_balance). A side that stays unquoted for this shows here, not in the rejects.
   std::uint64_t balance_withheld = 0;
+  // Fills booked as estimates, from a cum_qty no fill message reported (Engine::book_missed_fill);
+  // the orders whose estimate no execution has named yet; and estimates whose order the OMS forgot
+  // before one did (OmsStats::synthetic_pending, synthetic_forgotten): an execution of such an
+  // order the venue replays later would be booked on top of its estimate.
+  std::uint64_t estimated_fills = 0;
+  std::uint64_t estimates_pending = 0;
+  std::uint64_t estimates_forgotten = 0;
   // The first reason the global kill switch was set for, and the engine time it was set (0 while
   // it is not set).
   KillReason kill_reason = KillReason::None;

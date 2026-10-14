@@ -1963,6 +1963,9 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     snap.fills = live.stats.fills;
     snap.risk_rejects = live.stats.risk_rejects;
     snap.balance_withheld = live.stats.balance_withheld;
+    snap.estimated_fills = live.stats.estimated_fills;
+    snap.estimates_pending = live.stats.estimates_pending;
+    snap.estimates_forgotten = live.stats.estimates_forgotten;
     if (treasury) snap.treasury = treasury->stats();
     snap.venue_rejects = live.stats.venue_rejects;
     set_status_rejects(snap.risk_reject_reasons, live.stats.risk_rejects_by_reason);
@@ -2650,6 +2653,14 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   if (rs.balance_withheld > 0)
     FASTMM_LOG_INFO("fastmm-live: balance_withheld={} (quote orders the balance no longer covered)",
                     rs.balance_withheld);
+  if (rs.estimated_fills > 0)
+    FASTMM_LOG_WARN(
+        "fastmm-live: estimated_fills={} pending={} forgotten={} (fills booked from a cumulative "
+        "quantity at the order's price; pending: no execution has named them yet, forgotten: an "
+        "execution replayed for them later would be booked again)",
+        rs.estimated_fills,
+        rs.estimates_pending,
+        rs.estimates_forgotten);
   FASTMM_LOG_INFO(
       "fastmm-live: realized_pnl={} unrealized_pnl={} fees={} tick_to_trade p50={} ns p99={} ns",
       Notional::from_raw(rs.realized_pnl_raw),
