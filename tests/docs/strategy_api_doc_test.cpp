@@ -287,6 +287,11 @@ static_assert(std::same_as<decltype(TradeMsg::price), Price>);
 static_assert(std::same_as<decltype(TradeMsg::qty), Qty>);
 static_assert(std::same_as<decltype(TradeMsg::aggressor), Side>);
 static_assert(std::same_as<decltype(TradeMsg::trade_id), std::uint64_t>);
+static_assert(
+    std::same_as<decltype(std::declval<const TradeMsg&>().parties()), const TradeParties*>);
+static_assert(std::same_as<decltype(TradeParties::buyer), PartyId>);
+static_assert(std::same_as<decltype(TradeParties::seller), PartyId>);
+static_assert(std::same_as<decltype(PartyId::kind), PartyIdKind>);
 static_assert(std::same_as<decltype(BookTickerMsg::bid_px), Price>);
 static_assert(std::same_as<decltype(BookTickerMsg::bid_qty), Qty>);
 static_assert(std::same_as<decltype(BookTickerMsg::ask_px), Price>);

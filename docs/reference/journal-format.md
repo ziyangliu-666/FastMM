@@ -130,6 +130,18 @@ Every message starts with the 64-byte `EventHeader`; its total length (`len`) is
 
 Message layouts are the structs in `include/fastmm/core/messages.hpp` (`EventType` in `core/enums.hpp`): book snapshots and deltas, trades, book tickers, option tickers, L3 order adds, executions, cancels and replaces, order acks, rejects, cancel acks and rejects, fills, expiries, positions, timers, control commands, connection states, reconciliation records, latency samples, outbound orders, parameter updates, funding payments (`FundingMsg`, 128 bytes: the signed amount in the settlement asset at offset 64, the venue's funding id, the asset, and flag bit 0 when it came from the venue's history) balances (`BalanceMsg`, 128 bytes: free, locked, total, equity and maintenance at offsets 64 to 96, the asset at 104, flags at 113: bit 0 snapshot, bit 1 snapshot end, bit 2 account-wide margin) and a venue's mark, index and funding (`PerpStateMsg`, 128 bytes: mark and index price at 64 and 72, the funding rate (f64, per interval) at 80, the interval (ns) at 88, the next funding time at 96, open interest at 104, and at 112 the fields it carries: bit 0 mark, bit 1 index, bit 2 funding, bit 3 open interest).
 
+## Trades
+
+A `Trade` message (`TradeMsg`) is 128 bytes: price at offset 64, quantity at 72, the venue's trade id at 80, the aggressor's side at 88. Where the venue publishes who traded (Hyperliquid, Lighter), the record is 192 bytes and carries `TradeParties` at offset 128: the buyer at 128 and the seller at 160, 32 bytes each.
+
+| Offset in the party | Size | Field | Meaning |
+|---:|---:|---|---|
+| 0 | 1 | `kind` | 0 not named, 1 `Account` (a numeric account id), 2 `Address` (an address or public key) |
+| 1 | 1 | `len` | bytes of `bytes` in use: 8 for an account, the address's length (20 on Hyperliquid) |
+| 2 | 30 | `bytes` | an account as a little-endian `uint64`; an address as its raw bytes, first byte first |
+
+`hdr.len` tells the two apart, so the format version did not change: a journal written before parties existed reads as trades that name nobody, and an older reader steps over the 64 bytes it does not know.
+
 ## Engine clock
 
 - Every consumed event and every fired timer (a synthetic `Timer` message) carries `kEngineTime` and a delta from the previous such record.

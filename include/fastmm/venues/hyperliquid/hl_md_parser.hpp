@@ -10,7 +10,9 @@
 //   bbo      {"channel":"bbo","data":{"coin","time","bbo":[{px,sz,n}|null, {px,sz,n}|null]}}
 //            -> BookTickerMsg (null: an empty side)
 //   trades   {"channel":"trades","data":[{coin, side "B"|"A" (the taker's), px, sz, time, hash,
-//            tid, users}]} -> one TradeMsg per trade
+//            tid, users}]} -> one TradeMsg per trade; users = [buyer, seller] (0x wallet
+//            addresses) -> TradeMsg::parties() as PartyIdKind::Address (20 bytes); a trade
+//            without a readable pair carries none
 //   subscriptionResponse, pong, error -> control
 //
 // Coins are the venue's names ("BTC", "xyz:NVDA" on the xyz builder dex). An instrument may be

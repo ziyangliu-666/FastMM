@@ -6,6 +6,9 @@
 
 #include "fastmm/strategies/basic_mm.hpp"
 
+#include <optional>
+#include <vector>
+
 using namespace fastmm;
 using fastmm::sim::StrategyHarness;
 
@@ -85,4 +88,41 @@ TEST_CASE("strategies.harness: advance fires timers and trades reach the engine"
   CHECK(h.engine().stats().timers_fired >= 5);
   CHECK(h.working_orders().empty());
   CHECK_THROWS_AS(StrategyHarness<BasicMM>({{"levels", "99"}}), std::invalid_argument);
+}
+
+namespace {
+// Keeps who traded in each trade it sees.
+struct PartiesProbe {
+  std::vector<std::optional<TradeParties>> seen;
+  void on_trade(auto&, InstrumentId, const TradeMsg& m) noexcept {
+    const TradeParties* p = m.parties();
+    seen.push_back(p != nullptr ? std::optional<TradeParties>(*p) : std::nullopt);
+  }
+};
+}  // namespace
+
+TEST_CASE("strategies.harness: on_trade reads the buyer and the seller the venue named") {
+  StrategyHarness<PartiesProbe> h;
+  h.book("100.00", "100.02");
+  alignas(64) std::byte buf[TradeMsg::kSizeWithParties]{};
+  auto& t = *reinterpret_cast<TradeMsg*>(buf);
+  init_header(t, EventType::Trade, h.instrument(), VenueId{0});
+  t.price = px("100.02");
+  t.qty = qt("0.5");
+  t.aggressor = Side::Buy;
+  const std::uint8_t addr[20] = {0x35, 0xf1, 0x3d, 0xc7, 0x14, 0x26, 0xd4, 0xa4, 0x29, 0xcf,
+                                 0x8b, 0xad, 0x69, 0xc4, 0xb3, 0x9a, 0xbb, 0xbf, 0x98, 0x96};
+  const TradeParties named{PartyId::of_address(addr), PartyId::of_account(751368)};
+  t.set_parties(named);
+  CHECK(t.hdr.len == TradeMsg::kSizeWithParties);
+  h.push(t.hdr);
+  h.trade(px("100.00"), qt("0.1"), Side::Sell);  // a trade that names nobody
+  const auto& seen = h.strategy().seen;
+  REQUIRE(seen.size() == 2);
+  REQUIRE(seen[0].has_value());
+  CHECK(*seen[0] == named);
+  CHECK(seen[0]->buyer.kind == PartyIdKind::Address);
+  CHECK(seen[0]->buyer.len == 20);
+  CHECK(seen[0]->seller.account() == 751368);
+  CHECK_FALSE(seen[1].has_value());
 }

@@ -4,6 +4,11 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+### Added
+- venues: Hyperliquid and Lighter public trades carry the buyer and the seller the venue names
+  (`TradeMsg::parties()`, `TradeView.buyer` / `.seller`), journaled and replayed; such a trade is
+  192 bytes, every other trade still 128, and older journals read as trades that name nobody.
+
 ### Fixed
 - docs: the reference backtest outputs (economics, backtesting, tutorial step 7) are this build's;
   `docs.reference_output` runs every documented command and fails when its output no longer

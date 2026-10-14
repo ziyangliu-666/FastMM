@@ -216,6 +216,45 @@ struct Ctx {
   return r;
 }
 
+// "0x" and an even number of hex digits -> an address; empty if it is not one.
+[[nodiscard]] PartyId read_address(std::string_view s) noexcept {
+  if (s.size() < 4 || s[0] != '0' || (s[1] != 'x' && s[1] != 'X') || s.size() % 2 != 0 ||
+      (s.size() - 2) / 2 > PartyId::kMaxBytes)
+    return {};
+  const auto nibble = [](char ch) noexcept -> int {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+  };
+  std::uint8_t raw[PartyId::kMaxBytes]{};
+  const std::size_t n = (s.size() - 2) / 2;
+  for (std::size_t i = 0; i < n; ++i) {
+    const int hi = nibble(s[2 + 2 * i]);
+    const int lo = nibble(s[3 + 2 * i]);
+    if (hi < 0 || lo < 0) return {};
+    raw[i] = static_cast<std::uint8_t>(hi * 16 + lo);
+  }
+  return PartyId::of_address({raw, n});
+}
+
+// users [buyer, seller] -> parties; false if the value is not an array (malformed). A pair that
+// is not two addresses leaves `out` empty.
+[[gnu::noinline]] bool read_users(od::value v, TradeParties& out) noexcept {
+  od::array arr;
+  if (v.get_array().get(arr) != sj::SUCCESS) return false;
+  PartyId ids[2]{};
+  std::size_t n = 0;
+  for (auto item : arr) {
+    std::string_view s;
+    if (item.get_string().get(s) != sj::SUCCESS) return false;
+    if (n < 2) ids[n] = read_address(s);
+    ++n;
+  }
+  if (n == 2 && ids[0].known() && ids[1].known()) out = TradeParties{ids[0], ids[1]};
+  return true;
+}
+
 // data [{coin, side, px, sz, time, hash, tid, users}]
 [[gnu::noinline]] MdDecodeResult decode_trades(const Ctx& c,
                                                od::array& data,
@@ -232,6 +271,7 @@ struct Ctx {
     std::string_view sz;
     std::int64_t time = 0;
     std::uint64_t tid = 0;
+    TradeParties users{};
     for (auto field : t) {
       std::string_view key;
       if (field.unescaped_key().get(key) != sj::SUCCESS) return malformed(stats, r);
@@ -247,6 +287,10 @@ struct Ctx {
         if (field.value().get_int64().get(time) != sj::SUCCESS) return malformed(stats, r);
       } else if (key == "tid") {
         if (field.value().get_uint64().get(tid) != sj::SUCCESS) return malformed(stats, r);
+      } else if (key == "users") {
+        od::value v;
+        if (field.value().get(v) != sj::SUCCESS || !read_users(v, users))
+          return malformed(stats, r);
       }
     }
     if (coin.empty() || px.empty() || sz.empty() || (side != "B" && side != "A"))
@@ -259,7 +303,9 @@ struct Ctx {
     const auto p = parse_price(px);
     const auto q = parse_rounded<Qty>(sz);
     if (!p || !q) return malformed(stats, r);
-    if (written + sizeof(TradeMsg) > c.out.size()) {
+    const bool named = users.buyer.known();
+    const std::uint32_t len = named ? TradeMsg::kSizeWithParties : sizeof(TradeMsg);
+    if (written + len > c.out.size()) {
       ++stats.overflow;
       break;
     }
@@ -273,7 +319,8 @@ struct Ctx {
     m->hdr.exch_ts = ts_from_ms(time);
     m->hdr.recv_ts = c.recv_ts;
     m->hdr.t0_cycles = c.t0;
-    written += sizeof(TradeMsg);
+    if (named) m->set_parties(users);
+    written += len;
     ++count;
     ++stats.trades;
   }

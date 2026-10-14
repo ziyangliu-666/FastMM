@@ -437,6 +437,11 @@ static_assert(std::same_as<decltype(TradeMsg::price), Price>);
 static_assert(std::same_as<decltype(TradeMsg::qty), Qty>);
 static_assert(std::same_as<decltype(TradeMsg::aggressor), Side>);
 static_assert(std::same_as<decltype(TradeMsg::trade_id), std::uint64_t>);
+static_assert(
+    std::same_as<decltype(std::declval<const TradeMsg&>().parties()), const TradeParties*>);
+static_assert(std::same_as<decltype(TradeParties::buyer), PartyId>);
+static_assert(std::same_as<decltype(TradeParties::seller), PartyId>);
+static_assert(std::same_as<decltype(PartyId::kind), PartyIdKind>);
 static_assert(std::same_as<decltype(BookTickerMsg::bid_px), Price>);
 static_assert(std::same_as<decltype(BookTickerMsg::bid_qty), Qty>);
 static_assert(std::same_as<decltype(BookTickerMsg::ask_px), Price>);
@@ -464,6 +469,7 @@ static_assert(std::same_as<decltype(PerpStateMsg::fields), std::uint8_t>);
 
 - Every message starts with an `EventHeader`: `type`, `venue`, `instrument`, `exch_ts` (venue event time) and `recv_ts` (receive time), plus `seq` and flags.
 - `TradeMsg::aggressor` is the taker's side.
+- `TradeMsg::parties()` is who bought and who sold, where the venue publishes it, and null otherwise: Hyperliquid names both wallet addresses (`PartyIdKind::Address`, 20 bytes in `raw()`), Lighter both account indexes (`PartyIdKind::Account`, `account()`). The ids are copied as the venue sends them. A trade that carries them is 192 bytes (`hdr.len`), the `TradeParties` after the 128-byte message, so copy `*m.parties()` rather than the `TradeMsg`: a copied `TradeMsg` does not include them.
 - `OptionTickerMsg`: `mark_price` is in the instrument's price unit, `underlying_price` and `index_price` in the underlying's quote currency, implied volatilities are annualised decimals (0.312 is 31.2 %), greeks are the venue's; NaN marks a field the venue did not send.
 - `ConnectionStateMsg::state` is `Disconnected`, `Connecting`, `Live`, `Stale`, `Resyncing` or `Dead`; `channel` is 0 for market data and 1 for the order and user stream; `reason_code` is venue-specific.
 - `OmsUpdate` carries the order snapshot after the transition (`order`), the previous state (`prev`), and `known`, `changed` and `terminal` flags.

@@ -718,6 +718,29 @@ py::object qty_or_none(std::optional<Qty> q, bool raw) {
   return py::float_(q->to_double());
 }
 
+// A trade's buyer or seller: an int (account id), a "0x..." str (address), None (not named).
+py::object party_or_none(const TradeMsg& t, bool buyer) {
+  const TradeParties* ps = t.parties();
+  if (ps == nullptr) return py::none();
+  const PartyId& id = buyer ? ps->buyer : ps->seller;
+  switch (id.kind) {
+    case PartyIdKind::Account:
+      return py::int_(id.account());
+    case PartyIdKind::Address: {
+      static constexpr char kHex[] = "0123456789abcdef";
+      std::string s = "0x";
+      for (const std::uint8_t b : id.raw()) {
+        s.push_back(kHex[b >> 4U]);
+        s.push_back(kHex[b & 0xFU]);
+      }
+      return py::str(s);
+    }
+    case PartyIdKind::None:
+      break;
+  }
+  return py::none();
+}
+
 py::tuple level_f(Level l) {
   return py::make_tuple(l.price.to_double(), l.qty.to_double());
 }
@@ -957,6 +980,8 @@ void bind_strategy_api(py::module_& m) {
   FASTMM_PY_FIELD(trade, TradeView, "recv_ts_ns", x.hdr.recv_ts.ns);
   FASTMM_PY_FIXED(trade, TradeView, "price", x.price);
   FASTMM_PY_FIXED(trade, TradeView, "qty", x.qty);
+  FASTMM_PY_FIELD(trade, TradeView, "buyer", party_or_none(x, true));
+  FASTMM_PY_FIELD(trade, TradeView, "seller", party_or_none(x, false));
 
   py::class_<BookTickerView> ticker(m,
                                     "BookTickerView",

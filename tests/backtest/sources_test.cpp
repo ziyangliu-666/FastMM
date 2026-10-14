@@ -236,6 +236,52 @@ TEST_CASE("backtest.journal_source: OptionTicker is market data and round-trips"
   CHECK(msg_cast<OptionTickerMsg>(h).underlying_price == px("76904.4"));
 }
 
+TEST_CASE("backtest.journal_source: a trade's parties round-trip, a trade without has none") {
+  struct TradeSource final : sim::MdSource {
+    alignas(64) std::byte named[TradeMsg::kSizeWithParties]{};
+    TradeMsg bare{};
+    int at = 0;
+    TradeSource() {
+      auto& t = *reinterpret_cast<TradeMsg*>(named);
+      init_header(t, EventType::Trade, InstrumentId{0}, VenueId{0});
+      t.hdr.recv_ts = t.hdr.exch_ts = Timestamp{100};
+      t.trade_id = 1;
+      t.set_parties({PartyId::of_account(702386), PartyId::of_account(751368)});
+      init_header(bare, EventType::Trade, InstrumentId{0}, VenueId{0});
+      bare.hdr.recv_ts = bare.hdr.exch_ts = Timestamp{101};
+      bare.trade_id = 2;
+    }
+    const EventHeader* next() override {
+      switch (at++) {
+        case 0:
+          return reinterpret_cast<const EventHeader*>(named);
+        case 1:
+          return &bare.hdr;
+        default:
+          return nullptr;
+      }
+    }
+    void reset() override { at = 0; }
+    [[nodiscard]] Timestamp start_ts() const override { return Timestamp{100}; }
+  } src;
+  const BacktestConfig cfg = BacktestConfig::single_instrument("X", px("0.01"), qt("0.001"));
+  const std::string path = (fastmm::test::tmp_dir() / "trade_parties.fmj").string();
+  CHECK(write_md_journal(src, path, cfg.instruments, 7) == 2);
+  JournalSource js(path);
+  const EventHeader* h = js.next();
+  REQUIRE(h != nullptr);
+  CHECK(h->len == TradeMsg::kSizeWithParties);
+  const TradeParties* p = msg_cast<TradeMsg>(h).parties();
+  REQUIRE(p != nullptr);
+  CHECK(p->buyer.account() == 702386);
+  CHECK(p->seller.account() == 751368);
+  h = js.next();
+  REQUIRE(h != nullptr);
+  CHECK(msg_cast<TradeMsg>(h).trade_id == 2);
+  CHECK(msg_cast<TradeMsg>(h).parties() == nullptr);
+  CHECK(js.next() == nullptr);
+}
+
 namespace {
 // One depth snapshot of `levels` bids and asks, larger than an EventBuf past 257 a side, as a
 // journal of a venue that sends 500 or 1000 levels yields them, then a trade.

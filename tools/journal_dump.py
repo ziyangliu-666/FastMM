@@ -162,6 +162,16 @@ def param_update_fields(body: bytes, params) -> str:
     return head + (" ".join(out) if out else "(no fields)")
 
 
+def party(b: bytes) -> str:
+    """One PartyId (32 bytes): kind, length, then the bytes."""
+    kind, n = b[0], min(b[1], 30)
+    if kind == 1:
+        return str(struct.unpack_from("<Q", b, 2)[0])
+    if kind == 2:
+        return "0x" + b[2:2 + n].hex()
+    return "-"
+
+
 def decode_body(type_name: str, body: bytes, params=()) -> str:
     q = lambda off: struct.unpack_from("<q", body, off)[0]  # noqa: E731
     u64 = lambda off: struct.unpack_from("<Q", body, off)[0]  # noqa: E731
@@ -172,7 +182,10 @@ def decode_body(type_name: str, body: bytes, params=()) -> str:
         return (f"U={first} u={last} pu={prev} bids({nb})=[{fmt_lv(levels[:nb])}] "
                 f"asks({na})=[{fmt_lv(levels[nb:])}]")
     if type_name == "Trade":
-        return f"px={dec(q(0))} qty={dec(q(8))} trade_id={u64(16)} aggressor={SIDES.get(body[24], body[24])}"
+        s = f"px={dec(q(0))} qty={dec(q(8))} trade_id={u64(16)} aggressor={SIDES.get(body[24], body[24])}"
+        if len(body) >= 128:  # TradeParties after the 128-byte message
+            s += f" buyer={party(body[64:96])} seller={party(body[96:128])}"
+        return s
     if type_name == "BookTicker":
         return f"bid={dec(q(0))}x{dec(q(8))} ask={dec(q(16))}x{dec(q(24))}"
     if type_name == "OptionTicker":

@@ -1685,6 +1685,9 @@ class TradeView:
     def aggressor(self) -> int:
         ...
     @property
+    def buyer(self) -> typing.Any:
+        ...
+    @property
     def exch_ts_ns(self) -> int:
         ...
     @property
@@ -1704,6 +1707,9 @@ class TradeView:
         ...
     @property
     def recv_ts_ns(self) -> int:
+        ...
+    @property
+    def seller(self) -> typing.Any:
         ...
     @property
     def trade_id(self) -> int:

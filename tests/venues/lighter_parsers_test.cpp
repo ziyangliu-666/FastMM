@@ -117,6 +117,16 @@ TEST_CASE("lighter.md: the book sync applies the chain and resubscribes on a gap
     books += t == EventType::BookSnapshot || t == EventType::BookDelta ? 1 : 0;
   }
   CHECK(books == 3);
+  // A trade reaches the ring whole, its parties included.
+  const auto tr = padded_fixture("lighter/md_trade.json");
+  CHECK(feed.on_message(tr.view(), 1) == ParseStatus::Ok);
+  const auto out = sink.drain();
+  REQUIRE(out.size() == 2);
+  CHECK(out[0].size() == TradeMsg::kSizeWithParties);
+  const auto& t0 = RecordingSink::as<TradeMsg>(out[0]);
+  REQUIRE(t0.parties() != nullptr);
+  CHECK(t0.parties()->buyer.account() == 702386);
+  CHECK(RecordingSink::as<TradeMsg>(out[1]).parties()->buyer.account() == 270812);
   // A fresh feed that misses the second update: the third does not chain.
   LighterMdFeed gap(u.symbols, kLighter, sink.sink, InstrumentCallback{requester, &asked}, {}, 0);
   REQUIRE(gap.add_instrument(u.nvda, 110, "NVDA"));
@@ -168,6 +178,36 @@ TEST_CASE("lighter.md: ticker, trades and the control frames") {
   CHECK(t0.trade_id == 34287672686ULL);
   CHECK(t0.aggressor == Side::Sell);  // the maker was the bid
   CHECK(t0.hdr.exch_ts.ns == 1791835628453LL * 1'000'000);
+  // bid_account_id is the buyer, ask_account_id the seller.
+  CHECK(t0.hdr.len == TradeMsg::kSizeWithParties);
+  REQUIRE(t0.parties() != nullptr);
+  CHECK(t0.parties()->buyer.kind == PartyIdKind::Account);
+  CHECK(t0.parties()->buyer.account() == 702386);
+  CHECK(t0.parties()->seller.account() == 751368);
+  CHECK(r.len == 2 * TradeMsg::kSizeWithParties);
+  const auto& t1 = *reinterpret_cast<const TradeMsg*>(scratch + TradeMsg::kSizeWithParties);
+  CHECK(t1.trade_id == 34287672685ULL);
+  CHECK(t1.qty == qty("0.350"));
+  REQUIRE(t1.parties() != nullptr);
+  CHECK(t1.parties()->buyer == PartyId::of_account(270812));
+  CHECK(t1.parties()->seller == PartyId::of_account(751368));
+
+  // A liquidation names the liquidated account like any other; a trade without the account ids
+  // is a 128-byte trade with none.
+  const PaddedJson liq(
+      R"({"channel":"trade:110","liquidation_trades":[{"trade_id":34247094304,"type":"liquidation","market_id":110,"size":"0.182","price":"225.146","ask_account_id":281474976549565,"bid_account_id":702386,"is_maker_ask":false,"timestamp":1791814431015}],"nonce":1,"trades":[{"trade_id":7,"market_id":110,"size":"1","price":"2","is_maker_ask":true,"timestamp":1}],"type":"update/trade"})");
+  r = p.decode(liq.view(), Timestamp{1}, Cycles{2}, scratch);
+  REQUIRE(r.status == ParseStatus::Ok);
+  REQUIRE(r.count == 2);
+  CHECK(r.len == TradeMsg::kSizeWithParties + sizeof(TradeMsg));
+  const auto& l0 = *reinterpret_cast<const TradeMsg*>(scratch);
+  REQUIRE(l0.parties() != nullptr);
+  CHECK(l0.parties()->seller.account() == 281474976549565ULL);
+  CHECK(l0.parties()->buyer.account() == 702386);
+  const auto& l1 = *reinterpret_cast<const TradeMsg*>(scratch + l0.hdr.len);
+  CHECK(l1.trade_id == 7);
+  CHECK(l1.hdr.len == sizeof(TradeMsg));
+  CHECK(l1.parties() == nullptr);
 
   // The history sent on subscribing is not market data.
   const auto hist = padded_fixture("lighter/md_trade_snapshot.json");

@@ -681,3 +681,65 @@ def test_on_perp_state_and_the_venue_mark(example_config):
     assert over == pytest.approx(0.0001 / 8)
     with pytest.raises(fastmm.StaleViewError):
         s.view.mark_price
+
+
+def _crc32c(data: bytes) -> int:
+    crc = 0xFFFFFFFF
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = (crc >> 1) ^ (0x82F63B78 & -(crc & 1))
+    return crc ^ 0xFFFFFFFF
+
+
+def _journal_with_parties(path):
+    """The fixture journal's header and first book, then three trades: one naming two addresses,
+    one naming two accounts, one naming nobody (docs/reference/journal-format.md, Trades)."""
+    import struct
+
+    event = struct.Struct("<IBBBBIIQQqqQII")
+    block = struct.Struct("<4sIQQIII28s")
+    data = FIXTURE_FMJ.read_bytes()
+    header_bytes = struct.unpack_from("<I", data, 8)[0]
+    first = header_bytes + block.size
+    book = bytearray(data[first:first + struct.unpack_from("<I", data, first)[0]])
+    struct.pack_into("<Q", book, 16, 1)
+    t0 = struct.unpack_from("<q", book, 40)[0]
+
+    def party(kind, raw):
+        return bytes([kind, len(raw)]) + raw + bytes(30 - len(raw))
+
+    def trade(seq, tid, parties):
+        body = struct.pack("<qqQB", 6_000_001_000_000, 100_000, tid, 0) + bytes(39) + parties
+        ts = t0 + seq * 1_000_000
+        return event.pack(64 + len(body), 4, 1, 0, 0, 0, 0, seq, tid, ts, ts, 0, 0, 0) + body
+
+    addr_b = bytes.fromhex("35f13dc71426d4a429cf8bad69c4b39abbbf9896")
+    addr_s = bytes.fromhex("46921f6961bdb411b756c9712f6bdb58fbd9164f")
+    payload = bytes(book) + trade(2, 11, party(2, addr_b) + party(2, addr_s)) + \
+        trade(3, 12, party(1, struct.pack("<Q", 702386)) + party(1, struct.pack("<Q", 751368))) + \
+        trade(4, 13, b"")
+    blocks = block.pack(b"FMJB", len(payload), 1, 4, 4, _crc32c(payload), 0, bytes(28)) + payload
+    blocks += block.pack(b"FMJB", 0, 0, 0, 0, _crc32c(b""), 1, bytes(28))
+    path.write_bytes(data[:header_bytes] + blocks)
+    return path
+
+
+def test_trade_view_names_the_buyer_and_the_seller(example_config, tmp_path):
+    class Probe(Strategy):
+        def on_start(self, ctx):
+            self.trades = []
+
+        def on_trade(self, ctx, inst, trade):
+            self.view = trade
+            self.trades.append((trade.trade_id, trade.buyer, trade.seller))
+
+    s = Probe()
+    fastmm.run_backtest(_cfg(example_config), data=str(_journal_with_parties(tmp_path / "p.fmj")),
+                        strategy=s)
+    assert s.trades == [(11, "0x35f13dc71426d4a429cf8bad69c4b39abbbf9896",
+                         "0x46921f6961bdb411b756c9712f6bdb58fbd9164f"),
+                        (12, 702386, 751368),
+                        (13, None, None)]
+    with pytest.raises(fastmm.StaleViewError):
+        s.view.buyer

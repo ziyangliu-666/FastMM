@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <span>
 #include <string_view>
 #include <type_traits>
@@ -136,15 +137,84 @@ static_assert(sizeof(BookDeltaMsg) == 96 && alignof(BookDeltaMsg) == 8);
 }
 using BookSnapshotMsg = BookDeltaMsg;  // same layout; hdr.type == BookSnapshot, kSnapshot set
 
+// One side of a public trade as the venue names it, on venues that publish who traded
+// (Hyperliquid: wallet addresses; Lighter: account indexes). Copied as sent; FastMM gives it no
+// meaning.
+enum class PartyIdKind : std::uint8_t {
+  None = 0,     // the venue did not name this side
+  Account = 1,  // a numeric account id, `bytes` holds it as a little-endian uint64 (account())
+  Address = 2,  // an address or public key, `len` raw bytes in the order written (0x hex text)
+};
+
+struct PartyId {
+  static constexpr std::size_t kMaxBytes = 30;
+  PartyIdKind kind;
+  std::uint8_t len;  // bytes used: 8 for an Account, the address's length for an Address
+  std::uint8_t bytes[kMaxBytes];
+
+  [[nodiscard]] constexpr bool known() const noexcept { return kind != PartyIdKind::None; }
+  // The account id; 0 for another kind.
+  [[nodiscard]] std::uint64_t account() const noexcept {
+    std::uint64_t v = 0;
+    if (kind == PartyIdKind::Account) std::memcpy(&v, bytes, sizeof(v));
+    return v;
+  }
+  [[nodiscard]] std::span<const std::uint8_t> raw() const noexcept { return {bytes, len}; }
+  [[nodiscard]] static PartyId of_account(std::uint64_t id) noexcept {
+    PartyId p{};
+    p.kind = PartyIdKind::Account;
+    p.len = sizeof(id);
+    std::memcpy(p.bytes, &id, sizeof(id));
+    return p;
+  }
+  // Empty when `raw` is longer than kMaxBytes.
+  [[nodiscard]] static PartyId of_address(std::span<const std::uint8_t> raw) noexcept {
+    PartyId p{};
+    if (raw.empty() || raw.size() > kMaxBytes) return p;
+    p.kind = PartyIdKind::Address;
+    p.len = static_cast<std::uint8_t>(raw.size());
+    std::memcpy(p.bytes, raw.data(), raw.size());
+    return p;
+  }
+  constexpr bool operator==(const PartyId&) const noexcept = default;
+};
+static_assert(sizeof(PartyId) == 32 && std::is_trivially_copyable_v<PartyId>);
+
+struct TradeParties {
+  PartyId buyer;
+  PartyId seller;
+  constexpr bool operator==(const TradeParties&) const noexcept = default;
+};
+static_assert(sizeof(TradeParties) == 64 && std::is_trivially_copyable_v<TradeParties>);
+
+// A trade whose venue names the buyer and the seller carries them in the 64 bytes after the
+// message: hdr.len is kSizeWithParties and parties() points at them. Every other trade, and every
+// trade journaled before them, is 128 bytes and parties() is null; a reader that knows nothing of
+// them steps over the tail by hdr.len. As for BookDeltaMsg, such a trade is written in place
+// (set_parties() needs kSizeWithParties bytes there), and a TradeMsg copied by value loses the
+// tail: copy *parties() instead.
 struct TradeMsg {
+  static constexpr std::uint32_t kSizeWithParties = 192;
+
   EventHeader hdr;
   Price price;
   Qty qty;
   std::uint64_t trade_id;
   Side aggressor;
-  std::uint8_t pad_[39];
+  std::uint8_t pad_[39];  // pad_[0]: CME's kTradeNoAggressor (codecs/mdp3/mdp3_decoder.hpp)
+
+  [[nodiscard]] const TradeParties* parties() const noexcept {
+    if (hdr.len < kSizeWithParties) return nullptr;
+    return reinterpret_cast<const TradeParties*>(reinterpret_cast<const std::byte*>(this) +
+                                                 sizeof(TradeMsg));
+  }
+  void set_parties(const TradeParties& p) noexcept {
+    hdr.len = kSizeWithParties;
+    std::memcpy(reinterpret_cast<std::byte*>(this) + sizeof(TradeMsg), &p, sizeof(p));
+  }
 };
 static_assert(sizeof(TradeMsg) == 128);
+static_assert(TradeMsg::kSizeWithParties == sizeof(TradeMsg) + sizeof(TradeParties));
 
 struct BookTickerMsg {
   EventHeader hdr;

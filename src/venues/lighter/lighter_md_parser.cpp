@@ -159,6 +159,7 @@ struct TradeCtx {
     std::int64_t time = 0;
     std::uint64_t tid = 0;
     bool maker_ask = false;
+    TradeParties parties{};
     for (auto field : t) {
       std::string_view key;
       if (field.unescaped_key().get(key) != sj::SUCCESS) return false;
@@ -174,6 +175,10 @@ struct TradeCtx {
         if (field.value().get_uint64().get(tid) != sj::SUCCESS) return false;
       } else if (key == "is_maker_ask") {
         if (field.value().get_bool().get(maker_ask) != sj::SUCCESS) return false;
+      } else if (key == "bid_account_id" || key == "ask_account_id") {
+        std::uint64_t account = 0;
+        if (field.value().get_uint64().get(account) != sj::SUCCESS) return false;
+        (key == "bid_account_id" ? parties.buyer : parties.seller) = PartyId::of_account(account);
       }
     }
     if (px.empty() || sz.empty() || market < 0) return false;
@@ -185,7 +190,9 @@ struct TradeCtx {
     const auto p = parse_price(px);
     const auto q = parse_rounded<Qty>(sz);
     if (!p || !q) return false;
-    if (c.written + sizeof(TradeMsg) > c.out.size()) {
+    const bool named = parties.buyer.known() || parties.seller.known();
+    const std::uint32_t len = named ? TradeMsg::kSizeWithParties : sizeof(TradeMsg);
+    if (c.written + len > c.out.size()) {
       ++c.stats->overflow;
       continue;  // read on: the frame's type, at its end, may say it is the history
     }
@@ -199,7 +206,8 @@ struct TradeCtx {
     m->hdr.exch_ts = ts_from_ms(time);
     m->hdr.recv_ts = c.recv_ts;
     m->hdr.t0_cycles = c.t0;
-    c.written += sizeof(TradeMsg);
+    if (named) m->set_parties(parties);
+    c.written += len;
     ++c.count;
   }
   return true;

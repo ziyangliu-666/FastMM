@@ -113,6 +113,73 @@ TEST_CASE("hyperliquid.md: l2Book is a whole book, bbo the touch, trades the tak
   CHECK(r.error.starts_with("Error parsing JSON"));
 }
 
+namespace {
+// "0x..." -> the bytes of an address.
+std::vector<std::uint8_t> hex_bytes(std::string_view s) {
+  std::vector<std::uint8_t> out;
+  for (std::size_t i = 2; i + 1 < s.size(); i += 2)
+    out.push_back(static_cast<std::uint8_t>(std::stoi(std::string(s.substr(i, 2)), nullptr, 16)));
+  return out;
+}
+bool is_address(const PartyId& id, std::string_view hex) {
+  const auto want = hex_bytes(hex);
+  return id.kind == PartyIdKind::Address && id.len == 20 &&
+         std::vector<std::uint8_t>(id.raw().begin(), id.raw().end()) == want;
+}
+}  // namespace
+
+TEST_CASE("hyperliquid.md: trades carry users, the buyer and the seller, as addresses") {
+  HlUniverse u;
+  HlMdParser p(u.symbols, kHl);
+  alignas(64) std::byte scratch[kDecoderScratchBytes];
+
+  // Recorded: 30 trades, each with users [buyer, seller].
+  const auto trades = padded_fixture("hyperliquid/md_trades.json");
+  MdDecodeResult r = p.decode(trades.view(), Timestamp{1}, Cycles{2}, scratch);
+  REQUIRE(r.status == ParseStatus::Ok);
+  REQUIRE(r.count == 30);
+  CHECK(r.len == 30 * TradeMsg::kSizeWithParties);
+  const auto msgs = messages(scratch, r.count);
+  for (const EventHeader* h : msgs) {
+    CHECK(h->len == TradeMsg::kSizeWithParties);
+    CHECK(msg_cast<TradeMsg>(h).parties() != nullptr);
+  }
+  // "A": the taker sold; users[1] is the seller.
+  const auto& t0 = msg_cast<TradeMsg>(msgs[0]);
+  CHECK(t0.aggressor == Side::Sell);
+  CHECK(t0.trade_id == 781762851773916ULL);
+  REQUIRE(t0.parties() != nullptr);
+  CHECK(is_address(t0.parties()->buyer, "0x35f13dc71426d4a429cf8bad69c4b39abbbf9896"));
+  CHECK(is_address(t0.parties()->seller, "0x46921f6961bdb411b756c9712f6bdb58fbd9164f"));
+  const auto& t1 = msg_cast<TradeMsg>(msgs[1]);
+  CHECK(t1.aggressor == Side::Buy);
+  CHECK(is_address(t1.parties()->buyer, "0x277056f4d05ae5a5d4d42ac1e036d3b58063d324"));
+  CHECK(is_address(t1.parties()->seller, "0xd0956a1eba0a9060baf5f73ee26b9601dc47ec43"));
+  CHECK(t1.parties()->buyer.account() == 0);  // not an account id
+  // The last trade still has the fields of a trade.
+  const auto& last = msg_cast<TradeMsg>(msgs[29]);
+  CHECK(last.price == px("230.33"));
+  CHECK(last.qty == qty("0.048"));
+  CHECK(is_address(last.parties()->buyer, "0xcd0aa686548e25035e175466cce52797b6ab4a5f"));
+  CHECK(is_address(last.parties()->seller, "0x4e60e3a4a32d63d245aa4e4ce304b4254b088f95"));
+
+  // Without users, or with a pair that is not two addresses: a 128-byte trade, no parties.
+  const PaddedJson bare(
+      R"({"channel":"trades","data":[{"coin":"xyz:NVDA","side":"B","px":"1","sz":"2","time":5,"hash":"0x00","tid":9},{"coin":"xyz:NVDA","side":"A","px":"1","sz":"2","time":5,"hash":"0x00","tid":10,"users":["0x35f13dc71426d4a429cf8bad69c4b39abbbf9896","nobody"]},{"coin":"xyz:NVDA","side":"A","px":"1","sz":"2","time":5,"hash":"0x00","tid":11,"users":["0x35f13dc71426d4a429cf8bad69c4b39abbbf9896"]}]})");
+  r = p.decode(bare.view(), Timestamp{1}, Cycles{2}, scratch);
+  REQUIRE(r.status == ParseStatus::Ok);
+  REQUIRE(r.count == 3);
+  CHECK(r.len == 3 * sizeof(TradeMsg));
+  for (const EventHeader* h : messages(scratch, r.count)) {
+    CHECK(h->len == sizeof(TradeMsg));
+    CHECK(msg_cast<TradeMsg>(h).parties() == nullptr);
+  }
+  // users that is not an array of strings is malformed, as any other field of the wrong type.
+  const PaddedJson bad(
+      R"({"channel":"trades","data":[{"coin":"xyz:NVDA","side":"B","px":"1","sz":"2","time":5,"tid":9,"users":"0x35f13dc71426d4a429cf8bad69c4b39abbbf9896"}]})");
+  CHECK(p.decode(bad.view(), Timestamp{1}, Cycles{2}, scratch).status == ParseStatus::Malformed);
+}
+
 TEST_CASE("hyperliquid.md: coins without the dex prefix when the connector names the dex") {
   InstrumentTable instruments;
   Instrument n = make_instrument("NVDA", 7, "NVDA", "USDC");

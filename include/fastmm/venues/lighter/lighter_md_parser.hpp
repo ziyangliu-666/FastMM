@@ -12,8 +12,9 @@
 //   ticker/{market}      {"ticker":{"s","a":{price,size},"b":{price,size}}} -> BookTickerMsg
 //   trade/{market}       {"trades":[{trade_id, market_id, price, size, is_maker_ask, timestamp
 //                        (ms)..}],"liquidation_trades":[..]} -> one TradeMsg per trade (the
-//                        aggressor buys when the maker is the ask); the history sent on
-//                        subscribing is skipped
+//                        aggressor buys when the maker is the ask); bid_account_id (the
+//                        buyer) and ask_account_id (the seller) -> TradeMsg::parties() as
+//                        PartyIdKind::Account; the history sent on subscribing is skipped
 //   connected, pong, {"error":{code,message}} -> control
 //
 // Prices and sizes are decimal strings. exch_ts is the venue's last_updated_at (us) where the

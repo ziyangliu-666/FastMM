@@ -120,7 +120,7 @@ Views are reused between hooks. A view is valid only inside the hook that receiv
 |---|---|
 | `BookView` | `instrument`, `valid`, `mid`, `spread`, `best_bid` and `best_ask` as `(price, qty)`, `level(side, i)`, `depth(side)`, `last_update_ns`, `seq`, `microprice()`, `imbalance(levels=1)` |
 | `PositionView` | `instrument`, `qty`, `avg_price`, `realized`, `unrealized`, `fees`, `net_pnl`, `fills` |
-| `TradeView` | `instrument`, `price`, `qty`, `aggressor` (side), `trade_id`, `exch_ts_ns`, `recv_ts_ns` |
+| `TradeView` | `instrument`, `price`, `qty`, `aggressor` (side), `trade_id`, `exch_ts_ns`, `recv_ts_ns`, `buyer` and `seller` (where the venue names them: an `int` account id on Lighter, a `"0x..."` address on Hyperliquid; `None` otherwise) |
 | `BookTickerView` | `instrument`, `bid_price`, `bid_qty`, `ask_price`, `ask_qty`, `exch_ts_ns`, `recv_ts_ns` |
 | `OptionTickerView` | `instrument`, `mark_price`, `underlying_price`, `index_price`, `mark_iv`, `bid_iv`, `ask_iv`, `delta`, `gamma`, `vega`, `theta`, `rho`, `interest_rate`, `exch_ts_ns`, `recv_ts_ns` |
 | `BalanceView` | `venue`, `asset`, `free`, `locked`, `total`, `equity`, `maintenance`, `snapshot`, `snapshot_end`, `account`, `exch_ts_ns`, `recv_ts_ns` |
