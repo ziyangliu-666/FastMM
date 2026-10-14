@@ -60,6 +60,8 @@ python3 tools/doc_snippets.py
 
 Code that the docs show should be compiled or run by a test: the examples and the tutorial have ctest labels `examples` and `tutorial`, `scripts/docs/tutorial.sh` holds the tutorial's shell steps, and `tests/docs/strategy_api_doc_test.cpp` holds the strategy API reference.
 
+A `text` block of a backtest's output is preceded by the command that prints it, `<!-- output: fastmm-backtest --config configs/backtest-example.toml --data synthetic --out - -->` (the program, then its arguments). The test `docs.reference_output` runs each one and fails when a line of the block, `...` matching anything, is not in the output; after a change that moves the numbers, rerun the command and paste them.
+
 ## Generated pages
 
 | Page | Generated from | Tool |
@@ -88,7 +90,7 @@ The headers document themselves with `//` comments; `tools/doxygen_filter.py` pr
 | relative links and anchors resolve | `python3 tools/docs_links.py --check` | lint |
 | configuration reference is current | `python3 tools/docs_config_ref.py --check` | lint |
 | command-line reference is current | `python3 tools/docs_cli_help.py --check --bin build/release/bin` | gcc unit |
-| strategy API as documented, every public header compiles alone | `ctest --test-dir build/release -L docs` | all build jobs |
+| strategy API as documented, every public header compiles alone, quoted outputs and versions are current | `ctest --test-dir build/release -L docs` | all build jobs |
 | quick start, examples and tutorial run | `ctest --test-dir build/release -L 'examples\|tutorial'` | all build jobs |
 | every `configs/*.toml` loads without warnings | `ctest --test-dir build/release -L config` | all build jobs |
 | the site builds with no broken link and every page in the nav | `./scripts/docs-serve.sh --build` | docs |

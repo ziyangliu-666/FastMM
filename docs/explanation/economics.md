@@ -11,33 +11,34 @@
     --data synthetic --out -
 ```
 
+<!-- output: fastmm-backtest --config configs/backtest-example.toml --data synthetic --out - -->
 ```text
-backtest basic_mm  seed=1  md_events=15611  steps=16363  wall=0.01s
-  net pnl                        -11.9755
-  realized / unrealized / fees   0.0095 / 0.0000 / 11.9850
-  fills (maker / taker)          112 (112 / 0)
+backtest basic_mm  seed=1  md_events=15723  steps=16524  wall=0.05s
+  net pnl                        -12.5750
+  realized / unrealized / fees   0.0089 / 0.0001 / 12.5841
+  fills (maker / taker)          153 (153 / 0)
   spread captured (bps)          0.008
-  volume base / quote            0.19975 / 11984.99
+  volume base / quote            0.20974 / 12584.09
 ```
 
-Net PnL is `realized + unrealized - fees`. Trading contributed 0.0095 USDT on 11,984.99 USDT of volume: 0.0079 bps. The strategy does not read the fee table, so changing only `maker_bps` gives the same 112 fills and this PnL:
+Net PnL is `realized + unrealized - fees`. Trading contributed 0.0091 USDT (the net PnL at a zero fee) on 12,584.09 USDT of volume: 0.0072 bps. The strategy does not read the fee table, so changing only `maker_bps` gives the same 153 fills and this PnL:
 
 | `maker_bps` | Fees (USDT) | Net PnL (USDT) |
 |---:|---:|---:|
-| −0.5 | −0.5992 | +0.6087 |
-| 0 | 0.0000 | +0.0095 |
-| 0.5 | 0.5992 | −0.5898 |
-| 1.0 | 1.1985 | −1.1890 |
-| 2.0 | 2.3970 | −2.3875 |
-| 10.0 (shipped) | 11.9850 | −11.9755 |
+| −0.5 | −0.6292 | +0.6383 |
+| 0 | 0.0000 | +0.0091 |
+| 0.5 | 0.6292 | −0.6201 |
+| 1.0 | 1.2584 | −1.2494 |
+| 2.0 | 2.5168 | −2.5078 |
+| 10.0 (shipped) | 12.5841 | −12.5750 |
 
-The break-even maker fee is 0.0079 bps. At a 0.5 bps rebate the run nets +0.6087 USDT, 98.4 % of it the rebate.
+The break-even maker fee is 0.0072 bps. At a 0.5 bps rebate the run nets +0.6383 USDT, 98.6 % of it the rebate.
 
 With `fill_model = "matching"` instead of `l2_queue` the same run realizes 0.0059 USDT on 8,442.57 USDT over 77 fills (0.007 bps) and gets 3 `PostOnlyWouldCross` rejects. The break-even fee moves; the conclusion does not.
 
 ## Why the gross number is so small
 
-The synthetic market has no informed flow. `MarketGenerator::do_market` picks the aggressor's side with a fair coin (`src/sim/market_generator.cpp`), and the latent mid is a separate Poisson process of ±1-tick steps in `MarketGenerator::step`. A market order carries no information about the next mid move, so a resting quote is never picked off, and `spread_captured_bps` and realised PnL are the same number: 0.008 bps × 11,984.99 USDT = 0.0095 USDT.
+The synthetic market has no informed flow. `MarketGenerator::do_market` picks the aggressor's side with a fair coin (`src/sim/market_generator.cpp`), and the latent mid is a separate Poisson process of ±1-tick steps in `MarketGenerator::step`. A market order carries no information about the next mid move, so a resting quote is never picked off: the mid drift after the fills is −0.0004 USDT against 0.0095 USDT of gross spread capture, and realised PnL is 0.0089 USDT, 0.007 bps of 12,584.09 USDT.
 
 On a real venue the taker chooses when to trade. The quotes that fill are the ones that were wrong, so realised PnL is below the quoted half spread by the adverse-selection cost, which the synthetic market prices at zero: the backtest reports an upper bound on spread capture.
 

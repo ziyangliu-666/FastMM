@@ -13,18 +13,19 @@
 - `--param edge_bps=0.002` sets a parameter; repeat `--param` for more. An unknown name is an error ([exit codes](../../reference/cli.md#fastmm-backtest)).
 - `--seed 7 --duration 60` seeds the synthetic market and the simulated venue and runs 60 s of simulated time. The engine's random generator keeps `[engine] rng_seed` (1 in this file).
 
+<!-- output: tutorial-backtest --config configs/backtest-example.toml --data synthetic --strategy first_mm --param edge_bps=0.002 --seed 7 --duration 60 --out runs/tutorial/backtest --journal-out runs/tutorial/backtest.fmj -->
 ```text
 tutorial-backtest: note: ignoring [strategy.params] of 'basic_mm' for --strategy first_mm
-backtest first_mm  seed=7  md_events=15148  steps=16808  wall=0.03s
-  net pnl                        -25.7849
-  fills (maker / taker)          471 (471 / 0)
+backtest first_mm  seed=7  md_events=15733  steps=17408  wall=0.10s
+  net pnl                        -25.3044
+  fills (maker / taker)          482 (482 / 0)
   ...
-  outbound messages / sha256     1189 / 6ccab4815434470ef46161a79f32f6bf18ef422229d26be328adacc73df80812
+  outbound messages / sha256     1193 / f618ba2258ee17d67bd7d71ff58e4349507ef8934fe0e7b58e9d13ff8ddda0bb
 
-where the PnL came from (quote currency, 25791.74 traded notional)
-  gross spread capture                 0.0068  +0.003 bps of 25791.74, mid at the fill
-  fees paid                          -25.7917
-  = net                              -25.7849
+where the PnL came from (quote currency, 25311.14 traded notional)
+  gross spread capture                 0.0066  +0.003 bps of 25311.14, mid at the fill
+  fees paid                          -25.3111
+  = net                              -25.3044
   ...
 results written to runs/tutorial/backtest/{equity,fills,orders}.csv and summary.json
 session journal: runs/tutorial/backtest.fmj
@@ -59,13 +60,14 @@ One self-contained page from those four files: the equity curve and the inventor
 "$BIN"/tutorial-replay --journal runs/tutorial/backtest.fmj --verify
 ```
 
+<!-- output: tutorial-replay --journal runs/tutorial/backtest.fmj --verify -->
 ```text
-journal  runs/tutorial/backtest.fmj: format v3, 18067 messages (15148 market data, 1189 outbound), rng_seed 1, strategy 'first_mm'
+journal  runs/tutorial/backtest.fmj: format v3, 18671 messages (15733 market data, 1193 outbound), rng_seed 1, strategy 'first_mm'
 session  epoch 1, quoting enabled, cancel-replace venues 0, engine clock recorded
-config   embedded in the journal (hash 4b67f35b82760ab2)
-replay   strategy=first_mm events=16814
-recorded outbound 1189 msgs sha256 6ccab4815434470ef46161a79f32f6bf18ef422229d26be328adacc73df80812
-replayed outbound 1189 msgs sha256 6ccab4815434470ef46161a79f32f6bf18ef422229d26be328adacc73df80812
+config   embedded in the journal (hash 9a5ede35a1359874)
+replay   strategy=first_mm events=17414
+recorded outbound 1193 msgs sha256 f618ba2258ee17d67bd7d71ff58e4349507ef8934fe0e7b58e9d13ff8ddda0bb
+replayed outbound 1193 msgs sha256 f618ba2258ee17d67bd7d71ff58e4349507ef8934fe0e7b58e9d13ff8ddda0bb
 replay MATCH
 ```
 

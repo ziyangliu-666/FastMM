@@ -4,6 +4,12 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+### Fixed
+- docs: the reference backtest outputs (economics, backtesting, tutorial step 7) are this build's;
+  `docs.reference_output` runs every documented command and fails when its output no longer
+  matches the page. `compatibility.md`, `storage.md` and `status-file.md` give the current status
+  file (21), store schema (9) and gateway protocol (7) versions.
+
 ## [0.6.0] - 2026-10-13
 
 Connectors for Hyperliquid and Lighter, both signing natively. The store and `fastmm-top` show why

@@ -109,6 +109,7 @@ Add `-DFETCHCONTENT_SOURCE_DIR_FASTMM=$PWD` to the first command to build agains
 
 The report is the whole run on one page; the summary table it printed is the same numbers:
 
+<!-- output: my_mm_backtest -->
 ```text
 backtest my_mm  seed=1  md_events=7129  steps=7694  wall=0.01s
   net pnl                        -2.1594

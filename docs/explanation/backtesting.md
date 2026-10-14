@@ -165,37 +165,39 @@ The positions a session restores from its store and the venues report at the sta
 
 ```bash
 ./build/release/bin/fastmm-backtest --config configs/backtest-example.toml \
-    --data synthetic
+    --data synthetic --out -
 ```
 
+<!-- output: fastmm-backtest --config configs/backtest-example.toml --data synthetic --out - -->
 ```text
-  net pnl                        -11.9755
-  fills (maker / taker)          112 (112 / 0)
+  net pnl                        -12.5750
+  fills (maker / taker)          153 (153 / 0)
   spread captured (bps)          0.008
   realized spread (bps of notional) 0.008
-  fills at / inside / behind / through 8.0% / 27.7% / 63.4% / 0.9%
-  quotes filled / placed         101 / 366 (27.6%)
-  time to fill p50/p90/p99       44.1 / 271.9 / 1100.2 ms
-  queue ahead at fill p50/p90    0.00000 / 0.00621
+  fills at / inside / behind / through 7.2% / 31.4% / 58.8% / 2.6%
+  quotes filled / placed         109 / 369 (29.5%)
+  time to fill p50/p90/p99       36.6 / 271.8 / 1100.2 ms
+  queue ahead at fill p50/p90    0.00000 / 0.00102
 
-where the PnL came from (quote currency, 11984.99 traded notional)
-  gross spread capture                 0.0097  +0.008 bps of 11984.99, mid at the fill
-  mid drift after the fills           -0.0002  adverse selection + the open inventory, marked at the final mid
-  fees paid                          -11.9850
+where the PnL came from (quote currency, 12584.09 traded notional)
+  gross spread capture                 0.0095  +0.008 bps of 12104.09, over the 149 of 153 fills that had a venue mid
+  mid drift after the fills           -0.0004  adverse selection + the open inventory, marked at the final mid
+  fees paid                          -12.5841
   rebates received                     0.0000
-  = net                              -11.9755
-  reported net pnl                   -11.9755
-  unexplained                         -0.0000
+  = net                              -12.5750
+  reported net pnl                   -12.5750
+  unexplained                         -0.0000  fixed-point rounding, or something this split does not model
 
 markout per fill (mid at fill + horizon vs the fill price; bps of notional)
   horizon     markout     mo bps    capture    cap bps    adv.sel    fills past end   no mid
-  1s           0.0082     0.0078     0.0082     0.0079     0.0000       97       15        0
-  10s          0.0067     0.0075     0.0070     0.0079     0.0003       81       31        0
-  1m           0.0000     0.0000     0.0000     0.0000     0.0000        0      112        0
+  1s           0.0085     0.0081     0.0080     0.0076    -0.0005      131       18        4
+  10s          0.0073     0.0080     0.0068     0.0075    -0.0005      116       33        4
+  1m           0.0000     0.0000     0.0000     0.0000     0.0000        0      153        0
 ```
 
 `first_mm` from the tutorial (`examples/cpp/tutorial/first_mm_backtest.cpp`, 60 s, seed 7, same fees) on the matching fill model:
 
+<!-- output: first_mm_backtest -->
 ```text
   net pnl                        -27.0083
   fills (maker / taker)          467 (467 / 0)

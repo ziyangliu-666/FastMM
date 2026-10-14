@@ -609,6 +609,16 @@ if(Python3_Interpreter_FOUND AND TARGET fastmm-live)
   set_tests_properties(apps.fastmm-live.exit_codes_documented PROPERTIES LABELS "unit;cli")
 endif()
 
+# The backtest outputs the docs quote (<!-- output: ... --> blocks) are what the programs print, and
+# the versions in docs/reference/compatibility.md are the code's.
+if(Python3_Interpreter_FOUND AND TARGET fastmm-backtest AND TARGET first_mm_backtest
+   AND TARGET tutorial-backtest AND TARGET tutorial-replay AND TARGET my_mm_backtest)
+  add_test(NAME docs.reference_output
+    COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/support/docs_reference_output.py
+            $<TARGET_FILE_DIR:fastmm-backtest> $<TARGET_FILE_DIR:my_mm_backtest>)
+  set_tests_properties(docs.reference_output PROPERTIES LABELS "unit;docs" TIMEOUT 600)
+endif()
+
 # fastmm-top --once messages: missing file, unpublished segment, segment of another version.
 if(Python3_Interpreter_FOUND AND TARGET fastmm-top)
   add_test(NAME apps.fastmm-top.messages

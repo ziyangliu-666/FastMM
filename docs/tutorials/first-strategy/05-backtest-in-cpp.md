@@ -45,6 +45,7 @@ return failures == 0 ? 0 : 1;
 "$BIN"/first_mm_backtest
 ```
 
+<!-- output: first_mm_backtest -->
 ```text
 backtest first_mm  seed=7  md_events=18478  steps=20023  wall=0.01s
   net pnl                        -27.0083
