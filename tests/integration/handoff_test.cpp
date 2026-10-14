@@ -316,8 +316,12 @@ TEST_CASE("handoff: a warm standby reads market data before the handoff and quot
   watch.finish();
   const std::string c_log = fastmm::test::read_file(f.config + ".c.log");
   CHECK(c_log.find("private=deferred") != std::string::npos);
-  // Until it took over, the standby read nothing of the account and opened none of it.
-  const std::size_t took_over = c_log.find("took over after");
+  // Until it took over, the standby read nothing of the account and opened none of it. Up to the
+  // lock taken over: the private channels are opened (Venue::enable_private, posted to the network
+  // thread) before "took over after" is logged, and on the simulator a start-up reconciliation can
+  // be logged first.
+  REQUIRE(c_log.find("took over after") != std::string::npos);
+  const std::size_t took_over = c_log.find("standby: instance lock ");
   REQUIRE(took_over != std::string::npos);
   const std::string_view warming = std::string_view(c_log).substr(0, took_over);
   CHECK(warming.find("reconciled") == std::string_view::npos);
