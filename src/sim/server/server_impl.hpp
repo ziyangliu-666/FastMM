@@ -168,6 +168,7 @@ struct FaultState {
   std::uint32_t reject_next = 0;
   std::uint32_t rate_limit_next = 0;
   std::uint32_t swallow_ws_api_next = 0;
+  std::string swallow_ws_api_method;          // empty: any request's reply
   std::uint32_t delay_open_orders_ms = 0;     // openOrders.status replies
   std::uint32_t fail_order_queries_next = 0;  // GET /api/v3/order answers 503
   std::uint32_t duplicate_user_events_next = 0;

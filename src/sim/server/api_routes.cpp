@@ -311,7 +311,8 @@ void Impl::handle_ws_api(net::WsSession& s, std::string_view text) {
   // The reply is dropped after the request has been carried out: the venue acted and the client
   // never hears the outcome.
   bool swallow = false;
-  if (faults_.swallow_ws_api_next > 0) {
+  if (faults_.swallow_ws_api_next > 0 &&
+      (faults_.swallow_ws_api_method.empty() || faults_.swallow_ws_api_method == req.method)) {
     --faults_.swallow_ws_api_next;
     ++stats_.responses_swallowed;
     swallow = true;

@@ -143,7 +143,7 @@ The timed `[sim.faults]` settings (`*_after_s`) are one-shot, in seconds after t
 | `rate_limit_next` | `rate_limit_next_requests(k)` | 429 / `-1003` / `Retry-After` cooldown |
 | — | `set_clock_offset_ms(ms)` | clock skew between client and venue |
 | — | `expire_listen_keys()` | legacy listenKey expiry |
-| — | `swallow_next_ws_api_responses(k)` | the request is carried out and the reply never sent: an outcome the client cannot know |
+| — | `swallow_next_ws_api_responses(k, method)` | the request is carried out and the reply never sent: an outcome the client cannot know; with `method` (`"order.cancel"`), only requests of that method count |
 | — | `duplicate_next_user_events(k)` | a repeated `executionReport`: duplicate acks, duplicate fills |
 | — | `set_user_stream_muted(bool)` | the private stream is out without the connection closing; nothing replays what was missed |
 | — | `fill_open_order(id, qty)` | crosses one named resting order (everything ahead of it in price-time is swept first), returns what it filled |

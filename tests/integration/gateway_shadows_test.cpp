@@ -147,14 +147,19 @@ TEST_CASE(
                         20000),
                     fastmm::test::read_file(g.log));
 
-    // Every cancel is carried out and its answer lost: no reply, no execution report.
+    // Every cancel is carried out and its answer lost: no reply, no execution report. Only the
+    // cancels' replies: a balance query the connector sends meanwhile (the balance leg of a
+    // reconciliation, asked again a second after the last) is answered, and does not leave a
+    // cancel's reply to arrive and end its shadow.
+    const std::uint64_t swallowed = fx.server.stats().responses_swallowed;
     fx.server.set_user_stream_muted(true);
-    fx.server.swallow_next_ws_api_responses(2 * kPerRound);
+    fx.server.swallow_next_ws_api_responses(2 * kPerRound, "order.cancel");
     for (std::size_t k = 0; k < kPerRound; ++k) {
       a.cancel(ids_a[k]);
       b.cancel(ids_b[k]);
     }
     REQUIRE(wait_until([&] { return fx.server.open_client_order_ids().empty(); }, 20000));
+    CHECK(fx.server.stats().responses_swallowed == swallowed + 2 * kPerRound);
     fx.server.set_user_stream_muted(false);
     // The connector still holds a shadow for each of them.
     REQUIRE_MESSAGE(wait_shadows(g, 2 * kPerRound, &mark), fastmm::test::read_file(g.log));

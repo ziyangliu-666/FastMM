@@ -151,8 +151,10 @@ class SimExchangeServer {
   void expire_listen_keys();
 
   // Uncertain outcomes. The next `count` WebSocket API requests are carried out in full and their
-  // reply is never sent: the venue acted, the client never learns whether it did.
-  void swallow_next_ws_api_responses(std::uint32_t count);
+  // reply is never sent: the venue acted, the client never learns whether it did. With `method`
+  // ("order.cancel"), only requests of that method count and lose their reply; the others (a
+  // balance query the client sends meanwhile) are answered.
+  void swallow_next_ws_api_responses(std::uint32_t count, std::string_view method = {});
   // The next `count` user-data events are delivered twice (a repeated executionReport).
   void duplicate_next_user_events(std::uint32_t count);
   // Drops every user-data event while set, without closing the connection: the private stream is

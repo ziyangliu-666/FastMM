@@ -812,8 +812,12 @@ void SimExchangeServer::set_clock_offset_ms(std::int64_t offset_ms) {
 void SimExchangeServer::expire_listen_keys() {
   impl_->call([this] { impl_->expire_all_listen_keys(); });
 }
-void SimExchangeServer::swallow_next_ws_api_responses(std::uint32_t count) {
-  impl_->call([this, count] { impl_->faults_.swallow_ws_api_next = count; });
+void SimExchangeServer::swallow_next_ws_api_responses(std::uint32_t count,
+                                                      std::string_view method) {
+  impl_->call([this, count, m = std::string(method)] {
+    impl_->faults_.swallow_ws_api_next = count;
+    impl_->faults_.swallow_ws_api_method = m;
+  });
 }
 void SimExchangeServer::duplicate_next_user_events(std::uint32_t count) {
   impl_->call([this, count] { impl_->faults_.duplicate_user_events_next = count; });

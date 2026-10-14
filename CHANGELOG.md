@@ -18,6 +18,7 @@ All notable changes are recorded here (Keep a Changelog format).
   matches the page. `compatibility.md`, `storage.md` and `status-file.md` give the current status
   file (21), store schema (9) and gateway protocol (7) versions.
 - venues: Binance orders early in a minute no longer hold the depth snapshots and reconciliations.
+- tests: the shadow sweep test drops only the cancels' replies, not a balance query's.
 
 ## [0.6.0] - 2026-10-13
 
