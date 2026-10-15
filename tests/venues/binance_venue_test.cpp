@@ -1619,8 +1619,14 @@ TEST_CASE("binance.venue: a fill audit reads the symbols with executions in its 
       oc.take(orders);
       return oc.count(EventType::Reconcile) >= 2;  // the start-up sweep
     }));
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    const long long from = wall_now().ns / 1'000'000;
+    // The audit's window starts 1.5 s before the orders, as FillAuditor's starts kMarginMs before
+    // its own: a fill is noted at its receive time in the connector's venue time, and the clock
+    // offset it took from the fake's GET /api/v3/time is behind by however late that reply was
+    // read (tens of ms with the machine loaded), which put a fill a few ms after a window start
+    // taken on the wall clock before it. 3 s after the start: the window starts after the
+    // connector began counting, so the symbols without a fill in it are quiet.
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+    const long long from = wall_now().ns / 1'000'000 - 1'500;
 
     // An order on every symbol; the venue fills the one on BTCUSDT (the fake's TRADE report).
     for (std::size_t i = 0; i < names.size(); ++i) {
@@ -1640,7 +1646,6 @@ TEST_CASE("binance.venue: a fill audit reads the symbols with executions in its 
       return oc.count(EventType::OrderFill) >= names.size();
     }));
 
-    const std::size_t before = h.srv.frames("myTrades").size();
     bool done = false;
     bool complete = false;
     REQUIRE(venue.audit_executions(
@@ -1650,9 +1655,13 @@ TEST_CASE("binance.venue: a fill audit reads the symbols with executions in its 
         }));
     REQUIRE(pump_until(reactor, [&] { return done; }));
     CHECK(complete);
-    const auto q = h.srv.frames("myTrades");
-    REQUIRE(q.size() == before + 1);
-    CHECK(query_param(q.back(), "symbol") == "BTCUSDT");
+    // The audit's queries, by their window's start (the replay's sweep asks from its watermarks).
+    std::vector<std::string> audited;
+    for (const std::string& f : h.srv.frames("myTrades")) {
+      if (query_param(f, "startTime") == std::to_string(from))
+        audited.push_back(query_param(f, "symbol"));
+    }
+    CHECK(audited == std::vector<std::string>{"BTCUSDT"});
     venue.disconnect();
     reactor.run_once(0);
   }
