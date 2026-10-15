@@ -21,6 +21,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - venues: Binance spot replays and fill audits read myTrades of the symbols with executions only.
 - venues: a Binance spot cancel refused for an order already over no longer reads every symbol.
 - tests: the shadow sweep test drops only the cancels' replies, not a balance query's.
+- core: an execution a replay re-sends thousands of executions later is no longer booked twice.
 
 ## [0.6.0] - 2026-10-13
 

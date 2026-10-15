@@ -443,10 +443,10 @@ TEST_CASE("core.oms: recently-terminal ring evicts oldest") {
   CHECK(oms.classify(make_cl_ord_id(1, kRecentlyTerminal + 10)) == OrderClass::RecentlyTerminal);
   // exec dedupe ring evicts too: the first exec id becomes acceptable again
   const ClientOrderId id = oms.next_cl_ord_id();
-  static_cast<void>(oms.submit(req(Side::Buy, 1, 100000), id, {}));
+  static_cast<void>(oms.submit(req(Side::Buy, 1, 1000000), id, {}));
   oms.on_ack(ack(id));
   CHECK(oms.on_fill(fill(id, 1, 1, 0, "first")).action == OmsAction::None);
-  for (std::size_t i = 0; i < kRecentlyTerminal; ++i) {
+  for (std::size_t i = 0; i < kExecMemory; ++i) {
     oms.on_fill(fill(id, 1, 1, 0, ("e" + std::to_string(i)).c_str()));
   }
   CHECK(oms.on_fill(fill(id, 1, 1, 0, "first")).action == OmsAction::None);
@@ -734,6 +734,27 @@ TEST_CASE("core.oms: an execution is deduplicated whether or not it names the or
   OrderFillMsg other = fill(ClientOrderId{}, 100, 1, 0, "t1");
   other.hdr.instrument = InstrumentId{1};
   CHECK(oms.on_fill(other).action == OmsAction::UnknownFill);
+}
+
+// A replay of the venue's trade history can read back further than a few thousand executions: live,
+// Binance spot rows came again thousands of executions after the private stream had reported them,
+// naming no order. The OMS must still know them, or the position takes them twice.
+TEST_CASE("core.oms: an execution replayed after thousands of others is still a duplicate") {
+  Oms oms;
+  const ClientOrderId id = oms.next_cl_ord_id();
+  REQUIRE(oms.submit(req(Side::Buy, 100, 10), id, Timestamp{1}));
+  static_cast<void>(oms.on_ack(ack(id)));
+  REQUIRE(oms.on_fill(fill(id, 100, 1, 1, "first")).action != OmsAction::Duplicate);
+  // 30,000 other executions (foreign ones: they name no order of this OMS).
+  for (int k = 0; k < 30'000; ++k) {
+    OrderFillMsg other = fill(ClientOrderId{}, 100, 1, 0, std::to_string(k).c_str());
+    other.flags = OrderFillMsg::kReplayed;
+    REQUIRE(oms.on_fill(other).action == OmsAction::UnknownFill);
+  }
+  OrderFillMsg again = fill(ClientOrderId{}, 100, 1, 0, "first");
+  again.flags = OrderFillMsg::kReplayed;
+  CHECK(oms.on_fill(again).action == OmsAction::Duplicate);
+  CHECK(oms.stats().duplicates == 1);
 }
 
 // Bybit publishes order states and executions on separate topics: an IOC can arrive as ended, its

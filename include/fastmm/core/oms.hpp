@@ -56,6 +56,13 @@ namespace fastmm {
 
 inline constexpr std::size_t kMaxOpenOrders = 4096;
 inline constexpr std::size_t kRecentlyTerminal = 4096;
+// Executions the OMS remembers by the venue's id, so that one it is given again (a replay of the
+// venue's trade history reading back past rows it already had) is dropped as a duplicate. 4096 was
+// not enough: live, Binance spot replays re-sent executions 4,000 and more executions after the
+// private stream had reported them, naming no order, and each was booked a second time into the
+// position and the PnL. 64Ki executions is days of a busy market maker's fills and costs 2.5 MiB,
+// allocated with the OMS.
+inline constexpr std::size_t kExecMemory = std::size_t{1} << 16;
 // Client order ids per session: the wire form is 48 bits, epoch(16) << 32 | seq(32).
 inline constexpr std::uint64_t kMaxSeq = 0xFFFF'FFFFULL;
 
@@ -896,7 +903,7 @@ class Oms {
     const std::uint64_t key = m.exec_id.hash() ^
                               (static_cast<std::uint64_t>(m.hdr.instrument.value) << 1U) ^
                               (static_cast<std::uint64_t>(m.side) * 0x9E3779B97F4A7C15ULL);
-    return exec_seen_.assign(key, 1);
+    return exec_seen_->assign(key, 1);
   }
 
   std::uint16_t epoch_;
@@ -911,7 +918,9 @@ class Oms {
   std::uint32_t live_pos_[kMaxOpenOrders] = {};
   OpenHashMap<ClientOrderId, Handle<Order>, kMaxOpenOrders * 4> by_id_;  // ids + pending ids
   RingBuffer<TerminalRecord, kRecentlyTerminal> recently_terminal_;
-  RecentMap<std::uint64_t, std::uint8_t, kRecentlyTerminal> exec_seen_;
+  // On the heap: its ring of ids alone is 512 KiB.
+  std::unique_ptr<RecentMap<std::uint64_t, std::uint8_t, kExecMemory>> exec_seen_ =
+      std::make_unique<RecentMap<std::uint64_t, std::uint8_t, kExecMemory>>();
   Price best_own_[kMaxInstruments][2];
   Qty open_qty_[kMaxInstruments][2];
   std::uint32_t open_per_inst_[kMaxInstruments] = {};
