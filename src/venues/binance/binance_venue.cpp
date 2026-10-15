@@ -35,6 +35,9 @@ constexpr int kMyTradesLimit = 1000;
 constexpr std::int64_t kMyTradesWindowMs = 24LL * 3600 * 1000;
 constexpr std::size_t kMyTradesMaxPages = 10;  // per symbol and replay (weight 20 each)
 constexpr std::uint32_t kMyTradesWeight = 20;
+// Every symbol's myTrades at least this often (ReplayLimits::full_ns), whatever its executions:
+// 85 symbols on 5 accounts of one IP cost 280 of its 6000 weight a minute.
+constexpr std::int64_t kMyTradesFullReadNs = 30LL * 60 * 1'000'000'000;
 // How long a blocking start-up request waits for its weight (wait_for_weight): a window and some.
 constexpr std::int64_t kStartupWaitNs = 65'000'000'000;
 // rest-api.md "Order book" weight by limit: 1-100:5, 101-500:25, 501-1000:50, 1001-5000:250.
@@ -69,6 +72,7 @@ BinanceVenue::BinanceVenue(VenueId id, BinanceVenueConfig cfg)
   limits.window_ms = kMyTradesWindowMs;
   limits.page_rows = kMyTradesLimit;
   limits.max_pages = kMyTradesMaxPages;
+  limits.full_ns = kMyTradesFullReadNs;
   exec_replay_.setup(
       cfg_.name,
       "execution(s)",
@@ -82,10 +86,10 @@ BinanceVenue::BinanceVenue(VenueId id, BinanceVenueConfig cfg)
          return replay_room() &&
                 rate_.can_send(kMyTradesWeight, now_ns(), false, RateLimiter::kBulkShare);
        },
-       // A sweep reads the instruments with order activity since their watermark.
+       // A replay reads the instruments with signs of an execution since their watermark, and
+       // the others once in kMyTradesFullReadNs.
        [this](std::size_t stream, std::int64_t since_ms) {
-         return stream >= subscribed_.size() ||
-                activity_.since(subscribed_[stream], since_ms, venue_time_ms(), now_ns());
+         return executed_since(stream, since_ms);
        }},
       [this](std::size_t stream, const MyTradeRow& t) { return emit_execution(stream, t); },
       [this](std::size_t, const MyTradeRow& t) {
@@ -103,6 +107,10 @@ BinanceVenue::BinanceVenue(VenueId id, BinanceVenueConfig cfg)
                 [this] {
                   return replay_room() &&
                          rate_.can_send(kMyTradesWeight, now_ns(), false, RateLimiter::kBulkShare);
+                },
+                // The instruments with executions in the audit's window.
+                [this](std::size_t stream, std::int64_t since_ms) {
+                  return executed_since(stream, since_ms);
                 }},
                [this](std::size_t stream, const MyTradeRow& t, AuditFill& out) {
                  return audit_row(stream, t, out);
@@ -369,7 +377,7 @@ void BinanceVenue::subscribe(std::span<const InstrumentId> instruments) {
   audit_.set_streams(subscribed_.size());
   std::size_t tracked = 0;
   for (InstrumentId id : subscribed_) tracked = std::max<std::size_t>(tracked, id.value + 1U);
-  activity_.track(tracked, now_ns());
+  executions_.track(tracked, now_ns());
   stats_.books_total = pool_member() ? 0 : static_cast<std::uint32_t>(subscribed_.size());
   depth_limit_ = cfg_.depth_limit > 0 ? cfg_.depth_limit : auto_depth_limit(subscribed_.size());
   if (rest_ != nullptr) rest_->set_max_queue(rest_queue_for(subscribed_.size()));
@@ -683,7 +691,11 @@ void BinanceVenue::on_user_state(net::ConnState s) {
     // 6.7: after a user-stream reconnect the OMS view may be stale. The old condition relied on
     // stats_.reconnects, which only market-data backoffs increment, and fired on every
     // Stale -> Live flip of a quiet stream.
-    if (user_was_live_ && prev != ConnState::Stale) request_open_orders();
+    // What the stream missed meanwhile names no instrument: the replay reads them all.
+    if (user_was_live_ && prev != ConnState::Stale) {
+      exec_replay_.read_all();
+      request_open_orders();
+    }
     user_was_live_ = true;
   } else if (mapped == ConnState::Disconnected && prev != ConnState::Connecting) {
     user_subscribed_ = false;
@@ -715,11 +727,11 @@ void BinanceVenue::on_user_text(std::string_view t, std::int64_t ts) {
       auto* h = reinterpret_cast<EventHeader*>(scratch_ + off);
       h->t1_delta = static_cast<std::uint32_t>(rdtscp() - t0);
       off += h->len;
-      if (h->type == EventType::PositionUpdate) {
-        if (!cfg_.position_from_balance) continue;
-      } else {
-        activity_.note(h->instrument, now);
-      }
+      if (h->type == EventType::PositionUpdate && !cfg_.position_from_balance) continue;
+      if (h->type == EventType::OrderFill || h->type == EventType::OrderExpired ||
+          (h->type == EventType::OrderCancelAck &&
+           reinterpret_cast<const OrderCancelAckMsg*>(h)->cum_qty.raw > 0))
+        executions_.note(h->instrument, now);
       switch (h->type) {
         case EventType::OrderReject:
         case EventType::OrderCancelAck:
@@ -775,6 +787,7 @@ void BinanceVenue::on_order_state(net::ConnState s) {
     if (prev != ConnState::Stale) emit_connection_state(Channel::Order, ConnState::Live);
     drain_outbound();  // anything queued while the channel was down
     if (reconnected) {
+      exec_replay_.read_all();  // the replies lost with the connection name no instrument
       reconcile_.request();
     } else if (first_connect) {
       reconcile_.sweep();
@@ -945,6 +958,8 @@ void BinanceVenue::handle_order_response(RequestKind kind,
         const ErrorMapping m = map_error(r.code, r.msg);
         emit_reject(inst, id, m.reason, r.code, r.msg);
         shadows_.erase(id);
+        // Before the reconciliation it asks for: its replay reads this symbol.
+        if (m.action == VenueAction::Reconcile) note_execution(inst);
         apply_action(m.action, r.code, r.msg, r.retry_after_ms);
       }
       return;
@@ -959,6 +974,8 @@ void BinanceVenue::handle_order_response(RequestKind kind,
       {
         const ErrorMapping m = map_error(r.code, r.msg);
         emit_cancel_reject(inst, id, m.reason, r.code, r.msg);
+        // Before the reconciliation it asks for: its replay reads this symbol.
+        if (m.action == VenueAction::Reconcile) note_execution(inst);
         apply_action(m.action, r.code, r.msg, r.retry_after_ms);
       }
       return;
@@ -981,6 +998,8 @@ void BinanceVenue::handle_order_response(RequestKind kind,
       const ErrorMapping m = map_error(r.code, r.msg);
       emit_reject(inst, id, m.reason, r.code, r.msg);
       shadows_.erase(id);
+      // Before the reconciliation it asks for: its replay reads this symbol.
+      if (m.action == VenueAction::Reconcile) note_execution(inst);
       apply_action(m.action, r.code, r.msg, r.retry_after_ms);
       return;
     }
@@ -1008,6 +1027,8 @@ void BinanceVenue::handle_order_response(RequestKind kind,
       const ErrorMapping m = map_error(code, msg);
       emit_reject(inst, id, m.reason, code, msg);
       shadows_.erase(id);
+      // Before the reconciliation it asks for: its replay reads this symbol.
+      if (m.action == VenueAction::Reconcile) note_execution(inst);
       apply_action(m.action, code, msg, r.retry_after_ms);
       return;
     }
@@ -1075,7 +1096,6 @@ void BinanceVenue::send_now(std::span<const EventHeader* const> batch) {
 void BinanceVenue::send_command(const OrderCommand& cmd) {
   note_taken(cmd);
   const std::int64_t now = now_ns();
-  activity_.note(cmd.instrument, now);
   if (cfg_.dry_run) {
     emit_reject(
         cmd.instrument, cmd.cl_ord_id, RejectReason::VenueKilled, 0, "dry-run: orders disabled");
@@ -1247,6 +1267,7 @@ void BinanceVenue::handle_rest_order_response(const OrderCommand& cmd,
   if (r.error != net::NetError::None) {
     ++stats_.rest_errors;
     // Send status unknown (timeout / closed): reconcile rather than guess.
+    note_execution(cmd.instrument);
     if (kind == RequestKind::Cancel) {
       emit_cancel_reject(
           cmd.instrument, cmd.cl_ord_id, RejectReason::VenueReject, 0, net::to_string(r.error));
@@ -1396,6 +1417,7 @@ void BinanceVenue::emit_cancel_ack(InstrumentId inst,
                                    std::string_view executed_qty,
                                    std::int64_t venue_ms) {
   const auto q = parse_qty(executed_qty);
+  if (q && q->raw > 0) note_execution(inst);  // it traded before the cancel
   venues::emit_cancel_ack(
       *order_sink_, id_, inst, id, IdText(order_id).view(), q ? *q : Qty{}, ts_from_ms(venue_ms));
   ++stats_.order_events;
@@ -1670,9 +1692,23 @@ bool BinanceVenue::emit_execution(std::size_t stream, const MyTradeRow& t) {
                                t.view(),
                                exec_replay_.emitting_unresolved() ? OrderFillMsg::kUnresolved : 0))
     return false;
+  note_execution(id);  // for the fill audit's window
   ++stats_.order_events;
   ++stats_.executions_fetched;
   return true;
+}
+
+void BinanceVenue::note_execution(InstrumentId id) noexcept {
+  if (!id.valid()) {
+    exec_replay_.read_all();  // an order of no instrument this connector can name
+    return;
+  }
+  executions_.note(id, now_ns());
+}
+
+bool BinanceVenue::executed_since(std::size_t stream, std::int64_t since_ms) const noexcept {
+  return stream >= subscribed_.size() ||
+         executions_.since(subscribed_[stream], since_ms, venue_time_ms(), now_ns());
 }
 
 bool BinanceVenue::audit_executions(std::int64_t start_ms,

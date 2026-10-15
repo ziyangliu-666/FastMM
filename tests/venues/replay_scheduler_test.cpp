@@ -1,15 +1,21 @@
 // ReplayScheduler against a fake venue: paging with rows an earlier session booked, window
 // narrowing, the watermark after an empty window and near "now", retry timing, the generation
 // after a disconnect, id cursors, windows and the history floor, the due trigger, order lookups,
-// sweeps that skip the streams without order activity.
+// sweeps that skip the streams without order activity, replays that read only the streams with
+// signs of an execution (full_ns), and five accounts of one IP replaying and auditing 85 symbols.
 #include "fastmm/venues/replay_scheduler.hpp"
 
 #include "test_support.hpp"
 
 #include "fastmm/net/reactor.hpp"
+#include "fastmm/venues/execution_audit.hpp"
+#include "fastmm/venues/rate_limiter.hpp"
 
 #include <algorithm>
+#include <deque>
 #include <functional>
+#include <memory>
+#include <random>
 #include <string>
 #include <utility>
 #include <vector>
@@ -34,6 +40,7 @@ struct Rig {
   // Hooks::active: absent, every stream; `asked` has what it was asked (stream, since_ms).
   std::function<bool(std::size_t, std::int64_t)> active;
   std::vector<std::pair<std::size_t, std::int64_t>> asked;
+  std::int64_t clock_ns = 0;  // Hooks::clock_ns; 0: Reactor::now_ns()
 
   explicit Rig(ReplayLimits limits = {}, std::size_t streams = 1) {
     ReplaySchedulerBase::Hooks h;
@@ -54,6 +61,7 @@ struct Rig {
       --budget;
       return true;
     };
+    h.clock_ns = [this] { return clock_ns != 0 ? clock_ns : net::Reactor::now_ns(); };
     sched.setup("fake", "row(s)", limits, h, [this](std::size_t, const std::string& r) {
       if (r.rfind("other:", 0) == 0) return false;  // not traded here
       emitted.push_back(r);
@@ -878,4 +886,322 @@ TEST_CASE("replay_scheduler: OrderActivity in venue time") {
   CHECK(a.since(InstrumentId{7}, kNow - 50'000, kNow, at));  // not counted: active
   a.track(8, at);                                            // counted from t0 still
   CHECK_FALSE(a.since(InstrumentId{7}, kNow - 50'000, kNow, at));
+}
+
+TEST_CASE("replay_scheduler: with full_ns every replay reads the active streams alone") {
+  // A reconciliation's replay read every symbol: 85 myTrades (1700 weight) at each cancel that
+  // found its order filled, on each of five accounts of one IP. Now a reconciliation, a retry and
+  // a sweep alike read the streams the hook names, and the others keep their watermarks.
+  ReplayLimits l;
+  l.full_ns = 3'600'000'000'000;
+  Rig r(l, 3);
+  std::vector<bool> on{false, true, false};
+  r.active = [&on](std::size_t stream, std::int64_t) { return on[stream]; };
+  REQUIRE(r.sched.run());  // the first replay of the connection reads every stream
+  REQUIRE(r.queries.size() == 3);
+  for (std::size_t i = 0; i < 3; ++i) r.answer({}, false, {}, &r.queries[i]);
+  CHECK(r.sched.since_ms(0) == kNow - kMin);
+
+  r.now_ms = kNow + 5 * kMin;
+  REQUIRE(r.sched.run());  // a reconciliation's
+  REQUIRE(r.queries.size() == 4);
+  CHECK(r.queries[3].stream == 1);
+  CHECK(r.sched.skipped() == 2);
+  r.answer({{kNow + 4 * kMin, "a"}});
+  REQUIRE(r.finished.size() == 2);
+  CHECK(r.finished[1]);
+  // The quiet streams' watermarks stay where their last read left them.
+  CHECK(r.sched.since_ms(0) == kNow - kMin);
+  CHECK(r.sched.since_ms(1) == kNow + 4 * kMin);
+
+  // Stream 0 active later: read from its own watermark, so nothing since its last read is lost.
+  on = {true, false, false};
+  r.now_ms = kNow + 10 * kMin;
+  sweep(r);
+  REQUIRE(r.queries.size() == 5);
+  CHECK(r.queries[4].stream == 0);
+  CHECK(r.queries[4].start_ms == kNow - kMin);
+  r.answer({{kNow + 2 * kMin, "b"}});
+  CHECK(r.emitted == std::vector<std::string>{"a", "b"});
+  CHECK(r.finished.back());
+}
+
+TEST_CASE("replay_scheduler: full_ns reads every stream that often, the deadlines spread") {
+  constexpr std::int64_t kSec = 1'000'000'000;
+  ReplayLimits l;
+  l.full_ns = 400 * kSec;
+  l.sweep_ns = 0;
+  Rig r(l, 4);
+  r.active = [](std::size_t, std::int64_t) { return false; };
+  const std::int64_t t0 = net::Reactor::now_ns() + 1000 * kSec;
+  r.clock_ns = t0;
+  REQUIRE(r.sched.run());
+  REQUIRE(r.queries.size() == 4);
+  for (std::size_t i = 0; i < 4; ++i) r.answer({}, false, {}, &r.queries[i]);
+  // Stream i is due (i + 1) * 100 s after the first read, then every 400 s after its last.
+  const auto read_at = [&](std::int64_t t) {
+    r.clock_ns = t;
+    const std::size_t before = r.queries.size();
+    REQUIRE(r.sched.run());
+    std::vector<std::size_t> got;
+    for (std::size_t i = before; i < r.queries.size(); ++i) got.push_back(r.queries[i].stream);
+    for (std::size_t i = before; i < r.queries.size(); ++i) r.answer({}, false, {}, &r.queries[i]);
+    return got;
+  };
+  CHECK(read_at(t0 + 50 * kSec).empty());
+  CHECK(read_at(t0 + 101 * kSec) == std::vector<std::size_t>{0});
+  CHECK(read_at(t0 + 201 * kSec) == std::vector<std::size_t>{1});
+  CHECK(read_at(t0 + 401 * kSec) == std::vector<std::size_t>{2, 3});
+  CHECK(read_at(t0 + 450 * kSec).empty());
+  CHECK(read_at(t0 + 502 * kSec) == std::vector<std::size_t>{0});
+}
+
+TEST_CASE("replay_scheduler: read_all reads every stream next, or goes on after the one running") {
+  // The private stream reconnected: what it missed names no stream.
+  ReplayLimits l;
+  l.full_ns = 3'600'000'000'000;
+  Rig r(l, 3);
+  r.active = [](std::size_t stream, std::int64_t) { return stream == 1; };
+  REQUIRE(r.sched.run());
+  for (std::size_t i = 0; i < 3; ++i) r.answer({}, false, {}, &r.queries[i]);
+  r.sched.read_all();
+  REQUIRE(r.sched.run());
+  REQUIRE(r.queries.size() == 6);
+  for (std::size_t i = 3; i < 6; ++i) r.answer({}, false, {}, &r.queries[i]);
+  REQUIRE(r.finished.size() == 2);
+
+  // While a replay runs: the one after it reads every stream.
+  REQUIRE(r.sched.run());
+  REQUIRE(r.queries.size() == 7);
+  r.sched.read_all();
+  r.answer({});
+  REQUIRE(r.finished.size() == 3);
+  CHECK(r.finished.back());
+  REQUIRE(r.sched.run());
+  REQUIRE(r.queries.size() == 10);
+  for (std::size_t i = 7; i < 10; ++i) r.answer({}, false, {}, &r.queries[i]);
+  REQUIRE(r.finished.size() == 4);
+  CHECK(r.finished.back());
+}
+
+TEST_CASE("replay_scheduler: only_active reads the active streams, also after a restart") {
+  // A fill audit: the instruments with executions in its window, from its start.
+  ReplayLimits l;
+  l.only_active = true;
+  Rig r(l, 3);
+  r.active = [](std::size_t stream, std::int64_t) { return stream == 2; };
+  r.sched.restart_from(kNow - 5 * kMin);
+  REQUIRE(r.sched.run());
+  REQUIRE(r.queries.size() == 1);
+  CHECK(r.queries[0].stream == 2);
+  CHECK(r.queries[0].start_ms == kNow - 5 * kMin);
+  REQUIRE(r.asked.size() == 3);
+  CHECK(r.asked[0].second == kNow - 5 * kMin);  // the window's start: no settle margin
+  r.answer({});
+  REQUIRE(r.finished.size() == 1);
+  CHECK(r.finished[0]);
+  // None active: nothing asked, and complete.
+  r.active = [](std::size_t, std::int64_t) { return false; };
+  r.sched.restart_from(kNow - 5 * kMin);
+  REQUIRE(r.sched.run());
+  CHECK(r.queries.size() == 1);
+  REQUIRE(r.finished.size() == 2);
+  CHECK(r.finished[1]);
+}
+
+namespace {
+
+// Five accounts of one IP (an account pool), each quoting 85 symbols: Binance spot's weight
+// (6000 a minute, the limiter at 0.9 of it, half of that for bulk requests), myTrades at 20, the
+// orders' own weight, a reconciliation every three minutes per account (a cancel that found its
+// order filled), the sweep every five, a fill audit every ten. Replies come 100 ms after the
+// query. `signs`: the replay reads the symbols with signs of an execution (and each symbol once
+// in 30 minutes) and the audit those with executions in its window; otherwise every symbol counts
+// as active, as order activity made them all for a market maker.
+struct PoolSim {
+  static constexpr std::size_t kSlots = 5;
+  static constexpr std::size_t kSymbols = 85;
+  static constexpr std::int64_t kSec = 1'000'000'000;
+  static constexpr std::int64_t kTick = kSec / 5;
+  static constexpr std::uint32_t kWeight = 20;
+
+  struct Out {
+    ReplayQuery q;
+    bool audit = false;
+    std::int64_t at = 0;
+  };
+  struct Slot {
+    ReplayScheduler<int> exec;
+    ExecutionAudit<int> audit;
+    RateLimiter rate{0.9};
+    std::deque<Out> out;
+    std::vector<std::int64_t> executed_ms;  // per symbol: venue time of the last sign; 0: none
+    std::int64_t audit_from_ms = 0;
+    std::int64_t next_reconcile = 0;
+    std::int64_t next_audit = 0;
+    std::int64_t next_fill = 0;
+    double order_weight = 0;
+    std::size_t replays_incomplete = 0;
+  };
+
+  std::int64_t t = 0;  // the simulated Reactor clock
+  std::size_t audits_done = 0;
+  std::size_t audits_incomplete = 0;
+  std::uint64_t bulk_weight = 0;
+  std::vector<std::unique_ptr<Slot>> slots;
+  std::mt19937 rng{7};
+
+  [[nodiscard]] std::int64_t venue_ms() const { return t / 1'000'000; }
+
+  explicit PoolSim(bool signs) {
+    const std::int64_t t0 = 1'789'000'020LL * kSec;  // 20 s into a minute
+    t = t0;
+    const auto ip = std::make_shared<SharedRate>();
+    for (std::size_t k = 0; k < kSlots; ++k) {
+      auto s = std::make_unique<Slot>();
+      Slot& sl = *s;
+      sl.rate.add_weight_bucket(6000, 60 * kSec);
+      sl.rate.share_ip(ip);
+      sl.executed_ms.assign(kSymbols, 0);
+      ReplayLimits l;
+      l.window_ms = 24LL * 3600 * 1000;
+      l.page_rows = 1000;
+      l.max_pages = 10;
+      l.sweep_ns = 300 * kSec;
+      if (signs) l.full_ns = 1800 * kSec;
+      const auto query = [this, &sl](bool audit) {
+        return [this, &sl, audit](const ReplayQuery& q) {
+          sl.out.push_back(Out{q, audit, t + kSec / 10});
+          sl.rate.on_bulk_sent(kWeight, t);
+          bulk_weight += kWeight;
+          return true;
+        };
+      };
+      std::function<bool(std::size_t, std::int64_t)> active = [&sl](std::size_t stream,
+                                                                    std::int64_t since_ms) {
+        return sl.executed_ms[stream] != 0 && sl.executed_ms[stream] >= since_ms;
+      };
+      ReplaySchedulerBase::Hooks h;
+      h.ready = [] { return true; };
+      h.now_ms = [this] { return venue_ms(); };
+      h.query = query(false);
+      h.finished = [&sl](bool complete) { sl.replays_incomplete += complete ? 0 : 1; };
+      h.can_query = [this, &sl] {
+        return sl.out.size() < 4 && sl.rate.can_send(kWeight, t, false, RateLimiter::kBulkShare);
+      };
+      h.active = signs ? active : [](std::size_t, std::int64_t) { return true; };
+      h.clock_ns = [this] { return t; };
+      sl.exec.setup("sim", "execution(s)", l, h, [](std::size_t, const int&) { return true; });
+      sl.exec.set_streams(kSymbols);
+      sl.exec.start_at(venue_ms());
+      sl.exec.open(true);
+      ReplaySchedulerBase::Hooks a = h;
+      a.query = query(true);
+      a.active = signs ? active : nullptr;
+      sl.audit.setup("sim", l, a, [](std::size_t, const int&, AuditFill&) { return false; });
+      sl.audit.set_streams(kSymbols);
+      const auto off = static_cast<std::int64_t>(k);
+      sl.next_reconcile = t0 + (180 + 36 * off) * kSec;
+      sl.next_audit = t0 + (600 + 120 * off) * kSec;
+      sl.next_fill = t0 + (60 + 11 * off) * kSec;
+      sl.audit_from_ms = venue_ms();
+      static_cast<void>(sl.exec.run());  // the connection's first replay
+      slots.push_back(std::move(s));
+    }
+  }
+
+  void sign(Slot& sl) {
+    sl.executed_ms[std::uniform_int_distribution<std::size_t>(0, kSymbols - 1)(rng)] = venue_ms();
+  }
+
+  void audit(Slot& sl) {
+    const std::int64_t to = venue_ms() - 180'000;
+    const bool started = sl.audit.start(
+        sl.audit_from_ms, to, [this, &sl, to](bool complete, std::vector<AuditFill>) {
+          if (complete) {
+            ++audits_done;
+            sl.audit_from_ms = to + 1;
+          } else {
+            ++audits_incomplete;
+          }
+        });
+    if (!started) ++audits_incomplete;
+  }
+
+  void step() {
+    t += kTick;
+    for (auto& s : slots) {
+      Slot& sl = *s;
+      // 6.5 orders and cancels a second, weight 1 each.
+      sl.order_weight += 6.5 * static_cast<double>(kTick) / static_cast<double>(kSec);
+      while (sl.order_weight >= 1.0) {
+        sl.order_weight -= 1.0;
+        if (sl.rate.can_send(1, t, true)) sl.rate.on_sent(1, t, true);
+      }
+      while (!sl.out.empty() && sl.out.front().at <= t) {
+        const Out o = sl.out.front();
+        sl.out.pop_front();
+        ReplayScheduler<int>& sched = o.audit ? sl.audit.scheduler() : sl.exec;
+        sched.answer(o.q, ReplayPage<int>{});
+        sched.send_waiting();
+      }
+      if (t >= sl.next_fill) {  // a fill a minute
+        sl.next_fill += 60 * kSec;
+        sign(sl);
+      }
+      if (t >= sl.next_reconcile) {
+        sl.next_reconcile += 180 * kSec;
+        sign(sl);  // the cancel that found its order filled
+        static_cast<void>(sl.exec.run());
+      }
+      if (t >= sl.next_audit) {
+        sl.next_audit += 600 * kSec;
+        audit(sl);
+      }
+      sl.exec.on_timer(t);
+      sl.audit.on_timer(t);
+    }
+  }
+  void run_for(std::int64_t ns) {
+    const std::int64_t until = t + ns;
+    while (t < until) step();
+  }
+  [[nodiscard]] std::uint64_t timeouts() const {
+    std::uint64_t n = 0;
+    for (const auto& s : slots) n += s->exec.timeouts() + s->audit.scheduler().timeouts();
+    return n;
+  }
+  [[nodiscard]] std::size_t replays_incomplete() const {
+    std::size_t n = 0;
+    for (const auto& s : slots) n += s->replays_incomplete;
+    return n;
+  }
+};
+
+}  // namespace
+
+TEST_CASE("replay_scheduler: five accounts of one IP replay and audit 85 symbols in its weight") {
+  constexpr std::int64_t kSec = PoolSim::kSec;
+  // Every symbol read at every replay: the IP's bulk weight (2700 a minute) is spent all the
+  // time, queries wait past kDeferTimeoutNs, the replays end incomplete (the retry 5 s later reads
+  // every symbol again) and the audits are not done. Live, 2026-10-15: 9 of the first 10 audits.
+  PoolSim every(false);
+  every.run_for(3600 * kSec);
+  CHECK(every.timeouts() > 100);
+  CHECK(every.audits_incomplete > every.audits_done);
+
+  // The symbols with signs of an execution: the first replay of each account (85 symbols, 425 on
+  // the IP) is the only one that may wait; after it nothing does, and every audit is done.
+  PoolSim signs(true);
+  signs.run_for(600 * kSec);
+  const std::uint64_t timeouts = signs.timeouts();
+  const std::size_t incomplete = signs.replays_incomplete();
+  const std::uint64_t weight = signs.bulk_weight;
+  signs.run_for(2 * 3600 * kSec);
+  CHECK(signs.timeouts() == timeouts);
+  CHECK(signs.replays_incomplete() == incomplete);
+  CHECK(signs.audits_incomplete == 0);
+  CHECK(signs.audits_done >= 5 * 11);
+  // Well inside the bulk share: under 600 of the IP's 6000 a minute.
+  CHECK((signs.bulk_weight - weight) / 120 < 600);
 }

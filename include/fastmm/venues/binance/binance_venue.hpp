@@ -323,6 +323,9 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   // rest wait for a reply or a housekeeping tick, not in the connection's queue, where an order
   // or a snapshot sent meanwhile would wait behind them all.
   static constexpr std::size_t kReplayQueueDepth = 4;
+  void note_execution(InstrumentId id) noexcept;
+  // executions_ on stream `stream` at or after venue time `since_ms` (Hooks::active).
+  [[nodiscard]] bool executed_since(std::size_t stream, std::int64_t since_ms) const noexcept;
   [[nodiscard]] bool replay_room() const noexcept {
     return rest_ == nullptr || rest_->queued() < kReplayQueueDepth;
   }
@@ -375,8 +378,13 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   ReplayScheduler<MyTradeRow> exec_replay_;
   // The fill audit's read of myTrades (audit_executions), apart from the replay.
   ExecutionAudit<MyTradeRow> audit_;
-  // Orders sent and order events heard per instrument: a sweep skips the quiet ones.
-  OrderActivity activity_;
+  // Signs of an execution per instrument (note_execution): a fill reported or replayed, a cancel
+  // that found the order traded or gone, an order whose fate the venue did not say. The replay
+  // reads these instruments' myTrades and the others once in kMyTradesFullReadNs; the fill audit
+  // reads these alone. Orders sent are no sign: a market maker sends them on every symbol, and the
+  // replays of five accounts on one IP, each reading 85 symbols at every reconciliation, spent
+  // the IP's bulk weight and held the rest for minutes.
+  OrderActivity executions_;
   // The first trade id per instrument an earlier session left off at (resume_trade_ids): handed
   // to exec_replay_ at connect(), once subscribed_ gives the instruments their streams.
   std::vector<std::pair<InstrumentId, std::int64_t>> resume_from_ids_;

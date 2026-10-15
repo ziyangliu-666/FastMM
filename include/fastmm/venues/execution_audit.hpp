@@ -6,7 +6,8 @@
 // connector sends its queries through the same REST channel and rate limiter (Hooks::can_query: the
 // bulk share), so an audit takes the weight a replay would, and none an order needs.
 //
-// start() reads every stream from `start_ms` to now, once; the rows go through `convert` into
+// start() reads every stream from `start_ms` to now, once (with Hooks::active, the streams it names
+// from `start_ms`: those with executions in the window); the rows go through `convert` into
 // AuditFill and those inside [start_ms, end_ms] reach `done` when every stream has answered, with
 // complete = false when one could not (a failed or unanswered query, close()). Nothing is retried:
 // the caller asks again. Reactor thread only; control path.
@@ -32,12 +33,14 @@ class ExecutionAudit {
   using Convert = std::function<bool(std::size_t stream, const Row& row, AuditFill& out)>;
 
   // `limits` as the connector's execution replay has them; the audit drops the sweep and the
-  // order lookups. `hooks.finished` and `hooks.lookup` are the audit's own.
+  // order lookups. `hooks.finished` and `hooks.lookup` are the audit's own; `hooks.active`, when
+  // given, names the streams an audit reads (ReplayLimits::only_active).
   void setup(std::string name, ReplayLimits limits, ReplaySchedulerBase::Hooks hooks, Convert c) {
     limits.sweep_ns = 0;
     limits.max_lookups = 0;
+    limits.full_ns = 0;
+    limits.only_active = static_cast<bool>(hooks.active);
     hooks.lookup = {};
-    hooks.active = {};
     hooks.finished = [this](bool complete) { finished(complete); };
     convert_ = std::move(c);
     sched_.setup(std::move(name),

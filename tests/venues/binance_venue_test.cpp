@@ -1556,3 +1556,89 @@ TEST_CASE("binance.venue: a disconnect ends a fill audit incomplete") {
   }
   h.srv.stop();
 }
+
+TEST_CASE("binance.venue: a fill audit reads the symbols with executions in its window") {
+  // Five accounts of one IP quoted 85 symbols each, and every fill audit read myTrades of all 85
+  // (weight 20 each) behind the replays doing the same: the IP's bulk weight was spent, and live
+  // nine audits in ten were not done. Orders on a symbol are no sign of an execution; a fill is.
+  Harness h;
+  const std::vector<std::string> names{"BTC", "ETH", "SOL", "XRP", "BNB", "ADA"};
+  {
+    const std::size_t at = h.exchange_info.find(R"({"symbol":"BTCUSDT")");
+    const std::size_t end = h.exchange_info.rfind("]}");
+    REQUIRE(at != std::string::npos);
+    const std::string btc = h.exchange_info.substr(at, end - at);
+    std::string more;
+    for (std::size_t i = 1; i < names.size(); ++i) {
+      std::string s = btc;
+      s.replace(s.find("BTCUSDT"), 7, names[i] + "USDT");
+      s.replace(s.find(R"("baseAsset":"BTC")"), 17, R"("baseAsset":")" + names[i] + "\"");
+      more += "," + s;
+    }
+    h.exchange_info.insert(end, more);
+  }
+  InstrumentTable instruments;
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    const std::string symbol = names[i] + "USDT";
+    REQUIRE(instruments.add(make_instrument(symbol.c_str(), 0, names[i].c_str(), "USDT")));
+  }
+  RecordingSink md(8U << 20);
+  RecordingSink orders(4U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  Collected oc;
+  {
+    BinanceVenue venue(VenueId{0}, h.config(false));
+    REQUIRE(venue.load_reference_data(instruments));
+    REQUIRE(symbols.build(instruments));
+    venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    std::vector<InstrumentId> ids;
+    for (std::size_t i = 0; i < names.size(); ++i)
+      ids.push_back(InstrumentId{static_cast<std::uint32_t>(i)});
+    venue.subscribe(ids);
+    venue.resume_executions(wall_now().ns / 1'000'000 - 60'000, {});
+    venue.connect(reactor);
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return oc.count(EventType::Reconcile) >= 2;  // the start-up sweep
+    }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const long long from = wall_now().ns / 1'000'000;
+
+    // An order on every symbol; the venue fills the one on BTCUSDT (the fake's TRADE report).
+    for (std::size_t i = 0; i < names.size(); ++i) {
+      OutNewOrderMsg n{};
+      init_header(
+          n, EventType::OutNewOrder, InstrumentId{static_cast<std::uint32_t>(i)}, VenueId{0});
+      n.cl_ord_id = decode_cl_ord_id("fm00010000000" + std::to_string(i + 1)).value();
+      n.side = Side::Buy;
+      n.type = OrderType::PostOnly;
+      n.price = Price::from_decimal("70000").value();
+      n.qty = Qty::from_decimal("0.001").value();
+      REQUIRE(outbound.try_push(&n, n.hdr.len));
+    }
+    venue.on_wake();
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return oc.count(EventType::OrderFill) >= names.size();
+    }));
+
+    const std::size_t before = h.srv.frames("myTrades").size();
+    bool done = false;
+    bool complete = false;
+    REQUIRE(venue.audit_executions(
+        from, wall_now().ns / 1'000'000, [&](bool c, std::vector<AuditFill>) {
+          done = true;
+          complete = c;
+        }));
+    REQUIRE(pump_until(reactor, [&] { return done; }));
+    CHECK(complete);
+    const auto q = h.srv.frames("myTrades");
+    REQUIRE(q.size() == before + 1);
+    CHECK(query_param(q.back(), "symbol") == "BTCUSDT");
+    venue.disconnect();
+    reactor.run_once(0);
+  }
+  h.srv.stop();
+}

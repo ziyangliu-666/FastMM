@@ -34,6 +34,17 @@
 //     every row since the activity. A fill the private stream dropped on an order with no other
 //     activity is not looked for then: an id cursor (from_id) still reaches it at the stream's
 //     next read, a time watermark does not.
+//   * with ReplayLimits::full_ns, every replay (a reconciliation's, a retry, not only the sweep)
+//     skips the streams Hooks::active calls quiet, and reads each of them at least once in full_ns
+//     (the first deadlines spread over the streams, so they do not come due together). A skipped
+//     stream keeps its watermark and its cursor: the read that comes next, for activity or for
+//     full_ns, covers every row since the last one. For a market maker whose orders touch every
+//     symbol, order activity names them all; full_ns with a hook that names the streams with
+//     signs of an execution (a fill reported, an order the venue no longer knows) reads a few.
+//     ReplayLimits::only_active: the streams Hooks::active names and no other, also on the first
+//     replay and after a restart (a fill audit: the instruments with executions in its window).
+//   * read_all(): the next replay reads every stream (the private stream reconnected: what it
+//     missed meanwhile names no stream), also when one runs now: the one after it.
 //   * a restart (resume(), restart_from()) while one runs: that replay goes on from the restart's
 //     start at the first timer tick after it has ended, and ends (Hooks::finished) after that.
 //   * a query not answered within kQueryTimeoutNs has failed (the housekeeping timer checks):
@@ -86,6 +97,10 @@ struct ReplayLimits {
   std::int64_t settle_ms = 60'000;    // how late the venue may index a row
   std::int64_t sweep_ns = 60'000'000'000;  // a replay while all is well; 0: none
   std::size_t max_lookups = 16;            // order lookups per replay (Hooks::lookup)
+  // > 0: every replay skips the streams Hooks::active calls quiet, keeping their watermarks, and
+  // reads each at least this often; 0: the sweep alone skips them, moving their watermarks.
+  std::int64_t full_ns = 0;
+  bool only_active = false;  // the streams Hooks::active names, whether read before or not
 };
 
 // An order a replayed row names by the venue's id only. The connector asks the venue for it and
@@ -164,6 +179,8 @@ class ReplaySchedulerBase {
     // connector that cannot tell (since_ms before it started counting) says true. Absent: every
     // stream, every sweep.
     std::function<bool(std::size_t stream, std::int64_t since_ms)> active = {};
+    // Optional: the clock of on_timer() and of every time kept here; absent, Reactor::now_ns().
+    std::function<std::int64_t()> clock_ns = {};
   };
 
   ReplaySchedulerBase(const ReplaySchedulerBase&) = delete;
@@ -208,6 +225,9 @@ class ReplaySchedulerBase {
   // full), as part of the same replay: Hooks::finished comes after that. fastmm-gateway attaches
   // strategies whose stores end at different times, one while another's replay runs.
   void restart_from(std::int64_t since_ms);
+  // Every stream is read by the next replay, from its watermark and cursor; while one runs, by the
+  // one after it.
+  void read_all() noexcept;
   // A stream's next id (Binance fromId), from a restart's store.
   void set_cursor(std::size_t stream, std::int64_t from_id);
   // Ids of `stream` (Entry::seq) that are booked already, ascending: rows carrying one are not
@@ -264,6 +284,7 @@ class ReplaySchedulerBase {
     std::int64_t from_id = 0;                            // > 0: the next id to ask from
     std::vector<std::int64_t> known_ids;                 // set_known_ids(), ascending
     bool read_once = false;  // read in full since open() or the last restart: a sweep may skip it
+    std::int64_t full_at_ns = 0;  // ReplayLimits::full_ns: read by then, active or not
     // The replay in progress.
     bool running = false;
     bool awaiting = false;         // a query is out
@@ -300,6 +321,10 @@ class ReplaySchedulerBase {
 
   // `sweep`: the periodic replay alone, which skips the quiet streams (Hooks::active).
   void start(bool sweep = false);
+  // Stream i is not read by this replay (Hooks::active, ReplayLimits::full_ns / only_active).
+  [[nodiscard]] bool quiet(std::size_t i, bool sweep, std::int64_t now_ns) const;
+  // Hooks::clock_ns, else Reactor::now_ns().
+  [[nodiscard]] std::int64_t clock_ns() const;
   void begin_window(std::size_t i);
   void send(std::size_t i);
   void send_deferred(std::int64_t now_ns);
@@ -331,6 +356,7 @@ class ReplaySchedulerBase {
   std::unordered_set<std::string> known_;
   std::int64_t default_since_ms_ = 0;
   std::int64_t again_from_ms_ = 0;  // a restart_from() while a replay ran; 0: none
+  bool again_all_ = false;          // a read_all() while a replay ran
   bool open_ = false;
   bool active_ = false;
   bool ok_ = true;

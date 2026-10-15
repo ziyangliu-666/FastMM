@@ -17,6 +17,10 @@ void ReplaySchedulerBase::setup(std::string name,
   hooks_ = std::move(hooks);
 }
 
+std::int64_t ReplaySchedulerBase::clock_ns() const {
+  return hooks_.clock_ns ? hooks_.clock_ns() : net::Reactor::now_ns();
+}
+
 void ReplaySchedulerBase::reset_streams() noexcept {
   for (std::size_t i = 0; i < streams_.size(); ++i) {
     Stream& s = streams_[i];
@@ -61,7 +65,7 @@ void ReplaySchedulerBase::abort() noexcept {
   reset_streams();
   drop_lookups();
   take_again();
-  retry_at_ns_ = net::Reactor::now_ns() + kRetryNs;
+  retry_at_ns_ = clock_ns() + kRetryNs;
 }
 
 void ReplaySchedulerBase::set_streams(std::size_t n) {
@@ -109,9 +113,22 @@ void ReplaySchedulerBase::resume(std::int64_t since_ms, const std::vector<std::s
   restart_from(since_ms);
 }
 
+void ReplaySchedulerBase::read_all() noexcept {
+  if (active_) {
+    again_all_ = true;
+    return;
+  }
+  for (Stream& s : streams_) s.read_once = false;
+}
+
 // A restart asked for while a replay ran: every stream starts from there, or from where that replay
-// left it if that is earlier (a window it did not read in full).
+// left it if that is earlier (a window it did not read in full). A read_all(): the next replay
+// reads every stream from where it is.
 void ReplaySchedulerBase::take_again() noexcept {
+  if (again_all_) {
+    again_all_ = false;
+    for (Stream& s : streams_) s.read_once = false;
+  }
   if (again_from_ms_ <= 0) return;
   const std::int64_t from = again_from_ms_;
   again_from_ms_ = 0;
@@ -151,7 +168,7 @@ bool ReplaySchedulerBase::run() {
 }
 
 void ReplaySchedulerBase::due_in(std::int64_t delay_ns) {
-  const std::int64_t at = net::Reactor::now_ns() + delay_ns;
+  const std::int64_t at = clock_ns() + delay_ns;
   if (due_at_ns_ == 0 || at < due_at_ns_) due_at_ns_ = at;
 }
 
@@ -181,7 +198,8 @@ void ReplaySchedulerBase::start(bool sweep) {
   emitted_ = 0;
   not_held_ = 0;
   retry_at_ns_ = 0;  // this attempt replaces the retry; its own failure schedules the next
-  last_start_ns_ = net::Reactor::now_ns();
+  const std::int64_t now_ns = clock_ns();
+  last_start_ns_ = now_ns;
   now_ms_ = hooks_.now_ms();
   lookups_sent_ = 0;
   drop_lookups();
@@ -191,11 +209,11 @@ void ReplaySchedulerBase::start(bool sweep) {
   for (std::size_t i = 0; i < streams_.size(); ++i) {
     Stream& s = streams_[i];
     if (s.since_ms <= 0) s.since_ms = default_since_ms_ > 0 ? default_since_ms_ : now_ms_;
-    if (sweep && s.read_once && hooks_.active &&
-        !hooks_.active(i, s.since_ms - limits_.settle_ms)) {
-      // Quiet: nothing to read, as if it had been answered empty.
+    if (quiet(i, sweep, now_ns)) {
       ++skipped_;
-      commit(s, now_ms_);
+      // A sweep's: nothing to read, as if it had been answered empty. With full_ns or
+      // only_active the watermark stays, so the next read covers what this one would have.
+      if (limits_.full_ns <= 0 && !limits_.only_active) commit(s, now_ms_);
       continue;
     }
     s.running = true;
@@ -206,6 +224,17 @@ void ReplaySchedulerBase::start(bool sweep) {
     begin_window(i);
   }
   stream_done(streams_.size(), true);
+}
+
+bool ReplaySchedulerBase::quiet(std::size_t i, bool sweep, std::int64_t now_ns) const {
+  if (!hooks_.active) return false;
+  const Stream& s = streams_[i];
+  // A read of a window (a fill audit's) asks for executions inside it, which no sign before it
+  // can name: an execution is noted when it is heard of, at or after its own time.
+  if (limits_.only_active) return !hooks_.active(i, s.since_ms);
+  if (!s.read_once) return false;
+  if (limits_.full_ns > 0 ? now_ns >= s.full_at_ns : !sweep) return false;
+  return !hooks_.active(i, s.since_ms - limits_.settle_ms);
 }
 
 void ReplaySchedulerBase::begin_window(std::size_t i) {
@@ -259,7 +288,7 @@ void ReplaySchedulerBase::send(std::size_t i) {
   if (hooks_.can_query && !hooks_.can_query()) {
     if (!s.deferred) {
       s.deferred = true;
-      s.deferred_ns = net::Reactor::now_ns();
+      s.deferred_ns = clock_ns();
       ++deferrals_;
     }
     return;
@@ -267,7 +296,7 @@ void ReplaySchedulerBase::send(std::size_t i) {
   s.deferred = false;
   ++s.pages;
   s.awaiting = true;
-  s.sent_ns = net::Reactor::now_ns();
+  s.sent_ns = clock_ns();
   if (hooks_.query(s.q)) return;
   if (!expects(s.q)) return;  // the hook moved the generation on
   s.awaiting = false;
@@ -275,7 +304,7 @@ void ReplaySchedulerBase::send(std::size_t i) {
 }
 
 void ReplaySchedulerBase::send_waiting() {
-  if (open_ && active_) send_deferred(net::Reactor::now_ns());
+  if (open_ && active_) send_deferred(clock_ns());
 }
 
 // The housekeeping tick: the queries that waited for Hooks::can_query, in stream order, as far
@@ -390,7 +419,7 @@ bool ReplaySchedulerBase::want_lookup(std::size_t stream,
   if (lookups_sent_ >= limits_.max_lookups) return false;
   ++lookups_sent_;
   ++lookups_total_;
-  lookups_.emplace(key, Lookup{stream, order_id, net::Reactor::now_ns(), {waiter}});
+  lookups_.emplace(key, Lookup{stream, order_id, clock_ns(), {waiter}});
   return true;
 }
 
@@ -613,7 +642,17 @@ void ReplaySchedulerBase::commit(Stream& s, std::int64_t read_to) const {
 void ReplaySchedulerBase::stream_done(std::size_t i, bool ok) {
   if (i < streams_.size()) {
     Stream& s = streams_[i];
-    if (ok && s.running) s.read_once = true;
+    if (ok && s.running) {
+      // The first read of each stream spreads the next deadlines over full_ns.
+      if (limits_.full_ns > 0) {
+        const auto n = static_cast<std::int64_t>(streams_.size());
+        const std::int64_t wait = s.read_once
+                                      ? limits_.full_ns
+                                      : limits_.full_ns / n * (static_cast<std::int64_t>(i) + 1);
+        s.full_at_ns = clock_ns() + wait;
+      }
+      s.read_once = true;
+    }
     s.running = false;
     s.awaiting = false;
     s.deferred = false;
@@ -666,6 +705,12 @@ void ReplaySchedulerBase::finish() {
                     not_held_,
                     what_,
                     kMaxHeld);
+  // A read_all() meanwhile: the next replay (the reconciliation the reconnect asked for) reads
+  // every stream.
+  if (again_all_) {
+    again_all_ = false;
+    for (Stream& s : streams_) s.read_once = false;
+  }
   // A restart asked for meanwhile: the replay goes on from there at the next timer tick, and
   // whoever waits for it (a reconciliation) waits for that too, so it learns about the rows the
   // restart was for. That one alone says complete or not: it starts no later than where this one
@@ -673,13 +718,13 @@ void ReplaySchedulerBase::finish() {
   if (again_from_ms_ > 0) {
     take_again();
     if (open_) {
-      due_at_ns_ = net::Reactor::now_ns();
+      due_at_ns_ = clock_ns();
       return;
     }
     ok_ = false;
   }
   // Rows sent naming no order: the next replay asks for their orders again, soon.
-  if (!ok_ || (hooks_.lookup && !held_.empty())) retry_at_ns_ = net::Reactor::now_ns() + kRetryNs;
+  if (!ok_ || (hooks_.lookup && !held_.empty())) retry_at_ns_ = clock_ns() + kRetryNs;
   if (hooks_.finished) hooks_.finished(ok_);
 }
 
