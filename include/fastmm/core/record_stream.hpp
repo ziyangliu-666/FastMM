@@ -103,28 +103,33 @@ static_assert(offsetof(RecordHeader, len) == 0 && offsetof(RecordHeader, type) =
 // is reported but not booked, so `fee` is then zero).
 struct FillRecord {
   RecordHeader hdr;
-  ClientOrderId cl_ord_id;      // 64
-  Price price;                  // 72
-  Qty qty;                      // 80  this execution, as the venue reported it
-  Qty booked_qty;               // 88  what the position moved by (base-asset fees deducted)
-  Qty cum_qty;                  // 96
-  Qty leaves_qty;               // 104
-  Notional fee;                 // 112 settlement currency, booked
-  Notional fee_amount;          // 120 as reported, in fee_asset units
-  Qty position_qty;             // 128 the instrument's position after this fill
-  Price position_avg_px;        // 136
-  Notional position_realized;   // 144
-  Notional position_fees;       // 152
-  Side side;                    // 160
-  Liquidity liquidity;          // 161
-  FeeAsset fee_asset;           // 162
-  std::uint8_t pad0_[5];        // 163 -> 168
+  ClientOrderId cl_ord_id;     // 64
+  Price price;                 // 72
+  Qty qty;                     // 80  this execution, as the venue reported it
+  Qty booked_qty;              // 88  what the position moved by (base-asset fees deducted)
+  Qty cum_qty;                 // 96
+  Qty leaves_qty;              // 104
+  Notional fee;                // 112 settlement currency, booked
+  Notional fee_amount;         // 120 as reported, in fee_asset units
+  Qty position_qty;            // 128 the instrument's position after this fill
+  Price position_avg_px;       // 136
+  Notional position_realized;  // 144
+  Notional position_fees;      // 152
+  // The part of this execution that named an estimate (a synthetic fill of the same order booked
+  // before it, Engine::book_missed_fill): the position already held it and only took the rest,
+  // booked_qty, while the estimate's price and missing fee were corrected to this execution's.
+  // Zero on a synthetic fill and on an ordinary execution.
+  Qty named_qty;                // 160
   VenueOrderId venue_order_id;  // 168 -> 209
   ExecId exec_id;               // 209 -> 250
-  std::uint8_t pad_[6];         // -> 256
+  Side side;                    // 250
+  Liquidity liquidity;          // 251
+  FeeAsset fee_asset;           // 252
+  std::uint8_t pad_[3];         // -> 256
 };
 static_assert(sizeof(FillRecord) == 256 && std::is_trivially_copyable_v<FillRecord>);
-static_assert(offsetof(FillRecord, venue_order_id) == 168 && offsetof(FillRecord, exec_id) == 209);
+static_assert(offsetof(FillRecord, named_qty) == 160 &&
+              offsetof(FillRecord, venue_order_id) == 168 && offsetof(FillRecord, exec_id) == 209);
 
 // The OMS record after a transition. hdr.aux[0] is the previous OrderState, hdr.aux[1] the
 // OmsAction as an integer, and hdr.aux[2] is 1 when this closes the client order id a

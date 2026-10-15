@@ -139,10 +139,15 @@ TEST_CASE("store.migration: a version 1 store gains the PnL roll-up and is backf
 TEST_CASE("store.migration: a version 4 store gains the execution key by instrument and side") {
   const std::string path = fresh("migrate_v4.db");
   const auto fill_sql = [](int seq, int instrument, int venue, const char* side) {
-    return "INSERT OR IGNORE INTO fills VALUES (7," + std::to_string(seq) + "," +
-           std::to_string(kDay1Ns + seq) + ",'2024-03-04'," + std::to_string(instrument) + "," +
-           std::to_string(venue) + ",'BTCUSDT','c','v','4711','" + side +
-           "','Maker',1,1,1,1,0,0,0,'quote',1,1,0,0,0,0," + std::to_string(kDay1Ns + seq) + ")";
+    return "INSERT OR IGNORE INTO fills (session_id, seq, ts_ns, day, instrument_id, venue_id,"
+           " symbol, cl_ord_id, venue_order_id, exec_id, side, liquidity, price_raw, qty_raw,"
+           " booked_qty_raw, cum_qty_raw, leaves_qty_raw, fee_raw, fee_amount_raw, fee_asset,"
+           " position_qty_raw, position_avg_px_raw, position_realized_raw, position_fees_raw,"
+           " synthetic, late, exch_ns) VALUES (7," +
+           std::to_string(seq) + "," + std::to_string(kDay1Ns + seq) + ",'2024-03-04'," +
+           std::to_string(instrument) + "," + std::to_string(venue) +
+           ",'BTCUSDT','c','v','4711','" + side + "','Maker',1,1,1,1,0,0,0,'quote',1,1,0,0,0,0," +
+           std::to_string(kDay1Ns + seq) + ")";
   };
   {
     Db d(path);

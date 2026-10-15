@@ -17,13 +17,15 @@ build/release/bin/fastmm-pnl pnl --engine mm1 --day yesterday
 ```
 
 ```text
-day         symbol   settlement_ccy  realized  funding  fees      net       gross_traded  fills
-2024-03-04  BTCUSDT  USDT            12.4      -0.6     0.31      12.09     4.2           186
-2024-03-04  ETHUSDT  USDT            -3.1      0        0.09      -3.19     11.5          204
+day         account  symbol   settlement_ccy  realized  funding  fees  net    gross_traded  fills  estimates  books_net
+2024-03-04  binance  BTCUSDT  USDT            12.4      -0.6     0.31  12.09  4.2           186    0          12.09
+2024-03-04  binance  ETHUSDT  USDT            -3.1      0        0.09  -3.19  11.5          204    1          -3.19
 2 row(s)
 ```
 
 `--day`, `--since` and `--until` take a UTC day (`2024-03-04`) or `today` / `yesterday`. `realized` and `fees` are the change within that day; `net` is `realized - fees`. `funding` is the part of `realized` that perpetual funding paid or received. Unrealised PnL is a mark, not a flow, so it is not summed across days: read it from `fastmm-pnl positions`.
+
+The numbers are recomputed from the stored executions at average cost, by the account that holds the position (`account`, the `[venues.<name>]` of the instrument; a pool's members trade into its primary's) and symbol, carried from one session to the next: an execution counts once however many records hold it. `estimates` counts fills the engine booked at the order's price because the venue reported the quantity before the execution (a cancel ack ahead of the fill) and no execution has named yet. `books_net` is what the engine booked for the day from its own positions; it differs from `net` when the engine booked an execution twice (`fill_repeats` in the store, [Storage](../../reference/storage.md#fill_repeats)). `--books` prints the engine's books alone.
 
 `--engine mm1` reads `runs/mm1.db` (`--store <path>` another file), `--instrument BTCUSDT` selects one symbol, `--csv` prints comma-separated values.
 
@@ -120,9 +122,11 @@ build/release/bin/fastmm-pnl fills --engine mm1 --session 1709510400123456789
 ```
 
 ```text
-ts                   symbol   side  liquidity  price      qty    fee      fee_asset  cl_ord_id         exec_id   position_qty  session_id
-2024-03-04 09:14:02  BTCUSDT  Buy   Maker      61250.10   0.002  0.00061  quote      fm000300000a1b    88213401  0.002         1709510400123456789
+ts                   account  symbol   side  liquidity  price      qty    named_qty  fee      fee_asset  cl_ord_id         exec_id   synthetic  position_qty  session_id
+2024-03-04 09:14:02  binance  BTCUSDT  Buy   Maker      61250.10   0.002  0          0.00061  quote      fm000300000a1b    88213401  0          0.002         1709510400123456789
 ```
+
+A `synthetic` row is an estimate the engine booked from a venue's filled quantity before the execution arrived; `named_qty` on it is how much of it executions named since, and on an execution how much of it named an estimate. Count an execution whole and a synthetic row for `qty - named_qty`.
 
 `fastmm-pnl orders --session <id>` lists each order in its last state; `fastmm-pnl positions --session <id>` the last position per instrument.
 

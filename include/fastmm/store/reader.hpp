@@ -212,8 +212,19 @@ class Reader {
   [[nodiscard]] virtual Result<Rows, std::string> fills(const QueryFilter& f) = 0;
   // One row per order, in its last known state.
   [[nodiscard]] virtual Result<Rows, std::string> orders(const QueryFilter& f) = 0;
-  // One row per UTC day and instrument: realised, fees, unrealised, position, settlement currency.
+  // One row per UTC day, account and symbol: realised (funding included, `funding` says how much),
+  // fees, net, the quantity traded, the executions and the estimates it counts, in the settlement
+  // currency. Recomputed from the stored fills at average cost, so that an execution counts once
+  // however many records hold it (a copy another session stored, a repeat the engine booked again,
+  // fill_repeats), an estimate (a synthetic fill) counts only for what no execution named since,
+  // and a position carries from one session to the next by the name of the account holding it.
+  // `estimates`: the synthetic fills no execution has named, still counted at the order's price
+  // and no fee. `books_net`: the engine's own net for the day (books_pnl), for comparison. A
+  // backend or a store that cannot recompute it answers with books_pnl.
   [[nodiscard]] virtual Result<Rows, std::string> pnl(const QueryFilter& f) = 0;
+  // The engine's day roll-up of its own position records, as it booked them: one row per UTC day,
+  // account and symbol. The default is pnl().
+  [[nodiscard]] virtual Result<Rows, std::string> books_pnl(const QueryFilter& f) { return pnl(f); }
   // One row per funding payment. The default has none (a backend without the table).
   [[nodiscard]] virtual Result<Rows, std::string> funding(const QueryFilter& /*f*/) {
     return Rows{};

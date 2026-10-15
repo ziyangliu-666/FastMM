@@ -7,11 +7,14 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <iterator>
 #include <map>
 #include <set>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 namespace fastmm::store {
@@ -224,9 +227,13 @@ class SqliteReader final : public Reader {
   }
 
   [[nodiscard]] Result<Rows, std::string> fills(const QueryFilter& f) override {
-    std::string sql =
-        "SELECT ts_ns, symbol, side, liquidity, price_raw, qty_raw, fee_raw, fee_asset,"
-        " cl_ord_id, exec_id, position_qty_raw, session_id FROM fills";
+    // Schema 10: the account it executed on, and how much of it is not an execution of its own
+    // (an estimate executions named since, or the part of an execution that named one).
+    std::string sql = std::string("SELECT ts_ns, ") + (version_ >= 10 ? "account, " : "") +
+                      "symbol, side, liquidity, price_raw, qty_raw, " +
+                      (version_ >= 10 ? "named_qty_raw, " : "") +
+                      "fee_raw, fee_asset, cl_ord_id, exec_id, synthetic, position_qty_raw,"
+                      " session_id FROM fills";
     Where w;
     w.session(f);
     w.symbol(f);
@@ -404,21 +411,279 @@ class SqliteReader final : public Reader {
     return query(sql + w.text() + " ORDER BY updated_ns" + limit(f), w);
   }
 
-  // Realized includes funding: `funding` says how much of it.
-  [[nodiscard]] Result<Rows, std::string> pnl(const QueryFilter& f) override {
-    std::string sql =
-        "SELECT day, symbol, settlement_ccy, SUM(realized_raw) AS realized_raw, " +
-        v4("SUM(funding_raw)", "funding_raw") +
-        ", SUM(fees_raw) AS fees_raw, SUM(realized_raw) - SUM(fees_raw) AS net_raw,"
-        " SUM(gross_traded_raw) AS gross_traded_raw, SUM(fills) AS fills FROM pnl_daily";
+  // The engine's own day roll-up (pnl_daily), from its position records. Realized includes
+  // funding: `funding` says how much of it.
+  [[nodiscard]] Result<Rows, std::string> books_pnl(const QueryFilter& f) override {
+    const bool named = version_ >= 10;
+    std::string sql = std::string("SELECT day, ") + (named ? "account, " : "") +
+                      "symbol, settlement_ccy, SUM(realized_raw) AS realized_raw, " +
+                      v4("SUM(funding_raw)", "funding_raw") +
+                      ", SUM(fees_raw) AS fees_raw, SUM(realized_raw) - SUM(fees_raw) AS net_raw,"
+                      " SUM(gross_traded_raw) AS gross_traded_raw, SUM(fills) AS fills"
+                      " FROM pnl_daily";
     Where w;
     w.session(f);
     w.symbol(f);
     w.day_text(f);
     w.engine_join(f, "pnl_daily");
-    return query(
-        sql + w.text() + " GROUP BY day, symbol, settlement_ccy ORDER BY day, symbol" + limit(f),
-        w);
+    const std::string by = named ? "day, account, symbol" : "day, symbol";
+    return query(sql + w.text() + " GROUP BY " + by + ", settlement_ccy ORDER BY " + by + limit(f),
+                 w);
+  }
+
+  // The PnL of the executions the store holds (Reader::pnl), average cost, by the account that
+  // holds the position (the instrument's venue) and symbol, carried across sessions.
+  [[nodiscard]] Result<Rows, std::string> pnl(const QueryFilter& f) override {
+    if (version_ < 10) return books_pnl(f);
+    struct Bucket {
+      long double realized = 0;  // raw, funding included
+      std::int64_t funding = 0;
+      std::int64_t fees = 0;
+      std::int64_t gross = 0;
+      std::int64_t fills = 0;
+      std::int64_t estimates = 0;
+      std::int64_t books = 0;  // the engine's net, pnl_daily
+      bool books_known = false;
+      std::string ccy;
+    };
+    struct Book {
+      std::int64_t qty = 0;
+      long double avg = 0;  // raw price
+      bool seeded = false;
+    };
+    // (day, account, symbol)
+    std::map<std::tuple<std::string, std::string, std::string>, Bucket> days;
+    // (engine, account, symbol)
+    std::map<std::tuple<std::string, std::string, std::string>, Book> books;
+    std::set<std::string> seen;  // executions booked, by engine, account, symbol, side and id
+    // The engine's realized and fees of the previous fill of a session and instrument.
+    std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t> last_net;
+    const auto wanted = [&](const std::string& day, std::int64_t session) {
+      return (f.from.empty() || day >= f.from) && (f.to.empty() || day <= f.to) &&
+             (f.session_id == 0 || static_cast<std::uint64_t>(session) == f.session_id);
+    };
+
+    std::string sql =
+        "SELECT f.session_id, f.day, s.engine, COALESCE(NULLIF(i.account, ''), f.account),"
+        " f.account, f.symbol, f.side, f.price_raw, f.qty_raw, f.booked_qty_raw,"
+        " f.named_qty_raw, f.fee_raw, f.synthetic, f.exec_id, f.position_qty_raw,"
+        " f.position_avg_px_raw, f.position_realized_raw - f.position_fees_raw,"
+        " COALESCE(i.settlement_ccy, ''), COALESCE(i.inverse, 0),"
+        " COALESCE(NULLIF(i.multiplier_raw, 0), 100000000), f.instrument_id"
+        " FROM fills f JOIN sessions s ON s.session_id = f.session_id"
+        " LEFT JOIN instruments i ON i.session_id = f.session_id"
+        " AND i.instrument_id = f.instrument_id";
+    Where w;
+    w.engine(f);
+    w.symbol(f, "f.symbol");
+    sql += w.text() + " ORDER BY f.ts_ns, f.session_id, f.seq";
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr) != SQLITE_OK)
+      return fail(error_of(db_, "pnl"));
+    w.bind(st);
+    const auto text = [&st](int i) {
+      const auto* p = reinterpret_cast<const char*>(sqlite3_column_text(st, i));
+      return p == nullptr ? std::string() : std::string(p);
+    };
+    constexpr long double kScale = 1e8L;
+    int rc = 0;
+    while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+      const std::int64_t session = sqlite3_column_int64(st, 0);
+      const std::string day = text(1);
+      const std::string engine = text(2);
+      const std::string holder = text(3);
+      const std::string account = text(4);
+      const std::string symbol = text(5);
+      const std::string side = text(6);
+      const std::int64_t px = sqlite3_column_int64(st, 7);
+      const std::int64_t qty = sqlite3_column_int64(st, 8);
+      const std::int64_t booked = sqlite3_column_int64(st, 9);
+      const std::int64_t named_qty = sqlite3_column_int64(st, 10);
+      const std::int64_t fee = sqlite3_column_int64(st, 11);
+      const bool synthetic = sqlite3_column_int64(st, 12) != 0;
+      const std::string exec = text(13);
+      const std::int64_t pos_qty = sqlite3_column_int64(st, 14);
+      const std::int64_t pos_avg = sqlite3_column_int64(st, 15);
+      const std::int64_t engine_net = sqlite3_column_int64(st, 16);
+      const std::string ccy = text(17);
+      const bool inverse = sqlite3_column_int64(st, 18) != 0;
+      const long double mult = static_cast<long double>(sqlite3_column_int64(st, 19)) / kScale;
+      const std::int64_t inst = sqlite3_column_int64(st, 20);
+      const std::int64_t prev_net = last_net[{session, inst}];
+      last_net[{session, inst}] = engine_net;
+
+      // What this row adds: an execution once, whole; an estimate for what no execution named.
+      std::int64_t moved = 0;
+      if (synthetic) {
+        moved = qty - named_qty;
+      } else {
+        std::string key = engine;
+        for (const std::string* part : {&account, &symbol, &side, &exec}) {
+          key += '\x1f';
+          key += *part;
+        }
+        if (!exec.empty() && !seen.insert(std::move(key)).second)
+          continue;  // another session stored it too
+        moved = booked + named_qty;
+      }
+      Book& b = books[{engine, holder, symbol}];
+      Bucket& out = days[{day, holder, symbol}];
+      out.ccy = ccy;
+      const bool counted = wanted(day, session);
+      if (!b.seeded) {
+        // The first row of the book: it starts where the engine's position stood, and this fill
+        // made what the engine says it made.
+        b.seeded = true;
+        b.qty = pos_qty;
+        b.avg = static_cast<long double>(pos_avg);
+        if (counted) {
+          out.realized += static_cast<long double>(engine_net - prev_net + fee);
+          out.fees += fee;
+        }
+      } else if (moved > 0) {
+        const std::int64_t d = side == "Sell" ? -moved : moved;
+        long double realized = 0;
+        if (b.qty == 0 || (b.qty > 0) == (d > 0)) {
+          const long double held = static_cast<long double>(b.qty < 0 ? -b.qty : b.qty);
+          const long double add = static_cast<long double>(moved);
+          b.avg = (b.avg * held + static_cast<long double>(px) * add) / (held + add);
+          b.qty += d;
+        } else {
+          const std::int64_t open = b.qty < 0 ? -b.qty : b.qty;
+          const long double closed = static_cast<long double>(moved < open ? moved : open);
+          const long double sign = b.qty > 0 ? 1.0L : -1.0L;
+          if (inverse) {
+            // Contracts of `mult` quote each, settled in the base asset.
+            realized =
+                b.avg > 0 && px > 0 ? sign * closed * mult * (kScale / b.avg - kScale / px) : 0.0L;
+          } else {
+            realized = sign * closed * (static_cast<long double>(px) - b.avg) / kScale * mult;
+          }
+          const std::int64_t was = b.qty;
+          b.qty += d;
+          if (b.qty == 0) {
+            b.avg = 0;
+          } else if ((b.qty > 0) != (was > 0)) {
+            b.avg = static_cast<long double>(px);
+          }
+        }
+        if (counted) {
+          out.realized += realized;
+          if (!synthetic) out.fees += fee;
+        }
+      }
+      if (counted) {
+        if (moved > 0) out.gross += moved;
+        if (synthetic) {
+          if (moved > 0) ++out.estimates;
+        } else {
+          ++out.fills;
+        }
+      }
+    }
+    const bool ok = rc == SQLITE_DONE;
+    const std::string err = ok ? std::string() : error_of(db_, "pnl");
+    sqlite3_finalize(st);
+    if (!ok) return fail(err);
+
+    // Funding, once per payment, on the account holding the position.
+    {
+      std::string q =
+          "SELECT g.session_id, g.day, s.engine, COALESCE(NULLIF(i.account, ''), g.account),"
+          " g.symbol, g.funding_id, g.amount_raw, COALESCE(i.settlement_ccy, '')"
+          " FROM funding g JOIN sessions s ON s.session_id = g.session_id"
+          " LEFT JOIN instruments i ON i.session_id = g.session_id"
+          " AND i.instrument_id = g.instrument_id";
+      Where fw;
+      fw.engine(f);
+      fw.symbol(f, "g.symbol");
+      q += fw.text() + " ORDER BY g.ts_ns, g.session_id, g.seq";
+      if (sqlite3_prepare_v2(db_, q.c_str(), -1, &st, nullptr) != SQLITE_OK)
+        return fail(error_of(db_, "pnl funding"));
+      fw.bind(st);
+      std::set<std::string> paid;
+      while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const std::string day = text(1);
+        const std::string holder = text(3);
+        const std::string symbol = text(4);
+        const std::string id = text(5);
+        std::string key = text(2);
+        for (const std::string* part : {&holder, &symbol, &id}) {
+          key += '\x1f';
+          key += *part;
+        }
+        if (!id.empty() && !paid.insert(std::move(key)).second) continue;
+        if (!wanted(day, sqlite3_column_int64(st, 0))) continue;
+        Bucket& out = days[{day, holder, symbol}];
+        out.ccy = text(7);
+        out.funding += sqlite3_column_int64(st, 6);
+        out.realized += static_cast<long double>(sqlite3_column_int64(st, 6));
+      }
+      const bool fok = rc == SQLITE_DONE;
+      const std::string ferr = fok ? std::string() : error_of(db_, "pnl funding");
+      sqlite3_finalize(st);
+      if (!fok) return fail(ferr);
+    }
+
+    // The engine's net for the same day, account and symbol.
+    {
+      std::string q =
+          "SELECT day, account, symbol, settlement_ccy, SUM(realized_raw) - SUM(fees_raw)"
+          " FROM pnl_daily";
+      Where bw;
+      bw.session(f);
+      bw.symbol(f);
+      bw.day_text(f);
+      bw.engine_join(f, "pnl_daily");
+      q += bw.text() + " GROUP BY day, account, symbol, settlement_ccy";
+      if (sqlite3_prepare_v2(db_, q.c_str(), -1, &st, nullptr) != SQLITE_OK)
+        return fail(error_of(db_, "pnl books"));
+      bw.bind(st);
+      while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        Bucket& out = days[{text(0), text(1), text(2)}];
+        if (out.ccy.empty()) out.ccy = text(3);
+        out.books += sqlite3_column_int64(st, 4);
+        out.books_known = true;
+      }
+      const bool bok = rc == SQLITE_DONE;
+      const std::string berr = bok ? std::string() : error_of(db_, "pnl books");
+      sqlite3_finalize(st);
+      if (!bok) return fail(berr);
+    }
+
+    Rows rows;
+    rows.columns = {"day",
+                    "account",
+                    "symbol",
+                    "settlement_ccy",
+                    "realized",
+                    "funding",
+                    "fees",
+                    "net",
+                    "gross_traded",
+                    "fills",
+                    "estimates",
+                    "books_net"};
+    for (const auto& [key, b] : days) {
+      const auto& [day, holder, symbol] = key;
+      if (!wanted(day, static_cast<std::int64_t>(f.session_id))) continue;
+      if (b.fills == 0 && b.estimates == 0 && b.funding == 0 && !b.books_known) continue;
+      const auto realized = static_cast<std::int64_t>(std::llround(b.realized));
+      rows.rows.push_back({day,
+                           holder,
+                           symbol,
+                           b.ccy,
+                           decimal(realized),
+                           decimal(b.funding),
+                           decimal(b.fees),
+                           decimal(realized - b.fees),
+                           decimal(b.gross),
+                           std::to_string(b.fills),
+                           std::to_string(b.estimates),
+                           b.books_known ? decimal(b.books) : std::string()});
+      if (f.limit != 0 && rows.rows.size() >= f.limit) break;
+    }
+    return rows;
   }
 
   [[nodiscard]] Result<Rows, std::string> funding(const QueryFilter& f) override {

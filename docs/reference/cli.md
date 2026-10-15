@@ -308,14 +308,17 @@ OPTIONS:
   --against <id>              param-diff: the earlier session to compare with
   --summary                   rejects: one row per account, instrument, side and source
   --raw                       ledger: every stored row, with its copy number
+  --books                     pnl: the engine's own day roll-up of its positions, as it
+                              booked them
   --order <id>                order: the client order id
 
 SUBCOMMANDS:
   sessions                    one row per session: when it ran, what it made, how it ended
   fills                       one row per execution
   orders                      one row per order, in its last known state
-  pnl                         realised (and the funding in it), fees and net by UTC day and
-                              instrument
+  pnl                         realised (and the funding in it), fees and net by UTC day,
+                              account and instrument, from the executions; --books: as the
+                              engine booked them
   funding                     one row per perpetual funding payment
   positions                   the last position snapshot of each session and instrument
   duplicates                  executions and funding payments stored more than once (booked

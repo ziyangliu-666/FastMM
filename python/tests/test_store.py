@@ -265,3 +265,72 @@ def test_fastmm_pnl_reads_the_same_store(store_path):
 
 def test_fixed_scale_matches_the_engine():
     assert fastmm.store.FIXED_SCALE == fastmm.FIXED_SCALE
+
+
+def test_pnl_counts_each_execution_once(tmp_path):
+    """Schema 10: an estimate an execution named, a copy another session stored and a venue
+    account at another id in the next session are each counted once, by the account's name."""
+    text = SCHEMA.read_text()
+    path = tmp_path / "ledger.db"
+    db = sqlite3.connect(path)
+    db.executescript(
+        "CREATE TABLE schema_version (version INTEGER NOT NULL, applied_ns INTEGER NOT NULL,"
+        " fastmm TEXT NOT NULL); INSERT INTO schema_version VALUES (10, 0, 'test');"
+    )
+    for v in range(1, 11):
+        db.executescript(_sql_between(text, f'constexpr std::string_view kV{v} = R"SQL(', ')SQL";'))
+    day1 = 1_709_510_400_000_000_000
+    cols = (
+        "session_id, seq, ts_ns, day, instrument_id, venue_id, symbol, cl_ord_id, venue_order_id,"
+        " exec_id, side, liquidity, price_raw, qty_raw, booked_qty_raw, cum_qty_raw,"
+        " leaves_qty_raw, fee_raw, fee_amount_raw, fee_asset, position_qty_raw,"
+        " position_avg_px_raw, position_realized_raw, position_fees_raw, synthetic, late,"
+        " account, named_qty_raw"
+    )
+    one = 100_000_000
+    db.executescript(
+        f"""
+        INSERT INTO sessions (session_id, engine, strategy, session_epoch, started_ns,
+            started_day, version, build, config_hash, dry_run, pnl_carry_raw)
+          VALUES (1, 'mm', 'x', 1, {day1}, '2024-03-04', '0.7.0', 'b', '0', 0, 0),
+                 (2, 'mm', 'x', 2, {day1 + 10}, '2024-03-04', '0.7.0', 'b', '0', 0, 0);
+        INSERT INTO instruments (session_id, instrument_id, venue_id, symbol, base, quote,
+            settlement_ccy, asset_class, inverse, tick_raw, lot_raw, multiplier_raw, account)
+          VALUES (1, 0, 1, 'SOXLUSDT', 'SOXL', 'USDT', 'USDT', 'Perpetual', 0, 1000000, 100000,
+                  {one}, 'usdm'),
+                 (2, 0, 3, 'SOXLUSDT', 'SOXL', 'USDT', 'USDT', 'Perpetual', 0, 1000000, 100000,
+                  {one}, 'usdm');
+        INSERT INTO fills ({cols}) VALUES
+          (1, 1, {day1 + 1}, '2024-03-04', 0, 1, 'SOXLUSDT', 'a', 'v', 'T1', 'Buy', 'Maker',
+           {100 * one}, {one}, {one}, {one}, 0, 0, 0, 'quote', {one}, {100 * one}, 0, 0, 0, 0,
+           'usdm', 0),
+          (1, 3, {day1 + 2}, '2024-03-04', 0, 1, 'SOXLUSDT', 'b', 'v', '', 'Sell', 'Unknown',
+           {101 * one}, {one}, {one}, {one}, 0, 0, 0, 'quote', 0, 0, {one}, 0, 1, 0, 'usdm',
+           {one}),
+          (1, 5, {day1 + 3}, '2024-03-04', 0, 1, 'SOXLUSDT', 'b', 'v', 'T2', 'Sell', 'Maker',
+           {101 * one}, {one}, 0, {one}, 0, 1000, 1000, 'quote', 0, 0, {one}, 1000, 0, 1,
+           'usdm', {one}),
+          (2, 1, {day1 + 11}, '2024-03-04', 0, 3, 'SOXLUSDT', 'b', 'v', 'T2', 'Sell', 'Maker',
+           {101 * one}, {one}, {one}, {one}, 0, 1000, 1000, 'quote', -{one}, {101 * one}, 0,
+           1000, 0, 1, 'usdm', 0),
+          (2, 3, {day1 + 12}, '2024-03-04', 0, 3, 'SOXLUSDT', 'c', 'v', 'T3', 'Sell', 'Maker',
+           {103 * one}, {one}, {one}, {one}, 0, 0, 0, 'quote', -{2 * one}, {102 * one}, 0,
+           1000, 0, 0, 'usdm', 0);
+        """
+    )
+    db.commit()
+    db.close()
+    with fastmm.open_store(path) as store:
+        pnl = store.pnl()
+        fills = store.fills()
+    assert list(fills["account"].unique()) == ["usdm"]
+    assert len(pnl) == 1
+    row = pnl.iloc[0]
+    assert row["account"] == "usdm"
+    # Bought 1 at 100, sold it at 101 (the estimate, named by T2, stored again by session 2),
+    # then sold 1 more at 103: 1 made, one fee.
+    assert row["realized"] == pytest.approx(1.0)
+    assert row["fees"] == pytest.approx(0.00001)
+    assert row["fills"] == 3
+    assert row["estimates"] == 0
+    assert row["gross_traded"] == pytest.approx(3.0)

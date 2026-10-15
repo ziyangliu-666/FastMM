@@ -248,6 +248,7 @@ static int run(int argc, char** argv) {
   std::uint64_t against = 0;
   bool summary = false;
   bool raw = false;
+  bool books = false;
   QueryFilter f;
 
   CLI::App app("What a deployment traded, read from the store.", "fastmm-pnl");
@@ -257,7 +258,9 @@ static int run(int argc, char** argv) {
       {"sessions", "one row per session: when it ran, what it made, how it ended"},
       {"fills", "one row per execution"},
       {"orders", "one row per order, in its last known state"},
-      {"pnl", "realised (and the funding in it), fees and net by UTC day and instrument"},
+      {"pnl",
+       "realised (and the funding in it), fees and net by UTC day, account and instrument, from "
+       "the executions; --books: as the engine booked them"},
       {"funding", "one row per perpetual funding payment"},
       {"positions", "the last position snapshot of each session and instrument"},
       {"duplicates", "executions and funding payments stored more than once (booked twice)"},
@@ -310,6 +313,8 @@ static int run(int argc, char** argv) {
       ->option_text("<id>");
   app.add_flag("--summary", summary, "rejects: one row per account, instrument, side and source");
   app.add_flag("--raw", raw, "ledger: every stored row, with its copy number");
+  app.add_flag(
+      "--books", books, "pnl: the engine's own day roll-up of its positions, as it booked them");
   app.add_option("--order", f.order, "order: the client order id")->option_text("<id>");
   if (const auto rc = fastmm::cli::parse(app, argc, argv)) return *rc;
   if (app.get_subcommands().empty()) return fastmm::cli::usage_error(app, "a command is required");
@@ -429,7 +434,7 @@ static int run(int argc, char** argv) {
   } else if (command == "orders") {
     rows = reader->orders(f);
   } else if (command == "pnl") {
-    rows = reader->pnl(f);
+    rows = books ? reader->books_pnl(f) : reader->pnl(f);
   } else if (command == "funding") {
     rows = reader->funding(f);
   } else if (command == "positions") {

@@ -78,7 +78,7 @@ The SQLite backend opens the file with `journal_mode=WAL` and `synchronous=NORMA
 
 ## Schema
 
-Version 9 (`kSqliteSchemaVersion`). The SQL is `src/store/sqlite_schema.cpp`, one migration step per version; an existing store is migrated in place at open, and a store written by a newer FastMM is refused with the version it holds.
+Version 10 (`kSqliteSchemaVersion`). The SQL is `src/store/sqlite_schema.cpp`, one migration step per version; an existing store is migrated in place at open, and a store written by a newer FastMM is refused with the version it holds.
 
 ### sessions
 
@@ -101,6 +101,8 @@ One row per session, written at start and completed at shutdown.
 | `realized_raw`, `unrealized_raw`, `fees_raw` | the session's final PnL |
 | `funding_raw` | the part of `realized_raw` that is funding; null for sessions from before version 4 |
 
+A row's venue is `venue_id`, its place in the session's `[venues.*]` order, and the same id can name another account in another session (a venue added to a pool moves the others). Since version 10 the rows that sum across sessions also carry `account`, the venue's name: group by it, not by `venue_id`. A fill's `account` is the account it executed on (a pool member); an instrument's, a position's and a `pnl_daily` row's is the instrument's own venue (the pool's primary), which holds the position. The migration fills it in for older rows from `session_venues` (`#<id>` where a session recorded no names).
+
 ### session_journals
 
 `(session_id, part, path)`: the journal parts the session wrote, in order.
@@ -111,7 +113,7 @@ One row per session, written at start and completed at shutdown.
 
 ### instruments
 
-`(session_id, instrument_id)` and the instrument as the session loaded it: `venue_id`, `symbol`, `base`, `quote`, `settlement_ccy`, `asset_class`, `inverse`, `tick_raw`, `lot_raw`, `multiplier_raw`. Per session, because a restart may load different reference data.
+`(session_id, instrument_id)` and the instrument as the session loaded it: `venue_id`, `symbol`, `base`, `quote`, `settlement_ccy`, `asset_class`, `inverse`, `tick_raw`, `lot_raw`, `multiplier_raw`, and (version 10) `account`. Per session, because a restart may load different reference data.
 
 ### fills
 
@@ -129,6 +131,14 @@ One row per execution, keyed `(session_id, seq)`, with a unique index on `(sessi
 | `position_qty_raw`, `position_avg_px_raw`, `position_realized_raw`, `position_fees_raw` | the instrument's position after this fill |
 | `synthetic` | 1 for a quantity the engine booked from a `cum_qty` jump, at the order's own price and with no fee |
 | `late` | 1 for a fill that arrived after the order was already terminal |
+| `account` | the `[venues.<name>]` it executed on (version 10) |
+| `named_qty_raw` | on a synthetic fill, how much of it executions have named since; on an execution, how much of it named an estimate (version 10) |
+
+A synthetic fill is an estimate: the venue reported filled quantity (a cancel ack, an expiry, a reconciliation snapshot) before the execution behind it arrived, so the engine booked it at the order's price. When the execution comes, it corrects the estimate's price and fee instead of moving the position again: its `booked_qty_raw` excludes the `named_qty_raw` the estimate already moved. Both rows stay. Summing the table therefore counts an execution whole and a synthetic fill for `qty_raw - named_qty_raw`, the part still estimated; anything else counts the named quantity twice (on Binance spot a cancel ack often overtakes the fill). Rows from before version 10 are backfilled from `booked_qty_raw`.
+
+### fill_repeats
+
+Version 10. An execution the engine booked a second time in a session that had already stored it: the store refused the row (the unique index above) and writes it here instead, keyed `(session_id, seq)` with the `seq` of the refused fill record, with `account`, `instrument_id`, `symbol`, `side`, `exec_id`, `price_raw`, `qty_raw`, `booked_qty_raw` and `first_seq`, the stored row's. The position and the PnL the engine recorded after it count the execution twice; `fills` does not. Older sessions are backfilled from their position records: a change of position with no fill or funding record before it that one stored execution explains (side, quantity, and the price the change implies within a tick).
 
 ### funding
 
@@ -155,7 +165,7 @@ A fill that arrives after its order ended (the cancel ack overtook the execution
 
 ### positions
 
-One row per position snapshot, keyed `(session_id, seq)`: `qty_raw`, `avg_px_raw`, `realized_raw`, `unrealized_raw`, `fees_raw`, `gross_traded_raw`, `fills`, the portfolio totals `total_realized_raw`, `total_unrealized_raw`, `total_fees_raw`, `pnl_carry_raw`, and (version 4) `funding_raw` and `total_funding_raw`.
+One row per position snapshot, keyed `(session_id, seq)`: `qty_raw`, `avg_px_raw`, `realized_raw`, `unrealized_raw`, `fees_raw`, `gross_traded_raw`, `fills`, the portfolio totals `total_realized_raw`, `total_unrealized_raw`, `total_fees_raw`, `pnl_carry_raw`, (version 4) `funding_raw` and `total_funding_raw`, and (version 10) `account`.
 
 ### kill_events
 
@@ -206,7 +216,7 @@ Refusals of the same instrument, side, account, reason, source and flags (`reduc
 |---|---|
 | `reject_summary` | `day`, `account`, `symbol`, `side`, `reduces`, `reason`, `source` and `rejects`, the summed `count` |
 | `param_history` | `param_updates` joined with `param_values`: one row per value of every update, with its session, time, scope, origin and source |
-| `pnl_by_day` | `day`, `symbol`, `settlement_ccy`, `realized_raw`, `funding_raw`, `fees_raw`, `net_raw`, `gross_traded_raw`, `fills`, summed over sessions |
+| `pnl_by_day` | `day`, `account`, `symbol`, `settlement_ccy`, `realized_raw`, `funding_raw`, `fees_raw`, `net_raw`, `gross_traded_raw`, `fills`, summed over sessions: the engine's books (`fastmm-pnl pnl --books`) |
 | `pnl_by_currency` | the same by `day` and `settlement_ccy` |
 | `open_orders` | `orders` with `terminal = 0` |
 
@@ -248,6 +258,7 @@ The loss budget `[risk] max_loss` is carried across restarts by the kill-state f
 
 ## Tools
 
+- `fastmm-pnl pnl` (`Reader::pnl`, `Store.pnl()`) recomputes each day's PnL from `fills`, at average cost, by the account holding the position and symbol, the position carried from one session to the next by that account's name: an execution counts once (a copy another session stored, a repeat in `fill_repeats`), a synthetic fill only for what no execution named. `pnl_daily` is the engine's own books, from its position records: they count a repeat twice from the moment the engine booked it. The output says both (`net`, `books_net`) and how many estimates are still open; `--books` prints `pnl_daily` alone, as before version 10.
 - `fastmm-pnl ledger` reads `fills` as one row per execution across sessions (by engine, venue name, symbol, side and exec id; a synthetic fill is its own), with its copies and flags; `fastmm-pnl order --order <id>` joins `orders`, `rejects` and `fills` for one client order ([Query what you traded](../how-to/operations/query-trading-records.md#the-economic-ledger)). Both are queries over the tables above, not tables of their own.
 - `fastmm-pnl` ([command lines](cli.md), [the daily questions](../how-to/operations/query-trading-records.md)).
 - `fastmm.open_store(path)` returns pandas DataFrames ([Python API](python-api.md)).

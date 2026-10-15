@@ -16,12 +16,14 @@ All notable changes are recorded here (Keep a Changelog format).
 - docs: the reference backtest outputs (economics, backtesting, tutorial step 7) are this build's;
   `docs.reference_output` runs every documented command and fails when its output no longer
   matches the page. `compatibility.md`, `storage.md` and `status-file.md` give the current status
-  file (21), store schema (9) and gateway protocol (7) versions.
+  file (21), store schema (10) and gateway protocol (7) versions.
 - venues: Binance orders early in a minute no longer hold the depth snapshots and reconciliations.
 - venues: Binance spot replays and fill audits read myTrades of the symbols with executions only.
 - venues: a Binance spot cancel refused for an order already over no longer reads every symbol.
 - tests: the shadow sweep test drops only the cancels' replies, not a balance query's.
 - core: an execution a replay re-sends thousands of executions later is no longer booked twice.
+- store: `fastmm-pnl pnl` counts each execution once: an estimate an execution named, a repeat.
+- store: fills, positions and the day roll-up carry the account's name (`account`, schema 10).
 
 ## [0.6.0] - 2026-10-13
 

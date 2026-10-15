@@ -142,8 +142,8 @@ TEST_CASE("store.sqlite: a session round trips through fills, orders, positions 
     CHECK(r->rows[1][column(*r, "exec_id")] == "E2");
   }
 
-  SUBCASE("PnL by day is the change within each day, not the running total") {
-    auto r = reader->pnl(QueryFilter{});
+  SUBCASE("the engine's PnL by day is the change within each day, not the running total") {
+    auto r = reader->books_pnl(QueryFilter{});
     REQUIRE(r);
     REQUIRE(r->rows.size() == 2);
     const std::size_t day = column(*r, "day");
@@ -161,7 +161,7 @@ TEST_CASE("store.sqlite: a session round trips through fills, orders, positions 
     QueryFilter f;
     f.from = "2024-03-05";
     f.to = "2024-03-05";
-    auto r = reader->pnl(f);
+    auto r = reader->books_pnl(f);
     REQUIRE(r);
     REQUIRE(r->rows.size() == 1);
     CHECK(r->rows[0][column(*r, "day")] == "2024-03-05");

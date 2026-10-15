@@ -1582,7 +1582,8 @@ class Engine {
                  Notional fee,
                  FeeAsset fee_asset,
                  const OmsUpdate& u,
-                 const OrderFillMsg* msg) noexcept {
+                 const OrderFillMsg* msg,
+                 Qty named = Qty{}) noexcept {
     if (!records_.enabled() || !instruments_.contains(id)) return;
     FillRecord r;
     // The account it filled on: a pool member's id where the order went to one.
@@ -1598,6 +1599,7 @@ class Engine {
     r.price = px;
     r.qty = qty;
     r.booked_qty = booked;
+    r.named_qty = named;
     r.cum_qty = msg != nullptr ? msg->cum_qty : u.order.cum_qty;
     r.leaves_qty = msg != nullptr ? msg->leaves_qty : u.order.leaves_qty();
     r.fee = fee;
@@ -1924,8 +1926,10 @@ class Engine {
       // names what the estimate could only guess, so it replaces its price and its fee. The rest of
       // the execution is an ordinary fill; the fee belongs to the correction, which adds it whole.
       const Notional exec_fee = fee;  // what this execution cost, whichever path books it
+      Qty named{};
       if (FASTMM_UNLIKELY(!u.corrected_qty.is_zero())) {
         const Qty corrected = u.corrected_qty < booked ? u.corrected_qty : booked;
+        named = corrected;
         ++stats_.corrected_fills;
         FASTMM_LOG_INFO("order {}: execution {} of {} at {} replaces the estimate booked at {}",
                         encode_cl_ord_id(f.cl_ord_id),
@@ -1957,7 +1961,7 @@ class Engine {
                            f.hdr.exch_ts,
                            account);
       }
-      emit_fill(id, side, f.price, f.qty, booked, exec_fee, fee_asset, u, &f);
+      emit_fill(id, side, f.price, f.qty, booked, exec_fee, fee_asset, u, &f, named);
       if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
     } else if (stats_.unknown_instrument_fills++ == 0) {
       FASTMM_LOG_WARN("fill on instrument {} outside the instrument table is not booked", id.value);

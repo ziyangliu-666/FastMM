@@ -176,12 +176,14 @@ class SqliteBackend final : public Backend {
                                                       std::span<const Instrument> table) override {
     symbols_.assign(kMaxInstruments, std::string());
     ccy_.assign(kMaxInstruments, std::string());
+    accounts_.assign(kMaxInstruments, std::string());
     prev_.assign(kMaxInstruments, Prev{});
     if (auto r = exec(db_, "BEGIN"); !r) return fail(r.error());
     for (const Instrument& i : table) {
       if (i.id.value < symbols_.size()) {
         symbols_[i.id.value] = std::string(i.symbol.view());
         ccy_[i.id.value] = std::string(i.settlement_ccy());
+        accounts_[i.id.value] = venue_name(i.venue.value);
       }
       Bind b(ins_instrument_.get());
       b.u(session_id);
@@ -196,6 +198,7 @@ class SqliteBackend final : public Backend {
       b.i(i.tick.raw);
       b.i(i.lot.raw);
       b.i(i.contract_multiplier.raw);
+      b.t(venue_name(i.venue.value));
       if (sqlite3_step(ins_instrument_.get()) != SQLITE_DONE) {
         const std::string e = error_of(db_, "insert instrument");
         static_cast<void>(exec(db_, "ROLLBACK"));
@@ -255,7 +258,22 @@ class SqliteBackend final : public Backend {
     b.b((r.hdr.flags & RecordHeader::kSynthetic) != 0);
     b.b((r.hdr.flags & RecordHeader::kLate) != 0);
     b.i(r.hdr.exch_ts.ns);
-    step(ins_fill_.get(), "insert fill");
+    const std::string account = venue_name(r.hdr.venue.value);
+    b.t(account);
+    b.i(r.named_qty.raw);
+    const int rc = sqlite3_step(ins_fill_.get());
+    if (rc == SQLITE_DONE) {
+      // Zero rows changed: this very record again (its session and seq), a no-op.
+      if (sqlite3_changes(db_) > 0) ++rows_;
+    } else if (rc == SQLITE_CONSTRAINT) {
+      // Another record of this session stored the execution: the engine booked it again.
+      repeat(r, account);
+      return;
+    } else {
+      note(error_of(db_, "insert fill"));
+      return;
+    }
+    if (r.named_qty.is_positive()) name_estimates(r);
   }
 
   void order(const OrderRecord& r) override {
@@ -330,6 +348,7 @@ class SqliteBackend final : public Backend {
     b.i(r.pnl_carry.raw);
     b.i(r.funding.raw);
     b.i(r.total_funding.raw);
+    b.t(account(id));
     step(ins_position_.get(), "insert position");
     roll_up(r);
   }
@@ -353,6 +372,7 @@ class SqliteBackend final : public Backend {
     b.i(r.position_realized.raw);
     b.i(r.position_funding.raw);
     b.b((r.hdr.flags & RecordHeader::kReplayed) != 0);
+    b.t(venue_name(r.hdr.venue.value));
     step(ins_funding_.get(), "insert funding");
   }
 
@@ -533,6 +553,9 @@ class SqliteBackend final : public Backend {
     ins_reject_.reset();
     ins_funding_.reset();
     ins_pnl_.reset();
+    ins_repeat_.reset();
+    sel_estimates_.reset();
+    upd_named_.reset();
     if (db_ != nullptr) {
       static_cast<void>(sqlite3_close_v2(db_));
       db_ = nullptr;
@@ -668,6 +691,67 @@ class SqliteBackend final : public Backend {
     return id < venue_names_.size() ? venue_names_[id] : "#" + std::to_string(id);
   }
 
+  // An execution this session had stored already, booked again by the engine: the position and
+  // the PnL recorded from here on count it twice, and fill_repeats says where.
+  void repeat(const FillRecord& r, const std::string& account) {
+    const std::uint32_t id = r.hdr.instrument.value;
+    Bind b(ins_repeat_.get());
+    b.u(r.hdr.session_id);
+    b.u(r.hdr.seq);
+    b.i(r.hdr.engine_ts.ns);
+    b.t(utc_day(r.hdr.engine_ts.ns));
+    b.t(account);
+    b.i(id);
+    b.t(symbol(id));
+    b.t(to_string(r.side));
+    b.t(to_str(r.exec_id));
+    b.i(r.price.raw);
+    b.i(r.qty.raw);
+    b.i(r.booked_qty.raw);
+    b.u(r.hdr.session_id);
+    b.i(id);
+    b.t(to_string(r.side));
+    b.t(to_str(r.exec_id));
+    step(ins_repeat_.get(), "insert fill repeat");
+    if (!warned_repeat_) {
+      warned_repeat_ = true;
+      FASTMM_LOG_ERROR(
+          "store: execution {} of {} booked a second time; the position and the PnL count it twice "
+          "from here on (fill_repeats)",
+          r.exec_id.view(),
+          symbol(id));
+    }
+  }
+
+  // An execution that named `r.named_qty` of its order's estimates: the synthetic rows of that
+  // order take it, oldest first.
+  void name_estimates(const FillRecord& r) {
+    std::int64_t left = r.named_qty.raw;
+    std::vector<std::pair<std::int64_t, std::int64_t>> open;  // seq, quantity still unnamed
+    {
+      Bind b(sel_estimates_.get());
+      b.u(r.hdr.session_id);
+      b.t(encode_cl_ord_id(r.cl_ord_id).view());
+      while (sqlite3_step(sel_estimates_.get()) == SQLITE_ROW)
+        open.emplace_back(sqlite3_column_int64(sel_estimates_.get(), 0),
+                          sqlite3_column_int64(sel_estimates_.get(), 1));
+    }
+    for (const auto& [seq, unnamed] : open) {
+      if (left <= 0) break;
+      const std::int64_t take = std::min(left, unnamed);
+      left -= take;
+      Bind b(upd_named_.get());
+      b.i(take);
+      b.u(r.hdr.session_id);
+      b.i(seq);
+      step(upd_named_.get(), "name an estimate");
+    }
+  }
+
+  [[nodiscard]] std::string_view account(std::uint32_t id) const noexcept {
+    return id < accounts_.size() ? std::string_view(accounts_[id]) : std::string_view();
+  }
+
   [[nodiscard]] std::string_view symbol(std::uint32_t id) const noexcept {
     return id < symbols_.size() ? std::string_view(symbols_[id]) : std::string_view();
   }
@@ -722,6 +806,7 @@ class SqliteBackend final : public Backend {
     b.i(d_fills);
     b.i(r.hdr.engine_ts.ns);
     b.i(d_funding);
+    b.t(account(id));
     step(ins_pnl_.get(), "upsert pnl_daily");
   }
 
@@ -742,10 +827,30 @@ class SqliteBackend final : public Backend {
          " records_dropped=?, realized_raw=?, unrealized_raw=?, fees_raw=?, funding_raw=?,"
          " param_refreshes=? WHERE session_id=?"},
         {&ins_journal_, "INSERT OR REPLACE INTO session_journals VALUES (?,?,?)"},
-        {&ins_instrument_, "INSERT OR REPLACE INTO instruments VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"},
+        {&ins_instrument_,
+         "INSERT OR REPLACE INTO instruments (session_id, instrument_id, venue_id, symbol, base,"
+         " quote, settlement_ccy, asset_class, inverse, tick_raw, lot_raw, multiplier_raw,"
+         " account) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"},
+        // The same record again (its session and seq) is a no-op; the same execution in another
+        // record of the session fails fills_exec, which fill() records as a repeat.
         {&ins_fill_,
-         "INSERT OR IGNORE INTO fills VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
-         "?,?,?,?,?,?,?)"},
+         "INSERT INTO fills (session_id, seq, ts_ns, day, instrument_id, venue_id, symbol,"
+         " cl_ord_id, venue_order_id, exec_id, side, liquidity, price_raw, qty_raw,"
+         " booked_qty_raw, cum_qty_raw, leaves_qty_raw, fee_raw, fee_amount_raw, fee_asset,"
+         " position_qty_raw, position_avg_px_raw, position_realized_raw, position_fees_raw,"
+         " synthetic, late, exch_ns, account, named_qty_raw)"
+         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+         " ON CONFLICT(session_id, seq) DO NOTHING"},
+        {&ins_repeat_,
+         "INSERT OR IGNORE INTO fill_repeats (session_id, seq, ts_ns, day, account,"
+         " instrument_id, symbol, side, exec_id, price_raw, qty_raw, booked_qty_raw, first_seq)"
+         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,(SELECT seq FROM fills WHERE session_id = ? AND"
+         " instrument_id = ? AND side = ? AND exec_id = ?))"},
+        {&sel_estimates_,
+         "SELECT seq, qty_raw - named_qty_raw FROM fills WHERE session_id = ? AND cl_ord_id = ?"
+         " AND synthetic <> 0 AND named_qty_raw < qty_raw ORDER BY seq"},
+        {&upd_named_,
+         "UPDATE fills SET named_qty_raw = named_qty_raw + ? WHERE session_id = ? AND seq = ?"},
         {&ins_venue_,
          "INSERT OR REPLACE INTO session_venues (session_id, venue_id, name, replayed_seq)"
          " VALUES (?,?,?,0)"},
@@ -768,8 +873,10 @@ class SqliteBackend final : public Backend {
          "UPDATE orders SET cum_qty_raw=?, state=?, terminal=1, updated_ns=?,"
          " updates=orders.updates+1 WHERE session_id=? AND cl_ord_id=?"},
         {&ins_position_,
-         "INSERT OR IGNORE INTO positions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
-         "?,?,?)"},
+         "INSERT OR IGNORE INTO positions (session_id, seq, ts_ns, day, instrument_id, symbol,"
+         " qty_raw, avg_px_raw, realized_raw, unrealized_raw, fees_raw, gross_traded_raw, fills,"
+         " total_realized_raw, total_unrealized_raw, total_fees_raw, pnl_carry_raw, funding_raw,"
+         " total_funding_raw, account) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"},
         {&ins_kill_, "INSERT OR IGNORE INTO kill_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"},
         {&ins_param_field_, "INSERT OR REPLACE INTO param_schema VALUES (?,?,?,?)"},
         {&ins_param_update_,
@@ -778,11 +885,15 @@ class SqliteBackend final : public Backend {
         {&ins_reject_,
          "INSERT OR IGNORE INTO rejects VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
          "?,?,?,?,?,?,?,?)"},
-        {&ins_funding_, "INSERT OR IGNORE INTO funding VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"},
+        {&ins_funding_,
+         "INSERT OR IGNORE INTO funding (session_id, seq, ts_ns, day, exch_ns, instrument_id,"
+         " venue_id, symbol, funding_id, asset, amount_raw, position_qty_raw,"
+         " position_realized_raw, position_funding_raw, replayed, account)"
+         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"},
         {&ins_pnl_,
          "INSERT INTO pnl_daily (session_id, day, instrument_id, symbol, settlement_ccy,"
          " realized_raw, fees_raw, unrealized_raw, qty_raw, gross_traded_raw, fills, last_ns,"
-         " funding_raw) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+         " funding_raw, account) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
          " ON CONFLICT(session_id, day, instrument_id) DO UPDATE SET"
          " realized_raw=pnl_daily.realized_raw+excluded.realized_raw,"
          " fees_raw=pnl_daily.fees_raw+excluded.fees_raw,"
@@ -832,6 +943,11 @@ class SqliteBackend final : public Backend {
   std::uint64_t param_refreshes_ = 0;
   Stmt ins_funding_;
   Stmt ins_pnl_;
+  Stmt ins_repeat_;
+  Stmt sel_estimates_;
+  Stmt upd_named_;
+  std::vector<std::string> accounts_;  // each instrument's venue name, by dense id
+  bool warned_repeat_ = false;
 };
 
 }  // namespace

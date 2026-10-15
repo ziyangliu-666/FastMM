@@ -465,15 +465,148 @@ CREATE VIEW reject_summary AS
   GROUP BY day, account, symbol, side, reduces, reason, source;
 )SQL";
 
-constexpr std::array<Migration, 9> kMigrations{Migration{1, kV1},
-                                               Migration{2, kV2},
-                                               Migration{3, kV3},
-                                               Migration{4, kV4},
-                                               Migration{5, kV5},
-                                               Migration{6, kV6},
-                                               Migration{7, kV7},
-                                               Migration{8, kV8},
-                                               Migration{9, kV9}};
+// Version 10: who holds what, by name, and which fills are not executions.
+//
+// `account` is the [venues.<name>] of a row's venue in the session that wrote it. venue_id is the
+// venue's place in that session's configuration, so the same id named another account in another
+// session (a venue added to a pool moved the USD-M account from id 1 to 4, then 5): rows of
+// several sessions group by the name. A fill's account is the one it executed on (a pool member);
+// an instrument's, a position's and a day roll-up's is the instrument's own venue (a pool's
+// primary), which holds the position.
+//
+// `named_qty_raw` says how much of a fill is not an execution of its own. A synthetic fill is an
+// estimate the engine booked from a cum_qty no execution had reported yet (a cancel ack overtaking
+// the fill on Binance spot); on it, named_qty_raw is how much of it executions named since. On an
+// execution, it is how much of it named an estimate: the position held that part already, so the
+// execution moved it by booked_qty only and corrected the estimate's price and fee. Counting
+// executions whole and estimates for qty_raw - named_qty_raw counts each traded unit once.
+// Rows written before this version are backfilled from booked_qty (an execution of an order with an
+// estimate that booked less than its quantity), the estimates oldest first.
+//
+// fill_repeats: an execution the engine booked a second time in a session that had stored it (its
+// row was refused by fills_exec), at the seq of the fill record the store refused (the position
+// record after it is seq + 1). The position and the PnL the engine recorded from then on count it
+// twice; the fills do not. Older sessions are backfilled from their position records: a change
+// of position with no fill or funding before it that one stored execution explains (same side and
+// quantity, price within a tick of the one the position's change implies).
+constexpr std::string_view kV10 = R"SQL(
+ALTER TABLE fills ADD COLUMN account TEXT NOT NULL DEFAULT '';
+ALTER TABLE fills ADD COLUMN named_qty_raw INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE funding ADD COLUMN account TEXT NOT NULL DEFAULT '';
+ALTER TABLE instruments ADD COLUMN account TEXT NOT NULL DEFAULT '';
+ALTER TABLE positions ADD COLUMN account TEXT NOT NULL DEFAULT '';
+ALTER TABLE pnl_daily ADD COLUMN account TEXT NOT NULL DEFAULT '';
+
+UPDATE fills SET account = COALESCE((SELECT v.name FROM session_venues v
+  WHERE v.session_id = fills.session_id AND v.venue_id = fills.venue_id), '#' || venue_id);
+UPDATE funding SET account = COALESCE((SELECT v.name FROM session_venues v
+  WHERE v.session_id = funding.session_id AND v.venue_id = funding.venue_id), '#' || venue_id);
+UPDATE instruments SET account = COALESCE((SELECT v.name FROM session_venues v
+  WHERE v.session_id = instruments.session_id AND v.venue_id = instruments.venue_id),
+  '#' || venue_id);
+UPDATE positions SET account = COALESCE((SELECT i.account FROM instruments i
+  WHERE i.session_id = positions.session_id AND i.instrument_id = positions.instrument_id), '');
+UPDATE pnl_daily SET account = COALESCE((SELECT i.account FROM instruments i
+  WHERE i.session_id = pnl_daily.session_id AND i.instrument_id = pnl_daily.instrument_id), '');
+CREATE INDEX fills_account ON fills(account, symbol, ts_ns);
+
+UPDATE fills SET named_qty_raw = MAX(0,
+    CASE WHEN fee_asset = 'base' AND side = 'Buy' THEN qty_raw - fee_amount_raw
+         WHEN fee_asset = 'base' THEN qty_raw + fee_amount_raw
+         ELSE qty_raw END - booked_qty_raw)
+  WHERE synthetic = 0 AND EXISTS (SELECT 1 FROM fills e WHERE e.session_id = fills.session_id
+    AND e.cl_ord_id = fills.cl_ord_id AND e.synthetic <> 0);
+WITH named AS (
+  SELECT session_id, cl_ord_id, SUM(named_qty_raw) AS qty FROM fills
+  WHERE synthetic = 0 AND named_qty_raw > 0 GROUP BY session_id, cl_ord_id),
+est AS (
+  SELECT f.session_id, f.seq, f.qty_raw, n.qty AS named,
+         COALESCE(SUM(f.qty_raw) OVER (PARTITION BY f.session_id, f.cl_ord_id ORDER BY f.seq
+                  ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS before
+  FROM fills f JOIN named n ON n.session_id = f.session_id AND n.cl_ord_id = f.cl_ord_id
+  WHERE f.synthetic <> 0)
+UPDATE fills SET named_qty_raw = MAX(0, MIN(est.qty_raw, est.named - est.before))
+  FROM est WHERE fills.session_id = est.session_id AND fills.seq = est.seq;
+
+CREATE TABLE fill_repeats (
+  session_id     INTEGER NOT NULL,
+  seq            INTEGER NOT NULL,
+  ts_ns          INTEGER NOT NULL,
+  day            TEXT    NOT NULL,
+  account        TEXT    NOT NULL,
+  instrument_id  INTEGER NOT NULL,
+  symbol         TEXT    NOT NULL,
+  side           TEXT    NOT NULL,
+  exec_id        TEXT    NOT NULL,
+  price_raw      INTEGER NOT NULL,
+  qty_raw        INTEGER NOT NULL,
+  booked_qty_raw INTEGER NOT NULL,
+  first_seq      INTEGER,
+  PRIMARY KEY (session_id, seq)
+);
+CREATE INDEX fill_repeats_day ON fill_repeats(day, symbol);
+
+WITH p AS (
+  SELECT session_id, seq, ts_ns, day, instrument_id, symbol, account, qty_raw, avg_px_raw,
+         realized_raw,
+         LAG(qty_raw) OVER w AS prev_qty, LAG(avg_px_raw) OVER w AS prev_avg,
+         LAG(realized_raw) OVER w AS prev_realized
+  FROM positions WINDOW w AS (PARTITION BY session_id, instrument_id ORDER BY seq)),
+jump AS (
+  SELECT p.*, CASE WHEN qty_raw > prev_qty THEN 'Buy' ELSE 'Sell' END AS side,
+         ABS(qty_raw - prev_qty) AS moved,
+         -- The price the change implies: an increase moves the average, a decrease realizes.
+         CASE WHEN prev_qty = 0 OR (prev_qty > 0 AND qty_raw > prev_qty)
+                   OR (prev_qty < 0 AND qty_raw < prev_qty)
+              THEN (CAST(qty_raw AS REAL) * avg_px_raw - CAST(prev_qty AS REAL) * prev_avg)
+                   / (qty_raw - prev_qty)
+              ELSE prev_avg + (CAST(realized_raw - prev_realized AS REAL) * 100000000.0)
+                   / (prev_qty - qty_raw)
+         END AS px
+  FROM p
+  WHERE prev_qty IS NOT NULL AND qty_raw <> prev_qty
+    AND NOT EXISTS (SELECT 1 FROM fills f WHERE f.session_id = p.session_id AND f.seq = p.seq - 1)
+    AND NOT EXISTS (SELECT 1 FROM funding g WHERE g.session_id = p.session_id
+                    AND g.seq = p.seq - 1)),
+hit AS (
+  SELECT j.session_id, j.seq, j.ts_ns, j.day, f.account, j.instrument_id, j.symbol, j.side,
+         f.exec_id, f.price_raw, j.moved, f.seq AS first_seq,
+         ROW_NUMBER() OVER (PARTITION BY j.session_id, j.seq ORDER BY f.seq DESC) AS n
+  FROM jump j
+  JOIN fills f ON f.session_id = j.session_id AND f.instrument_id = j.instrument_id
+              AND f.side = j.side AND f.seq < j.seq AND f.exec_id <> ''
+              AND f.booked_qty_raw + f.named_qty_raw = j.moved
+  JOIN instruments i ON i.session_id = j.session_id AND i.instrument_id = j.instrument_id
+  WHERE i.inverse = 0 AND ABS(j.px - f.price_raw) <= i.tick_raw)
+INSERT INTO fill_repeats (session_id, seq, ts_ns, day, account, instrument_id, symbol, side,
+                          exec_id, price_raw, qty_raw, booked_qty_raw, first_seq)
+SELECT session_id, seq - 1, ts_ns, day, account, instrument_id, symbol, side, exec_id, price_raw,
+       moved, moved, first_seq
+FROM hit WHERE n = 1;
+
+DROP VIEW pnl_by_day;
+CREATE VIEW pnl_by_day AS
+  SELECT day, account, symbol, settlement_ccy,
+         SUM(realized_raw)     AS realized_raw,
+         SUM(funding_raw)      AS funding_raw,
+         SUM(fees_raw)         AS fees_raw,
+         SUM(realized_raw) - SUM(fees_raw) AS net_raw,
+         SUM(gross_traded_raw) AS gross_traded_raw,
+         SUM(fills)            AS fills
+  FROM pnl_daily
+  GROUP BY day, account, symbol, settlement_ccy;
+)SQL";
+
+constexpr std::array<Migration, 10> kMigrations{Migration{1, kV1},
+                                                Migration{2, kV2},
+                                                Migration{3, kV3},
+                                                Migration{4, kV4},
+                                                Migration{5, kV5},
+                                                Migration{6, kV6},
+                                                Migration{7, kV7},
+                                                Migration{8, kV8},
+                                                Migration{9, kV9},
+                                                Migration{10, kV10}};
 
 // days since 1970-01-01 -> y/m/d (Howard Hinnant's civil_from_days).
 void civil_from_days(std::int64_t z, int& y, unsigned& m, unsigned& d) {
