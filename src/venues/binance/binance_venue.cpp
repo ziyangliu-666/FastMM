@@ -1698,12 +1698,13 @@ bool BinanceVenue::emit_execution(std::size_t stream, const MyTradeRow& t) {
   return true;
 }
 
+// An order the connector names no instrument for has no shadow any more: its end (the fill that
+// finished it, its cancel, its sweep) was heard of already, and that fill was noted then. The
+// commonest case is the cancel that raced the fill: "Unknown order sent", and Binance's error
+// reply names no symbol. It used to read every symbol (read_all), at every such reconciliation:
+// on the accounts that trade most, 85 myTrades every few minutes, which held the IP's bulk weight.
 void BinanceVenue::note_execution(InstrumentId id) noexcept {
-  if (!id.valid()) {
-    exec_replay_.read_all();  // an order of no instrument this connector can name
-    return;
-  }
-  executions_.note(id, now_ns());
+  if (id.valid()) executions_.note(id, now_ns());
 }
 
 bool BinanceVenue::executed_since(std::size_t stream, std::int64_t since_ms) const noexcept {

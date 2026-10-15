@@ -19,6 +19,7 @@ All notable changes are recorded here (Keep a Changelog format).
   file (21), store schema (9) and gateway protocol (7) versions.
 - venues: Binance orders early in a minute no longer hold the depth snapshots and reconciliations.
 - venues: Binance spot replays and fill audits read myTrades of the symbols with executions only.
+- venues: a Binance spot cancel refused for an order already over no longer reads every symbol.
 - tests: the shadow sweep test drops only the cancels' replies, not a balance query's.
 
 ## [0.6.0] - 2026-10-13

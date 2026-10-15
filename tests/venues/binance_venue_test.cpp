@@ -67,8 +67,9 @@ struct Harness {
   std::atomic<std::uint64_t> depth_last_update_id{100};  // the snapshot's lastUpdateId
   std::atomic<int> cancel_all_ok{0};
   std::atomic<int> cancel_all_bad{0};
-  std::atomic<bool> hold_place{false};   // order.place gets no answer (still in flight)
-  std::atomic<bool> hold_trades{false};  // GET myTrades answers only once released (3 s at most)
+  std::atomic<bool> hold_place{false};      // order.place gets no answer (still in flight)
+  std::atomic<bool> cancel_unknown{false};  // order.cancel answers -2011 "Unknown order sent."
+  std::atomic<bool> hold_trades{false};     // GET myTrades answers only once released (3 s at most)
   // > 0: signed REST requests older than this by the fake's clock when they arrive are refused with
   // -1021, as Binance does past recvWindow.
   std::atomic<long long> recv_window_ms{0};
@@ -212,6 +213,9 @@ struct Harness {
           user_session->send_text(
               exec_report("TRADE", "PARTIALLY_FILLED", "0.00040000", "0.00040000", 777));
         }
+      } else if (method == "order.cancel" && cancel_unknown.load()) {
+        s.send_text(R"({"id":")" + id +
+                    R"(","status":400,"error":{"code":-2011,"msg":"Unknown order sent."}})");
       } else if (method == "order.cancel") {
         s.send_text(
             R"({"id":")" + id +
@@ -1557,31 +1561,43 @@ TEST_CASE("binance.venue: a disconnect ends a fill audit incomplete") {
   h.srv.stop();
 }
 
+namespace {
+
+// Five more spot symbols in the fake's exchangeInfo, copies of BTCUSDT; the six bases.
+std::vector<std::string> six_symbols(Harness& h) {
+  const std::vector<std::string> names{"BTC", "ETH", "SOL", "XRP", "BNB", "ADA"};
+  const std::size_t at = h.exchange_info.find(R"({"symbol":"BTCUSDT")");
+  const std::size_t end = h.exchange_info.rfind("]}");
+  REQUIRE(at != std::string::npos);
+  const std::string btc = h.exchange_info.substr(at, end - at);
+  std::string more;
+  for (std::size_t i = 1; i < names.size(); ++i) {
+    std::string s = btc;
+    s.replace(s.find("BTCUSDT"), 7, names[i] + "USDT");
+    s.replace(s.find(R"("baseAsset":"BTC")"), 17, R"("baseAsset":")" + names[i] + "\"");
+    more += "," + s;
+  }
+  h.exchange_info.insert(end, more);
+  return names;
+}
+
+void add_instruments(InstrumentTable& instruments, const std::vector<std::string>& bases) {
+  for (const std::string& b : bases) {
+    const std::string symbol = b + "USDT";
+    REQUIRE(instruments.add(make_instrument(symbol.c_str(), 0, b.c_str(), "USDT")));
+  }
+}
+
+}  // namespace
+
 TEST_CASE("binance.venue: a fill audit reads the symbols with executions in its window") {
   // Five accounts of one IP quoted 85 symbols each, and every fill audit read myTrades of all 85
   // (weight 20 each) behind the replays doing the same: the IP's bulk weight was spent, and live
   // nine audits in ten were not done. Orders on a symbol are no sign of an execution; a fill is.
   Harness h;
-  const std::vector<std::string> names{"BTC", "ETH", "SOL", "XRP", "BNB", "ADA"};
-  {
-    const std::size_t at = h.exchange_info.find(R"({"symbol":"BTCUSDT")");
-    const std::size_t end = h.exchange_info.rfind("]}");
-    REQUIRE(at != std::string::npos);
-    const std::string btc = h.exchange_info.substr(at, end - at);
-    std::string more;
-    for (std::size_t i = 1; i < names.size(); ++i) {
-      std::string s = btc;
-      s.replace(s.find("BTCUSDT"), 7, names[i] + "USDT");
-      s.replace(s.find(R"("baseAsset":"BTC")"), 17, R"("baseAsset":")" + names[i] + "\"");
-      more += "," + s;
-    }
-    h.exchange_info.insert(end, more);
-  }
+  const std::vector<std::string> names = six_symbols(h);
   InstrumentTable instruments;
-  for (std::size_t i = 0; i < names.size(); ++i) {
-    const std::string symbol = names[i] + "USDT";
-    REQUIRE(instruments.add(make_instrument(symbol.c_str(), 0, names[i].c_str(), "USDT")));
-  }
+  add_instruments(instruments, names);
   RecordingSink md(8U << 20);
   RecordingSink orders(4U << 20, SinkPolicy::Spin);
   MsgRing outbound(1U << 16);
@@ -1637,6 +1653,66 @@ TEST_CASE("binance.venue: a fill audit reads the symbols with executions in its 
     const auto q = h.srv.frames("myTrades");
     REQUIRE(q.size() == before + 1);
     CHECK(query_param(q.back(), "symbol") == "BTCUSDT");
+    venue.disconnect();
+    reactor.run_once(0);
+  }
+  h.srv.stop();
+}
+
+TEST_CASE(
+    "binance.venue: a cancel that finds its order over reconciles without reading every symbol") {
+  // Live (anchor-live23): the cancel that races the fill finishing its order is refused,
+  // -2011 "Unknown order sent.", and asks for a reconciliation. The fill had ended the order's
+  // shadow and the error names no symbol, so the connector named no instrument and read every
+  // symbol's myTrades for it: 85 queries every few minutes on the accounts that trade most, which
+  // held the IP's bulk weight for a minute or two each time while the others' replays and fill
+  // audits gave up. The fill that ended the order was heard of, and noted, already.
+  Harness h;
+  const std::vector<std::string> names = six_symbols(h);
+  InstrumentTable instruments;
+  add_instruments(instruments, names);
+  RecordingSink md(8U << 20);
+  RecordingSink orders(4U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  Collected oc;
+  {
+    BinanceVenue venue(VenueId{0}, h.config(false));
+    REQUIRE(venue.load_reference_data(instruments));
+    REQUIRE(symbols.build(instruments));
+    venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    std::vector<InstrumentId> ids;
+    for (std::size_t i = 0; i < names.size(); ++i)
+      ids.push_back(InstrumentId{static_cast<std::uint32_t>(i)});
+    venue.subscribe(ids);
+    // Watermarks ten minutes ahead: within the test's seconds no symbol has had an execution
+    // since its watermark (in its first minutes a connector counts every symbol as active).
+    venue.resume_executions(wall_now().ns / 1'000'000 + 600'000, {});
+    venue.connect(reactor);
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return oc.count(EventType::Reconcile) >= 2;  // the start-up sweep
+    }));
+    const std::size_t read = h.srv.frames("myTrades").size();
+    CHECK(read == names.size());  // the connection's first replay reads every symbol
+
+    // A cancel of an order the connector holds nothing of any more, refused as unknown.
+    h.cancel_unknown = true;
+    const std::size_t reconciles = oc.count(EventType::Reconcile);
+    OutCancelMsg c{};
+    init_header(c, EventType::OutCancel, InstrumentId{1}, VenueId{0});
+    c.cl_ord_id = decode_cl_ord_id("fm000100000009").value();
+    c.venue_order_id.assign("4293199");
+    REQUIRE(outbound.try_push(&c, c.hdr.len));
+    venue.on_wake();
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return oc.count(EventType::OrderCancelReject) == 1 &&
+             oc.count(EventType::Reconcile) >= reconciles + 2;
+    }));
+    // The reconciliation it asked for read no symbol's myTrades.
+    CHECK(h.srv.frames("myTrades").size() == read);
     venue.disconnect();
     reactor.run_once(0);
   }
