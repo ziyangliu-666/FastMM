@@ -4,7 +4,7 @@ A release comes in three forms, from <https://github.com/ziyangliu-666/FastMM/re
 
 | Form | What it holds | Use it for |
 |---|---|---|
-| `fastmm-<version>-x86_64.tar.gz` | `fastmm-live`, `fastmm-gateway`, `fastmm-ctl`, `fastmm-top`, `fastmm-pnl`, `fastmm-replay`, `fastmm-sim-exchange`, `fastmm-sim-itch`, the simulator configs, the systemd units, the Prometheus alert rules (0.2.0: `fastmm-live`, `fastmm-top`, `fastmm-replay`, `fastmm-sim-itch` and `fastmm-live.service`) | a host that runs C++ strategies |
+| `fastmm-<version>-x86_64.tar.gz` | `fastmm-live`, `fastmm-gateway`, `fastmm-ctl`, `fastmm-top`, `fastmm-pnl`, `fastmm-replay`, `fastmm-sim-exchange`, `fastmm-sim-itch`, the simulator configs, the systemd units, the Prometheus alert rules | a host that runs C++ strategies |
 | `ghcr.io/ziyangliu-666/fastmm:<version>` | the same programs without the simulator, non-root | a container host |
 | `pip install "fastmm-engine[live]"` | the engine as a Python package, for strategies written in Python | [Python](../../python.md) |
 
@@ -13,12 +13,14 @@ Both are built for x86-64-v2. The tarball needs glibc 2.28 or newer and nothing 
 ## Install the tarball
 
 ```bash
-URL=https://github.com/ziyangliu-666/FastMM/releases/download/v0.2.0
-curl -LO $URL/fastmm-0.2.0-x86_64.tar.gz
-curl -LO $URL/fastmm-0.2.0-x86_64.tar.gz.sha256
-sha256sum -c fastmm-0.2.0-x86_64.tar.gz.sha256
-sudo tar xzf fastmm-0.2.0-x86_64.tar.gz -C /opt
-sudo ln -sfn /opt/fastmm-0.2.0-x86_64 /opt/fastmm
+VERSION=$(curl -s https://api.github.com/repos/ziyangliu-666/FastMM/releases/latest \
+  | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')   # the newest; or set VERSION=x.y.z
+URL=https://github.com/ziyangliu-666/FastMM/releases/download/v$VERSION
+curl -LO $URL/fastmm-$VERSION-x86_64.tar.gz
+curl -LO $URL/fastmm-$VERSION-x86_64.tar.gz.sha256
+sha256sum -c fastmm-$VERSION-x86_64.tar.gz.sha256
+sudo tar xzf fastmm-$VERSION-x86_64.tar.gz -C /opt
+sudo ln -sfn /opt/fastmm-$VERSION-x86_64 /opt/fastmm
 /opt/fastmm/bin/fastmm-live --version
 ```
 
@@ -72,7 +74,7 @@ sudo rm /var/lib/fastmm/runs/<engine name>.kill   # clears a latched max_loss tr
 
 ## Run the container
 
-The image runs as uid 10001 with no login shell, trusts the distro CA bundle, and runs `tini` as PID 1 to forward signals and reap children. It holds no simulator, no test certificates and no configuration: the first argument is a config path.
+Each release is tagged `ghcr.io/ziyangliu-666/fastmm:<version>`, and the newest also `:latest`; `VERSION` is set as in [Install the tarball](#install-the-tarball). The image runs as uid 10001 with no login shell, trusts the distro CA bundle, and runs `tini` as PID 1 to forward signals and reap children. It holds no simulator, no test certificates and no configuration: the first argument is a config path.
 
 ```bash
 mkdir -p runs && sudo chown 10001:10001 runs
@@ -81,7 +83,7 @@ docker run --rm --name fastmm \
   -v "$PWD/runs:/var/lib/fastmm/runs" \
   -e FASTMM_API_KEY -e FASTMM_API_SECRET \
   --stop-timeout 90 \
-  ghcr.io/ziyangliu-666/fastmm:0.2.0 /etc/fastmm/live.toml --duration 60s
+  "ghcr.io/ziyangliu-666/fastmm:$VERSION" /etc/fastmm/live.toml --duration 60s
 ```
 
 | Path in the container | Mount |
@@ -92,7 +94,7 @@ docker run --rm --name fastmm \
 
 `--stop-timeout 90` gives the cancel-all the same room as the systemd unit. Do not restart a container that exited with 2, 3, 5, 6 or 7. Docker's restart policies cannot exclude exit codes, so use `--restart no`, or an orchestrator that restarts only on a signal or exit 4, as the unit does.
 
-Other programs run through the same entrypoint by name: `docker run --rm -v "$PWD/runs:/var/lib/fastmm/runs" ghcr.io/ziyangliu-666/fastmm:0.2.0 fastmm-replay --journal /var/lib/fastmm/runs/<file>.fmj --verify`.
+Other programs run through the same entrypoint by name: `docker run --rm -v "$PWD/runs:/var/lib/fastmm/runs" "ghcr.io/ziyangliu-666/fastmm:$VERSION" fastmm-replay --journal /var/lib/fastmm/runs/<file>.fmj --verify`.
 
 Build it from a checkout with `docker build -f deploy/docker/Dockerfile.production -t fastmm:local .`. `deploy/docker/Dockerfile` and `deploy/docker/compose.yml` are the demo instead: they run as root with test certificates and a simulated exchange ([Install](../../getting-started/install.md#docker)).
 
