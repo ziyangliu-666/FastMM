@@ -167,7 +167,8 @@ std::string BacktestResult::summary_table() const {
       m.fill_quality.queue_position_known
           ? fmt::format(
                 "{:.5f} / {:.5f}", m.fill_quality.queue_ahead_p50, m.fill_quality.queue_ahead_p90)
-          : std::string("n/a (the matching fill model has no queue position)"));
+          : std::string(m.fills == 0 ? "n/a (no fills)"
+                                     : "n/a (the matching fill model has no queue position)"));
   row("volume base / quote", fmt::format("{:.5f} / {:.2f}", m.volume_base, m.volume_quote));
   row("inventory mean / |mean| / max",
       fmt::format(
