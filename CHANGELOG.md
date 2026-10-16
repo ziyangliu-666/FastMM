@@ -60,6 +60,7 @@ All notable changes are recorded here (Keep a Changelog format).
   the numpy columns and `to_pandas()`.
 - live: a stop's venue cancel-all waits for the engine to take the kill switch; it left open an
   order the engine sent after it.
+- live: `--strategy` naming no strategy prints its error in one write; a log line no longer splits it.
 
 ## [0.6.0] - 2026-10-13
 

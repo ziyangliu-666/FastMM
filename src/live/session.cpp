@@ -50,6 +50,7 @@
 #include <exception>
 #include <filesystem>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <span>
@@ -731,12 +732,15 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     return kExitConfig;
   }
   if (custom == nullptr && (strategy == nullptr || !strategy->supports(TransportKind::Live))) {
-    std::fprintf(stderr, "%s: unknown strategy '%s' (available:", prog, cfg.strategy.name.c_str());
+    // One write: the async logger writes to stderr too (the dry run's INFO line), and a line
+    // printed piece by piece took its line in the middle.
+    std::string line =
+        fmt::format("{}: unknown strategy '{}' (available:", prog, cfg.strategy.name);
     for (const StrategyEntry& e : list_strategies()) {
-      if (e.supports(TransportKind::Live))
-        std::fprintf(stderr, " %.*s", static_cast<int>(e.name.size()), e.name.data());
+      if (e.supports(TransportKind::Live)) fmt::format_to(std::back_inserter(line), " {}", e.name);
     }
-    std::fprintf(stderr, ")\n");
+    line += ")\n";
+    std::fwrite(line.data(), 1, line.size(), stderr);
     return kExitConfig;
   }
   const std::string_view strategy_name =
