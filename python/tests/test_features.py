@@ -142,3 +142,25 @@ def test_forward_mid_matches_the_backtest_at_every_fill(example_config, syntheti
         i = by_ts[int(ts)]
         assert mid[i] == fills["mid"][k]
         assert fwd[i] == markout[k]
+
+
+def test_the_synthetic_market_records_as_the_error_says(example_config, tmp_path):
+    with pytest.raises(ValueError, match="convert_data") as e:
+        fastmm.features("synthetic")
+    assert "fastmm.convert_data('synthetic', 'synthetic.fmj', config)" in str(e.value)
+    # The call the message names works and gives a journal features() reads.
+    cfg = example_config.copy()
+    cfg.duration_s = 5
+    out = tmp_path / "synthetic.fmj"
+    assert fastmm.convert_data("synthetic", str(out), cfg) > 0
+    assert len(fastmm.features(str(out), horizons=[1.0])) > 0
+    assert fastmm.run_backtest(cfg, data=str(out)).md_events > 0
+
+
+def test_a_run_without_fills_does_not_blame_the_fill_model(example_config):
+    cfg = example_config.copy()
+    cfg.duration_s = 3
+    r = fastmm.run_backtest(cfg, data="synthetic", params={"half_spread_bps": 500.0})
+    assert r.stats()["fills"] == 0
+    line = next(ln for ln in r.summary_table().splitlines() if "queue ahead" in ln)
+    assert "no fills" in line and "matching" not in line

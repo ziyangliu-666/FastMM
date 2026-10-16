@@ -6,15 +6,17 @@
 // Result columns are exposed as read-only numpy views whose base capsule owns a
 // shared_ptr<BacktestResult>, so they outlive the Python result object.
 #include "bind_common.hpp"
+#include "result_state.hpp"
 
 #include "fastmm/backtest/array_source.hpp"
 #include "fastmm/backtest/backtest_runner.hpp"
 #include "fastmm/backtest/data_registry.hpp"
 #include "fastmm/backtest/data_source.hpp"
+#include "fastmm/backtest/journal_source.hpp"
 #include "fastmm/backtest/replay.hpp"
 #include "fastmm/backtest/result.hpp"
 #include "fastmm/backtest/sweep.hpp"
-#include "result_state.hpp"
+#include "fastmm/backtest/synthetic_source.hpp"
 
 #include <pybind11/stl.h>
 
@@ -780,12 +782,11 @@ void bind_backtest(py::module_& m) {
           },
           "fills / equity / orders as pandas DataFrames with float prices and datetime64 "
           "timestamps (see fastmm.results.to_pandas).")
-      .def(py::pickle(
-          [](const BacktestResult& r) { return py::bytes(result_state::to_bytes(r)); },
-          [](const py::bytes& b) {
-            return std::make_shared<BacktestResult>(
-                result_state::from_bytes(static_cast<std::string_view>(b)));
-          }))
+      .def(py::pickle([](const BacktestResult& r) { return py::bytes(result_state::to_bytes(r)); },
+                      [](const py::bytes& b) {
+                        return std::make_shared<BacktestResult>(
+                            result_state::from_bytes(static_cast<std::string_view>(b)));
+                      }))
       .def("__repr__", [](const BacktestResult& r) {
         return "<BacktestResult strategy='" + r.strategy +
                "' fills=" + std::to_string(r.fills.size()) +
@@ -831,13 +832,19 @@ void bind_backtest(py::module_& m) {
       [](const std::string& data, const std::string& out, const BacktestConfig& config) {
         const BacktestConfig cfg = config;
         py::gil_scoped_release release;
+        if (data == "synthetic") {
+          // The generator of config's [sim] as a stream: what the l2_queue fill model replays.
+          bt::SyntheticSource source(bt::synthetic_source_config(cfg));
+          return bt::write_md_journal(source, out, cfg.instruments, cfg.seed);
+        }
         return bt::convert_data(data, out, cfg.instruments);
       },
       py::arg("data"),
       py::arg("out"),
       py::arg("config"),
       "Decode a data source into an .fmj journal, the format a backtest replays fastest, and "
-      "return the number of events written. The instruments come from `config`.");
+      "return the number of events written. The instruments come from `config`; 'synthetic' "
+      "records the synthetic market of config's [sim] and [backtest] duration_s.");
 
   m.def(
       "_run_strategy",

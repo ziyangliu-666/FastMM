@@ -112,7 +112,7 @@ The `fastmm-engine` package (imported as `fastmm`) runs backtests on CPython 3.1
 | Extra | Installs |
 |---|---|
 | `fastmm-engine[live]` | `fastmm-engine-live` of the same version: networking, venue connectors and OpenSSL 3 inside the extension module |
-| `fastmm-engine[hot]` | numba and llvmlite |
+| `fastmm-engine[hot]` | numba and llvmlite for hot hooks, pandas for `to_pandas()`, `sweep_frame` and `markout_frame` |
 
 ```bash
 pip install "fastmm-engine[hot]"    # backtests, Python strategies, the fastmm command

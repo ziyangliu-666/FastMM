@@ -36,6 +36,14 @@ All notable changes are recorded here (Keep a Changelog format).
   config.toml named the project. `fastmm init --help` lists every file it writes.
 - python: the scaffold's `testnet` says what its venue is: true for Demo Mode, the testnet and the
   local simulator, false for the real market (`production.toml` left the default, true).
+- backtest: the summary of a run without fills says so on the queue-ahead line, not that the
+  matching fill model has no queue position.
+- python: `fastmm.convert_data('synthetic', out, config)` records the synthetic market, as the
+  `features('synthetic')` error tells you to; it raised "no events to convert".
+- python: the `hot` extra installs pandas, which `to_pandas()`, `sweep_frame` and the Python
+  docs' examples need.
+- docs: one table maps the metric and column names of `stats()`, `summary.json`, the CSV files,
+  the numpy columns and `to_pandas()`.
 
 ## [0.6.0] - 2026-10-13
 

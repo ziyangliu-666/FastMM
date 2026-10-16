@@ -73,6 +73,24 @@ The GIL is released while a C++ strategy or hot hooks run, so several runs can p
 
 `markouts()` returns one dict per horizon of `cfg.markout_horizons_s` with the buckets `total`, `buy`, `sell`, `maker`, `taker` and `instrument`, each holding `markout`, `capture` and `adverse_selection` in quote currency and in bps of notional, plus `excluded_past_end` and `excluded_no_mid` for the fills that could not be marked. `fastmm.markout_frame(result)` puts the same rows in a DataFrame, and `stats()` carries the PnL decomposition (`spread_capture`, `mid_drift`, `fees_paid`, `rebates_received`, `decomposition_net`, `decomposition_residual`) and the fill-quality diagnostics. `r.fills` gains `best_bid`, `best_ask`, `queue_ahead` (-1 when the fill model has no queue position) and one `markout_mid_<ns>ns` column per horizon, 0 where the fill could not be marked ([Backtesting](explanation/backtesting.md)).
 
+### Names in each output
+
+`stats()` and `summary.json` share the metric names, except that `summary.json` nests the PnL decomposition under `pnl_decomposition` and the markouts under `markouts`, where `stats()` flattens the first and leaves the second to `markouts()`. The CSV files name columns as `fastmm-backtest` writes them, the numpy dicts as the C++ result fields, and `to_pandas()` adds derived columns:
+
+| Quantity | `stats()` | `summary.json` | CSV | `r.fills` / `r.equity` / `r.orders` | `to_pandas()` |
+|---|---|---|---|---|---|
+| time | | `start_ts` / `end_ts` | `ts_ns` (orders: also `venue_ts_ns`, `trigger_ts_ns`) | `ts` (orders: also `venue_ts`, `trigger_ts`) | index `ts`, datetime64 |
+| instrument | | | `inst` | `instrument` | `instrument` |
+| side, liquidity | | | `B` / `S`, `M` / `T` | 0 / 1, 1 / 2 | categorical `buy` / `sell`, `maker` / `taker` |
+| prices, quantities, PnL | float | float | exact decimals | raw int64, 1e-8 | float |
+| mid at a markout horizon | | | `mid_1s`, `mid_10s`, `mid_1m` | `markout_mid_<ns>ns`, 0 when unmarked | `mid_1s` (NaN when unmarked) and `markout_1s` |
+| equity | | | `equity` | `realized + unrealized - fees` | `equity` |
+| quotes resting | | | `quoted` (bit 0 bid, bit 1 ask) | `quoted` | `bid_quoted`, `ask_quoted` |
+| decomposition: capture, drift, fees, rebates | `spread_capture`, `mid_drift`, `fees_paid`, `rebates_received` | `pnl_decomposition.` the same | | | |
+| decomposition: sum, residual, notional | `decomposition_net`, `decomposition_residual`, `traded_notional` | `pnl_decomposition.net`, `.residual`, `.notional` | | | |
+
+`spread_captured_bps` (summary table: `spread captured (bps)`) is the mean over fills of each fill's capture in bps of its mid; `spread_capture_bps` is the decomposition's total capture over the notional of the fills that had a mid. Both are in `stats()`; `summary.json` has the first at the top level and the second under `pnl_decomposition`.
+
 ## Sweeps
 
 ```python

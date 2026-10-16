@@ -25,8 +25,9 @@ fastmm = "fastmm.__main__:main"
 [project.optional-dependencies]
 pandas = ["pandas>=2.0"]
 plot = ["matplotlib>=3.7"]
-# Hot hooks (@fastmm.hot). Tested with numba 0.61.2 and 0.67.0.
-hot = ["numba>=0.61,<0.68", "llvmlite>=0.44,<0.50"]
+# Hot hooks (@fastmm.hot), and pandas for the DataFrames of results. Tested with numba 0.61.2 and
+# 0.67.0.
+hot = ["numba>=0.61,<0.68", "llvmlite>=0.44,<0.50", "pandas>=2.0"]
 # Same version as fastmm (python/tests/test_packaging.py checks it).
 live = ["fastmm-engine-live==0.6.0"]
 dev = ["pytest>=7", "pandas>=2.0", "pybind11-stubgen"]

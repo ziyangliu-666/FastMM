@@ -200,8 +200,8 @@ void bind_research(py::module_& m) {
         if (source == nullptr) {
           throw py::value_error(
               "data: 'synthetic' is a generator coupled to the simulated venue, not a stream of "
-              "events; record one with convert_data('synthetic', out, config) and read the "
-              "journal");
+              "events; record it with fastmm.convert_data('synthetic', 'synthetic.fmj', config) "
+              "and pass the journal");
         }
         auto table = std::make_shared<rs::FeatureTable>();
         {

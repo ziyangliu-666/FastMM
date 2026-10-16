@@ -1096,6 +1096,8 @@ def _fill_quality_section(run: Run) -> str:
         rows.append(("queue ahead at fill p50 / p90",
                      f"{_fmt_qty(run.get('queue_ahead_p50'))} / "
                      f"{_fmt_qty(run.get('queue_ahead_p90'))}"))
+    elif not run.get("fills"):
+        rows.append(("queue ahead at fill", "no fills"))
     else:
         rows.append(("queue ahead at fill", "not tracked by this fill model"))
     return (

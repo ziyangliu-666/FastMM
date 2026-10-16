@@ -1898,7 +1898,7 @@ def build_info() -> str:
     """
 def convert_data(data: str, out: str, config: BacktestConfig) -> int:
     """
-    Decode a data source into an .fmj journal, the format a backtest replays fastest, and return the number of events written. The instruments come from `config`.
+    Decode a data source into an .fmj journal, the format a backtest replays fastest, and return the number of events written. The instruments come from `config`; 'synthetic' records the synthetic market of config's [sim] and [backtest] duration_s.
     """
 def data_sources() -> str:
     """
