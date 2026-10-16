@@ -15,8 +15,13 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import _core
 
-# The work of the current pool, inherited by its forked workers.
+# In a worker process: the work of its pool (config, data, class, [(params, window)]).
 _JOB: Optional[Tuple[Any, Any, type, List[Tuple[Dict[str, Any], Any]]]] = None
+
+
+def _set_job(job: Tuple[Any, Any, type, List[Tuple[Dict[str, Any], Any]]]) -> None:
+    global _JOB
+    _JOB = job
 
 
 def _strategy_class(config: Any, strategy: Any) -> Optional[type]:
@@ -65,7 +70,6 @@ def _workers(threads: int, n: int) -> int:
 
 def _run_points(config: Any, data: Any, cls: type,
                 tasks: List[Tuple[Dict[str, Any], Any]], threads: int) -> List[Any]:
-    global _JOB
 
     cfg = _point_config(config)
     workers = _workers(threads, len(tasks))
@@ -73,15 +77,11 @@ def _run_points(config: Any, data: Any, cls: type,
         return [_run_one(cfg, data, cls, p, w) for p, w in tasks]
     from concurrent.futures import ProcessPoolExecutor
 
-    if _JOB is not None:
-        raise RuntimeError("fastmm: a sweep of a Python strategy is already running in this process")
-    _JOB = (cfg, data, cls, tasks)
-    try:
-        with ProcessPoolExecutor(max_workers=workers,
-                                 mp_context=multiprocessing.get_context("fork")) as pool:
-            return list(pool.map(_run_task, range(len(tasks))))
-    finally:
-        _JOB = None
+    # A forked worker inherits the initializer's arguments as they are: nothing is pickled on the
+    # way in, only the results on the way back.
+    with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("fork"),
+                             initializer=_set_job, initargs=((cfg, data, cls, tasks),)) as pool:
+        return list(pool.map(_run_task, range(len(tasks))))
 
 
 def sweep(config: Any, grid: Dict[str, Sequence[Any]], data: Any = None, strategy: Any = None,
