@@ -16,6 +16,13 @@ All notable changes are recorded here (Keep a Changelog format).
 - python: `fastmm init --venue` writes `live.toml` for Binance Spot Demo Mode (`binance-demo`, the
   default), the Spot testnet at testnet.binance.vision (`binance-testnet`) or the real market
   (`binance`, recorded keyless with `--dry-run`).
+- backtest: `[sim] spread_bps`, `mid_step_bps` and `depth_bps` shape the synthetic market in bps
+  of its mid (`mid_step_ticks` and `MarketGeneratorParams::depth_ticks` in ticks).
+
+### Changed
+- backtest: a configuration's synthetic market defaults to a liquid pair, a book about 2.7 bps
+  wide with 0.5 bps mid steps where a quote at the touch fills; it was one tick, 0.003 bps, wide.
+  `configs/backtest-example.toml` pins the one-tick market, and C++ `single_instrument()` keeps it.
 
 ### Fixed
 - core: an execution replay naming more than 64 estimated fills no longer books the oldest twice.

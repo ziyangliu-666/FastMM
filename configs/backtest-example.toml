@@ -73,8 +73,12 @@ stp = true
 [logging]
 level = "warn"
 
-# Synthetic market (--data synthetic): MarketGenerator parameters.
+# Synthetic market (--data synthetic): MarketGenerator parameters. The touch one tick from the mid
+# and one-tick mid steps (0.003 bps of spread at 60000) are what the golden fixtures record; the
+# [sim] defaults are a market a few bps wide instead (docs/reference/configuration.md#sim).
 [sim]
+base_spread_ticks = 1
+mid_step_ticks = 1
 seed = 1
 start_mid = "60000"
 depth_update_ms = 100

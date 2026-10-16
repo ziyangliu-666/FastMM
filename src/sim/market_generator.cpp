@@ -1,6 +1,8 @@
 #include "fastmm/sim/market_generator.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 namespace fastmm::sim {
 
@@ -52,10 +54,26 @@ Timestamp MarketGenerator::next_ts() const noexcept {
   return t > end_ ? Timestamp::max() : t;
 }
 
+std::int64_t MarketGenerator::offset_ticks() noexcept {
+  if (p_.depth_ticks > 0.0) {
+    // Geometric with mean depth_ticks: P(k) = q (1-q)^k, q = 1 / (1 + depth_ticks).
+    const double u = 1.0 - rng_.uniform01();  // (0, 1]
+    const double k = std::floor(std::log(u) / std::log1p(-1.0 / (1.0 + p_.depth_ticks)));
+    const double cap = 100.0 * p_.depth_ticks;
+    return static_cast<std::int64_t>(k < cap ? k : cap);
+  }
+  // geometric offset in ticks: number of failures before the first success
+  std::int64_t k = 0;
+  while (rng_.uniform01() >= p_.offset_p && k < 200) ++k;
+  return k;
+}
+
 void MarketGenerator::seed_book(MatchingEngine& me, int levels, Timestamp now) noexcept {
+  const std::int64_t spacing =
+      p_.depth_ticks > 0.0 ? std::max<std::int64_t>(1, std::llround(p_.depth_ticks / 4.0)) : 1;
   for (int k = 0; k < levels; ++k) {
     for (Side side : {Side::Buy, Side::Sell}) {
-      const std::int64_t off = (p_.base_spread_ticks + k) * p_.tick.raw;
+      const std::int64_t off = (p_.base_spread_ticks + k * spacing) * p_.tick.raw;
       NewOrder o;
       o.account = kGeneratorAccount;
       o.cl_ord_id = ClientOrderId{next_id_++};
@@ -86,7 +104,8 @@ void MarketGenerator::step(MatchingEngine& me) noexcept {
     do_market(me, now);
     next_market_ = now + exp_delay(p_.market_rate_per_s * regime_mult());
   } else if (now == next_mid_) {
-    mid_ = Price::from_raw(mid_.raw + (rng_.uniform(2) == 0 ? -p_.tick.raw : p_.tick.raw));
+    const std::int64_t step = p_.mid_step_ticks * p_.tick.raw;
+    mid_ = Price::from_raw(mid_.raw + (rng_.uniform(2) == 0 ? -step : step));
     if (mid_.raw < 2 * p_.tick.raw) mid_ = Price::from_raw(2 * p_.tick.raw);
     ++stats_.mid_steps;
     next_mid_ = now + exp_delay(p_.mid_step_rate_per_s * regime_mult());
@@ -101,9 +120,7 @@ void MarketGenerator::do_limit(MatchingEngine& me, Timestamp now) noexcept {
   if (resting_.size() >= resting_.capacity() - 1) compact(me);
   if (resting_.size() >= p_.max_resting) return;  // book saturated: skip this arrival
   const Side side = rng_.uniform(2) == 0 ? Side::Buy : Side::Sell;
-  // geometric offset in ticks: number of failures before the first success
-  std::int64_t k = 0;
-  while (rng_.uniform01() >= p_.offset_p && k < 200) ++k;
+  const std::int64_t k = offset_ticks();
   const std::int64_t off = (p_.base_spread_ticks + k) * p_.tick.raw;
   NewOrder o;
   o.account = kGeneratorAccount;

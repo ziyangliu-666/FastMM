@@ -12,7 +12,8 @@
 //   queue_conservatism = 0..1                     base_spread_ticks, limit_qty_median_lots,
 //   latency_fixed_us, latency_jitter_us,          market_qty_median_lots, regimes,
 //   latency_ack_us, latency_ack_jitter_us,
-//   latency_md_us, latency_md_jitter_us, p_drop   volatile_mult, seed_levels
+//   latency_md_us, latency_md_jitter_us, p_drop   volatile_mult, seed_levels, spread_bps,
+//                                                 mid_step_bps, mid_step_ticks, depth_bps
 //   latency_cancel_us, latency_cancel_jitter_us, order_service_us
 //   md_arrival = "venue" | "recorded", reorder_window_ms = 1000
 //   balances_from_journal = false, own_orders_in_feed = true, transfer_latency_ms = 0
@@ -42,6 +43,15 @@ enum class InitialState : std::uint8_t {
   Journal = 1,    // the data journal's (journal_state.hpp), with the session's positions
   None = 2,       // nothing: the strategy starts fresh
 };
+
+// The [sim] defaults of a configuration file: a liquid crypto pair. New limit orders leave 4 bps
+// around the latent mid and rest 1 bps behind that on average; orders a mid move left behind rest
+// inside it, so the book's spread is 1.7 to 3.4 bps (10th to 90th percentile), 2.7 at the median.
+// Latent mid steps of 0.5 bps, 2 a second calm and 8 volatile, give 0.4 to 0.7 bps of volatility a
+// square-root second.
+inline constexpr double kDefaultSpreadBps = 4.0;
+inline constexpr double kDefaultMidStepBps = 0.5;
+inline constexpr double kDefaultDepthBps = 1.0;
 
 struct BacktestConfig {
   EngineConfig engine;
@@ -109,6 +119,14 @@ struct BacktestConfig {
   [[nodiscard]] FxPlan fx_plan(const InstrumentTable& table);
   // The [risk.underlying] plan for `table` (throws ConfigError when the spec does not fit it).
   [[nodiscard]] UnderlyingPlan underlying_plan(const InstrumentTable& table) const;
+
+  // The synthetic market in basis points of generator.start_mid, turned into ticks of
+  // generator.tick: the spread from touch to touch (base_spread_ticks, half of it a side), the
+  // size of a latent mid step (mid_step_ticks) and the mean distance of a new limit order behind
+  // the touch (depth_ticks). Each comes to at least one tick. from_config() applies the [sim]
+  // defaults below unless the tick keys are given; single_instrument() keeps the one-tick market
+  // of MarketGeneratorParams.
+  void set_market_bps(double spread_bps, double mid_step_bps, double depth_bps);
 
   // "key=value" strategy parameter override (CLI --param).
   void set_param(const std::string& key, const std::string& value) { params[key] = value; }

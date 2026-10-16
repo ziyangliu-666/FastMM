@@ -825,9 +825,13 @@ The synthetic market; free-form in the schema. Prices and sizes use the first in
 | `limit_rate_per_s` | number | `200` | Limit-order arrivals per second |
 | `cancel_rate_per_order_s` | number | `0.5` | Cancellation hazard of each resting order, per second |
 | `market_rate_per_s` | number | `10` | Market-order arrivals per second |
-| `mid_step_rate_per_s` | number | `2` | Steps of one tick in the latent mid price, per second |
-| `offset_p` | number | `0.35` | In (0, 1]. Limit orders land k ticks from the touch with probability p(1-p)^k |
-| `base_spread_ticks` | int | `1` | Distance of the touch from the latent mid, ticks, at least 1 |
+| `mid_step_rate_per_s` | number | `2` | Steps of the latent mid price per second, times `volatile_mult` in the volatile regime |
+| `spread_bps` | number | `4` | The spread new limit orders leave around the latent mid, bps of `start_mid`; the book's spread is narrower, since orders a mid step left behind rest inside it |
+| `depth_bps` | number | `1` | Mean distance of a new limit order behind the touch, bps of `start_mid` (geometric) |
+| `mid_step_bps` | number | `0.5` | Size of one latent mid step, bps of `start_mid` |
+| `base_spread_ticks` | int | from `spread_bps` | Distance of the touch from the latent mid, ticks, at least 1; replaces `spread_bps` |
+| `offset_p` | number | unset | In (0, 1]. Limit orders land k ticks from the touch with probability p(1-p)^k, at most 200; replaces `depth_bps` |
+| `mid_step_ticks` | int | from `mid_step_bps` | Size of one latent mid step, ticks, at least 1; replaces `mid_step_bps` |
 | `limit_qty_median_lots` | number | `200` | Median limit-order size in lots (log-normal) |
 | `market_qty_median_lots` | number | `100` | Median market-order size in lots (log-normal) |
 | `regimes` | bool | `true` | Switch between a calm and a volatile regime |
@@ -835,5 +839,5 @@ The synthetic market; free-form in the schema. Prices and sizes use the first in
 | `depth_update_ms` | int | `100` | Book changes are aggregated into one depth diff per interval, ms, like Binance `@depth@100ms` |
 | `book_ticker` | bool | `true` | Also publish top-of-book updates, at the same flush as the depth diff |
 
-Example: `configs/backtest-example.toml`.
+At the defaults, a BTCUSDT-like instrument at 60,000 USDT with a 0.01 tick has a book 1.7 to 3.4 bps wide (10th to 90th percentile, 2.7 at the median) and 0.4 to 0.7 bps of volatility a square-root second. Setting a bps key and the tick key that replaces it is an error. `configs/backtest-example.toml` sets `base_spread_ticks = 1`, `mid_step_ticks = 1` and `offset_p`: the one-tick market its golden fixtures record, 0.003 bps wide.
 

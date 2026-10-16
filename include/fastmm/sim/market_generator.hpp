@@ -31,9 +31,14 @@ struct MarketGeneratorParams {
   double limit_rate_per_s = 200.0;          // limit order arrivals
   double cancel_rate_per_order_s = 0.5;     // each resting order's hazard
   double market_rate_per_s = 10.0;          // market order arrivals
-  double mid_step_rate_per_s = 2.0;         // latent mid +-1 tick steps
+  double mid_step_rate_per_s = 2.0;         // latent mid +-mid_step_ticks steps
+  int mid_step_ticks = 1;                   // size of one latent mid step, ticks
   double offset_p = 0.35;                   // P(offset = k) = p (1-p)^k ticks from touch
-  int base_spread_ticks = 1;                // touch = mid -+ base_spread_ticks
+  // > 0: the offset from the touch is geometric with this mean in ticks, drawn from one uniform
+  // and not capped at 200 ticks, and offset_p is unused; the book is seeded at depth_ticks / 4
+  // spacing. 0 keeps offset_p (one draw per tick of offset).
+  double depth_ticks = 0.0;
+  int base_spread_ticks = 1;  // touch = mid -+ base_spread_ticks
   double limit_qty_median_lots = 200.0;
   double limit_qty_sigma = 0.8;
   double market_qty_median_lots = 100.0;
@@ -82,6 +87,7 @@ class MarketGenerator {
   enum class Kind : std::uint8_t { Limit, Cancel, Market, MidStep, Regime };
   [[nodiscard]] Duration exp_delay(double rate_per_s) noexcept;
   [[nodiscard]] Qty lognormal_qty(double median_lots, double sigma) noexcept;
+  [[nodiscard]] std::int64_t offset_ticks() noexcept;  // behind the touch, >= 0
   [[nodiscard]] double regime_mult() const noexcept { return volatile_ ? p_.volatile_mult : 1.0; }
   void do_limit(MatchingEngine& me, Timestamp now) noexcept;
   void do_cancel(MatchingEngine& me, Timestamp now) noexcept;

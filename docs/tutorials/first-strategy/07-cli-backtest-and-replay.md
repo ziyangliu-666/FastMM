@@ -64,7 +64,7 @@ One self-contained page from those four files: the equity curve and the inventor
 ```text
 journal  runs/tutorial/backtest.fmj: format v3, 18671 messages (15733 market data, 1193 outbound), rng_seed 1, strategy 'first_mm'
 session  epoch 1, quoting enabled, cancel-replace venues 0, engine clock recorded
-config   embedded in the journal (hash 9a5ede35a1359874)
+config   embedded in the journal (hash ffe3b7a8c976f070)
 replay   strategy=first_mm events=17414
 recorded outbound 1193 msgs sha256 f618ba2258ee17d67bd7d71ff58e4349507ef8934fe0e7b58e9d13ff8ddda0bb
 replayed outbound 1193 msgs sha256 f618ba2258ee17d67bd7d71ff58e4349507ef8934fe0e7b58e9d13ff8ddda0bb

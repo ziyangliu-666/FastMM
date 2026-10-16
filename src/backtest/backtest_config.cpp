@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace fastmm::bt {
@@ -437,8 +438,26 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   g.market_rate_per_s = sm.get_double("market_rate_per_s", g.market_rate_per_s);
   g.mid_step_rate_per_s = sm.get_double("mid_step_rate_per_s", g.mid_step_rate_per_s);
   g.cancel_rate_per_order_s = sm.get_double("cancel_rate_per_order_s", g.cancel_rate_per_order_s);
-  g.offset_p = sm.get_double("offset_p", g.offset_p);
+  // The market's shape in bps of start_mid, each replaced by its tick key when that is given.
+  for (const auto& [bps_key, tick_key] : {std::pair{"spread_bps", "base_spread_ticks"},
+                                          std::pair{"mid_step_bps", "mid_step_ticks"},
+                                          std::pair{"depth_bps", "offset_p"}}) {
+    if (sm.has(bps_key) && sm.has(tick_key)) {
+      throw ConfigError(std::string("sim: set ") + bps_key + " or " + tick_key + ", not both");
+    }
+    if (sm.has(bps_key) && !(sm.get_double(bps_key) > 0.0))
+      throw ConfigError(std::string("sim.") + bps_key + " must be > 0");
+  }
+  b.set_market_bps(sm.get_double("spread_bps", kDefaultSpreadBps),
+                   sm.get_double("mid_step_bps", kDefaultMidStepBps),
+                   sm.get_double("depth_bps", kDefaultDepthBps));
+  if (sm.has("offset_p")) {
+    g.offset_p = sm.get_double("offset_p", g.offset_p);
+    g.depth_ticks = 0.0;
+  }
   g.base_spread_ticks = static_cast<int>(sm.get_int("base_spread_ticks", g.base_spread_ticks));
+  g.mid_step_ticks = static_cast<int>(sm.get_int("mid_step_ticks", g.mid_step_ticks));
+  if (g.mid_step_ticks < 1) throw ConfigError("sim.mid_step_ticks must be >= 1");
   g.limit_qty_median_lots = sm.get_double("limit_qty_median_lots", g.limit_qty_median_lots);
   g.market_qty_median_lots = sm.get_double("market_qty_median_lots", g.market_qty_median_lots);
   g.regimes = sm.get_bool("regimes", g.regimes);
@@ -461,6 +480,18 @@ UnderlyingPlan BacktestConfig::underlying_plan(const InstrumentTable& table) con
   auto plan = build_underlying_plan(table, underlying, "risk");
   if (!plan) throw ConfigError(plan.error());
   return *plan;
+}
+
+void BacktestConfig::set_market_bps(double spread_bps, double mid_step_bps, double depth_bps) {
+  sim::MarketGeneratorParams& g = generator;
+  const double ticks_per_bps = static_cast<double>(g.start_mid.raw) * 1e-4 /
+                               static_cast<double>(g.tick.raw > 0 ? g.tick.raw : 1);
+  auto ticks = [&](double bps) {
+    return static_cast<int>(std::max<long long>(1, std::llround(bps * ticks_per_bps)));
+  };
+  g.base_spread_ticks = ticks(spread_bps / 2.0);
+  g.mid_step_ticks = ticks(mid_step_bps);
+  g.depth_ticks = std::max(1.0, depth_bps * ticks_per_bps);
 }
 
 BacktestConfig BacktestConfig::single_instrument(std::string_view symbol, Price tick, Qty lot) {
