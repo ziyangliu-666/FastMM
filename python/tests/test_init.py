@@ -59,7 +59,10 @@ def test_the_backtest_runs(tmp_path):
     out = subprocess.run([sys.executable, "backtest.py"],
                          cwd=tmp_path / "mm", capture_output=True, text=True, check=False)
     assert out.returncode == 0, out.stderr
-    assert "fills (maker / taker)" in out.stdout
+    fills = next(ln for ln in out.stdout.splitlines() if ln.strip().startswith("fills (maker"))
+    assert int(fills.split()[4]) > 100  # the quotes sit inside a book a few bps wide
+    captured = next(ln for ln in out.stdout.splitlines() if "spread captured (bps)" in ln)
+    assert float(captured.split()[-1]) > 0.3
     assert "stopped" not in out.stdout  # the default run does not reach [risk] max_loss
     assert (tmp_path / "mm" / "runs" / "backtest" / "fills.csv").exists()
 

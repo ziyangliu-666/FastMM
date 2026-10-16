@@ -23,7 +23,7 @@ class BacktestConfig:
     @staticmethod
     def single_instrument(symbol: str, tick: str, lot: str) -> BacktestConfig:
         """
-        One instrument on venue 0 with exact decimal tick/lot (e.g. '0.01', '0.00001'); synthetic market, matching fill model, no strategy selected.
+        One instrument on venue 0 with exact decimal tick/lot (e.g. '0.01', '0.00001'); matching fill model, no strategy selected, and the synthetic market of a TOML [sim] with no keys: a book about 2.7 bps wide (set_market changes it).
         """
     def __copy__(self) -> BacktestConfig:
         ...
@@ -44,6 +44,10 @@ class BacktestConfig:
     def set_instrument_fees(self, instrument: typing.SupportsInt | typing.SupportsIndex, maker_bps: typing.SupportsFloat | typing.SupportsIndex, taker_bps: typing.SupportsFloat | typing.SupportsIndex) -> None:
         """
         Charge one instrument its own maker / taker schedule (negative = rebate).
+        """
+    def set_market(self, spread_bps: typing.SupportsFloat | typing.SupportsIndex = 4.0, mid_step_bps: typing.SupportsFloat | typing.SupportsIndex = 0.5, depth_bps: typing.SupportsFloat | typing.SupportsIndex = 1.0) -> None:
+        """
+        Shape the synthetic market in bps of start_mid, as [sim] spread_bps, mid_step_bps and depth_bps do: the spread from touch to touch, the size of a latent mid step and the mean distance of a new limit order behind the touch. Set start_mid first.
         """
     def set_param(self, key: str, value: typing.Any) -> None:
         """
@@ -204,7 +208,7 @@ class BacktestConfig:
     @property
     def mid_step_rate_per_s(self) -> float:
         """
-        Synthetic latent mid +-1 tick steps per second.
+        Synthetic latent mid steps per second (each one mid_step_ticks ticks).
         """
     @mid_step_rate_per_s.setter
     def mid_step_rate_per_s(self, arg1: typing.SupportsFloat | typing.SupportsIndex) -> None:

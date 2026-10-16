@@ -47,8 +47,8 @@ name = "strategy:@NAME_CLASS@"  # module:Class; run_backtest(cfg) imports it
 
 # The Param defaults of strategy.py; every key here has to be one of them.
 [strategy.params]
-half_spread_bps = 0.01
-skew_bps = 0.01
+half_spread_bps = 1.0      # inside the touch: the market orders reach it
+skew_bps = 0.2
 quote_qty = 0.0001
 max_inventory = 0.0005
 requote_ticks = 2
@@ -66,16 +66,20 @@ stp = true
 [logging]
 level = "warn"
 
-# The synthetic market: order flow rates, sizes and mid moves per second.
+# The synthetic market, these values are the defaults: a book 1.7 to 3.4 bps wide (2.7 at the
+# median) and 0.4 to 0.7 bps of volatility a square-root second.
 [sim]
 seed = 1
 start_mid = "60000"
+spread_bps = 4.0             # new limit orders leave this around the latent mid
+depth_bps = 1.0              # and rest this far behind it on average
+mid_step_bps = 0.5           # one move of the latent mid
+mid_step_rate_per_s = 2.0    # moves per second; 4 x in the volatile regime
+limit_rate_per_s = 200.0
+limit_qty_median_lots = 200.0
+market_rate_per_s = 10.0     # market orders per second, the flow that fills a resting quote
+market_qty_median_lots = 100.0
 depth_update_ms = 100
-limit_rate_per_s = 400.0
-limit_qty_median_lots = 300.0
-market_rate_per_s = 30.0
-market_qty_median_lots = 1500.0
-mid_step_rate_per_s = 20.0
 seed_levels = 20
 
 [backtest]
@@ -125,8 +129,8 @@ def requote(self, ctx, book):
 class @NAME_CLASS@(fastmm.Strategy):
     """Symmetric quotes around the mid, skewed by inventory."""
 
-    half_spread_bps = Param(0.01, min=0.0, max=10000.0, doc="half spread around the mid, bps")
-    skew_bps = Param(0.01, min=0.0, max=10000.0, doc="shift per quote_qty of inventory, bps")
+    half_spread_bps = Param(1.0, min=0.0, max=10000.0, doc="half spread around the mid, bps")
+    skew_bps = Param(0.2, min=0.0, max=10000.0, doc="shift per quote_qty of inventory, bps")
     quote_qty = Param(0.0001, min=1e-9, doc="size per side, base units")
     max_inventory = Param(0.0005, min=0.0, doc="stop quoting the side that would pass this")
     requote_ticks = Param(2, min=0, doc="ignore mid moves smaller than this many ticks")
@@ -274,6 +278,13 @@ stp = true
 
 [logging]
 level = "info"
+
+# python backtest.py --config live.toml --data runs/<file>.fmj: the recorded book and trades, our
+# orders queued behind the displayed quantity
+[backtest]
+fill_model = "l2_queue"
+markout_horizons_s = "1,10,60"
+output_dir = "runs/backtest"
 '''
 
 SIM_TOML = '''\
@@ -488,7 +499,7 @@ BACKTEST_PY = '''\
 """Backtest @NAME_CLASS@ on the simulated market, or sweep one of its parameters.
 
     python backtest.py
-    python backtest.py --sweep half_spread_bps=0.005,0.01,0.02,0.05
+    python backtest.py --sweep half_spread_bps=0.5,1,1.5,2
     python backtest.py --config live.toml --data runs/<journal>.fmj
 """
 
@@ -517,12 +528,13 @@ def main():
 
     if args.sweep:
         name, _, values = args.sweep.partition("=")
+        grid = {name: [float(v) for v in values.split(",")]}
+        # One worker process per point, in grid order.
+        points = fastmm.sweep(cfg, grid, data=args.data, strategy=@NAME_CLASS@)
         print(f"{name:>16}  {'net PnL':>10}  {'fills':>6}  {'capture bps':>11}")
-        for value in [float(v) for v in values.split(",")]:
-            result = fastmm.run_backtest(cfg, data=args.data, strategy=@NAME_CLASS@,
-                                         params={name: value})
+        for params, result in points:
             stats = result.stats()
-            print(f"{value:>16}  {stats['net_pnl']:>10.4f}  {stats['fills']:>6}  "
+            print(f"{params[name]:>16}  {stats['net_pnl']:>10.4f}  {stats['fills']:>6}  "
                   f"{stats['spread_capture_bps']:>11.3f}")
         return
 
@@ -556,11 +568,16 @@ In the virtual environment that has `fastmm-engine[hot]`:
 
 ```bash
 python backtest.py
-python backtest.py --sweep half_spread_bps=0.005,0.01,0.02,0.05
+python backtest.py --sweep half_spread_bps=0.5,1,1.5,2
 ```
 
 The backtest prints the summary, the PnL decomposition and the markouts, and writes the fills,
-orders and equity curve to `runs/backtest/`. The sweep runs one backtest per value.
+orders and equity curve to `runs/backtest/`. The sweep runs one backtest per value, in parallel.
+
+The simulated book is about 2.7 bps wide, and the default quotes, 1 bps either side of the mid,
+capture most of a basis point a fill. `config.toml` charges Binance's VIP 0 fee of 10 bps, which
+is more than that; with your account's rate in `[venues.sim.fees]` the same run shows what the
+spread pays at your fees.
 
 ## What to change first
 

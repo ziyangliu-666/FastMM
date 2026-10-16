@@ -89,3 +89,51 @@ def test_a_backtest_needs_no_api_keys(repo, monkeypatch):
     cfg = fastmm.BacktestConfig.from_toml(path)
     assert cfg.strategy == "basic_mm"
     assert fastmm.BacktestConfig.from_toml_string(path.read_text()).strategy == "basic_mm"
+
+
+def _book_spread_bps(cfg, tmp_path):
+    import numpy as np
+
+    out = tmp_path / "market.fmj"
+    fastmm.convert_data("synthetic", str(out), cfg)
+    cols = fastmm.features(str(out)).columns
+    return float(np.median(cols["spread"] / cols["mid"] * 1e4))
+
+
+MARKET_TOML = """
+[[instruments]]
+venue = "sim"
+symbol = "BTCUSDT"
+tick = "0.01"
+lot = "0.00001"
+[venues.sim]
+kind = "sim"
+[backtest]
+duration_s = 30
+%s
+"""
+
+
+def test_the_default_synthetic_market_is_a_few_bps_wide(example_config, tmp_path):
+    cfg = fastmm.BacktestConfig.from_toml_string(MARKET_TOML % "")
+    assert 1.5 < _book_spread_bps(cfg, tmp_path) < 4.0
+    by_hand = fastmm.BacktestConfig.single_instrument("BTCUSDT", "0.01", "0.00001")
+    by_hand.duration_s = 30
+    assert _book_spread_bps(by_hand, tmp_path) == _book_spread_bps(cfg, tmp_path)
+    by_hand.set_market(spread_bps=20.0)
+    assert _book_spread_bps(by_hand, tmp_path) > 8.0
+    # backtest-example.toml pins the one-tick market of its fixtures.
+    tight = example_config.copy()
+    tight.duration_s = 30
+    assert _book_spread_bps(tight, tmp_path) < 0.05
+
+
+def test_a_bps_key_and_its_tick_key_conflict():
+    for keys in ("spread_bps = 3.0\nbase_spread_ticks = 2", "depth_bps = 1.0\noffset_p = 0.2",
+                 "mid_step_bps = 0.2\nmid_step_ticks = 4"):
+        with pytest.raises(fastmm.ConfigError, match="not both"):
+            fastmm.BacktestConfig.from_toml_string(MARKET_TOML % ("[sim]\n" + keys))
+    with pytest.raises(fastmm.ConfigError, match="spread_bps must be > 0"):
+        fastmm.BacktestConfig.from_toml_string(MARKET_TOML % "[sim]\nspread_bps = 0")
+    with pytest.raises(ValueError, match="must be > 0"):
+        fastmm.BacktestConfig.single_instrument("X", "0.01", "0.001").set_market(depth_bps=-1)

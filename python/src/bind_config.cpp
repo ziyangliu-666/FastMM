@@ -153,13 +153,30 @@ void bind_config(py::module_& m) {
               throw py::value_error("tick: '" + tick + "' is not a positive decimal");
             if (!l || !l->is_positive())
               throw py::value_error("lot: '" + lot + "' is not a positive decimal");
-            return BacktestConfig::single_instrument(symbol, *t, *l);
+            BacktestConfig c = BacktestConfig::single_instrument(symbol, *t, *l);
+            c.set_market_bps(bt::kDefaultSpreadBps, bt::kDefaultMidStepBps, bt::kDefaultDepthBps);
+            return c;
           },
           py::arg("symbol"),
           py::arg("tick"),
           py::arg("lot"),
           "One instrument on venue 0 with exact decimal tick/lot (e.g. '0.01', '0.00001'); "
-          "synthetic market, matching fill model, no strategy selected.")
+          "matching fill model, no strategy selected, and the synthetic market of a TOML [sim] "
+          "with no keys: a book about 2.7 bps wide (set_market changes it).")
+      .def(
+          "set_market",
+          [](BacktestConfig& c, double spread_bps, double mid_step_bps, double depth_bps) {
+            if (!(spread_bps > 0.0 && mid_step_bps > 0.0 && depth_bps > 0.0))
+              throw py::value_error(
+                  "set_market: spread_bps, mid_step_bps and depth_bps must be > 0");
+            c.set_market_bps(spread_bps, mid_step_bps, depth_bps);
+          },
+          py::arg("spread_bps") = bt::kDefaultSpreadBps,
+          py::arg("mid_step_bps") = bt::kDefaultMidStepBps,
+          py::arg("depth_bps") = bt::kDefaultDepthBps,
+          "Shape the synthetic market in bps of start_mid, as [sim] spread_bps, mid_step_bps and "
+          "depth_bps do: the spread from touch to touch, the size of a latent mid step and the "
+          "mean distance of a new limit order behind the touch. Set start_mid first.")
       .def("copy", [](const BacktestConfig& c) { return BacktestConfig(c); })
       .def("__copy__", [](const BacktestConfig& c) { return BacktestConfig(c); })
       .def(
@@ -423,7 +440,7 @@ void bind_config(py::module_& m) {
           "mid_step_rate_per_s",
           [](const BacktestConfig& c) { return c.generator.mid_step_rate_per_s; },
           [](BacktestConfig& c, double v) { c.generator.mid_step_rate_per_s = v; },
-          "Synthetic latent mid +-1 tick steps per second.")
+          "Synthetic latent mid steps per second (each one mid_step_ticks ticks).")
       .def_property(
           "cancel_rate_per_order_s",
           [](const BacktestConfig& c) { return c.generator.cancel_rate_per_order_s; },

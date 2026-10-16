@@ -18,11 +18,16 @@ All notable changes are recorded here (Keep a Changelog format).
   (`binance`, recorded keyless with `--dry-run`).
 - backtest: `[sim] spread_bps`, `mid_step_bps` and `depth_bps` shape the synthetic market in bps
   of its mid (`mid_step_ticks` and `MarketGeneratorParams::depth_ticks` in ticks).
+- python: `BacktestConfig.set_market()` shapes the synthetic market of a config built by hand.
 
 ### Changed
 - backtest: a configuration's synthetic market defaults to a liquid pair, a book about 2.7 bps
   wide with 0.5 bps mid steps where a quote at the touch fills; it was one tick, 0.003 bps, wide.
   `configs/backtest-example.toml` pins the one-tick market, and C++ `single_instrument()` keeps it.
+- python: `BacktestConfig.single_instrument()` gives the synthetic market of a `[sim]` without
+  keys. `fastmm init`'s strategy quotes 1 bps either side of the mid there, its `live.toml` has a
+  `[backtest]` section for the journals it records, and `backtest.py --sweep` runs its points in
+  parallel through `fastmm.sweep`.
 
 ### Fixed
 - core: an execution replay naming more than 64 estimated fills no longer books the oldest twice.
