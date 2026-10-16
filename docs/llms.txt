@@ -1,0 +1,53 @@
+# FastMM
+
+> A C++20 market-making engine with Python bindings. One strategy file runs in a deterministic backtest, a replay and live against exchanges. The PyPI package is `fastmm-engine`, imported as `fastmm`; `pip install fastmm` installs an unrelated project. Wheels: Linux x86-64, CPython 3.10 or later.
+
+The Markdown source of every page is in the repository under `docs/`: https://github.com/ziyangliu-666/FastMM/tree/main/docs. Repository guide for agents: https://github.com/ziyangliu-666/FastMM/blob/main/AGENTS.md
+
+## Start
+
+- [Quick start](https://ziy.bio/FastMM/getting-started/quickstart/): `pip install "fastmm-engine[hot]"`, `fastmm init`, a backtest, then a live session against the local simulated exchange
+- [Quick start in C++](https://ziy.bio/FastMM/getting-started/cpp-quickstart/): a C++ strategy backtested from a CMake project
+- [Install](https://ziy.bio/FastMM/getting-started/install/): the wheels, the release tarball and container, building from source
+- [Python](https://ziy.bio/FastMM/python/): backtests, data, results, sweeps and walk-forward from Python
+- [Tutorial: your first market maker](https://ziy.bio/FastMM/tutorials/first-strategy/): a C++ strategy from its header to Binance Demo
+
+## Strategy APIs
+
+- [Python strategy API](https://ziy.bio/FastMM/reference/python-api/): `fastmm.Strategy`, hot hooks, slow methods, the context, live sessions
+- [Strategy API (C++)](https://ziy.bio/FastMM/reference/strategy-api/): hooks, context methods, parameters, helpers
+- [Write hot hooks in Python](https://ziy.bio/FastMM/how-to/strategies/python-hot-hooks/)
+- [Run a Python strategy live](https://ziy.bio/FastMM/how-to/strategies/python-live/)
+- [Register a C++ strategy](https://ziy.bio/FastMM/how-to/strategies/register-a-strategy/)
+- [Quote on one venue, hedge on another](https://ziy.bio/FastMM/how-to/strategies/xmm/)
+- [Fixed point](https://ziy.bio/FastMM/reference/fixed-point/): the int64 price and quantity types
+
+## Reference
+
+- [Configuration](https://ziy.bio/FastMM/reference/configuration/): every TOML key
+- [Command lines](https://ziy.bio/FastMM/reference/cli/): every program's flags
+- [Venue connectors](https://ziy.bio/FastMM/reference/venues/): the exchanges, their environments and behaviour
+- [Errors and exit codes](https://ziy.bio/FastMM/reference/errors/)
+- [Market-data sources](https://ziy.bio/FastMM/reference/data-sources/)
+- [Versions and compatibility](https://ziy.bio/FastMM/reference/compatibility/)
+
+## Operations
+
+- [Run on a testnet or Binance Demo](https://ziy.bio/FastMM/how-to/operations/run-on-testnet/)
+- [Deploy a release](https://ziy.bio/FastMM/how-to/operations/deploy/)
+- [Run in production](https://ziy.bio/FastMM/how-to/operations/running-in-production/)
+- [Go-live checklist](https://ziy.bio/FastMM/how-to/operations/go-live-checklist/)
+- [Troubleshooting](https://ziy.bio/FastMM/how-to/operations/troubleshooting/)
+
+## Explanation
+
+- [How FastMM works](https://ziy.bio/FastMM/explanation/how-it-works/)
+- [Benchmarks](https://ziy.bio/FastMM/explanation/benchmarks/): the latency figures and what each one times
+- [Backtesting](https://ziy.bio/FastMM/explanation/backtesting/): fill models, markouts, PnL decomposition
+- [Determinism](https://ziy.bio/FastMM/explanation/determinism/)
+
+## Optional
+
+- [Architecture](https://ziy.bio/FastMM/explanation/architecture/)
+- [Design records](https://ziy.bio/FastMM/adr/)
+- [C++ API](https://ziy.bio/FastMM/api/cpp/) and [Python API](https://ziy.bio/FastMM/api/python/), generated

@@ -5,11 +5,18 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "fastmm-engine"
 dynamic = ["version"]
-description = "Ultra-low-latency multi-asset market-making engine (research bindings)"
+description = "Low-latency market-making engine: backtest and trade Python and C++ strategies"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.24"]
+
+[project.urls]
+Homepage = "https://github.com/ziyangliu-666/FastMM"
+Documentation = "https://ziy.bio/FastMM/"
+Repository = "https://github.com/ziyangliu-666/FastMM"
+Changelog = "https://github.com/ziyangliu-666/FastMM/blob/main/CHANGELOG.md"
+Issues = "https://github.com/ziyangliu-666/FastMM/issues"
 
 [project.scripts]
 # `fastmm init`, `fastmm report` and `fastmm run`, the same entry point as `python -m fastmm`.
