@@ -9,6 +9,10 @@ All notable changes are recorded here (Keep a Changelog format).
   (`TradeMsg::parties()`, `TradeView.buyer` / `.seller`), journaled and replayed; such a trade is
   192 bytes, every other trade still 128, and older journals read as trades that name nobody.
 - live: the status file and the metrics show estimated fills: booked, pending, forgotten (v22).
+- python: `fastmm.sweep` and `fastmm.walk_forward` take a `fastmm.Strategy` class (plain or hot
+  hooks) and run its points in forked worker processes; `BacktestResult` pickles.
+- python: `run_backtest`, `sweep` and `walk_forward` import a `module:Class` strategy name, given
+  as `strategy=` or as `[strategy] name`.
 
 ### Fixed
 - core: an execution replay naming more than 64 estimated fills no longer books the oldest twice.

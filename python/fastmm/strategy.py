@@ -462,6 +462,41 @@ def _instance(strategy: Any) -> Strategy:
                     f"an unused instance, got {type(strategy).__name__}")
 
 
+def resolve_strategy(name: str) -> Optional[Type[Strategy]]:
+    """The fastmm.Strategy class a ``module:Class`` name imports, the form ``fastmm run`` and
+    ``[strategy] name`` take; None for a registered C++ strategy name. ``py:Class`` (the name a
+    result or journal carries) has no module to import from and raises ValueError."""
+    if name.startswith("py:"):
+        raise ValueError(f"strategy '{name}' names a Python class without its module: write "
+                         f"'module:{name[3:]}' (as fastmm run takes it) or pass the class")
+    module_name, sep, qualname = name.partition(":")
+    if not sep:
+        return None
+    import importlib
+
+    try:
+        obj: Any = importlib.import_module(module_name)
+        for part in qualname.split("."):
+            obj = getattr(obj, part)
+    except (ImportError, AttributeError) as e:
+        raise ValueError(f"strategy '{name}': cannot load {qualname} from {module_name}: {e}") \
+            from e
+    if not (isinstance(obj, type) and issubclass(obj, Strategy)):
+        raise TypeError(f"strategy '{name}' is not a fastmm.Strategy subclass")
+    return obj
+
+
+def _named(config: "BacktestConfig", strategy: Any) -> Any:
+    """strategy, with a ``module:Class`` name (or config.strategy for None) imported."""
+    if strategy is None:
+        cls = resolve_strategy(config.strategy) if config.strategy else None
+        return cls
+    if isinstance(strategy, str):
+        cls = resolve_strategy(strategy)
+        return strategy if cls is None else cls
+    return strategy
+
+
 def run_backtest(config: "BacktestConfig", data: Any = None, strategy: StrategyArg = None,
                  params: Optional[Mapping[str, Any]] = None, *,
                  hot_cache: bool = True, slow_delay_ms: float = 0,
@@ -472,8 +507,9 @@ def run_backtest(config: "BacktestConfig", data: Any = None, strategy: StrategyA
     data: None (config.source / config.path), 'synthetic', a .fmj or .csv path, or a dict of numpy
     columns (see docs/python.md).
 
-    strategy: None (config.strategy), a registered C++ strategy name, a fastmm.Strategy subclass
-    (a fresh instance per run) or an unused Strategy instance.
+    strategy: None (config.strategy), a registered C++ strategy name, a ``module:Class`` name
+    (imported, as ``fastmm run`` does), a fastmm.Strategy subclass (a fresh instance per run) or an
+    unused Strategy instance.
 
     params: overrides applied on top of config.params (str, int, float or bool values).
 
@@ -494,6 +530,7 @@ def run_backtest(config: "BacktestConfig", data: Any = None, strategy: StrategyA
     rows per instrument that ctx.recent() keeps. A slow method that raises, or a full fills ring,
     stops the run and raises StrategyError with .slow_failure.
     """
+    strategy = _named(config, strategy)
     if strategy is None or isinstance(strategy, str):
         if params:
             config = config.copy()

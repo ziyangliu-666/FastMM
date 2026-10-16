@@ -314,7 +314,11 @@ class BacktestResult:
     """
     Outcome of one backtest. fills / equity / orders are dicts of read-only numpy views over the C++ vectors (prices, quantities, fees and PnL are raw int64 with a 1e-8 scale); to_pandas() converts them.
     """
+    def __getstate__(self) -> bytes:
+        ...
     def __repr__(self) -> str:
+        ...
+    def __setstate__(self, arg0: bytes) -> None:
         ...
     def _set_slow_methods(self, arg0: collections.abc.Sequence[tuple[str, typing.SupportsInt | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex]]) -> None:
         """
@@ -1829,6 +1833,29 @@ class _SlowChannel:
         """
         Instrument symbols by id.
         """
+class _TimeSlice:
+    """
+    Internal: the data of one walk-forward fold, [start_ns, end_ns) of `data`, for the run functions of a Python strategy.
+    """
+    def __init__(self, data: typing.Any, start_ns: typing.SupportsInt | typing.SupportsIndex, end_ns: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def data(self) -> typing.Any:
+        ...
+    @property
+    def end_ns(self) -> int:
+        ...
+    @property
+    def start_ns(self) -> int:
+        ...
+def _expand_grid(grid: dict) -> list:
+    """
+    Internal: the points of a sweep grid in fastmm.sweep's order, with the caller's values.
+    """
+def _fold_edges(config: BacktestConfig, data: typing.Any, folds: typing.SupportsInt | typing.SupportsIndex, metric: str) -> list[int]:
+    """
+    Internal: the folds + 1 edges of fastmm.walk_forward's folds over `data` (empty for one fold), after checking folds and metric.
+    """
 def _hot_abi() -> dict:
     """
     Internal: layout of the hot hook C ABI (include/fastmm/strategies/hot_abi.h).
@@ -1860,6 +1887,10 @@ def _run_strategy(config: BacktestConfig, data: typing.Any, instance: typing.Any
 def _slow_abi() -> dict:
     """
     Internal: layout of the slow channel structs (include/fastmm/strategies/slow_channel.hpp).
+    """
+def _walk_forward_report(grid: dict, metric: str, folds: list) -> dict:
+    """
+    Internal: fastmm.walk_forward's report from results run elsewhere; folds is [(start_ns, end_ns, [BacktestResult per grid point])], one entry for folds=1 with start_ns = end_ns = 0.
     """
 def build_info() -> str:
     """
@@ -1920,10 +1951,10 @@ def strategies() -> dict:
     """
 def sweep(config: BacktestConfig, grid: dict, data: typing.Any = None, strategy: str | None = None, threads: typing.SupportsInt | typing.SupportsIndex = 0) -> list:
     """
-    Cartesian parameter sweep on a thread pool (GIL released). grid: {param: [values]}. Returns [(params, BacktestResult)] in grid order, first parameter varying slowest. Every worker opens its own cursor over `data` (same forms as run_backtest). threads <= 0 uses every hardware thread.
+    Cartesian parameter sweep of a registered C++ strategy on a thread pool (GIL released). grid: {param: [values]}. Returns [(params, BacktestResult)] in grid order, first parameter varying slowest. Every worker opens its own cursor over `data` (same forms as run_backtest). threads <= 0 uses every hardware thread. fastmm.sweep also takes a fastmm.Strategy class and runs its points in worker processes.
     """
 def walk_forward(config: BacktestConfig, grid: dict, folds: typing.SupportsInt | typing.SupportsIndex, data: typing.Any = None, metric: str = 'net_pnl', strategy: str | None = None, threads: typing.SupportsInt | typing.SupportsIndex = 0) -> dict:
     """
-    Walk-forward sweep: the grid runs on `folds` consecutive time slices of `data`, and the best point of fold i-1 by `metric` (net_pnl, realized_pnl, sharpe_bar, spread_captured_bps) is scored on fold i. Returns a dict: metric, folds (start_ts, end_ts, best, chosen, in_sample, out_of_sample, hindsight, scores, points), mean_in_sample, mean_out_of_sample, mean_hindsight, choice_changes and table (the printable report). folds=1 runs exactly fastmm.sweep. The synthetic market needs fill_model='l2_queue' for folds > 1.
+    Walk-forward sweep: the grid runs on `folds` consecutive time slices of `data`, and the best point of fold i-1 by `metric` (net_pnl, realized_pnl, sharpe_bar, spread_captured_bps) is scored on fold i. Returns a dict: metric, folds (start_ts, end_ts, best, chosen, in_sample, out_of_sample, hindsight, scores, points), mean_in_sample, mean_out_of_sample, mean_hindsight, choice_changes and table (the printable report). folds=1 runs exactly fastmm.sweep. The synthetic market needs fill_model='l2_queue' for folds > 1. This entry point runs a registered C++ strategy; fastmm.walk_forward also takes a fastmm.Strategy class.
     """
 __version__: str = '0.3.0'

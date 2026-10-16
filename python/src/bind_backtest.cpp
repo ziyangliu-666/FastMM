@@ -14,6 +14,7 @@
 #include "fastmm/backtest/replay.hpp"
 #include "fastmm/backtest/result.hpp"
 #include "fastmm/backtest/sweep.hpp"
+#include "result_state.hpp"
 
 #include <pybind11/stl.h>
 
@@ -279,6 +280,18 @@ struct DataSpec {
   std::string path;              // Kind::Path: "synthetic", *.fmj or *.csv
   std::vector<py::object> keep;  // Kind::Arrays: owners of the column buffers
   bt::ArrayColumns cols;
+  // A walk-forward fold (fastmm._core._TimeSlice): the data from slice_start to slice_end, the
+  // synthetic market as a stream.
+  bool sliced = false;
+  Timestamp slice_start{};
+  Timestamp slice_end{};
+};
+
+// The data of one walk-forward fold: `data` from start_ns to end_ns (bt::fold_source).
+struct TimeSlice {
+  py::object data;
+  std::int64_t start_ns = 0;
+  std::int64_t end_ns = 0;
 };
 
 std::string dtype_name(const py::array& a) {
@@ -352,6 +365,15 @@ void fixed_column(const py::dict& d,
 DataSpec parse_data(const py::object& data) {
   DataSpec spec;
   if (data.is_none()) return spec;
+  if (py::isinstance<TimeSlice>(data)) {
+    const auto& slice = data.cast<const TimeSlice&>();
+    if (py::isinstance<TimeSlice>(slice.data)) throw py::value_error("data: a slice of a slice");
+    spec = parse_data(slice.data);
+    spec.sliced = true;
+    spec.slice_start = Timestamp{slice.start_ns};
+    spec.slice_end = Timestamp{slice.end_ns};
+    return spec;
+  }
   if (py::isinstance<py::dict>(data)) {
     auto d = py::reinterpret_borrow<py::dict>(data);
     static constexpr const char* kKeys[] = {"ts", "type", "inst", "side", "price", "qty", "seq"};
@@ -403,8 +425,7 @@ DataSpec parse_data(const py::object& data) {
       "data must be None, a '<source>:<args>' spec, a .fmj/.csv path or a dict of numpy arrays");
 }
 
-// Runs without the GIL: touches only C++ state and the (kept-alive) column buffers.
-std::unique_ptr<bt::MdSource> open_spec(const DataSpec& spec, const BacktestConfig& cfg) {
+std::unique_ptr<bt::MdSource> open_whole(const DataSpec& spec, const BacktestConfig& cfg) {
   switch (spec.kind) {
     case DataSpec::Kind::Config:
       return bt::open_source(cfg);
@@ -414,6 +435,14 @@ std::unique_ptr<bt::MdSource> open_spec(const DataSpec& spec, const BacktestConf
       return std::make_unique<bt::ArraySource>(spec.cols);
   }
   return nullptr;
+}
+
+// Runs without the GIL: touches only C++ state and the (kept-alive) column buffers. A sliced
+// spec opens the fold's cursor; `cfg` must outlive it (the synthetic stream reads it).
+std::unique_ptr<bt::MdSource> open_spec(const DataSpec& spec, const BacktestConfig& cfg) {
+  std::unique_ptr<bt::MdSource> whole = open_whole(spec, cfg);
+  if (!spec.sliced) return whole;
+  return bt::fold_source(cfg, std::move(whole), spec.slice_start, spec.slice_end);
 }
 
 // Events in time order, merged into a run's market data by _run_strategy: BalanceMsg (the
@@ -558,6 +587,40 @@ py::list sweep_points(const PyGrid& g, std::vector<bt::SweepPoint>& points) {
   return out;
 }
 
+// The dict fastmm.walk_forward returns. `points`, when given, holds each fold's
+// [(params, BacktestResult)] list already (results the caller owns); otherwise the results move
+// out of `rep`.
+py::dict report_dict(const PyGrid& g, bt::WalkForwardReport& rep, const py::list* points) {
+  py::list out_folds;
+  for (std::size_t i = 0; i < rep.folds.size(); ++i) {
+    bt::WalkForwardFold& f = rep.folds[i];
+    py::dict d;
+    d["start_ts"] = f.start_ts;
+    d["end_ts"] = f.end_ts;
+    d["best"] = f.points.empty() ? py::object(py::none())
+                                 : py::object(grid_params(g, f.points[f.best].params));
+    d["chosen"] = i == 0 || f.points.empty()
+                      ? py::object(py::none())
+                      : py::object(grid_params(g, f.points[f.chosen].params));
+    d["in_sample"] = f.in_sample;
+    d["out_of_sample"] = f.out_of_sample;
+    d["hindsight"] = f.scores.empty() ? f.hindsight : f.scores[f.best];
+    d["scores"] = f.scores;
+    d["points"] =
+        points != nullptr ? py::object((*points)[i]) : py::object(sweep_points(g, f.points));
+    out_folds.append(d);
+  }
+  py::dict out;
+  out["metric"] = rep.metric;
+  out["folds"] = out_folds;
+  out["mean_in_sample"] = rep.mean_in_sample;
+  out["mean_out_of_sample"] = rep.mean_out_of_sample;
+  out["mean_hindsight"] = rep.mean_hindsight;
+  out["choice_changes"] = rep.choice_changes;
+  out["table"] = rep.table();
+  return out;
+}
+
 // Calls body(factory) with the GIL released; the factory opens `spec` once per sweep worker
 // (empty for the synthetic market).
 template <class Body>
@@ -594,6 +657,7 @@ std::unique_ptr<sim::MdSource> open_md_source(const py::object& data,
         "data must be a '<source>:<args>' spec, a .fmj/.csv path or a dict of numpy arrays");
   }
   DataSpec spec = parse_data(data);
+  if (spec.sliced) throw py::value_error("data: a walk-forward fold is not accepted here");
   keep = std::move(spec.keep);  // the column spans point into these buffers
   if (spec.kind == DataSpec::Kind::Arrays) return std::make_unique<bt::ArraySource>(spec.cols);
   return bt::open_data(spec.path, instruments);
@@ -716,6 +780,12 @@ void bind_backtest(py::module_& m) {
           },
           "fills / equity / orders as pandas DataFrames with float prices and datetime64 "
           "timestamps (see fastmm.results.to_pandas).")
+      .def(py::pickle(
+          [](const BacktestResult& r) { return py::bytes(result_state::to_bytes(r)); },
+          [](const py::bytes& b) {
+            return std::make_shared<BacktestResult>(
+                result_state::from_bytes(static_cast<std::string_view>(b)));
+          }))
       .def("__repr__", [](const BacktestResult& r) {
         return "<BacktestResult strategy='" + r.strategy +
                "' fills=" + std::to_string(r.fills.size()) +
@@ -869,10 +939,11 @@ void bind_backtest(py::module_& m) {
       py::arg("data") = py::none(),
       py::arg("strategy") = py::none(),
       py::arg("threads") = 0,
-      "Cartesian parameter sweep on a thread pool (GIL released). grid: {param: [values]}. "
-      "Returns [(params, BacktestResult)] in grid order, first parameter varying slowest. "
-      "Every worker opens its own cursor over `data` (same forms as run_backtest). "
-      "threads <= 0 uses every hardware thread.");
+      "Cartesian parameter sweep of a registered C++ strategy on a thread pool (GIL released). "
+      "grid: {param: [values]}. Returns [(params, BacktestResult)] in grid order, first "
+      "parameter varying slowest. Every worker opens its own cursor over `data` (same forms as "
+      "run_backtest). threads <= 0 uses every hardware thread. fastmm.sweep also takes a "
+      "fastmm.Strategy class and runs its points in worker processes.");
 
   m.def(
       "walk_forward",
@@ -891,33 +962,7 @@ void bind_backtest(py::module_& m) {
         with_source_factory(spec, cfg, [&](const bt::SourceFactory& factory) {
           rep = bt::walk_forward_by_name(cfg, name, g.grid, factory, folds, metric, threads);
         });
-        py::list out_folds;
-        for (std::size_t i = 0; i < rep.folds.size(); ++i) {
-          bt::WalkForwardFold& f = rep.folds[i];
-          py::dict d;
-          d["start_ts"] = f.start_ts;
-          d["end_ts"] = f.end_ts;
-          d["best"] = f.points.empty() ? py::object(py::none())
-                                       : py::object(grid_params(g, f.points[f.best].params));
-          d["chosen"] = i == 0 || f.points.empty()
-                            ? py::object(py::none())
-                            : py::object(grid_params(g, f.points[f.chosen].params));
-          d["in_sample"] = f.in_sample;
-          d["out_of_sample"] = f.out_of_sample;
-          d["hindsight"] = f.scores.empty() ? f.hindsight : f.scores[f.best];
-          d["scores"] = f.scores;
-          d["points"] = sweep_points(g, f.points);
-          out_folds.append(d);
-        }
-        py::dict out;
-        out["metric"] = rep.metric;
-        out["folds"] = out_folds;
-        out["mean_in_sample"] = rep.mean_in_sample;
-        out["mean_out_of_sample"] = rep.mean_out_of_sample;
-        out["mean_hindsight"] = rep.mean_hindsight;
-        out["choice_changes"] = rep.choice_changes;
-        out["table"] = rep.table();
-        return out;
+        return report_dict(g, rep, nullptr);
       },
       py::arg("config"),
       py::arg("grid"),
@@ -932,7 +977,98 @@ void bind_backtest(py::module_& m) {
       "end_ts, best, chosen, in_sample, out_of_sample, hindsight, scores, points), "
       "mean_in_sample, mean_out_of_sample, mean_hindsight, choice_changes and table (the "
       "printable report). folds=1 runs exactly fastmm.sweep. The synthetic market needs "
-      "fill_model='l2_queue' for folds > 1.");
+      "fill_model='l2_queue' for folds > 1. This entry point runs a registered C++ strategy; "
+      "fastmm.walk_forward also takes a fastmm.Strategy class.");
+
+  py::class_<TimeSlice>(m,
+                        "_TimeSlice",
+                        "Internal: the data of one walk-forward fold, [start_ns, end_ns) of "
+                        "`data`, for the run functions of a Python strategy.")
+      .def(py::init([](py::object data, std::int64_t start_ns, std::int64_t end_ns) {
+             return TimeSlice{std::move(data), start_ns, end_ns};
+           }),
+           py::arg("data"),
+           py::arg("start_ns"),
+           py::arg("end_ns"))
+      .def_readonly("data", &TimeSlice::data)
+      .def_readonly("start_ns", &TimeSlice::start_ns)
+      .def_readonly("end_ns", &TimeSlice::end_ns);
+
+  m.def(
+      "_expand_grid",
+      [](const py::dict& grid) {
+        const PyGrid g = parse_grid(grid);
+        py::list out;
+        for (const ParamMap& p : bt::expand_grid(g.grid)) out.append(grid_params(g, p));
+        return out;
+      },
+      py::arg("grid"),
+      "Internal: the points of a sweep grid in fastmm.sweep's order, with the caller's values.");
+
+  m.def(
+      "_fold_edges",
+      [](const BacktestConfig& config,
+         const py::object& data,
+         int folds,
+         const std::string& metric) {
+        static_cast<void>(bt::score_metric(metric));
+        if (folds < 1) throw py::value_error("walk_forward: folds must be >= 1");
+        std::vector<std::int64_t> out;
+        if (folds == 1) return out;
+        DataSpec spec = parse_data(data);
+        const BacktestConfig cfg = config;
+        std::vector<Timestamp> edges;
+        with_source_factory(spec, cfg, [&](const bt::SourceFactory& factory) {
+          edges = bt::fold_edges(cfg, factory, folds);
+        });
+        out.reserve(edges.size());
+        for (const Timestamp t : edges) out.push_back(t.ns);
+        return out;
+      },
+      py::arg("config"),
+      py::arg("data"),
+      py::arg("folds"),
+      py::arg("metric"),
+      "Internal: the folds + 1 edges of fastmm.walk_forward's folds over `data` (empty for one "
+      "fold), after checking folds and metric.");
+
+  m.def(
+      "_walk_forward_report",
+      [](const py::dict& grid, const std::string& metric, const py::list& folds) {
+        const PyGrid g = parse_grid(grid);
+        bt::WalkForwardReport rep;
+        rep.metric = metric;
+        for (const auto& [k, values] : g.grid) {
+          if (!values.empty()) rep.param_names.push_back(k);
+        }
+        const std::vector<ParamMap> points = bt::expand_grid(g.grid);
+        py::list fold_points;
+        for (const py::handle item : folds) {
+          const auto t = item.cast<py::tuple>();
+          bt::WalkForwardFold f;
+          f.start_ts = t[0].cast<std::int64_t>();
+          f.end_ts = t[1].cast<std::int64_t>();
+          const auto results = t[2].cast<py::list>();
+          if (results.size() != points.size())
+            throw py::value_error("_walk_forward_report: one result per grid point");
+          py::list pts;
+          for (std::size_t i = 0; i < points.size(); ++i) {
+            const auto r = results[i].cast<ResultPtr>();
+            f.points.push_back(bt::SweepPoint{points[i], *r});
+            pts.append(py::make_tuple(grid_params(g, points[i]), results[i]));
+          }
+          rep.folds.push_back(std::move(f));
+          fold_points.append(pts);
+        }
+        bt::score_walk_forward(rep);
+        return report_dict(g, rep, &fold_points);
+      },
+      py::arg("grid"),
+      py::arg("metric"),
+      py::arg("folds"),
+      "Internal: fastmm.walk_forward's report from results run elsewhere; folds is "
+      "[(start_ns, end_ns, [BacktestResult per grid point])], one entry for folds=1 with "
+      "start_ns = end_ns = 0.");
 
   m.def(
       "inspect_journal",

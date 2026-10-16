@@ -48,12 +48,11 @@ from ._core import (
     features,
     inspect_journal,
     strategies,
-    sweep,
-    walk_forward,
 )
 from ._hot.decl import HotCompileError, State, hot
 from ._slow.decl import every
 from ._slow.replay import ReplayResult, replay
+from ._sweep import sweep, walk_forward
 from .data import load_csv
 from .live import run_live
 from .report import write_report

@@ -81,7 +81,14 @@ points = fastmm.sweep(cfg, {"half_spread_bps": [0.01, 0.02], "skew_bps_per_unit"
 df = fastmm.sweep_frame(points)           # one row per grid point
 ```
 
-Points run on a C++ thread pool (GIL released), every worker with its own cursor over `data`; results come back in grid order with the first parameter varying slowest.
+Results come back in grid order with the first parameter varying slowest, each the result `run_backtest` gives for that point. A registered C++ strategy runs on a C++ thread pool with the GIL released, every worker with its own cursor over `data`. A `fastmm.Strategy` class, with plain or hot hooks, runs a fresh instance per point in worker processes forked from the calling one, so a class defined in a script or a notebook works:
+
+```python
+points = fastmm.sweep(cfg, {"half_spread_bps": [1.0, 2.0, 4.0]}, data="synthetic",
+                      strategy=MyMM, threads=4)
+```
+
+`threads` is the number of threads or processes; 0 uses every CPU and 1 runs the points one after another in the calling process. Without `fork` (Windows) the points of a Python strategy run in the calling process.
 
 `fastmm.sweep` and `fastmm.walk_forward` take a built-in strategy only: the one `cfg.strategy` names, or `strategy="basic_mm"` (`fastmm.strategies()` lists them). A Python class cannot be passed. To sweep a Python strategy, call `run_backtest` once per point, as `python backtest.py --sweep` does in a project `fastmm init` wrote.
 
@@ -117,7 +124,7 @@ choice changes        1 of 2
 
 `chosen` and `best` are grid points (`#n` in grid order, listed under the table): the point carried over from the previous fold and the one that scores best on this fold in hindsight. `in_sample` is the chosen point's score on the fold it was chosen on, `out_of_sample` its score on this fold, `hindsight` the best score on this fold. The summary averages folds 1 to K−1 and counts how often the choice changed between consecutive folds. The choice generalizes when the out-of-sample mean stays close to the hindsight mean and the choice rarely changes; an out-of-sample mean well below both, or a choice that changes on every fold, means the ranking fits noise.
 
-`folds=1` runs exactly `fastmm.sweep`. The result does not depend on `threads`. The synthetic market needs `fill_model = "l2_queue"` for more than one fold: the coupled matching market has no stream to cut. The dict also holds every fold's `points` and `scores`; the C++ entry point is `bt::walk_forward` in `backtest/sweep.hpp`.
+`folds=1` runs exactly `fastmm.sweep`. `strategy=` takes a `fastmm.Strategy` class here too, which runs every fold and point in worker processes. The result does not depend on `threads`. The synthetic market needs `fill_model = "l2_queue"` for more than one fold: the coupled matching market has no stream to cut. The dict also holds every fold's `points` and `scores`; the C++ entry point is `bt::walk_forward` in `backtest/sweep.hpp`.
 
 ## Plain hooks
 

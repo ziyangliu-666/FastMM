@@ -232,7 +232,7 @@ def test_strategy_argument_forms(example_config):
         fastmm.run_backtest(cfg, FIXTURE_FMJ, strategy=42)
     with pytest.raises(TypeError, match="registered strategy name"):
         fastmm.run_backtest(cfg, FIXTURE_FMJ, strategy=object)
-    with pytest.raises(TypeError):
+    with pytest.raises(ValueError, match="unknown parameter 'x'"):
         fastmm.sweep(cfg, {"x": [1]}, data=FIXTURE_FMJ, strategy=Noop)
 
 

@@ -4,7 +4,7 @@ Strategies written in Python run inside the C++ engine. They use the same engine
 
 Methods marked `@fastmm.hot` are compiled with Numba instead and follow [Hot hooks](#hot-hooks).
 
-Scope: a class with plain hooks only (no `@fastmm.hot` methods) runs in in-process backtests; it does not replay, run in `fastmm.sweep` or trade live. A class with hot hooks also replays ([Replay](#replay)) and trades live ([Live sessions](#live-sessions)); [What runs where](../python.md#what-runs-where) compares them.
+Scope: a class with plain hooks only (no `@fastmm.hot` methods) runs in backtests, sweeps and walk-forwards; it does not replay or trade live. A class with hot hooks also replays ([Replay](#replay)) and trades live ([Live sessions](#live-sessions)); [What runs where](../python.md#what-runs-where) compares them.
 
 ## A strategy
 
@@ -181,7 +181,7 @@ The end-to-end numbers include the synthetic market and the simulated venue, whi
 
 ## Limits
 
-- `fastmm.sweep` takes registered C++ strategy names only; `fastmm-live` never links Python.
+- `fastmm-live` never links Python; a Python strategy trades live through `run_live` or `python -m fastmm run`.
 - The simulator produces no connection state changes and the numpy source no option tickers, so `on_connection` and `on_option_ticker` fire only with data sources that contain them. No backtest source carries balances: `on_balance` does not fire and `ctx.balance` stays unknown. A journal recorded by `fastmm-live` carries the venues' marks and funding (`on_perp_state`); the CSV, Tardis, Binance and numpy sources do not.
 - One thread: a hook must not start threads that call the context.
 
