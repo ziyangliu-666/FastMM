@@ -382,8 +382,9 @@ TEST_CASE(
     REQUIRE(::kill(pid, SIGTERM) == 0);
     CHECK(reap(pid) == live::kExitOk);
   }
-  const auto last = read_status(gw.status);
-  REQUIRE(last.has_value());
+  // A read can meet the gateway rewriting the file; the next one gets it.
+  std::optional<StatusSnapshot> last;
+  REQUIRE(wait_until([&] { return (last = read_status(gw.status)).has_value(); }, 5000));
   CHECK(last->gateway.venues[0].realized_raw == both);
   REQUIRE(::kill(gateway, SIGTERM) == 0);
   CHECK(reap(gateway) == live::kExitOk);

@@ -186,11 +186,15 @@ TEST_CASE(
   const SessionFiles f = write_config(fx, "recovery-position", "exit", "1000");
   remove_all_of({f.epoch, f.kill, f.journal_dir, f.config + ".log"});
 
-  const pid_t first = spawn_live(f, 60);
-  REQUIRE(wait_until([&] { return !fx.server.stats().position.is_zero(); }, 45000));
-  REQUIRE(::kill(first, SIGTERM) == 0);
-  CHECK(reap(first) == 0);
-  const Qty after_first = fx.server.stats().position;
+  // A fill between the wait and the stop can bring the position back to zero; run it again then.
+  Qty after_first{};
+  for (int run = 0; run < 3 && after_first.is_zero(); ++run) {
+    const pid_t first = spawn_live(f, 60);
+    REQUIRE(wait_until([&] { return !fx.server.stats().position.is_zero(); }, 45000));
+    REQUIRE(::kill(first, SIGTERM) == 0);
+    CHECK(reap(first) == 0);
+    after_first = fx.server.stats().position;
+  }
   REQUIRE_FALSE(after_first.is_zero());
 
   // A trade nobody running made: a market order over signed REST.
