@@ -65,6 +65,29 @@ Array columns: `ts` int64 (ns), `type` uint8 (0 snapshot level, 1 delta level, 2
 
 The GIL is released while a C++ strategy or hot hooks run, so several runs can proceed in Python threads. A strategy with plain hooks holds the GIL for its whole run.
 
+### Real BTC/USDT spot data
+
+The public archives have no Binance spot book, so record one: a `--dry-run` session reads Binance's public streams without keys, quotes on paper and journals the book and the trades it saw. The journal is the backtest's data.
+
+```bash
+pip install "fastmm-engine[hot,live]"
+fastmm init btc --venue binance && cd btc
+python -m fastmm run strategy:Btc --config live.toml --dry-run --duration 1h
+python backtest.py --config live.toml --data "$(ls -t runs/*.fmj | head -1)"
+```
+
+`--venue binance` writes a `live.toml` for Binance Spot itself, with `[backtest] fill_model = "l2_queue"` for the replay. From Python, the same run is `fastmm.run_backtest(fastmm.BacktestConfig.from_toml("live.toml"), data="runs/<file>.fmj", strategy=Btc)`, and `fastmm.sweep` and `fastmm.walk_forward` take the journal as `data=` too.
+
+| Data | Market | Book | Free | Suits |
+|---|---|---|---|---|
+| `--dry-run` journal of `--venue binance` | Binance spot, any symbol in the config | depth, trades, book ticker | yes, as long as you record | quoting at and behind the touch |
+| `tardis:binance,BTCUSDT,<date>` ([Tardis](reference/data-sources.md#tardis)) | Binance spot and the other venues Tardis covers | full L2, trades | the 1st of each month | quoting several levels deep, on days you did not record |
+| `binance:BTCUSDT,<date>` ([data.binance.vision](how-to/backtesting/binance-public-data.md)) | USDⓈ-M perpetual, not spot | top of book only, 2023-05-16 to 2024-03-30 | yes | quoting one level at the touch |
+| `binance:BTCUSDT,<date>,market=spot` | spot | none, trades only | yes | nothing that quotes: there is no book to fill against |
+| `--dry-run` journal of `--venue binance-demo` or `binance-testnet` | Demo Mode, Spot testnet | depth, trades | yes | the live session's plumbing; Demo Mode's prices are realistic, not real, and the testnet's book is its own |
+
+The archive sources read what `python -m fastmm.data fetch` downloaded, for Tardis spot `python -m fastmm.data fetch --source tardis --exchange binance --symbol BTCUSDT --date 2026-10-01`.
+
 ### Results
 
 `r.fills`, `r.equity` and `r.orders` are dicts of read-only numpy views over the C++ result vectors (no copy; the arrays keep the result alive). Prices, quantities, fees and PnL are raw int64 with a 1e-8 scale (`fastmm.FIXED_SCALE`); timestamps are int64 ns. `to_pandas()` converts to floats and `datetime64[ns]`. `stats()` returns the summary metrics; `sharpe_annualized` is NaN for runs shorter than 1 day and `max_drawdown_pct` is NaN without `initial_capital` ([`[backtest]`](reference/configuration.md#backtest)). When the kill switch stopped the run, `kill_reason` names why (`MaxLoss` for `[risk] max_loss`) and `kill_at_s` when, in seconds of simulated time; both are None otherwise, and the summary table opens with a `stopped` line. `engine_stats()` and `transport_stats()` return the component counters; `write_all(dir)` writes the same CSV/JSON files as `fastmm-backtest`.

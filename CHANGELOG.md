@@ -19,6 +19,8 @@ All notable changes are recorded here (Keep a Changelog format).
 - backtest: `[sim] spread_bps`, `mid_step_bps` and `depth_bps` shape the synthetic market in bps
   of its mid (`mid_step_ticks` and `MarketGeneratorParams::depth_ticks` in ticks).
 - python: `BacktestConfig.set_market()` shapes the synthetic market of a config built by hand.
+- docs: the Python page records real Binance BTCUSDT spot data with `--dry-run` and backtests the
+  journal, and says which free data source suits which backtest.
 
 ### Changed
 - backtest: a configuration's synthetic market defaults to a liquid pair, a book about 2.7 bps
