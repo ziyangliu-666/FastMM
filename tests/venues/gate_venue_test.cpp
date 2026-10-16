@@ -363,12 +363,17 @@ TEST_CASE("gate.venue: scripted fake exchange end to end") {
     CHECK(h.bad_subscriptions.load() == 0);
     REQUIRE(run_until([&] { return venue.order_channel_live(); }));
     {
+      // The fake sends the increment right after the snapshot, and the book is synced on the
+      // snapshot: the increment's frame can still be on its way (a loaded machine).
       bool snapshot = false;
       bool delta = false;
-      for (const auto& m : md.drain()) {
-        if (RecordingSink::type_of(m) == EventType::BookSnapshot) snapshot = true;
-        if (RecordingSink::type_of(m) == EventType::BookDelta) delta = true;
-      }
+      CHECK(run_until([&] {
+        for (const auto& m : md.drain()) {
+          if (RecordingSink::type_of(m) == EventType::BookSnapshot) snapshot = true;
+          if (RecordingSink::type_of(m) == EventType::BookDelta) delta = true;
+        }
+        return snapshot && delta;
+      }));
       CHECK(snapshot);
       CHECK(delta);
     }
