@@ -158,6 +158,9 @@ Config session_config(const ServerFixture& fx) {
   cfg.strategy.name = "hot_test";
   cfg.strategy.params.clear();
   cfg.engine.epoch_file = (fastmm::test::tmp_dir() / "live_session_epoch").string();
+  // Each case's simulator numbers its trades from 1 again: a store shared with an earlier case
+  // would hold them already.
+  cfg.storage.values["path"] = fresh_store("live_session.db");
   return cfg;
 }
 

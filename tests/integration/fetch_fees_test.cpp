@@ -31,6 +31,7 @@ Config fees_config(const ServerFixture& fx, const std::string& name) {
   cfg.engine.name = name;
   cfg.engine.epoch_file = fresh(name + ".epoch");
   cfg.engine.kill_file = fresh(name + ".kill");
+  cfg.storage.values["path"] = fresh_store(name + ".db");
   cfg.venues[0].fees.maker_bps = 1.0;
   cfg.venues[0].fees.taker_bps = 4.0;
   cfg.venues[0].extra["fetch_fees"] = "true";

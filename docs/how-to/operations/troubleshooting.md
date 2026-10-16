@@ -17,6 +17,9 @@ Messages are quoted as the code writes them; `<...>` stands for a value, and `<v
 | `fastmm-live: no [[instruments]] configured` (stderr) | The config has no instruments | Add `[[instruments]]` tables |
 | `fastmm-live: cannot open journal <path>` (stderr) | The journal file cannot be created | Check the directory permissions and free space, or pass `--journal <path>` |
 | `cannot create session epoch directory <dir>: <error>` | The parent directory of `[engine] epoch_file` cannot be created; without the epoch file, client order ids can repeat across restarts | Fix the path |
+| `fastmm-live: [engine] epoch_file <path> is missing, and the store holds sessions of this engine up to epoch <n> ...` (stderr, exit 9) | The epoch file was lost and the store was not | Write the counter back as the message says ([A start refuses the state it carries over](runbook.md#a-start-refuses-the-state-it-carries-over)) |
+| `fastmm-live: [engine] kill_file <path> is missing, and the store's newest session ... ended on a max_loss trip ...` (stderr, exit 6) | The kill file was lost after a latched `max_loss` trip | Reconcile the account, then start with `--clear-kill` |
+| `fastmm-live: the store's newest session (<id>) booked executions more than once ...` (stderr, exit 9) | The position the store would restore counts executions twice, and the venue does not report its own | `fastmm-pnl duplicates --engine <name>`; then `--accept-position` or `[engine] restore_position = false` |
 | `[engine] net_backend = "io_uring" but io_uring is not available (kernel too old, disabled or not permitted); falling back to epoll` | The kernel refuses io_uring (`kernel.io_uring_disabled`, seccomp, an old kernel); the session runs on epoll | Set `net_backend = "epoll"` |
 | `fastmm-live: fatal: <error>` | An uncaught error in the session; exit code 5 | Read the lines before it |
 

@@ -67,6 +67,7 @@ SessionResult run_single(ServerFixture& fx,
   cfg.engine.name = name;
   cfg.engine.threading = "single";
   cfg.engine.epoch_file = fresh(name + ".epoch");
+  cfg.storage.values["path"] = fresh_store(name + ".db");
   live::LiveOptions o;
   o.duration_ns = seconds(60).ns;  // a bound, not the expected end
   o.journal_path = fresh(name + ".fmj");

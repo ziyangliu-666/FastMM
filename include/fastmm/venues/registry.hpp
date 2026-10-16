@@ -62,7 +62,11 @@ struct VenueCapabilities {
   bool order_entry = true;  // can send orders at all
   bool replace = false;     // can amend a resting order in place
   bool positions = false;   // reports positions from the venue
-  bool polls = false;       // Venue::poll() drives its sockets; the reactor never wakes for them
+  // Its reconciliation reports the position of every subscribed derivative, flat ones too, before
+  // the engine sends an order: a position the session restored from the store is replaced by the
+  // venue's own before it is traded on. Spot instruments are never reported this way.
+  bool position_snapshot = false;
+  bool polls = false;  // Venue::poll() drives its sockets; the reactor never wakes for them
   // Can fetch what the account executed since a point in time, so a reconciliation replays the
   // fills the private stream missed instead of inferring them from a cum_qty jump. False: a fill
   // that finished an order while the stream was down is not recoverable on this venue, and the

@@ -339,6 +339,15 @@ struct VenueHarness {
   }
 };
 
+// A SQLite store under the test directory with nothing in it yet. A session that removes its epoch
+// or kill file must not find the sessions of an earlier run in a store (live/restart_check.hpp).
+inline std::string fresh_store(const std::string& name) {
+  const std::string p = (fastmm::test::tmp_dir() / name).string();
+  std::error_code ec;
+  for (const char* suffix : {"", "-wal", "-shm"}) std::filesystem::remove(p + suffix, ec);
+  return p;
+}
+
 // configs/sim-local.toml (or -tls) pointed at the in-process server.
 inline Config sim_local_config(const ServerFixture& fx, bool tls) {
   std::string text = fastmm::test::read_file(repo_root() / "configs" /

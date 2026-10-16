@@ -65,6 +65,7 @@ void register_gemini_venue(VenueRegistry& r) {
                                     .replace = false,
                                     // POST /v1/positions
                                     .positions = true,
+                                    .position_snapshot = true,
                                     .polls = false,
                                     // POST /v1/mytrades
                                     .executions = true,

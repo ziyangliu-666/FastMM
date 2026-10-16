@@ -18,6 +18,7 @@
 #include "fastmm/live/gateway.hpp"
 #include "fastmm/live/instance_lock.hpp"
 #include "fastmm/live/live_backend.hpp"
+#include "fastmm/live/restart_check.hpp"
 #include "fastmm/live/shutdown_guard.hpp"
 #include "fastmm/live/thread_affinity.hpp"
 #include "fastmm/live/treasury_thread.hpp"
@@ -383,8 +384,12 @@ std::string host_name() {
 // It is what FastMM recorded, not what the venue holds: FastMM does not fetch execution history
 // from a venue at start-up, so a fill that happened while the process was down is missing until
 // the venue's reconciliation snapshot arrives (docs/reference/storage.md).
-std::optional<store::Recovery> log_previous_session(const std::string& backend_name,
-                                                    const Config& cfg) {
+// The store's summary of the engine's newest session, read-only; nothing without a store or a
+// session in it.
+std::optional<store::Recovery> read_recovery(const Config& cfg) {
+  const std::string backend_name = store::configured_backend(cfg.storage);
+  if (backend_name == store::kNoBackend) return std::nullopt;
+  store::register_builtin_backends();
   auto reader = store::StoreRegistry::instance().make_reader(backend_name);
   if (reader == nullptr) return std::nullopt;
   store::BackendOptions opts;
@@ -397,6 +402,12 @@ std::optional<store::Recovery> log_previous_session(const std::string& backend_n
   f.engine = cfg.engine.name;
   auto rec = reader->recovery(f);
   if (!rec || !rec->found) return std::nullopt;
+  return std::move(*rec);
+}
+
+std::optional<store::Recovery> log_previous_session(const Config& cfg) {
+  auto rec = read_recovery(cfg);
+  if (!rec) return std::nullopt;
   const store::Recovery& p = *rec;
   FASTMM_LOG_WARN(
       "previous session {} ({}) started {} and {}: realized {} unrealized {} fees {} net {} over "
@@ -430,8 +441,9 @@ std::optional<store::Recovery> log_previous_session(const std::string& backend_n
         "the previous session still had order {} open at its last record; the venue may still "
         "hold it",
         std::string_view(line));
-  // Executions an earlier restart booked twice. The rows stay as they are; the position restored
-  // below may count them, until the venue's own position report replaces it.
+  // Executions an earlier restart booked twice. The rows stay as they are. A position restored
+  // from the newest session's copies is refused below (check_restored) unless the venue reports
+  // its own before the session trades.
   for (const store::Recovery::Duplicate& d : p.duplicates)
     FASTMM_LOG_ERROR(
         "the store holds {} {} of {} {} ({} {}) {} times, in sessions {}: it was booked more than "
@@ -447,12 +459,11 @@ std::optional<store::Recovery> log_previous_session(const std::string& backend_n
   if (p.duplicate_count != 0)
     FASTMM_LOG_ERROR(
         "the store holds {} execution(s) more than once: the stored positions and PnL of those "
-        "sessions count them twice, and a position restored from them is wrong until the venue "
-        "reports its own (fastmm-pnl duplicates --engine {})",
+        "sessions count them twice (fastmm-pnl duplicates --engine {})",
         p.duplicate_count,
         cfg.engine.name);
   FASTMM_LOG_INFO("previous session: fastmm-pnl recover --engine {}", cfg.engine.name);
-  return *rec;
+  return rec;
 }
 
 // A stored position belongs to the venue of this name (by its id in a store that predates names).
@@ -540,8 +551,50 @@ ResumePlan resume_plan(const store::Recovery& prev,
 // into the gateway's order ring) and the execution replay's start travels in the attach request.
 struct RestoreVenue {
   std::string_view name;
-  bool can_replay = false;  // VenueCapabilities::executions
+  bool can_replay = false;         // VenueCapabilities::executions
+  bool position_snapshot = false;  // VenueCapabilities::position_snapshot
 };
+
+// The instruments restore_positions restores, with whether their venue reports the position itself
+// before the engine sends an order (a derivative on a venue with a position snapshot).
+std::vector<RestoredInstrument> restored_instruments(const InstrumentTable& instruments,
+                                                     std::span<const RestoreVenue> venues) {
+  std::vector<RestoredInstrument> out;
+  for (const Instrument& in : instruments) {
+    if (in.venue.value >= venues.size()) continue;
+    const RestoreVenue& v = venues[in.venue.value];
+    if (!v.can_replay) continue;
+    const bool derivative = in.asset_class == AssetClass::Perpetual ||
+                            in.asset_class == AssetClass::Future ||
+                            in.asset_class == AssetClass::Option;
+    out.push_back({v.name, in.symbol.view(), v.position_snapshot && derivative});
+  }
+  return out;
+}
+
+// A restored position the store's newest session booked executions twice into (wrong_positions):
+// refused with kExitState, or traded on with --accept-position. 0: go on.
+int check_restored(const store::Recovery& prev,
+                   std::span<const RestoredInstrument> restored,
+                   const Config& cfg,
+                   const LiveOptions& opts) {
+  const std::vector<store::Recovery::DoubleBooked> wrong = wrong_positions(prev, restored);
+  if (wrong.empty()) return 0;
+  if (opts.accept_position) {
+    for (const store::Recovery::DoubleBooked& d : wrong)
+      FASTMM_LOG_WARN(
+          "--accept-position: {} {}: trading from the stored position though session {} booked {} "
+          "of its execution(s) more than once",
+          std::string_view(d.venue),
+          std::string_view(d.symbol),
+          prev.session_id,
+          d.executions);
+    return 0;
+  }
+  const RestartRefusal r = position_refusal(prev, wrong, cfg.engine.name);
+  std::fprintf(stderr, "%s: %s\n", opts.program.c_str(), r.message.c_str());
+  return r.exit_code;
+}
 
 template <class Push, class Resume>
 void restore_positions(const store::Recovery& prev,
@@ -878,6 +931,17 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
           ? KillStateStore::default_path(cfg.engine.journal_dir, cfg.engine.name)
           : cfg.engine.kill_file;
   KillState kill_state;
+  // The store's newest session, for checking the kill and epoch files against it
+  // (live/restart_check.hpp); read once, again after `stored_read = false`.
+  std::optional<store::Recovery> stored_rec;
+  bool stored_read = false;
+  const auto stored = [&]() -> const store::Recovery* {
+    if (!stored_read) {
+      stored_read = true;
+      stored_rec = read_recovery(cfg);
+    }
+    return stored_rec ? &*stored_rec : nullptr;
+  };
   // `holding`: this process holds the instance lock (or needs none) and may clear the file.
   const auto load_kill = [&](bool holding = true) -> int {
     if (opts.dry_run) return 0;  // a dry run keeps no ledger and starts from none
@@ -893,11 +957,28 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
       FASTMM_LOG_WARN("--clear-kill: {} removed; the whole [risk] max_loss budget is armed again",
                       kill_path);
     }
+    std::error_code missing_ec;
+    const bool kill_missing = !std::filesystem::exists(kill_path, missing_ec) && !missing_ec;
     if (auto loaded = KillStateStore::load(kill_path)) {
       kill_state = *loaded;
     } else {
       std::fprintf(stderr, "%s: %s\n", prog, loaded.error().c_str());
       return kExitConfig;
+    }
+    // Every keyed session writes the file as it starts: none while the store holds sessions means
+    // it was lost, and with it a latched trip and the loss budget spent.
+    if (kill_missing && !opts.clear_kill) {
+      if (const store::Recovery* rec = stored(); rec != nullptr) {
+        if (const RestartRefusal r = check_kill_file(*rec, kill_path)) {
+          std::fprintf(stderr, "%s: %s\n", prog, r.message.c_str());
+          return r.exit_code;
+        }
+        FASTMM_LOG_WARN(
+            "[engine] kill_file {} is missing while the store holds session {} of this engine: "
+            "[risk] max_loss is measured from zero again",
+            kill_path,
+            rec->session_id);
+      }
     }
     if (kill_state.latched && (!opts.clear_kill || holding)) {
       std::fprintf(stderr,
@@ -933,12 +1014,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   // What the previous session left behind, read before the venues attach so its positions can be
   // carried over (restore_positions). Read-only: the store itself is opened further down.
   std::optional<store::Recovery> previous;
-  const auto read_previous = [&] {
-    if (const std::string b = store::configured_backend(cfg.storage); b != store::kNoBackend) {
-      store::register_builtin_backends();
-      previous = log_previous_session(b, cfg);
-    }
-  };
+  const auto read_previous = [&] { previous = log_previous_session(cfg); };
   if (via_gateway) {
     if (cfg.single_threaded()) {
       std::fprintf(stderr,
@@ -964,6 +1040,12 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
       return kExitConfig;
     }
     if (previous && cfg.engine.restore_position) {
+      // The gateway's venues report no capabilities here: every restored instrument counts as one
+      // whose venue does not report its position.
+      std::vector<RestoredInstrument> restored;
+      restored.reserve(req.instruments.size());
+      for (const auto& [venue, symbol] : req.instruments) restored.push_back({venue, symbol});
+      if (const int rc = check_restored(*previous, restored, cfg, opts); rc != 0) return rc;
       // Each venue's execution replay starts where the store's record of it ends, in its own
       // clock. The trade-id start (Venue::resume_trade_ids) stays in-process: the gateway's venue
       // is shared, and it filters another attachment's replay for this one by time and ids.
@@ -1304,6 +1386,17 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   const net::ReactorBackend net_backend =
       via_gateway ? net::ReactorBackend::Epoll : resolve_net_backend(cfg);
   if (!via_gateway && !warm) read_previous();
+  // The venues of this process as restore_positions treats them.
+  const auto restore_venues = [&] {
+    std::vector<RestoreVenue> rv;
+    for (std::size_t i = 0; i < slots.size(); ++i) {
+      const venues::VenueEntry* entry = venues::VenueRegistry::instance().find(cfg.venues[i].kind);
+      rv.push_back({slots[i]->venue->name(),
+                    entry != nullptr && entry->caps.executions,
+                    entry != nullptr && entry->caps.position_snapshot});
+    }
+    return rv;
+  };
   for (std::size_t i = 0; i < slots.size(); ++i) {
     VenueSlot& s = *slots[i];
     const VenueId vid{static_cast<std::uint8_t>(i)};
@@ -1354,12 +1447,11 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     }
   } else {
     if (previous && cfg.engine.restore_position) {
-      std::vector<RestoreVenue> rv;
-      for (std::size_t i = 0; i < slots.size(); ++i) {
-        const venues::VenueEntry* entry =
-            venues::VenueRegistry::instance().find(cfg.venues[i].kind);
-        rv.push_back({slots[i]->venue->name(), entry != nullptr && entry->caps.executions});
-      }
+      const std::vector<RestoreVenue> rv = restore_venues();
+      if (const int rc =
+              check_restored(*previous, restored_instruments(instruments, rv), cfg, opts);
+          rc != 0)
+        return rc;
       restore_positions(
           *previous,
           instruments,
@@ -1394,6 +1486,18 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
       FASTMM_LOG_WARN("cannot create session epoch directory {}: {}",
                       std::string_view(dir),
                       std::string_view(why));
+    }
+  }
+  // A missing epoch file starts the counter at 1: refused while the store holds sessions whose
+  // client order ids it would reuse.
+  if (std::error_code ec;
+      !gateway && !opts.dry_run && !std::filesystem::exists(cfg.engine.epoch_file, ec) && !ec) {
+    const store::Recovery* rec = previous ? &*previous : stored();
+    if (rec != nullptr) {
+      if (const RestartRefusal r = check_epoch_file(*rec, cfg.engine.epoch_file)) {
+        std::fprintf(stderr, "%s: %s\n", prog, r.message.c_str());
+        return r.exit_code;
+      }
     }
   }
   bool epoch_wrapped = false;
@@ -2309,7 +2413,16 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
           lock_path);
       return kExitLocked;
     }
+    stored_read = false;  // the session before this one has written it since
     if (const int rc = load_kill(); rc != 0) return rc;
+    read_previous();
+    const std::vector<RestoreVenue> rv = restore_venues();
+    if (previous && cfg.engine.restore_position) {
+      if (const int rc =
+              check_restored(*previous, restored_instruments(instruments, rv), cfg, opts);
+          rc != 0)
+        return rc;
+    }
     ++kill_state.sessions;
     if (!cfg.strategy.state_file.empty()) {
       std::string bytes;
@@ -2332,14 +2445,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     feed.notify();
     // The previous sessions' positions and each venue's execution replay start, on the venue's own
     // network thread (it produces into the order ring and owns the connector).
-    read_previous();
     if (previous && cfg.engine.restore_position) {
-      std::vector<RestoreVenue> rv;
-      for (std::size_t i = 0; i < slots.size(); ++i) {
-        const venues::VenueEntry* entry =
-            venues::VenueRegistry::instance().find(cfg.venues[i].kind);
-        rv.push_back({slots[i]->venue->name(), entry != nullptr && entry->caps.executions});
-      }
       restore_positions(
           *previous,
           instruments,

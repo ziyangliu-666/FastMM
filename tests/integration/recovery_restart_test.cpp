@@ -161,9 +161,14 @@ TEST_CASE("recovery: a latched max-loss trip survives a SIGKILL and the next sta
   CHECK(reap(second) == live::kExitKilled);
   CHECK(fx.server.stats().orders_accepted == accepted);
 
-  // Cleaning the state arms the budget again; the session then runs and latches once more.
+  // Removing the kill file does not clear it: the store recorded the trip.
   REQUIRE(KillStateStore::clear(f.kill).has_value());
-  const pid_t third = spawn_live(f, 120);
+  const pid_t refused = spawn_live(f, 30);
+  CHECK(reap(refused) == live::kExitKilled);
+  CHECK(fx.server.stats().orders_accepted == accepted);
+
+  // --clear-kill arms the budget again; the session then runs and latches once more.
+  const pid_t third = spawn_live(f, 120, {"--clear-kill"});
   REQUIRE(wait_until([&] { return fx.server.stats().orders_accepted > accepted; }, 60000));
   REQUIRE(::kill(third, SIGTERM) == 0);
   static_cast<void>(reap(third));

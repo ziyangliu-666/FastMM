@@ -53,7 +53,8 @@ constexpr const char* kFooter =
     "A kill switch the engine trips itself ([risk] max_loss, a full ring, every venue\n"
     "killed) does the same and exits with code 6, unless [engine] on_kill = \"stay\".\n"
     "A max_loss trip is latched in [engine] kill_file: the next start refuses to trade\n"
-    "(exit code 6) until --clear-kill or the file is removed.\n"
+    "(exit code 6) until --clear-kill; with the file gone, the store's record of the\n"
+    "trip refuses it too.\n"
     "\n"
     "Exit codes:\n"
     "  0  stopped by --duration or SIGINT/SIGTERM, cancel_all ok\n"
@@ -63,7 +64,9 @@ constexpr const char* kFooter =
     "  5  runtime failure: cancel_all failed, journal, ring overflow, forced exit, uncaught error\n"
     "  6  kill switch tripped by the engine (on_kill = \"exit\"), or a latched max_loss trip\n"
     "  7  a Python strategy's slow tier failed (python -m fastmm run), cancel_all ok\n"
-    "  8  another process holds the instance lock, or --takeover failed; nothing traded";
+    "  8  another process holds the instance lock, or --takeover failed; nothing traded\n"
+    "  9  the epoch file is gone while the store holds sessions, or the store's position\n"
+    "     counts executions twice (--accept-position); nothing traded";
 
 }  // namespace
 
@@ -127,6 +130,10 @@ int live(int argc, char** argv, std::span<const StrategyModule> modules) {
                opts.clear_kill,
                "clear a latched kill switch and the cumulative PnL before starting; arms the "
                "whole [risk] max_loss budget again");
+  app.add_flag("--accept-position",
+               opts.accept_position,
+               "trade from the store's position even though its newest session booked "
+               "executions more than once (exit 9 otherwise)");
   app.add_flag("--standby",
                opts.standby,
                "while another process holds the instance lock, wait for it instead of exiting: "

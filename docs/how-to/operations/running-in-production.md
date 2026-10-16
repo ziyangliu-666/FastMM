@@ -8,10 +8,10 @@ The shipped configs point at a testnet, Demo Mode or a local simulator; a main-n
 
 | State | After a restart |
 |---|---|
-| Position | restored per venue and symbol from the store (`[engine] restore_position`, default on), then brought up to date by the venue's executions since the last stored fill, counted in the venue's clock: fills of orders that were resting when the process died, and trades made on the account outside FastMM. No order goes out until every venue has replayed and reconciled |
+| Position | restored per venue and symbol from the store (`[engine] restore_position`, default on), then brought up to date by the venue's executions since the last stored fill, counted in the venue's clock: fills of orders that were resting when the process died, and trades made on the account outside FastMM. No order goes out until every venue has replayed and reconciled. A stored position the newest session booked executions twice into exits 9 unless the venue reports its own ([Runbook](runbook.md#a-start-refuses-the-state-it-carries-over)) |
 | Orders the dead process left | every connector sweeps the venue's open orders on its first connect; their ids belong to an earlier session epoch, so the engine cancels them (`cancelling unknown live order <id>`) |
-| Kill switch, `[risk] max_loss` budget | carried in `<journal_dir>/<name>.kill`: a latched kill exits 6 at every start until cleared, and the loss budget is for the deployment, not the process |
-| Client order id sequence | continues: `[engine] epoch_file` (default `runs/session_epoch`) keeps ids unique; keep the file |
+| Kill switch, `[risk] max_loss` budget | carried in `<journal_dir>/<name>.kill`: a latched kill exits 6 at every start until cleared, also when the file is gone and the store recorded the trip; the loss budget is for the deployment, not the process |
+| Client order id sequence | continues: `[engine] epoch_file` (default `runs/session_epoch`) keeps ids unique; keep the file. Without it a start exits 9 while the store holds sessions ([Runbook](runbook.md#a-start-refuses-the-state-it-carries-over)) |
 | Realised PnL of the session | starts at zero; the previous session's is logged at start and kept in the store |
 | A running flatten | abandoned ([Operating a running session](operate-a-running-session.md#a-restart-during-a-flatten)) |
 

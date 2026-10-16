@@ -38,6 +38,8 @@ OPTIONS:
                               connecting to the venues (no API keys here)
   --clear-kill                clear a latched kill switch and the cumulative PnL before
                               starting; arms the whole [risk] max_loss budget again
+  --accept-position           trade from the store's position even though its newest session
+                              booked executions more than once (exit 9 otherwise)
   --standby                   while another process holds the instance lock, wait for it
                               instead of exiting: connected to market data with orders
                               refused where the venues allow it, else before connecting;
@@ -63,7 +65,8 @@ of an engine name trades at a time; `handoff` stops the holder for the successor
 A kill switch the engine trips itself ([risk] max_loss, a full ring, every venue
 killed) does the same and exits with code 6, unless [engine] on_kill = "stay".
 A max_loss trip is latched in [engine] kill_file: the next start refuses to trade
-(exit code 6) until --clear-kill or the file is removed.
+(exit code 6) until --clear-kill; with the file gone, the store's record of the
+trip refuses it too.
 
 Exit codes:
   0  stopped by --duration or SIGINT/SIGTERM, cancel_all ok
@@ -74,6 +77,8 @@ Exit codes:
   6  kill switch tripped by the engine (on_kill = "exit"), or a latched max_loss trip
   7  a Python strategy's slow tier failed (python -m fastmm run), cancel_all ok
   8  another process holds the instance lock, or --takeover failed; nothing traded
+  9  the epoch file is gone while the store holds sessions, or the store's position
+     counts executions twice (--accept-position); nothing traded
 ```
 <!-- END cli-help -->
 
@@ -86,9 +91,10 @@ Exit codes:
 | 3 | the configuration does not load (including an invalid `on_kill` or a literal secret), no instruments or duplicate symbols, an unknown venue `kind`, a strategy that is unknown or cannot run live, an unknown parameter or invalid value, a strategy name registered twice by different code; an account setting the connector refuses (Bybit linear in hedge mode); instruments in several settlement currencies with a limit set and no `[accounting]` source for one of them ([Configuration](configuration.md#accounting)); `threading = "single"` with more than one venue or with `--gateway`; the epoch or kill file cannot be read; a `[storage] backend` that is not registered or cannot be opened ([Storage](storage.md)) |
 | 4 | a venue's reference data failed to load; with `--gateway`, the gateway cannot be reached or refused the attach |
 | 5 | `cancel_all FAILED`, whatever stopped the session; the journal cannot be opened or written (a full filesystem trips the kill switch, [Journal format](journal-format.md#durability)); a venue's order-event ring overflowed; the gateway closed the attachment (`--gateway`); an uncaught error; a forced exit during shutdown: a second SIGINT/SIGTERM 5 s or more after the first, or a shutdown still running 60 s after the stop (`include/fastmm/live/shutdown_guard.hpp`), which does not wait for cancel_all |
-| 6 | the engine tripped the kill switch itself (`[risk] max_loss`, a full outbound or journal ring, every venue killed, a failing hot hook of a Python strategy) with `on_kill = "exit"`, and `cancel_all ok`; also a start refused because a `max_loss` trip is latched in `[engine] kill_file` ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md#the-latched-loss-budget)) |
+| 6 | the engine tripped the kill switch itself (`[risk] max_loss`, a full outbound or journal ring, every venue killed, a failing hot hook of a Python strategy) with `on_kill = "exit"`, and `cancel_all ok`; also a start refused because a `max_loss` trip is latched in `[engine] kill_file`, or because the file is missing and the store's newest session ended on one ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md#the-latched-loss-budget)) |
 | 7 | a Python strategy's slow tier failed, and `cancel_all ok` (`python -m fastmm run` and `fastmm.run_live`; `fastmm-live` does not return it) |
 | 8 | another process holds the instance lock (`[engine] instance_lock`); `--takeover` whose handoff the holder refused or did not answer, or whose lock it kept past `[engine] handoff_timeout_ms`; a session answering on the control socket without the lock. Nothing was traded ([Hand over a running session](../how-to/operations/hand-over-a-session.md)) |
+| 9 | `[engine] epoch_file` is missing while the store holds sessions of the engine; or the store's newest session booked executions more than once into a position the session would restore, on a venue that does not report its own before trading, and `--accept-position` was not given. Nothing was traded ([A start refuses the state it carries over](../how-to/operations/runbook.md#a-start-refuses-the-state-it-carries-over)) |
 
 - The journal records the configuration after `--strategy` and `--param`.
 - `python -m fastmm run` and `fastmm.run_live` run the same session for a Python strategy with these exit codes ([Live sessions](python-api.md#live-sessions)).

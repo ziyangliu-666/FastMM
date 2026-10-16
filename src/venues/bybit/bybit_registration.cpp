@@ -78,6 +78,7 @@ void register_bybit_venue(VenueRegistry& r) {
                                     // spot: the wallet; linear: position/list and the
                                     // position topic
                                     .positions = true,
+                                    .position_snapshot = true,
                                     .polls = false,
                                     // GET /v5/execution/list
                                     .executions = true,

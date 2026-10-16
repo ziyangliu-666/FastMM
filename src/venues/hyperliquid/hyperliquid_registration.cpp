@@ -99,6 +99,7 @@ void register_hyperliquid_venue(VenueRegistry& r) {
                                     .replace = true,
                                     // clearinghouseState
                                     .positions = true,
+                                    .position_snapshot = true,
                                     .polls = false,
                                     // userFillsByTime
                                     .executions = true,

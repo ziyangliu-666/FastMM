@@ -36,11 +36,13 @@ void register_strategies_once() {
   static_cast<void>(done);
 }
 
+// The epoch and kill files are the deployment's, like the store: a case removes them once, before
+// its first session.
 Config store_config(const ServerFixture& fx, const std::string& name, const std::string& db) {
   Config cfg = sim_local_config(fx, false);
   cfg.engine.name = name;
-  cfg.engine.epoch_file = fresh(name + ".epoch");
-  cfg.engine.kill_file = fresh(name + ".kill");
+  cfg.engine.epoch_file = (fastmm::test::tmp_dir() / (name + ".epoch")).string();
+  cfg.engine.kill_file = (fastmm::test::tmp_dir() / (name + ".kill")).string();
   cfg.storage.values["backend"] = "sqlite";
   cfg.storage.values["path"] = db;
   return cfg;
@@ -70,6 +72,8 @@ std::unique_ptr<store::Reader> reader_for(const std::string& db, GenericSection&
 TEST_CASE("store restart: a session records itself and the next one reads what it left behind") {
   register_strategies_once();
   const std::string db = fresh("restart.db");
+  static_cast<void>(fresh("restart.epoch"));
+  static_cast<void>(fresh("restart.kill"));
   const std::string journal_one = fresh("restart-1.fmj");
   const std::string journal_two = fresh("restart-2.fmj");
   std::uint64_t first_session = 0;

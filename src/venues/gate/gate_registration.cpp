@@ -88,6 +88,7 @@ void register_gate_usdt_venue(VenueRegistry& r) {
                                     .replace = true,
                                     // GET /positions and the positions channel
                                     .positions = true,
+                                    .position_snapshot = true,
                                     .polls = false,
                                     // GET /my_trades_timerange
                                     .executions = true,

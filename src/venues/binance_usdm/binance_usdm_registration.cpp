@@ -123,6 +123,7 @@ void register_binance_usdm_venue(VenueRegistry& r) {
                                     .order_entry = true,
                                     .replace = true,
                                     .positions = true,
+                                    .position_snapshot = true,
                                     .polls = false,
                                     // GET /fapi/v1/userTrades
                                     .executions = true,

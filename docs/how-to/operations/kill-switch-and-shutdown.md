@@ -34,7 +34,8 @@ updated_ns 1758600000000000000
 - `realized_raw` and `fees_raw` are the sum over every session since the file was last cleared, in 1e-8 units of the settlement currency. The engine adds `realized - fees` to the running session's PnL before comparing it with `max_loss`.
 - Unrealized PnL is not carried. An open position is remeasured from the venue's view once the session has reconciled.
 - A `max_loss` trip sets `latched`. The next start prints the reason, the carried PnL and the session count, and exits with code 6 before contacting any venue.
-- `fastmm-live --clear-kill`, or removing the file, arms the whole `max_loss` again and forgets the losses so far.
+- `fastmm-live --clear-kill` arms the whole `max_loss` again and forgets the losses so far.
+- Removing the file does not clear a trip the store recorded: with the file missing, a start whose store's newest session ended on a `max_loss` trip exits 6 too, until `--clear-kill`. Without such a trip it starts and logs that `max_loss` is measured from zero again.
 - No other kill reason is latched.
 
 `fastmm-top` shows `LATCHED` next to the state and `carried=` / `budget_used=` on the `pnl` line.

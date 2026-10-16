@@ -77,6 +77,7 @@ void register_deribit_venue(VenueRegistry& r) {
                                     .order_entry = true,
                                     .replace = true,
                                     .positions = true,
+                                    .position_snapshot = true,
                                     .polls = false,
                                     // private/get_user_trades_by_currency_and_time
                                     .executions = true,

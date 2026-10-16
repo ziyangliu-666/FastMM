@@ -30,6 +30,9 @@ All notable changes are recorded here (Keep a Changelog format).
   keys. `fastmm init`'s strategy quotes 1 bps either side of the mid there, its `live.toml` has a
   `[backtest]` section for the journals it records, and `backtest.py --sweep` runs its points in
   parallel through `fastmm.sweep`.
+- live: a restored position the newest session booked twice exits 9 unless `--accept-position`.
+- live: a start without `[engine] epoch_file` exits 9 while the store holds sessions of the engine.
+- live: a lost `[engine] kill_file` no longer clears a `max_loss` trip the store recorded (exit 6).
 
 ### Fixed
 - core: an execution replay naming more than 64 estimated fills no longer books the oldest twice.

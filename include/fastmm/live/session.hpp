@@ -87,6 +87,9 @@ struct LiveOptions {
   // Removes the durable kill state before starting: clears a latched max-loss trip and arms the
   // whole [risk] max_loss budget again ([engine] kill_file).
   bool clear_kill = false;
+  // Trade from the store's position even though its newest session booked executions more than
+  // once (live/restart_check.hpp); without it such a start exits with kExitState.
+  bool accept_position = false;
   // Waits for the instance lock (live/instance_lock.hpp) instead of refusing to start while another
   // process holds it; [engine] instance_lock is implied. Warm when every trading venue can hold its
   // private channels back (Venue::defer_private) and replays its executions before quoting, the
@@ -124,6 +127,10 @@ inline constexpr int kExitKilled = 6;   // engine-tripped kill switch with [engi
 inline constexpr int kExitSlowTier = 7;  // LiveOptions::watchdog (a Python slow tier failed)
 // Another process holds the instance lock, or a takeover failed; nothing was traded.
 inline constexpr int kExitLocked = 8;
+// The state a restart carries over is gone or known to be wrong (live/restart_check.hpp): the epoch
+// file is missing while the store holds sessions, or the store's newest session booked executions
+// twice on a venue that does not report its own position. Nothing was traded.
+inline constexpr int kExitState = 9;
 
 // How often a session that stays up after a kill ([engine] on_kill = "stay") repeats its ERROR.
 inline constexpr std::int64_t kKilledReminderNs = 10'000'000'000;

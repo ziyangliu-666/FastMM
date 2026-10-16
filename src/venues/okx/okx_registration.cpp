@@ -92,6 +92,7 @@ void register_okx_venue(VenueRegistry& r) {
                       // swaps: account/positions and the positions
                       // channel; spot: the engine's own, from the fills
                       .positions = true,
+                      .position_snapshot = true,
                       .polls = false,
                       // GET /api/v5/trade/fills
                       .executions = true,

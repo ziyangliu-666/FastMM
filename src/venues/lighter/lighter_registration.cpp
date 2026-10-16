@@ -109,6 +109,7 @@ void register_lighter_venue(VenueRegistry& r) {
                                     .replace = true,
                                     // account
                                     .positions = true,
+                                    .position_snapshot = true,
                                     .polls = false,
                                     .executions = false,
                                     .bind_source = true},

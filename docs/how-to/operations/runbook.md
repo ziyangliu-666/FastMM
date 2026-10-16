@@ -90,8 +90,22 @@ When the session does not restart by itself:
 3. Read what the last session recorded: `fastmm-pnl recover --engine <name>` prints its PnL, its last position per instrument and every order it still had open ([Query what you traded](query-trading-records.md)). `stopped   never recorded` confirms the crash.
 4. Establish what the journal holds: `python3 tools/journal_dump.py <journal> --type OrderFill` and the tail of the file. `trailer MISSING` means the process did not close the file; with `journal_sync = "async"` up to the last 100 ms of events were never synced ([durability](running-in-production.md#durability)).
 5. Recompute PnL from the journal: `python3 tools/pnl_report.py <journal> --start <before.json> --end <after.json>`. Where the account and the journal disagree, the account is right.
-6. Keep `[engine] epoch_file` (`runs/session_epoch`). Deleting it makes client order ids repeat across sessions.
+6. Keep `[engine] epoch_file` (`runs/session_epoch`) and `[engine] kill_file`. A start without them while the store holds sessions is refused ([below](#a-start-refuses-the-state-it-carries-over)).
 7. Start the session. It logs `<venue>: restored position <symbol> <qty> @ <px> from the previous session`; compare that and its first status with the venue's position. A venue that cannot replay executions starts flat (`not restoring the previous position ...`).
+
+## A start refuses the state it carries over
+
+Before it trades, `fastmm-live` checks the epoch file, the kill file and the store against each other. Each refusal prints one line to stderr and sends nothing.
+
+| Exit | Message starts | Cause | Action |
+|---:|---|---|---|
+| 9 | `[engine] epoch_file <path> is missing, and the store holds sessions of this engine up to epoch <n>` | the epoch file was lost; a new counter would start at 1 and reuse the client order ids of the stored sessions | restore the file, or write the newest epoch of every engine that shares it: `echo <n> > <path>` (the message has this engine's) |
+| 6 | `[engine] kill_file <path> is missing, and the store's newest session ... ended on a max_loss trip` | the kill file was lost after a latched trip | reconcile the account, then start with `--clear-kill`, which arms the whole `max_loss` budget again |
+| 9 | `the store's newest session (<id>) booked executions more than once (<n> <venue> <symbol>; ...)` | that session's replay booked executions the store already held, so the position it left counts them twice, and the venue does not report its own position before the session trades (spot instruments, and every instrument behind `fastmm-gateway`) | list them with `fastmm-pnl duplicates --engine <name>`, compare the account's balance with `fastmm-pnl recover --engine <name>`, then start with `--accept-position` to trade from the stored position, or with `[engine] restore_position = false` to start flat |
+
+A derivative on a venue whose reconciliation reports positions (Binance USDⓈ-M, Bybit linear, OKX, Gate, Deribit, Hyperliquid, Lighter, Gemini perpetuals) is not refused: the venue's position replaces the stored one before the first order. The duplicates stay in the store; only the newest session's copies are checked, so the session after an accepted or flat start runs without the flag.
+
+With the defaults the epoch file, the kill file and the store all live under `runs/`, and losing the directory loses all three: the next start is a first start and nothing can be checked. Put `[storage] path` elsewhere to keep the store when `runs/` goes.
 
 ## Roll back
 
