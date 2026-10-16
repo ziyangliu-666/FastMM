@@ -104,6 +104,28 @@ struct WalkForwardReport {
   [[nodiscard]] std::string table() const;
 };
 
+// The k + 1 edges of `folds` equal slices of the data's event-time range: fold i is
+// [edges[i], edges[i + 1]). Reads one cursor from `source_factory` to the end; an empty factory
+// (or one returning nullptr) reads the synthetic market as a SyntheticSource stream, which needs
+// fill_model l2_queue (std::invalid_argument otherwise, and for data with no events or folds < 2).
+[[nodiscard]] std::vector<Timestamp> fold_edges(const BacktestConfig& base,
+                                                const SourceFactory& source_factory,
+                                                int folds);
+
+// The cursor a walk-forward fold reads: `inner` from `t0` to `t1`, owning it. A null `inner` is the
+// synthetic market of `base` as a stream (fill_model l2_queue; std::invalid_argument otherwise).
+[[nodiscard]] std::unique_ptr<MdSource> fold_source(const BacktestConfig& base,
+                                                    std::unique_ptr<MdSource> inner,
+                                                    Timestamp t0,
+                                                    Timestamp t1);
+
+// Scores the points of every fold of `rep` by `rep.metric` and fills in best, chosen, the
+// in-sample / out-of-sample / hindsight scores, the means and the choice changes. With one fold,
+// its start_ts / end_ts are set from its results. walk_forward() ends with it; a caller that ran
+// the points itself (the Python package, for strategies written in Python) calls it directly.
+// Throws std::invalid_argument for an unknown metric.
+void score_walk_forward(WalkForwardReport& rep);
+
 // Splits the data's event-time range into `folds` equal slices and runs the whole grid on each
 // one (a fresh backtest per point and fold, all on one pool of `threads` workers). Each fold
 // reads a TimeSliceSource over the worker's cursor, so it starts on the book as of its first

@@ -6,8 +6,10 @@
 #include <cmath>
 #include <cstdio>
 #include <exception>
+#include <memory>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 
 namespace fastmm::bt {
 
@@ -189,87 +191,85 @@ std::string WalkForwardReport::table() const {
   return out;
 }
 
-WalkForwardReport walk_forward(const BacktestConfig& base,
-                               const ParamGrid& grid,
-                               const SourceFactory& source_factory,
-                               const RunFn& run,
-                               int folds,
-                               std::string_view metric,
-                               int threads) {
-  if (folds < 1) throw std::invalid_argument("walk_forward: folds must be >= 1");
-  const ScoreFn score = score_metric(metric);
-  WalkForwardReport rep;
-  rep.metric = std::string(metric);
-  for (const auto& [k, values] : grid) {
-    if (!values.empty()) rep.param_names.push_back(k);
-  }
-  const auto k = static_cast<std::size_t>(folds);
-  rep.folds.resize(k);
+namespace {
 
+// The synthetic market of `base` as a stream: what the folds cut when there is no data source.
+SourceFactory synthetic_stream(const BacktestConfig& base) {
+  if (base.transport.fill_model != sim::FillModel::L2Queue) {
+    throw std::invalid_argument(
+        "walk_forward: folds > 1 on the synthetic market need fill_model l2_queue (the "
+        "coupled matching market cannot be cut in time)");
+  }
+  return [&base]() -> std::unique_ptr<MdSource> {
+    return std::make_unique<SyntheticSource>(synthetic_source_config(base));
+  };
+}
+
+// A TimeSliceSource that owns the cursor it cuts.
+class OwnedSlice final : public MdSource {
+ public:
+  OwnedSlice(std::unique_ptr<MdSource> inner, Timestamp t0, Timestamp t1)
+      : inner_(std::move(inner)), slice_(*inner_, t0, t1) {}
+  const EventHeader* next() override { return slice_.next(); }
+  void reset() override { slice_.reset(); }
+  [[nodiscard]] Timestamp start_ts() const override { return slice_.start_ts(); }
+
+ private:
+  std::unique_ptr<MdSource> inner_;
+  TimeSliceSource slice_;
+};
+
+}  // namespace
+
+std::vector<Timestamp> fold_edges(const BacktestConfig& base,
+                                  const SourceFactory& source_factory,
+                                  int folds) {
+  if (folds < 2) throw std::invalid_argument("walk_forward: fold edges need folds >= 2");
+  std::unique_ptr<MdSource> probe = source_factory ? source_factory() : nullptr;
+  if (probe == nullptr) probe = synthetic_stream(base)();
+  // Event-time range of the data, cut into k equal slices.
+  Timestamp first{};
+  Timestamp last{};
+  for (const EventHeader* h = probe->next(); h != nullptr; h = probe->next()) {
+    if (!first.valid()) first = event_time(*h);
+    last = event_time(*h);
+  }
+  if (!first.valid()) throw std::invalid_argument("walk_forward: the data has no events");
+  const auto k = static_cast<std::size_t>(folds);
+  std::vector<Timestamp> edges(k + 1);
+  const std::int64_t span = last.ns - first.ns + 1;
+  const auto sk = static_cast<std::int64_t>(k);
+  for (std::size_t i = 0; i <= k; ++i) {
+    const auto si = static_cast<std::int64_t>(i);
+    edges[i] = Timestamp{first.ns + span / sk * si + span % sk * si / sk};
+  }
+  return edges;
+}
+
+std::unique_ptr<MdSource> fold_source(const BacktestConfig& base,
+                                      std::unique_ptr<MdSource> inner,
+                                      Timestamp t0,
+                                      Timestamp t1) {
+  if (inner == nullptr) inner = synthetic_stream(base)();
+  return std::make_unique<OwnedSlice>(std::move(inner), t0, t1);
+}
+
+void score_walk_forward(WalkForwardReport& rep) {
+  const ScoreFn score = score_metric(rep.metric);
+  const std::size_t k = rep.folds.size();
   if (k == 1) {
     WalkForwardFold& f = rep.folds[0];
-    f.points = sweep(base, grid, source_factory, run, threads);
     for (const SweepPoint& p : f.points) {
       if (f.start_ts == 0 || p.result.start_ts < f.start_ts) f.start_ts = p.result.start_ts;
       if (p.result.end_ts > f.end_ts) f.end_ts = p.result.end_ts;
     }
-  } else {
-    register_builtin_strategies();
-    // The per-worker cursor that the folds slice: the caller's source, or the synthetic
-    // market as a stream.
-    std::unique_ptr<MdSource> probe = source_factory ? source_factory() : nullptr;
-    SourceFactory factory = source_factory;
-    if (probe == nullptr) {
-      if (base.transport.fill_model != sim::FillModel::L2Queue) {
-        throw std::invalid_argument(
-            "walk_forward: folds > 1 on the synthetic market need fill_model l2_queue (the "
-            "coupled matching market cannot be cut in time)");
-      }
-      factory = [&base]() -> std::unique_ptr<MdSource> {
-        return std::make_unique<SyntheticSource>(synthetic_source_config(base));
-      };
-      probe = factory();
-    }
-    // Event-time range of the data, cut into k equal slices.
-    Timestamp first{};
-    Timestamp last{};
-    for (const EventHeader* h = probe->next(); h != nullptr; h = probe->next()) {
-      if (!first.valid()) first = event_time(*h);
-      last = event_time(*h);
-    }
-    probe.reset();
-    if (!first.valid()) throw std::invalid_argument("walk_forward: the data has no events");
-    std::vector<Timestamp> edges(k + 1);
-    const std::int64_t span = last.ns - first.ns + 1;
-    const auto sk = static_cast<std::int64_t>(k);
-    for (std::size_t i = 0; i <= k; ++i) {
-      const auto si = static_cast<std::int64_t>(i);
-      edges[i] = Timestamp{first.ns + span / sk * si + span % sk * si / sk};
-    }
-    const std::vector<ParamMap> points = expand_grid(grid);
-    const std::size_t n = points.size();
-    for (std::size_t i = 0; i < k; ++i) {
-      rep.folds[i].start_ts = edges[i].ns;
-      rep.folds[i].end_ts = edges[i + 1].ns;
-      rep.folds[i].points.resize(n);
-      for (std::size_t p = 0; p < n; ++p) rep.folds[i].points[p].params = points[p];
-    }
-    run_pool(k * n, threads, factory, [&](std::size_t t, MdSource* source) {
-      const std::size_t fi = t / n;
-      const std::size_t p = t % n;
-      const BacktestConfig cfg = point_config(base, points[p]);
-      if (source == nullptr) throw std::runtime_error("walk_forward: cannot open the data");
-      source->reset();
-      TimeSliceSource slice(*source, edges[fi], edges[fi + 1]);
-      rep.folds[fi].points[p].result = run(cfg, &slice);
-    });
   }
-
   double sum_in = 0.0;
   double sum_out = 0.0;
   double sum_hind = 0.0;
   for (std::size_t i = 0; i < k; ++i) {
     WalkForwardFold& f = rep.folds[i];
+    f.scores.clear();
     f.scores.reserve(f.points.size());
     for (const SweepPoint& p : f.points) f.scores.push_back(score(p.result));
     if (f.scores.empty()) continue;
@@ -291,6 +291,54 @@ WalkForwardReport walk_forward(const BacktestConfig& base,
     rep.mean_out_of_sample = sum_out / m;
     rep.mean_hindsight = sum_hind / m;
   }
+}
+
+WalkForwardReport walk_forward(const BacktestConfig& base,
+                               const ParamGrid& grid,
+                               const SourceFactory& source_factory,
+                               const RunFn& run,
+                               int folds,
+                               std::string_view metric,
+                               int threads) {
+  if (folds < 1) throw std::invalid_argument("walk_forward: folds must be >= 1");
+  static_cast<void>(score_metric(metric));  // an unknown metric fails before anything runs
+  WalkForwardReport rep;
+  rep.metric = std::string(metric);
+  for (const auto& [k, values] : grid) {
+    if (!values.empty()) rep.param_names.push_back(k);
+  }
+  const auto k = static_cast<std::size_t>(folds);
+  rep.folds.resize(k);
+
+  if (k == 1) {
+    rep.folds[0].points = sweep(base, grid, source_factory, run, threads);
+  } else {
+    register_builtin_strategies();
+    const std::vector<Timestamp> edges = fold_edges(base, source_factory, folds);
+    // The per-worker cursor that the folds slice: the caller's source, or the synthetic
+    // market as a stream.
+    std::unique_ptr<MdSource> probe = source_factory ? source_factory() : nullptr;
+    const SourceFactory factory = probe != nullptr ? source_factory : synthetic_stream(base);
+    probe.reset();
+    const std::vector<ParamMap> points = expand_grid(grid);
+    const std::size_t n = points.size();
+    for (std::size_t i = 0; i < k; ++i) {
+      rep.folds[i].start_ts = edges[i].ns;
+      rep.folds[i].end_ts = edges[i + 1].ns;
+      rep.folds[i].points.resize(n);
+      for (std::size_t p = 0; p < n; ++p) rep.folds[i].points[p].params = points[p];
+    }
+    run_pool(k * n, threads, factory, [&](std::size_t t, MdSource* source) {
+      const std::size_t fi = t / n;
+      const std::size_t p = t % n;
+      const BacktestConfig cfg = point_config(base, points[p]);
+      if (source == nullptr) throw std::runtime_error("walk_forward: cannot open the data");
+      source->reset();
+      TimeSliceSource slice(*source, edges[fi], edges[fi + 1]);
+      rep.folds[fi].points[p].result = run(cfg, &slice);
+    });
+  }
+  score_walk_forward(rep);
   return rep;
 }
 
