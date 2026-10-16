@@ -4,83 +4,87 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
-### Added
-- venues: Hyperliquid and Lighter public trades carry the buyer and the seller the venue names
-  (`TradeMsg::parties()`, `TradeView.buyer` / `.seller`), journaled and replayed; such a trade is
-  192 bytes, every other trade still 128, and older journals read as trades that name nobody.
-- live: the status file and the metrics show estimated fills: booked, pending, forgotten (v22).
-- python: `fastmm.sweep` and `fastmm.walk_forward` take a `fastmm.Strategy` class (plain or hot
-  hooks) and run its points in forked worker processes; `BacktestResult` pickles.
-- python: `run_backtest`, `sweep` and `walk_forward` import a `module:Class` strategy name, given
-  as `strategy=` or as `[strategy] name`.
-- python: `fastmm init --venue` writes `live.toml` for Binance Spot Demo Mode (`binance-demo`, the
-  default), the Spot testnet at testnet.binance.vision (`binance-testnet`) or the real market
-  (`binance`, recorded keyless with `--dry-run`).
-- backtest: `[sim] spread_bps`, `mid_step_bps` and `depth_bps` shape the synthetic market in bps
-  of its mid (`mid_step_ticks` and `MarketGeneratorParams::depth_ticks` in ticks).
-- python: `BacktestConfig.set_market()` shapes the synthetic market of a config built by hand.
-- docs: the Python page records real Binance BTCUSDT spot data with `--dry-run` and backtests the
-  journal, and says which free data source suits which backtest.
+## [0.7.0] - 2026-10-16
 
-### Changed
-- backtest: a configuration's synthetic market defaults to a liquid pair, a book about 2.7 bps
-  wide with 0.5 bps mid steps where a quote at the touch fills; it was one tick, 0.003 bps, wide.
-  `configs/backtest-example.toml` pins the one-tick market, and C++ `single_instrument()` keeps it.
-- python: `BacktestConfig.single_instrument()` gives the synthetic market of a `[sim]` without
-  keys. `fastmm init`'s strategy quotes 1 bps either side of the mid there, its `live.toml` has a
-  `[backtest]` section for the journals it records, and `backtest.py --sweep` runs its points in
-  parallel through `fastmm.sweep`.
-- live: the status file (v23) and the metrics show the store's rows, failed writes, dropped records.
-- deploy: `FastMMStoreFailing` alerts when the store fails a write or drops a record.
-- live: `[storage] kill_on_failure` trips the kill switch (`StoreFailure`) when the store fails.
-- live: a restored position the newest session booked twice exits 9 unless `--accept-position`.
+A live session now refuses to start where its limits, its store or its position cannot be trusted,
+and the store's health is in the status file and the metrics. Python strategy classes run in
+`fastmm.sweep` and `fastmm.walk_forward`, and `fastmm init` writes a live config for Binance.
+
+Highlights:
+- keyed sessions need position and loss limits, or `allow_unlimited` (Breaking changes, live)
+- a start refuses a position the store booked twice, a lost epoch file or kill file (Added, live)
+- store failures in the status file, the metrics and `kill_on_failure` (Added, live)
+- `fastmm.sweep` and `fastmm.walk_forward` take a `fastmm.Strategy` class (Added, python)
+- `fastmm init --venue binance-demo|binance-testnet|binance` (Added, python)
+- the exposure caps check an order that goes through zero (Fixed, core)
+
+### Breaking changes
+- live: a session with keys refuses to start without `[risk]` `max_position` (or
+  `max_order_notional`) and `max_loss`; set `[risk] allow_unlimited = true` to run without them.
+- live: `fastmm-ctl limits` turns a limit off (0, false) only with `--force`.
+- live: a restored position the newest session booked twice exits 9; pass `--accept-position`.
 - live: a start without `[engine] epoch_file` exits 9 while the store holds sessions of the engine.
 - live: a lost `[engine] kill_file` no longer clears a `max_loss` trip the store recorded (exit 6).
+- store: schema 11; a store opened by 0.7.0 does not open in 0.6.
+- live: status file version 23.
+- backtest: a configuration's synthetic market defaults to a book about 2.7 bps wide with 0.5 bps
+  mid steps; set `[sim] spread_bps` or use `configs/backtest-example.toml` for the one-tick market.
+
+### Added
+- live: the status file and the metrics show the store's rows, failed writes and dropped records.
+- live: `[storage] kill_on_failure` trips the kill switch (`StoreFailure`) when the store fails.
+- deploy: `FastMMStoreFailing` alerts when the store fails a write or drops a record.
+- live: the status file and the metrics show estimated fills: booked, pending, forgotten.
 - live: `fastmm-ctl limits` changes `max_gross_notional`, `max_net_notional` and `check_balance`.
 - store: each run-time limit change is kept with its values before and after (`limit_changes`,
-  schema 11, `fastmm-pnl limit-changes`).
+  `fastmm-pnl limit-changes`).
 - core: `[engine] cancel_unknown = "own"` cancels only FastMM's own unknown open orders.
+- core: `flatten` works the position off while the global kill switch is set.
+- venues: Hyperliquid and Lighter public trades carry the buyer and the seller the venue names
+  (`TradeMsg::parties()`, `TradeView.buyer` / `.seller`), journaled and replayed.
+- python: `fastmm.sweep` and `fastmm.walk_forward` take a `fastmm.Strategy` class (plain or hot
+  hooks) and run its points in forked worker processes; `BacktestResult` pickles.
+- python: `run_backtest`, `sweep` and `walk_forward` import a `module:Class` strategy name.
+- python: `fastmm init --venue` writes `live.toml` for Binance Spot Demo Mode (`binance-demo`, the
+  default), the Spot testnet (`binance-testnet`) or the real market (`binance`, with `--dry-run`).
+- python: `fastmm init`'s `live.toml` has a `[backtest]` section for the journals it records, and
+  `backtest.py --sweep` runs its points in parallel through `fastmm.sweep`.
+- backtest: `[sim] spread_bps`, `mid_step_bps` and `depth_bps` shape the synthetic market.
+- python: `BacktestConfig.set_market()` shapes the synthetic market of a config built by hand.
+- docs: the Python page records real Binance BTCUSDT spot data with `--dry-run` and backtests it.
 
 ### Changed
-- live: a session with keys refuses to start without `[risk]` `max_position` (or
-  `max_order_notional`) and `max_loss`, unless `[risk] allow_unlimited = true`.
-- live: `fastmm-ctl limits` turns a limit off (0, false) only with `--force`.
-- core: `flatten` works the position off while the global kill switch is set.
+- python: `BacktestConfig.single_instrument()` gives the synthetic market of a `[sim]` without
+  keys; `fastmm init`'s strategy quotes 1 bps either side of the mid there.
+- core: an estimated fill booked from a cancel ack logs a warning; an estimate no execution named
+  before its order was forgotten logs an error.
+- python: the `hot` extra installs pandas.
 
 ### Fixed
-- sim: `fastmm-sim-exchange` numbers trades from its start time, so a restart does not repeat the
-  trade ids a kept store holds (a fixed `start_time_ms` keeps them from 1).
+- core: the `[risk]` and `[gateway]` exposure caps check an order past zero (long 1, sell 100).
 - core: an execution replay naming more than 64 estimated fills no longer books the oldest twice.
 - core: executions after a replace (old leg, or amended to a new id) correct the earlier estimate.
-- docs: the reference backtest outputs (economics, backtesting, tutorial step 7) are this build's;
-  `docs.reference_output` runs every documented command and fails when its output no longer
-  matches the page. `compatibility.md`, `storage.md` and `status-file.md` give the current status
-  file (21), store schema (10) and gateway protocol (7) versions.
+- core: an execution a replay re-sends thousands of executions later is no longer booked twice.
+- store: `fastmm-pnl pnl` counts each execution once.
+- store: fills, positions and the day roll-up carry the account's name (`account`).
+- live: a stop's venue cancel-all waits for the engine to take the kill switch.
+- live: `--strategy` naming no strategy prints its error in one write.
+- live: `fastmm-ctl limits` no longer turns on `max_loss` where the totals mix currencies.
+- sim: a restarted `fastmm-sim-exchange` does not repeat the trade ids of its last run.
 - venues: Binance orders early in a minute no longer hold the depth snapshots and reconciliations.
 - venues: Binance spot replays and fill audits read myTrades of the symbols with executions only.
 - venues: a Binance spot cancel refused for an order already over no longer reads every symbol.
-- tests: the shadow sweep test drops only the cancels' replies, not a balance query's.
-- core: an execution a replay re-sends thousands of executions later is no longer booked twice.
-- store: `fastmm-pnl pnl` counts each execution once: an estimate an execution named, a repeat.
-- store: fills, positions and the day roll-up carry the account's name (`account`, schema 10).
-- core: the `[risk]` and `[gateway]` exposure caps check an order past zero (long 1, sell 100).
-- python: `fastmm init` names the strategy `strategy:Class` in every config, which resolves;
-  config.toml named the project. `fastmm init --help` lists every file it writes.
-- python: the scaffold's `testnet` says what its venue is: true for Demo Mode, the testnet and the
-  local simulator, false for the real market (`production.toml` left the default, true).
-- backtest: the summary of a run without fills says so on the queue-ahead line, not that the
-  matching fill model has no queue position.
-- python: `fastmm.convert_data('synthetic', out, config)` records the synthetic market, as the
-  `features('synthetic')` error tells you to; it raised "no events to convert".
-- python: the `hot` extra installs pandas, which `to_pandas()`, `sweep_frame` and the Python
-  docs' examples need.
+- python: `fastmm init` names the strategy `strategy:Class` in every config.
+- python: the scaffold's `testnet` is false for the real market.
+- python: `fastmm.convert_data('synthetic', out, config)` records the synthetic market.
+- backtest: the summary of a run without fills says so on the queue-ahead line.
+
+### Documentation
+- docs: the reference backtest outputs are this build's, and `docs.reference_output` checks them.
 - docs: one table maps the metric and column names of `stats()`, `summary.json`, the CSV files,
   the numpy columns and `to_pandas()`.
-- live: a stop's venue cancel-all waits for the engine to take the kill switch; it left open an
-  order the engine sent after it.
-- live: `--strategy` naming no strategy prints its error in one write; a log line no longer splits it.
-- live: `fastmm-ctl limits` no longer turns on `max_loss` where the totals mix currencies.
 - docs: a restart cancels every unknown open order on its symbols, not only FastMM's.
+- docs: `compatibility.md`, `storage.md` and `status-file.md` give the current versions.
 
 ## [0.6.0] - 2026-10-13
 
