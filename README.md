@@ -16,7 +16,7 @@ https://github.com/user-attachments/assets/dcd130c5-28fe-482f-a757-d0fc6550c5b9
 - **Account pools.** Several sub-accounts trade behind one venue, and orders spread across them.
 - **Gateway.** One `fastmm-gateway` holds the exchange connections; several strategy processes attach to it and can stop or restart without dropping them.
 - **Live control.** `fastmm-ctl` changes a running session's parameters without a restart.
-- **Low-latency tuning.** Host and network tuning built in, such as core pinning and kernel bypass.
+- **Low-latency tuning.** Core pinning, busy polling, and AF_XDP or DPDK receive for UDP multicast feeds. Order entry runs on the kernel TCP stack, which OpenOnload or XLIO can replace through `LD_PRELOAD`.
 
 ## Quickstart
 
@@ -57,7 +57,7 @@ class TouchMM(fastmm.Strategy):
 
 ## Exchanges
 
-Binance, OKX, Bybit, Gate, Hyperliquid, Lighter, Deribit, Gemini and Coinbase. Nasdaq over TotalView-ITCH and OUCH 5.0.
+Binance (spot and USDⓈ-M futures), OKX, Bybit, Gate, Hyperliquid, Lighter, Deribit, Gemini and Coinbase. A Nasdaq connector (TotalView-ITCH market data, OUCH 5.0 orders) trades only against the bundled simulator, `fastmm-sim-itch`.
 
 > If you are running FastMM on Binance, try [bndesk](https://github.com/ziyangliu-666/bndesk), a real-time dashboard for your accounts.
 

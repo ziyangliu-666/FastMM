@@ -1,6 +1,6 @@
 # Venue connectors
 
-FastMM ships nine connectors behind the control-path `fastmm::venues::Venue` interface (`include/fastmm/venues/venue.hpp`). Eight are crypto venues:
+FastMM ships twelve connectors behind the control-path `fastmm::venues::Venue` interface (`include/fastmm/venues/venue.hpp`). Eleven are crypto venues:
 
 | Venue | Markets | Orders | Environment |
 |---|---|---|---|
@@ -12,8 +12,11 @@ FastMM ships nine connectors behind the control-path `fastmm::venues::Venue` int
 | Gemini | spot, perpetuals | WebSocket | Gemini sandbox |
 | Coinbase Advanced Trade | spot | REST | production |
 | Coinbase Exchange | spot | REST | Coinbase Exchange sandbox |
+| Gate | USDT perpetuals | WebSocket API | production (`configs/gate-usdt.toml`); Gate futures TestNet |
+| Hyperliquid | perpetuals | WebSocket | production (`configs/hyperliquid.toml`); testnet with `testnet = true` |
+| Lighter | perpetuals | WebSocket | production (`configs/lighter.toml`); testnet with `testnet = true` |
 
-The ninth reads Nasdaq TotalView-ITCH market data and enters orders over OUCH 5.0 to `fastmm-sim-itch` ([below](#nasdaq-totalview-itch-nasdaq_itch)); Binance Spot also runs against the local simulator `fastmm-sim-exchange`.
+The twelfth reads Nasdaq TotalView-ITCH market data and enters orders over OUCH 5.0 to `fastmm-sim-itch` ([below](#nasdaq-totalview-itch-nasdaq_itch)); Binance Spot also runs against the local simulator `fastmm-sim-exchange`.
 
 Each connector registers itself in the venue registry (`include/fastmm/venues/registry.hpp`) under the `kind` a `[venues.<name>]` section names, and `make_venue()` resolves through it:
 
@@ -27,6 +30,9 @@ Each connector registers itself in the venue registry (`include/fastmm/venues/re
 | `coinbase_advanced` | `coinbase::CoinbaseAdvancedVenue` |
 | `coinbase_exchange` | `coinbase::CoinbaseExchangeVenue` |
 | `deribit` | `deribit::DeribitVenue` |
+| `gate_usdt`, `gate`, `gate_futures` | `gate::GateUsdtVenue` |
+| `hyperliquid`, `hl` | `hyperliquid::HyperliquidVenue` |
+| `lighter`, `zklighter` | `lighter::LighterVenue` |
 | `nasdaq_itch` | `nasdaq::NasdaqItchVenue` |
 
 A project can register its own connector, with its own configuration keys, without changing FastMM ([Add a venue](../how-to/venues/add-a-venue.md), `examples/external-venue/`). Operating them: [Run in production](../how-to/operations/running-in-production.md).
@@ -175,11 +181,11 @@ The listenKey user stream (`POST/PUT /api/v3/userDataStream` + `/ws/<listenKey>`
 
 ### Keys and session logon
 
-* HMAC keys (`key_type = "hmac"`, the default) sign every request: apiKey + hex HMAC-SHA256. The key pads are hashed once (`net::HmacSha256Key`), so a signature costs about 170 ns.
+* HMAC keys (`key_type = "hmac"`, the default) sign every request: apiKey + hex HMAC-SHA256. The key pads are hashed once (`net::HmacSha256Key`), so a signature costs about 232 ns (`BM_Sign_HmacSha256`, [bench/full-results.md](../../bench/full-results.md)).
 * Ed25519 keys (`key_type = "ed25519"`, `private_key_file` or `private_key_env`) log on once per WS API connection with `session.logon` (the only signed request) on the order and user connections. Later requests carry neither `apiKey` nor `signature`, only `timestamp` and `recvWindow`. The order channel is Live only after the logon reply. A failed logon is fatal for bad key, signature or permission errors; timestamp, rate-limit and server errors retry the logon after 2 s. A revoked session (`{"id":null,"status":401,...}`, key deleted or IP not whitelisted) is logged and acted on through the error map (-2015 is fatal). REST requests (fallback, reconciliation, kill switch) are signed with Ed25519 per request, about 30 µs each, so use `order_api = "ws"` with Ed25519 keys.
 * Binance supports `session.logon` with Ed25519 keys only, on production, the Spot testnet (`wss://ws-api.testnet.binance.vision/ws-api/v3`) and Demo Mode (`wss://demo-ws-api.binance.com/ws-api/v3`); RSA keys are not supported by FastMM.
 
-Order encode with HMAC signing: 523 ns (`bench/bench_order_encoders.cpp`, [bench/README.md](../../bench/README.md), release-native, one pinned core, 2026-09-23). `BM_Encode_BinanceOrderPlace_Session` and `_Ed25519` are not in `bench/results/latest`.
+Encoding an `order.place` takes 714.6 ns HMAC-signed and 268.2 ns on an Ed25519 session (`BM_Encode_BinanceOrderPlace`, `BM_Encode_BinanceOrderPlace_Session`, [Benchmarks](../explanation/benchmarks.md)).
 
 ### Fee rates
 
