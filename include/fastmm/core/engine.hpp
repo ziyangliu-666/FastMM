@@ -1663,8 +1663,12 @@ class Engine {
     ++stats_.synthetic_fills;
     if (FASTMM_UNLIKELY(!instruments_.contains(u.order.instrument))) return;
     const Instrument& inst = instruments_.get(u.order.instrument);
-    FASTMM_LOG_ERROR(
-        "order {} was {} filled while we were not listening: booking {} at its own price {}",
+    // On Binance this is mostly a cancel ack that names a fill the private stream delivers a
+    // fraction of a millisecond later; an estimate no execution names shows in
+    // fastmm_estimates_pending and, once the order is forgotten, as an error.
+    FASTMM_LOG_WARN(
+        "order {} on {}: the venue reports {} filled ahead of its executions, booked at the "
+        "order's price {} until one names it",
         encode_cl_ord_id(u.order.cl_ord_id),
         inst.symbol,
         u.missed_qty,
@@ -1785,7 +1789,7 @@ class Engine {
   // OmsStats::synthetic_forgotten counts these (the status file, the metrics export).
   void report_forgotten(const OmsUpdate& u) noexcept {
     if (FASTMM_LIKELY(u.forgotten_qty.is_zero())) return;
-    FASTMM_LOG_WARN(
+    FASTMM_LOG_ERROR(
         "order {}: {} booked as an estimate was never named by an execution, and the order is no "
         "longer remembered; an execution of it the venue replays from now on would be booked "
         "again",
