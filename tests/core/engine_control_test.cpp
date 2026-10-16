@@ -4,6 +4,7 @@
 
 #include "fastmm/core/engine.hpp"
 
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -87,22 +88,63 @@ struct Rig {
   Transport transport;
   InlineFeed feed{1 << 20};
   Quoter strategy;
+  MsgRing records{1U << 20};
   std::unique_ptr<E> engine;
 
-  explicit Rig(Duration flatten_timeout = seconds(60)) {
+  explicit Rig(Duration flatten_timeout = seconds(60), bool cancel_unknown_own = false) {
     EngineConfig cfg;
     cfg.risk.max_open_orders = 8;
     cfg.quotes.min_requote_interval = Duration{};
     cfg.flatten_interval = milliseconds(100);
     cfg.flatten_timeout = flatten_timeout;
     cfg.flatten_slippage_bps = 10;
-    engine = std::make_unique<E>(cfg, table, clock, transport, feed, strategy);
+    cfg.session_epoch = 3;
+    cfg.cancel_unknown_own = cancel_unknown_own;
+    engine = std::make_unique<E>(cfg, table, clock, transport, feed, strategy, nullptr, &records);
     engine->warm_up();
     engine->start();
   }
   void drain() {
     while (engine->step() > 0) {
     }
+  }
+  // The LimitsRecords written so far (other records are skipped).
+  std::vector<LimitsRecord> limit_records() {
+    std::vector<LimitsRecord> out;
+    while (const std::byte* p = records.try_peek()) {
+      const auto* h = reinterpret_cast<const RecordHeader*>(p);
+      if (h->type == RecordType::Limits) {
+        LimitsRecord r;
+        std::memcpy(&r, p, sizeof r);
+        out.push_back(r);
+      }
+      records.release();
+    }
+    return out;
+  }
+  // A reconciliation of venue 0 that reports one open order on kA the engine never sent.
+  void reconcile_unknown(ClientOrderId id, const char* venue_order_id) {
+    ReconcileMsg m{};
+    init_header(m, EventType::Reconcile, kA, VenueId{0});
+    m.kind = ReconcileMsg::Kind::Begin;
+    push(m);
+    m.kind = ReconcileMsg::Kind::OpenOrder;
+    m.cl_ord_id = id;
+    m.venue_order_id = venue_order_id;
+    m.side = Side::Buy;
+    m.price = px("99.00");
+    m.orig_qty = qt("0.010");
+    push(m);
+    m.kind = ReconcileMsg::Kind::End;
+    push(m);
+  }
+  [[nodiscard]] std::vector<OutCancelMsg> cancels() const {
+    std::vector<OutCancelMsg> v;
+    for (const auto& m : transport.out) {
+      const auto* h = reinterpret_cast<const EventHeader*>(m.data());
+      if (h->type == EventType::OutCancel) v.push_back(*reinterpret_cast<const OutCancelMsg*>(h));
+    }
+    return v;
   }
   template <class M>
   void push(M& m) {
@@ -307,6 +349,122 @@ TEST_CASE("core.engine.control: a resume stops a running flatten") {
   const std::size_t sent = r.transport.news().size();
   r.tick(seconds(1));
   CHECK(r.transport.news().size() == sent);
+}
+
+TEST_CASE("core.engine.control: flatten works the position off while the kill switch is set") {
+  Rig r;
+  r.book(kA, "100.00", "100.02");
+  r.fill(kA, Side::Buy, "100.00", "0.500");
+  r.control(ControlCommand::TripKill);
+  REQUIRE(r.engine->risk().killed());
+  const std::size_t before = r.transport.news().size();
+  r.book(kA, "100.00", "100.02");
+  CHECK(r.transport.news().size() == before);  // no quote while killed
+
+  r.control(ControlCommand::Flatten, kA, VenueId::invalid(), 10);
+  CHECK(r.engine->flatten_state() == FlattenState::Working);
+  REQUIRE(r.transport.news().size() == before + 1);
+  const OutNewOrderMsg o = r.transport.news().back();
+  CHECK(o.side == Side::Sell);
+  CHECK(o.qty == qt("0.500"));
+  CHECK(o.reduce_only == 1);
+  CHECK(o.tif == TimeInForce::Ioc);
+  r.fill_order(kA, o.cl_ord_id, Side::Sell, "99.90", "0.500");
+  r.tick(milliseconds(150));
+  CHECK(r.engine->position(kA).flat());
+  CHECK(r.engine->flatten_state() == FlattenState::Flat);
+  CHECK(r.engine->risk().killed());  // the kill stays until an operator clears it
+  CHECK_FALSE(r.engine->quoting_enabled());
+}
+
+TEST_CASE("core.engine.control: a flatten while killed still meets the price collar") {
+  Rig r;
+  ControlLimitsMsg m{};
+  init_header(m, EventType::Control);
+  m.command = ControlCommand::SetLimits;
+  m.limits.max_open_orders = 8;
+  m.limits.price_collar_bps = 5;  // narrower than the 10 bps the flatten goes through the touch
+  r.push(m);
+  r.book(kA, "100.00", "100.02");
+  r.fill(kA, Side::Buy, "100.00", "0.500");
+  r.control(ControlCommand::TripKill);
+  const std::size_t before = r.transport.news().size();
+  r.control(ControlCommand::Flatten, kA, VenueId::invalid(), 10);
+  CHECK(r.transport.news().size() == before);
+  CHECK(r.engine->stats().risk_rejects_by_reason[RejectReason::PriceCollar] >= 1);
+  CHECK(r.engine->stats().risk_rejects_by_reason[RejectReason::KillSwitch] == 0);
+}
+
+TEST_CASE("core.engine.control: a venue's kill still refuses its flatten") {
+  Rig r;
+  r.book(kA, "100.00", "100.02");
+  r.fill(kA, Side::Buy, "100.00", "0.500");
+  r.control(ControlCommand::TripVenueKill,
+            InstrumentId::invalid(),
+            VenueId{0},
+            static_cast<std::uint64_t>(KillReason::VenueFatal));
+  const std::size_t before = r.transport.news().size();
+  r.control(ControlCommand::Flatten, kA, VenueId::invalid(), 10);
+  CHECK(r.transport.news().size() == before);
+  CHECK(r.engine->stats().risk_rejects_by_reason[RejectReason::VenueKilled] >= 1);
+}
+
+TEST_CASE("core.engine.control: SetLimits records what changed and sets check_balance") {
+  Rig r;
+  REQUIRE(r.engine->balances().check_enabled());
+  ControlLimitsMsg m{};
+  init_header(m, EventType::Control);
+  m.command = ControlCommand::SetLimits;
+  m.limits = r.engine->risk().limits();
+  m.limits.max_gross_notional = Notional::from_decimal("5000").value();
+  m.arg = kLimitsCheckBalance | kLimitsForced;  // check_balance = false
+  r.push(m);
+  CHECK(r.engine->risk().limits().max_gross_notional == Notional::from_decimal("5000").value());
+  CHECK_FALSE(r.engine->balances().check_enabled());
+
+  // A record without the check_balance flag (an older journal) leaves it as it is.
+  m.arg = 0;
+  m.limits.max_gross_notional = Notional{};
+  r.push(m);
+  CHECK_FALSE(r.engine->balances().check_enabled());
+
+  ControlUnderlyingMsg u{};
+  init_header(u, EventType::Control);
+  u.command = ControlCommand::SetUnderlyingLimit;
+  u.underlying = 0;  // no [risk.underlying] in this session: ignored, nothing recorded
+  u.arg = static_cast<std::uint64_t>(qt("1").raw);
+  r.push(u);
+
+  const std::vector<LimitsRecord> recs = r.limit_records();
+  REQUIRE(recs.size() == 2);
+  CHECK(recs[0].kind == LimitsRecord::kRisk);
+  CHECK(recs[0].forced == 1);
+  CHECK(recs[0].before.max_gross_notional.is_zero());
+  CHECK(recs[0].after.max_gross_notional == Notional::from_decimal("5000").value());
+  CHECK(recs[0].check_balance_before == 1);
+  CHECK(recs[0].check_balance_after == 0);
+  CHECK(recs[1].forced == 0);
+  CHECK(recs[1].check_balance_before == 0);
+  CHECK(recs[1].check_balance_after == 0);
+  CHECK(recs[1].after.max_gross_notional.is_zero());
+}
+
+TEST_CASE("core.engine.control: cancel_unknown = own leaves orders FastMM did not send") {
+  Rig all;
+  all.reconcile_unknown(ClientOrderId{}, "MANUAL1");
+  REQUIRE(all.cancels().size() == 1);  // the default: every unknown order is cancelled
+  CHECK(all.cancels()[0].venue_order_id.view() == "MANUAL1");
+
+  Rig own(seconds(60), /*cancel_unknown_own=*/true);
+  own.reconcile_unknown(ClientOrderId{}, "MANUAL1");     // no client id of ours
+  own.reconcile_unknown(make_cl_ord_id(9, 1), "LATER");  // an epoch after this session's
+  CHECK(own.cancels().empty());
+  CHECK(own.engine->stats().unknown_orders_kept == 2);
+  own.reconcile_unknown(make_cl_ord_id(2, 7), "EARLIER");  // an earlier session of this engine
+  REQUIRE(own.cancels().size() == 1);
+  CHECK(own.cancels()[0].cl_ord_id == make_cl_ord_id(2, 7));
+  CHECK(own.cancels()[0].venue_order_id.view() == "EARLIER");
+  CHECK(own.engine->stats().unknown_order_cancels == 1);
 }
 
 TEST_CASE("core.engine.control: a flatten order is exempt from max_position") {

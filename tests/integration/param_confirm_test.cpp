@@ -11,6 +11,7 @@
 
 #include <csignal>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -141,6 +142,65 @@ TEST_CASE("integration.params: fastmm-ctl param --wait returns once the engine h
     if (row[0] == "half_spread_bps") spread = row[2] == "7" && row[5] == "scheduled:drain";
   }
   CHECK(spread);
+}
+
+// [risk] with every limit off is refused for a keyed session unless allow_unlimited says so; a
+// running session turns a limit off only with --force, and the store keeps the change.
+TEST_CASE(
+    "integration.limits: refused without limits, --force to turn one off, kept in the store") {
+  ServerFixture fx;
+  const SessionFiles f = write_config(fx, "limits-force", "exit", "50");
+  const std::string ctl = (std::filesystem::temp_directory_path() /
+                           ("fastmm-" + std::to_string(::getpid()) + "-limits.ctl"))
+                              .string();
+  remove_all_of({f.epoch, f.kill, f.journal_dir, f.status, ctl});
+  const auto rewrite = [&](std::string_view from, std::string_view to) {
+    std::string text = fastmm::test::read_file(f.config);
+    const std::size_t at = text.find(from);
+    REQUIRE(at != std::string::npos);
+    text.replace(at, from.size(), to);
+    std::ofstream(f.config, std::ios::trunc) << text;
+  };
+  rewrite("max_loss = \"50\"\n", "");
+  CHECK(reap(spawn_live(f, 5)) == 3);  // kExitConfig, before any venue is contacted
+
+  rewrite("[risk]\n", "[risk]\nallow_unlimited = true\n");
+  const pid_t live = spawn_live(f, 120, {"--control", ctl});
+  const auto ctl_run = [&](std::vector<std::string> command) {
+    command.insert(command.begin(), {"--path", ctl});
+    return run(FASTMM_CTL_EXE, command);
+  };
+  REQUIRE_MESSAGE(wait_until([&] { return ctl_run({"status"}).rc == 0; }, 60000),
+                  "the session never answered on its control socket");
+  const Output refused = ctl_run({"limits", "max_position=0"});
+  CHECK(refused.rc == 1);
+  CHECK(refused.out.find("turns off max_position; add --force") != std::string::npos);
+  CHECK(ctl_run({"limits", "max_position=0", "--force"}).rc == 0);
+  CHECK(ctl_run({"limits", "max_gross_notional=5000"}).rc == 0);
+  REQUIRE(wait_until(
+      [&] { return ctl_run({"status"}).out.find("max_position=0 ") != std::string::npos; }, 10000));
+
+  REQUIRE(::kill(live, SIGTERM) == 0);
+  CHECK(reap(live) == 0);
+  remove_all_of({ctl});
+
+  GenericSection section;
+  section.values["path"] = f.journal_dir + "/limits-force.db";
+  store::BackendOptions o;
+  o.config = &section;
+  o.read_only = true;
+  auto reader = store::make_sqlite_reader();
+  REQUIRE(reader->open(o));
+  auto rows = reader->limit_changes(store::QueryFilter{});
+  REQUIRE(rows);
+  REQUIRE(rows->rows.size() == 2);
+  CHECK(rows->rows[0][3] == "max_position");
+  CHECK(rows->rows[0][4] == "0.02");
+  CHECK(rows->rows[0][5] == "0");
+  CHECK(rows->rows[0][6] == "1");
+  CHECK(rows->rows[1][3] == "max_gross_notional");
+  CHECK(rows->rows[1][5] == "5000");
+  CHECK(rows->rows[1][6] == "0");
 }
 
 #endif

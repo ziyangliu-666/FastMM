@@ -36,6 +36,16 @@ All notable changes are recorded here (Keep a Changelog format).
 - live: a restored position the newest session booked twice exits 9 unless `--accept-position`.
 - live: a start without `[engine] epoch_file` exits 9 while the store holds sessions of the engine.
 - live: a lost `[engine] kill_file` no longer clears a `max_loss` trip the store recorded (exit 6).
+- live: `fastmm-ctl limits` changes `max_gross_notional`, `max_net_notional` and `check_balance`.
+- store: each run-time limit change is kept with its values before and after (`limit_changes`,
+  schema 11, `fastmm-pnl limit-changes`).
+- core: `[engine] cancel_unknown = "own"` cancels only FastMM's own unknown open orders.
+
+### Changed
+- live: a session with keys refuses to start without `[risk]` `max_position` (or
+  `max_order_notional`) and `max_loss`, unless `[risk] allow_unlimited = true`.
+- live: `fastmm-ctl limits` turns a limit off (0, false) only with `--force`.
+- core: `flatten` works the position off while the global kill switch is set.
 
 ### Fixed
 - core: an execution replay naming more than 64 estimated fills no longer books the oldest twice.
@@ -67,6 +77,8 @@ All notable changes are recorded here (Keep a Changelog format).
 - live: a stop's venue cancel-all waits for the engine to take the kill switch; it left open an
   order the engine sent after it.
 - live: `--strategy` naming no strategy prints its error in one write; a log line no longer splits it.
+- live: `fastmm-ctl limits` no longer turns on `max_loss` where the totals mix currencies.
+- docs: a restart cancels every unknown open order on its symbols, not only FastMM's.
 
 ## [0.6.0] - 2026-10-13
 

@@ -9,9 +9,10 @@ What to run on a first deploy, what to check each day, and what to do when somet
 3. Tune the host as root: `scripts/host-setup.sh tune` sets hugepages, disables irqbalance, moves device interrupts to CPU 0 and sets the `performance` governor. Add `isolcpus`, `nohz_full` and `rcu_nocbs` for the engine and network cores to the kernel command line yourself and reboot.
 4. Install `deploy/fastmm-live.service` ([Deploy](deploy.md#run-under-systemd)). It restarts the process after a crash or exit 4 and not after exit 2, 3, 5, 6 or 7; add an `ExecStopPost=` that alerts on `$EXIT_STATUS` in {5, 6, 7}.
 5. Copy the `[engine]` table from `configs/profiles/production-latency.toml` into your config and set `cpu` and `net_cpus` to your isolated cores. Take nothing else from that file: the rest of it is simulator configuration, including literal passwords.
-6. Create the journal directory on a filesystem with room for the session, and the session epoch directory: `[engine] journal_dir` and `epoch_file`.
-7. Export the keys. They come from the environment only; an unset `${VAR}` is a startup error, exit code 2.
-8. Run the [Go-live checklist](go-live-checklist.md) end to end, including a 24 h practice session and a kill-switch drill.
+6. Size `[risk]` to the account. Every limit is off by default, and a session with keys refuses to start (exit code 3) without `max_position` or `max_order_notional`, and `max_loss`. Give the session an account of its own: it cancels every open order it does not know on its symbols at start-up and after a reconnect ([`cancel_unknown`](../../reference/configuration.md#engine)).
+7. Create the journal directory on a filesystem with room for the session, and the session epoch directory: `[engine] journal_dir` and `epoch_file`.
+8. Export the keys. They come from the environment only; an unset `${VAR}` is a startup error, exit code 2.
+9. Run the [Go-live checklist](go-live-checklist.md) end to end, including a 24 h practice session and a kill-switch drill.
 
 ## Daily checks
 
@@ -58,7 +59,7 @@ Every ERROR line needs a known cause ([Troubleshooting](troubleshooting.md)). Th
 
 ## When a kill fires
 
-The reason is in the log (`kill switch engaged (<reason>, flags=<hex>)`), in `fastmm-top` and in the status file's `kill_reason`. A kill pulls the quotes and cancels the orders; the position stays. While the switch is engaged it also refuses the orders of a flatten: to work the position off in a session that is still running, clear the switch with `fastmm-ctl unkill` (or `SIGHUP`), which also resumes quoting, and run `fastmm-ctl flatten` ([Operating a running session](operate-a-running-session.md)).
+The reason is in the log (`kill switch engaged (<reason>, flags=<hex>)`), in `fastmm-top` and in the status file's `kill_reason`. A kill pulls the quotes and cancels the orders; the position stays. In a session that is still running (`fastmm-ctl kill`, or `[engine] on_kill = "stay"`), `fastmm-ctl flatten` works it off with the switch still set: reduce-only IOC orders through the touch, inside the price collar, while quoting stays off ([Flatten](operate-a-running-session.md#flatten)). A venue's own kill (`VenueFatal`, `VenueHardStop`, `DeadMansSwitchLost`) refuses the flatten there too.
 
 | Reason | Diagnosis | Action |
 |---|---|---|

@@ -297,6 +297,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      "fastmm-live after a kill switch the engine trips itself ([risk] max_loss, a full ring, every "
      "venue killed): exit (normal shutdown, exit code 6) | stay (keep running with quoting off) "
      "(default exit)"},
+    {"engine",
+     "cancel_unknown",
+     KeyType::String,
+     false,
+     "open orders the engine does not know, found on its symbols at start-up and after a "
+     "reconnect: all (cancel every one; the account must be FastMM's alone) | own (cancel only "
+     "those with a FastMM client order id of this engine's epochs) (default all)"},
     // [venues.<name>]
     {"venues.*",
      "kind",
@@ -641,6 +648,12 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "refuse an order the venue's reported balance, less this session's orders and fills since, "
      "cannot cover; off for a venue until it reports balances (default true)"},
+    {"risk",
+     "allow_unlimited",
+     KeyType::Bool,
+     false,
+     "let fastmm-live trade with real keys without max_position (or max_order_notional) and "
+     "max_loss; without it such a session refuses to start, exit code 3 (default false)"},
     {"risk",
      "underlying",
      KeyType::Table,

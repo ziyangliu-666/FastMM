@@ -75,6 +75,10 @@ struct ControlPlane {
   // The limits the session runs with. `limits` edits this copy and sends the whole struct, so the
   // keys a command does not name keep the values the session started with.
   RiskLimits limits;
+  bool check_balance = true;  // [risk] check_balance, edited the same way
+  // The PnL totals are in one currency: one settlement currency, or [accounting] converts. False:
+  // `limits` refuses to turn on max_loss or an exposure cap that the session started without.
+  bool totals_one_currency = true;
   // [risk.underlying]: each underlying of the session's plan, in its order, with the max_net it
   // runs with (`limits underlying.<BASE>.max_net=...` edits it the same way).
   std::vector<std::pair<std::string, Qty>> underlyings;

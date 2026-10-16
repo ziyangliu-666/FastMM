@@ -20,7 +20,7 @@ Repeat this list whenever the binary, config or strategy parameters change. Oper
 
 ## Risk limits
 
-A `[risk]` limit is off when it is `0` or missing ([Configuration](../../reference/configuration.md#risk)).
+A `[risk]` limit is off when it is `0` or missing ([Configuration](../../reference/configuration.md#risk)). A session with keys does not start without `max_position` (or `max_order_notional`) and `max_loss`.
 
 - [ ] `max_order_qty` and `max_order_notional` (settlement currency: the base coin for an inverse contract).
 - [ ] `max_position` per instrument, which counts same-side open orders.
@@ -37,6 +37,7 @@ A `[risk]` limit is off when it is `0` or missing ([Configuration](../../referen
 
 - [ ] Keys come only from the environment ([Configuration](../../reference/configuration.md#general-rules)), and you never run with `--allow-inline-secrets`.
 - [ ] The key has trading permission only: no withdrawals, no transfers.
+- [ ] The account (or subaccount) is the session's alone: the session cancels open orders it does not know on its symbols, and its cancel-alls take every order there ([`cancel_unknown`](../../reference/configuration.md#engine)).
 - [ ] The key is restricted to your server's IP addresses where the venue supports it.
 - [ ] One key per running engine, so that revoking one stops one engine.
 

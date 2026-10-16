@@ -67,9 +67,12 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `reject_backoff_max_ms` | integer |  | cap of the doubling reject backoff, ms (default 60000) |
 | `quote_token_reserve` | integer |  | order tokens of [risk] orders_per_sec a quote that does not reduce the position leaves for the strategy's own orders and for quotes that do; quotes short of a token wait and are placed in turn as tokens return, not refused (default 0) |
 | `on_kill` | string |  | fastmm-live after a kill switch the engine trips itself ([risk] max_loss, a full ring, every venue killed): exit (normal shutdown, exit code 6) \| stay (keep running with quoting off) (default exit) |
+| `cancel_unknown` | string |  | open orders the engine does not know, found on its symbols at start-up and after a reconnect: all (cancel every one; the account must be FastMM's alone) \| own (cancel only those with a FastMM client order id of this engine's epochs) (default all) |
 <!-- END config-keys -->
 
 `io_uring` is blocked by some seccomp profiles, including Docker's default ([Network reactor](../explanation/architecture.md#network-reactor)). `tsc_recalibrate_s`: the engine clock stays continuous and slews each measured offset away over one period (at most 500 ppm); it steps, with a warning, only when it was more than 1 ms off. `on_kill`: [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md#after-a-kill-the-engine-trips-itself).
+
+`cancel_unknown`: on its first connect and after every reconnect a connector reads the account's open orders on the session's symbols, and the engine cancels each one it does not know. With the default, `all`, that includes orders placed by hand or by another program, so give the session an account (or subaccount) of its own. `own` cancels only orders whose client order id FastMM wrote (`fm` and 12 hex digits) with a session epoch from 1 to this session's, which covers the orders an earlier session of this engine left behind, and leaves the rest. `own` does not make a shared account safe: the cancel-all of a kill or a shutdown, `cancel_on_order_channel_loss` and the venues' dead man's switches cancel every order on the symbol, whoever placed it.
 
 ## `[venues.<name>]`
 
@@ -610,7 +613,9 @@ quote_qty = 0.001
 
 ## `[risk]`
 
-Every limit is off when it is `0` or omitted. [Risk model](../explanation/risk-model.md) describes the checks and their order.
+Every limit is off when it is `0` or omitted. A `fastmm-live` session that trades with real keys (a venue with an `api_key`, or an OUCH login, that is not `public_only`; not `--dry-run`) refuses to start, exit code 3, unless `[risk]` sets `max_position` or `max_order_notional`, and `max_loss`; `allow_unlimited = true` starts it without them. A dry run, a backtest, a replay and a strategy behind `fastmm-gateway` are not checked. [Risk model](../explanation/risk-model.md) describes the checks and their order.
+
+`fastmm-ctl limits` changes any of these keys and `check_balance` while the session runs ([Operating a running session](../how-to/operations/operate-a-running-session.md)).
 
 <!-- BEGIN config-keys risk -->
 | Key | Type | Required | Meaning |
@@ -630,6 +635,7 @@ Every limit is off when it is `0` or omitted. [Risk model](../explanation/risk-m
 | `stp` | boolean |  | self-trade prevention against our own resting orders (default true) |
 | `max_feed_lag_ms` | integer |  | pull a venue's quotes and refuse orders that could rest there without reducing the position while its market data arrives this much later than its baseline, ms; resumes 100 ms after the last message over it (default 0: off) |
 | `check_balance` | boolean |  | refuse an order the venue's reported balance, less this session's orders and fills since, cannot cover; off for a venue until it reports balances (default true) |
+| `allow_unlimited` | boolean |  | let fastmm-live trade with real keys without max_position (or max_order_notional) and max_loss; without it such a session refuses to start, exit code 3 (default false) |
 | `underlying` | table |  | one [risk.underlying.BTC] table per base asset: a net position limit over every instrument and venue that trades it |
 <!-- END config-keys -->
 

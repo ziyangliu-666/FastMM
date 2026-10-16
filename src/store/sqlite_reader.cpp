@@ -116,6 +116,18 @@ class SqliteReader final : public Reader {
     return query(sql + w.text() + " ORDER BY session_id, seq, name" + limit(f), w);
   }
 
+  [[nodiscard]] Result<Rows, std::string> limit_changes(const QueryFilter& f) override {
+    if (version_ < 11)
+      return fail(path_ + " predates the limit history (schema 11): its sessions recorded none");
+    std::string sql =
+        "SELECT ts_ns, session_id, seq, key, before, after, forced FROM limit_changes";
+    Where w;
+    w.session(f);
+    w.engine_join(f, "limit_changes");
+    w.day_range(f);
+    return query(sql + w.text() + " ORDER BY session_id, seq, key" + limit(f), w);
+  }
+
   [[nodiscard]] Result<Rows, std::string> param_diff(std::uint64_t a, std::uint64_t b) override {
     if (a == 0) {
       sqlite3_stmt* st = nullptr;

@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <string_view>
 #include <type_traits>
 
 namespace fastmm {
@@ -40,6 +41,30 @@ struct RiskLimits {
   }
 };
 static_assert(std::is_trivially_copyable_v<RiskLimits> && sizeof(RiskLimits) == 96);
+
+// Calls f(key, before, after) for each [risk] key whose value differs between `a` and `b`, in the
+// order of the configuration reference, with the values as [risk] writes them: Qty or Notional,
+// an integer (stale_md_ms in milliseconds) or a bool.
+template <class F>
+constexpr void for_each_changed_limit(const RiskLimits& a, const RiskLimits& b, F&& f) {
+  const auto cmp = [&f](std::string_view key, auto x, auto y) {
+    if (x != y) f(key, x, y);
+  };
+  cmp("max_order_qty", a.max_order_qty, b.max_order_qty);
+  cmp("max_order_notional", a.max_order_notional, b.max_order_notional);
+  cmp("max_position", a.max_position, b.max_position);
+  cmp("max_open_orders", std::int64_t{a.max_open_orders}, std::int64_t{b.max_open_orders});
+  cmp("price_collar_bps", a.price_collar_bps, b.price_collar_bps);
+  cmp("fat_finger_bps", a.fat_finger_bps, b.fat_finger_bps);
+  cmp("stale_md_ms", a.stale_md.millis(), b.stale_md.millis());
+  cmp("max_loss", a.max_loss, b.max_loss);
+  cmp("max_gross_notional", a.max_gross_notional, b.max_gross_notional);
+  cmp("max_net_notional", a.max_net_notional, b.max_net_notional);
+  cmp("orders_per_sec", std::int64_t{a.orders_per_sec}, std::int64_t{b.orders_per_sec});
+  cmp("burst", std::int64_t{a.burst}, std::int64_t{b.burst});
+  cmp("stp", a.stp, b.stp);
+  cmp("max_feed_lag_ms", std::int64_t{a.max_feed_lag_ms}, std::int64_t{b.max_feed_lag_ms});
+}
 
 // How much more each limit admits for one instrument now: the largest order (or number of orders)
 // that passes that limit's check at this instant, the others aside. What check_new would use next:

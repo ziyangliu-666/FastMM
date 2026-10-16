@@ -15,7 +15,7 @@ Venue ids follow the order of the `[venues.<name>]` tables in the config, starti
 
 `SIGHUP`, or `fastmm-ctl unkill`, clears the kill switch of a running session and resumes quoting (`[engine] on_kill = "stay"`). It also clears a latched `max_loss` trip; the loss already spent stays in the budget.
 
-A kill leaves the inventory on: it pulls quotes and cancels orders, nothing more. Working the position off is `fastmm-ctl flatten`, and it has to run before the kill: while the kill switch is engaged the pre-trade check refuses the flatten's orders too ([Operating a running session](operate-a-running-session.md#flatten)).
+A kill leaves the inventory on: it pulls quotes and cancels orders, nothing more. Working the position off is `fastmm-ctl flatten`, which the global kill switch lets through: its reduce-only orders go out while the switch stays set and quoting stays off ([Operating a running session](operate-a-running-session.md#flatten)). A venue's kill switch still refuses them.
 
 ## The latched loss budget
 
@@ -84,7 +84,7 @@ These events do not trip the kill switch:
 | `on_kill` | Behaviour |
 |---|---|
 | `"exit"` (default) | Within 50 ms the control thread logs `fastmm-live: shutting down (kill switch: <reason>; [engine] on_kill = "exit")` at ERROR and runs the [shutdown sequence](#shutdown-sequence). Exit code 6, or 5 if a cancel-all failed |
-| `"stay"` | The process keeps running with quoting off and new orders refused. At once and then every 10 s it logs `fastmm-live: kill switch engaged (<reason>, flags=<hex>) and [engine] on_kill = "stay": quoting is off and no new orders are sent; stop the process (SIGINT/SIGTERM) to cancel all and exit` at ERROR. SIGINT or SIGTERM then runs the shutdown sequence: exit code 0, or 5 if a cancel-all failed |
+| `"stay"` | The process keeps running with quoting off and new orders refused, except a `fastmm-ctl flatten`'s. At once and then every 10 s it logs `fastmm-live: kill switch engaged (<reason>, flags=<hex>) and [engine] on_kill = "stay": quoting is off and only fastmm-ctl flatten sends orders; stop the process (SIGINT/SIGTERM) to cancel all and exit` at ERROR. SIGINT or SIGTERM then runs the shutdown sequence: exit code 0, or 5 if a cancel-all failed |
 
 Use `"stay"` only when someone watches the session. Alert on exit codes 5, 6 and 7. After a `max_loss` kill, check the PnL and the market, then clear the [latched budget](#the-latched-loss-budget); until then every start exits 6.
 
@@ -147,4 +147,4 @@ fastmm-live: exit code 0
 
    Typical causes are a network outage (status 0 with an error text), a revoked key or a missing permission (`401`, `403`; the venue kill switch has usually tripped earlier with `VenueFatal`), an IP ban (`418` on Binance, `403` on Bybit; `VenueHardStop`) or the venue being down.
 3. Confirm that the venue shows no open orders before you start anything again. On Deribit (`cancel_on_disconnect = true`), Binance USDⓈ-M (`dead_mans_switch_ms`) and Bybit with DCP armed, the venue also cancels once the connection is gone or the window runs out ([Run in production](running-in-production.md#venue-side-cancel-switches)).
-4. A restart sweeps what is left: every connector queries open orders on its first connect and the engine cancels the ones it does not know (`cancelling unknown live order <id>`), but only orders the connector recognises as FastMM's. Until then they rest and can fill; the restarted session books those fills from the venue's executions ([Run in production](running-in-production.md#venue-side-cancel-switches)).
+4. A restart sweeps what is left: every connector queries open orders on its first connect and the engine cancels the ones it does not know (`cancelling unknown live order <id>`) on the session's symbols, manual orders included; with `[engine] cancel_unknown = "own"` only those with a FastMM client order id ([Configuration](../../reference/configuration.md#engine)). Until then they rest and can fill; the restarted session books those fills from the venue's executions ([Run in production](running-in-production.md#venue-side-cancel-switches)).

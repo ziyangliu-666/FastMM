@@ -145,6 +145,10 @@ int run_live(const Config& cfg, const LiveOptions& opts);
 // prefixed with `prog` to stderr and returns false (kExitUsage).
 bool resolve_venue_env(Config& cfg, bool dry_run, const char* prog);
 
+// A venue of `cfg` trades with real keys: it is not public_only and has an api_key (an OUCH login
+// on a venue that takes no API key). Read after resolve_venue_env, which clears them in a dry run.
+[[nodiscard]] bool trades_with_keys(const Config& cfg);
+
 // Restores the SIGINT/SIGTERM handlers run_live replaced; a no-op when none are replaced. For a
 // child forked during a session, whose control thread does not exist.
 void restore_signal_handlers() noexcept;

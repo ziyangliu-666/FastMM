@@ -16,7 +16,7 @@ The first failing check decides the reason.
 
 | # | Reason | Refuses an order when | Setting |
 |---:|---|---|---|
-| 1 | `KillSwitch` | the global kill switch is set | |
+| 1 | `KillSwitch` | the global kill switch is set, unless the order is a `flatten`'s | |
 | 2 | `VenueKilled` | the venue's kill bit is set | |
 | 3 | `InstrumentDisabled` | the instrument is disabled or out of range | `[[instruments]] enabled` |
 | 4 | `InvalidTick` | a limit price is not a multiple of the tick | `tick` |
@@ -41,7 +41,7 @@ The first failing check decides the reason.
 | 23 | `RateLimit` | a pool order's account cannot send it now: its connector is paused or an order window is at its cap (`ctx.order_budget`) | |
 | 24 | `RateLimit` | the token bucket is empty | `orders_per_sec`, `burst` |
 
-- A limit of 0 turns its check off; the checks against the instrument's reference data always run.
+- A limit of 0 turns its check off; the checks against the instrument's reference data always run. Every limit defaults to off, so `fastmm-live` with real keys refuses to start without `max_position` (or `max_order_notional`) and `max_loss`, unless `[risk] allow_unlimited = true` ([Configuration](../reference/configuration.md#risk)).
 - A replace excludes the existing order's remaining quantity from the position prediction and is not counted against `max_open_orders`.
 - Only an order that passes every check takes a token from the bucket: one refused for any other reason, a full or paused pool account included, leaves the tokens to the orders that are sent.
 - `MaxPosition` counts same-side open orders, so a quote ladder cannot exceed `max_position` even if it fills entirely.
@@ -122,7 +122,7 @@ The decision runs on the engine clock, which the journal records, so a replay va
 
 ## The kill switch
 
-The kill switch is a 32-bit flag word that any thread can set: bit 0 is global, bit 1 + v is venue v. While a bit is set, checks 1 and 2 refuse every new order and replace. Tripping the global bit also turns quoting off (`on_quoting(false)`), pulls every quote and cancels every working order; tripping a venue's bit does that for that venue's instruments only. The engine records why each bit was first set (a `KillReason`, shown by `fastmm-top`).
+The kill switch is a 32-bit flag word that any thread can set: bit 0 is global, bit 1 + v is venue v. While a bit is set, checks 1 and 2 refuse every new order and replace, with one exception: the global bit lets through the reduce-only orders of an operator's `flatten`, so a killed session can still work its position off; a venue's bit refuses them too. Tripping the global bit also turns quoting off (`on_quoting(false)`), pulls every quote and cancels every working order; tripping a venue's bit does that for that venue's instruments only. The engine records why each bit was first set (a `KillReason`, shown by `fastmm-top`).
 
 The global switch trips when:
 
@@ -145,3 +145,4 @@ Nothing resets a kill switch automatically. After a kill the engine tripped itse
 - Position limits are per instrument, and per base asset with `[risk.underlying]`. The portfolio-wide limits are `max_gross_notional`, `max_net_notional` and `max_loss`, over one session; with instruments in more than one settlement currency they need `[accounting]` ([Currencies](#currencies)). Across strategies only `fastmm-gateway`'s `[gateway]` limits see the account.
 - It knows no venue rules beyond reference data, the account's balances and margin (check 21, [Balance check](#balance-check)) and its own order rate limit (check 22). The connectors back off on the venue's rate-limit responses ([Venue connectors](../reference/venues.md)), and the engine pauses a side after venue rejects (`[engine] reject_backoff_ms`). Cancels never take a token. A quote (`set_quotes`) short of one is not refused: it waits, and the engine places the waiting instruments' latest quotes in the order they ran out as the bucket refills; `[engine] quote_token_reserve` keeps tokens for orders the strategy sends itself and for quotes that reduce the position.
 - It does not protect against a venue that stops answering. Order-channel loss triggers a REST cancel-all in the connector; beyond that, see [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md).
+- It does not share an account. Open orders it does not know on its symbols are cancelled at start-up and after a reconnect (`[engine] cancel_unknown`), and the cancel-alls take every order on the symbol.

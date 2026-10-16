@@ -121,6 +121,10 @@ struct EngineSection {
   // killed): "exit" shuts down like SIGTERM and exits with code 6; "stay" keeps running with
   // quoting off and logs an ERROR line every 10 s.
   std::string on_kill = "exit";
+  // Open orders a reconciliation finds on the session's symbols that the engine does not know:
+  // "all" cancels every one; "own" only those whose client order id FastMM minted with an epoch
+  // up to this session's, and leaves the rest (manual orders, another program's) alone.
+  std::string cancel_unknown = "all";
 };
 
 struct FeesSection {
@@ -243,6 +247,9 @@ struct RiskSection {
   bool stp = true;
   int max_feed_lag_ms = 0;    // 0 = off
   bool check_balance = true;  // refuse what the venue's balance cannot cover
+  // A keyed fastmm-live session starts without max_position (or max_order_notional) and
+  // max_loss only with this set.
+  bool allow_unlimited = false;
   // [risk.underlying.<BASE>] max_net: net position per base asset over every instrument, base
   // units.
   UnderlyingSpec underlying;
@@ -336,6 +343,10 @@ class Config {
 
   // Typed views used to wire the engine.
   [[nodiscard]] RiskLimits risk_limits() const;
+  // Why fastmm-live refuses this [risk] for a session that trades with real keys: neither
+  // max_position nor max_order_notional, or no max_loss, and no allow_unlimited. Empty when it
+  // starts.
+  [[nodiscard]] std::string unlimited_risk() const;
   [[nodiscard]] QuoteParams quote_params() const;
   [[nodiscard]] LogLevel log_level() const;
   [[nodiscard]] LogLevel mirror_level() const;

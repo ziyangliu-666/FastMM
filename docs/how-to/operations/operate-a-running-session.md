@@ -34,9 +34,9 @@ The control thread reads the socket every 50 ms. A command reaches the engine at
 | `resume [--instrument SYM \| --venue NAME]` | Quotes again. Without a scope it also clears every scoped pull and stops a running flatten. |
 | `param <name>=<value> ... [--instrument SYM] [--source WHO]` | New strategy parameters. Validated here first: an unknown name, a value out of range or a failed `validate()` is refused and nothing is published ([Strategy parameters](../../reference/strategy-api.md#parameters)). The reply `ok param queued seq=N` means the update is on the engine's ring, not that the engine has applied it ([below](#confirm-a-parameter-change)). `--source` records who asked for it (`manual`, `scheduled:drain`, at most 39 bytes) in the journal and the status. |
 | `params [--instrument SYM]` | The control socket's sequence numbers, published and applied, the source of the last update, then the parameters' values, one `name=value` per line ([below](#confirm-a-parameter-change)). |
-| `limits <key>=<value> ...` | New risk limits. The keys are the `[risk]` keys and `underlying.<BASE>.max_net` for a base asset with a `[risk.underlying.<BASE>]` section; the ones you do not name keep the values the session started with. |
-| `flatten [--instrument SYM] [--max-slippage-bps N]` | The engine works the position off itself ([below](#flatten)). |
-| `kill` | Trips the global kill switch: quoting off, every quote pulled, every working order cancelled. The position stays. |
+| `limits <key>=<value> ... [--force]` | New risk limits. The keys are the `[risk]` keys, `check_balance` included, and `underlying.<BASE>.max_net` for a base asset with a `[risk.underlying.<BASE>]` section; the ones you do not name keep the values they have. Setting a limit that is on to `0` (or `stp`, `check_balance` to `false`) turns it off and is refused without `--force` ([below](#change-a-limit)). |
+| `flatten [--instrument SYM] [--max-slippage-bps N]` | The engine works the position off itself ([below](#flatten)), also while the kill switch is set. |
+| `kill` | Trips the global kill switch: quoting off, every quote pulled, every working order cancelled. The position stays; `flatten` works it off. |
 | `unkill` | Clears it and resumes quoting, as `SIGHUP` does, including a latched `max_loss` trip ([Kill switch and shutdown](kill-switch-and-shutdown.md#the-latched-loss-budget)). |
 | `stop` | Shuts the session down as `SIGTERM` does: kill switch, cancel-all on every venue, exit. |
 | `handoff` | `stop` for the process waiting on the instance lock (`fastmm-live --standby` or `--takeover`): the same shutdown, then the lock is released last. Refused by a session that holds no lock ([Hand over a running session](hand-over-a-session.md)). |
@@ -55,6 +55,8 @@ fastmm-ctl --name mm param half_spread_bps=99999
 error parameter 'half_spread_bps': value 99999 outside [0, 10000]
 ```
 
+## Change a limit
+
 ```bash
 fastmm-ctl --name mm limits max_position=0.5 orders_per_sec=10
 ```
@@ -64,6 +66,20 @@ ok limits queued (2 key(s))
 ```
 
 New limits take effect on the next pre-trade check, except `price_collar_bps` and `fat_finger_bps`, whose bands are recomputed on the next book or trade update of each instrument.
+
+Turning a limit off takes `--force`:
+
+```bash
+fastmm-ctl --name mm limits max_loss=0
+```
+
+```text
+error this turns off max_loss; add --force to mean it
+```
+
+`burst=0` is not off (it means `orders_per_sec`). A session whose instruments settle in more than one currency without `[accounting]` refuses to turn on `max_loss`, `max_gross_notional` or `max_net_notional` it started without, as it refuses `max_loss` at start-up.
+
+Each change the engine applies is logged (`risk limit replaced by the operator: max_loss 100 -> 0 (--force)`), journaled, and kept in the store, one row per key with the values before and after and whether `--force` was given: `fastmm-pnl limit-changes` ([Storage](../../reference/storage.md#limit_changes)). `status` shows the limits the session runs with now.
 
 ## Confirm a parameter change
 
@@ -111,7 +127,7 @@ A strategy that brings its own publisher (`LiveStrategy::set_params`) numbers it
 
 Only one slice per instrument is out at a time, so a flatten cannot sell the same position twice. A slice is capped at `[risk] max_order_qty`, so a large position leaves over several sweeps.
 
-A flatten order is exempt from `[risk] max_position` (a reduce-only order exists to get under it) and from self-trade prevention (the flatten cancelled the orders of its scope first; a cancel the venue never acknowledges must not leave the position on). Everything else applies: the **price collar**, the fat-finger band, `max_order_qty`, `max_order_notional`, `min_notional` and the rate limit. A slice a limit refuses is retried at the next sweep. If the collar is narrower than the slippage, no slice can pass and the flatten never finishes; widen it with `limits price_collar_bps=...`.
+A flatten order is exempt from the global kill switch, from `[risk] max_position` (a reduce-only order exists to get under it) and from self-trade prevention (the flatten cancelled the orders of its scope first; a cancel the venue never acknowledges must not leave the position on). Everything else applies: a venue's kill switch, the **price collar**, the fat-finger band, `max_order_qty`, `max_order_notional`, `min_notional` and the rate limit. A slice a limit refuses is retried at the next sweep. If the collar is narrower than the slippage, no slice can pass and the flatten never finishes; widen it with `limits price_collar_bps=...`.
 
 Progress is in the status file and in `fastmm-ctl status`:
 
@@ -131,7 +147,9 @@ flatten    state=Working instruments_left=1 orders=3
 | `[engine] flatten_timeout_ms` (default 60000) elapses with a position left | The flatten gives up: `state=TimedOut`, an ERROR line naming how many instruments still hold a position, no further orders. Quoting stays off in its scope. Widen the slippage or the collar and run `flatten` again, or `resume` to give the session back to the strategy. |
 | `flatten_timeout_ms = 0` | No deadline: it keeps trying until it is flat or an operator stops it. |
 
-`resume` (without a scope) stops a running flatten (`state=Stopped`) and hands the instruments back to the strategy. `kill` does not stop it: the kill switch refuses new orders, so the flatten's slices are rejected until you `unkill`. Flatten first, then kill.
+`resume` (without a scope) stops a running flatten (`state=Stopped`) and hands the instruments back to the strategy. `kill` does not stop it, and a `flatten` after a kill works the position off with the kill switch still set: quoting stays off, and `unkill` is only needed to quote again. The session's own shutdown (`stop`, SIGTERM, `--duration`) ends a running flatten.
+
+After a kill the engine trips itself, `fastmm-live` exits unless `[engine] on_kill = "stay"`; with `stay` the session keeps running and takes `flatten`.
 
 ### A restart during a flatten
 

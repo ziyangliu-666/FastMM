@@ -326,6 +326,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   b.engine.flatten_interval = milliseconds(cfg.engine.flatten_interval_ms);
   b.engine.flatten_timeout = milliseconds(cfg.engine.flatten_timeout_ms);
   b.engine.flatten_slippage_bps = cfg.engine.flatten_slippage_bps;
+  b.engine.cancel_unknown_own = cfg.engine.cancel_unknown == "own";
   b.engine.latency_publish_interval = milliseconds(cfg.engine.latency_publish_ms);
   b.engine.spin_mode = SpinMode::Busy;
   b.engine.risk = cfg.risk_limits();

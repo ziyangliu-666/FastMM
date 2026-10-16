@@ -52,6 +52,7 @@ The engine copies a trivially copyable record into an SPSC ring, as it writes th
 | `ReplayedRecord` (64 B) | a reconciliation of a venue begins with the venue's executions complete (its execution replay ended whole) | the venue; every execution it made until then is in the records before this one |
 | `KillRecord` (128 B) | every kill switch trip, global or per venue | the reason, the flag word and the PnL at the time |
 | `RejectRecord` (256 B) | every order the pre-trade checks or its venue refused, repeats folded (below) | the account, instrument, side, whether it only reduced the position, the reason, the limit or side that refused it (`RejectSource`) and the account's budget then: the `[risk]` bucket's tokens and each order window's count against what the connector admits |
+| `LimitsRecord` (320 B) | every `fastmm-ctl limits` the engine applies | the `[risk]` limits and `check_balance` before and after, or one underlying's `max_net`, and whether `--force` turned a limit off |
 | `ParamRecord` (448 B) | every strategy parameter update the engine applies | the update's target instrument, origin (control socket or the strategy's own publisher), source, publisher sequence number and its (field, raw value) pairs, as the `ParamUpdate` carried them ([Journal format](journal-format.md#parameter-updates)) |
 
 Session metadata (`session_open`, `session_close`, the instrument table) is written by the control thread, not through the ring.
@@ -80,7 +81,7 @@ The SQLite backend opens the file with `journal_mode=WAL` and `synchronous=NORMA
 
 ## Schema
 
-Version 10 (`kSqliteSchemaVersion`). The SQL is `src/store/sqlite_schema.cpp`, one migration step per version; an existing store is migrated in place at open, and a store written by a newer FastMM is refused with the version it holds.
+Version 11 (`kSqliteSchemaVersion`). The SQL is `src/store/sqlite_schema.cpp`, one migration step per version; an existing store is migrated in place at open, and a store written by a newer FastMM is refused with the version it holds.
 
 ### sessions
 
@@ -211,6 +212,10 @@ Version 9. One row per refused order the engine recorded, keyed `(session_id, se
 | `venue` | the venue (`venue_code`, `text`) |
 
 Refusals of the same instrument, side, account, reason, source and flags (`reduces`, `reduce_only`) within 100 ms of the last row recorded for them are counted, not written one by one: `count` is 1 plus those folded into the row, so `SUM(count)` is exact per account. A count no further refusal follows is written with the next once-a-second publication, or at the end of the session. The budget of a folded row is the one at the row's time.
+
+### limit_changes
+
+Version 11. One row per `[risk]` key a `fastmm-ctl limits` changed, keyed `(session_id, seq, key)`: `ts_ns` and `day` (when the engine applied it), `key` (`max_loss`, `check_balance`, `underlying.BTC.max_net`), `before` and `after` as `[risk]` writes them, and `forced` (1: `--force`, the command turned a limit off). A command that named only the values the session had is one row with an empty `key`. `fastmm-pnl limit-changes` lists them.
 
 ### Views
 

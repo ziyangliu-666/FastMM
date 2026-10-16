@@ -51,6 +51,10 @@ struct EngineConfig {
   Duration flatten_interval = milliseconds(500);
   Duration flatten_timeout = seconds(60);
   std::int64_t flatten_slippage_bps = 25;
+  // [engine] cancel_unknown = "own": an open order a reconciliation (or an ack) reports that the
+  // OMS does not know is cancelled only when its client order id is FastMM's with an epoch from
+  // 1 to session_epoch; any other is left alone. False ("all"): every one is cancelled.
+  bool cancel_unknown_own = false;
   // [engine] queue_conservatism (a backtest: [backtest] queue_conservatism), in bps of 1: how much
   // of a level's shrink ahead of our order the queue estimate (StrategyContext::queue_ahead)
   // credits to cancels ahead of it. 10000: none.

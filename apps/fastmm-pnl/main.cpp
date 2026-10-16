@@ -272,6 +272,9 @@ static int run(int argc, char** argv) {
        "what a session started with against what --against (default: the one "
        "before) ended with"},
       {"config", "the effective configuration a session ran with (TOML, secrets omitted)"},
+      {"limit-changes",
+       "every risk limit an operator changed at run time (fastmm-ctl limits): before, after, "
+       "--force"},
       {"rejects",
        "refused orders: who refused them (source), and the account's budget then; "
        "--summary sums them"},
@@ -451,6 +454,8 @@ static int run(int argc, char** argv) {
     rows = reader->order_timeline(f);
   } else if (command == "param-changes") {
     rows = reader->param_changes(f);
+  } else if (command == "limit-changes") {
+    rows = reader->limit_changes(f);
   } else if (command == "param-diff") {
     if (f.session_id == 0) return bad_usage("param-diff needs --session <id>");
     rows = reader->param_diff(against, f.session_id);

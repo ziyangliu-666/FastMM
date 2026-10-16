@@ -300,6 +300,12 @@ class Reader {
   [[nodiscard]] virtual Result<Rows, std::string> rejects(const QueryFilter& /*f*/) {
     return fail(std::string("this store backend keeps no rejects"));
   }
+  // Every risk limit change an operator made at run time (fastmm-ctl limits), one row per key:
+  // when, the session, the key, its value before and after, and whether --force turned it off.
+  // Filtered by engine, session and day. Needs schema 11.
+  [[nodiscard]] virtual Result<Rows, std::string> limit_changes(const QueryFilter& /*f*/) {
+    return fail(std::string("this store backend keeps no limit changes"));
+  }
   // The same summed: one row per account, instrument, side, reduces, reason and source.
   [[nodiscard]] virtual Result<Rows, std::string> reject_summary(const QueryFilter& /*f*/) {
     return fail(std::string("this store backend keeps no rejects"));

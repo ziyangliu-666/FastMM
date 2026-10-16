@@ -20,6 +20,7 @@
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/core/order.hpp"
 #include "fastmm/core/position.hpp"
+#include "fastmm/core/risk_limits.hpp"
 #include "fastmm/core/strong_id.hpp"
 #include "fastmm/core/time.hpp"
 
@@ -43,6 +44,7 @@ enum class RecordType : std::uint8_t {
   Replayed = 6,
   Param = 7,
   Reject = 8,
+  Limits = 9,
 };
 [[nodiscard]] constexpr std::string_view to_string(RecordType t) noexcept {
   switch (t) {
@@ -62,6 +64,8 @@ enum class RecordType : std::uint8_t {
       return "Param";
     case RecordType::Reject:
       return "Reject";
+    case RecordType::Limits:
+      return "Limits";
   }
   return "?";
 }
@@ -228,6 +232,25 @@ static_assert(offsetof(ParamRecord, count) == offsetof(ParamUpdateMsg, count) &&
               offsetof(ParamRecord, field) == offsetof(ParamUpdateMsg, field) &&
               offsetof(ParamRecord, source) == offsetof(ParamUpdateMsg, source) &&
               offsetof(ParamRecord, value) == offsetof(ParamUpdateMsg, value));
+
+// An operator's `limits` command the engine applied (ControlCommand::SetLimits or
+// SetUnderlyingLimit): the [risk] limits and check_balance before and after it, or one
+// underlying's max_net. `forced`: it turned a limit off (fastmm-ctl limits --force).
+struct LimitsRecord {
+  enum Kind : std::uint8_t { kRisk = 0, kUnderlying = 1 };
+  RecordHeader hdr;
+  RiskLimits before;                  // 64
+  RiskLimits after;                   // 160
+  std::int64_t underlying_before;     // 256 kUnderlying: max_net, raw Qty in base units
+  std::int64_t underlying_after;      // 264
+  FixedString<8> underlying;          // 272 kUnderlying: the base asset
+  std::uint8_t kind;                  //
+  std::uint8_t forced;                //
+  std::uint8_t check_balance_before;  //
+  std::uint8_t check_balance_after;   //
+  std::uint8_t pad_[320 - 276 - sizeof(FixedString<8>)];
+};
+static_assert(sizeof(LimitsRecord) == 320 && std::is_trivially_copyable_v<LimitsRecord>);
 
 // What refused an order (RejectRecord::source): the limit behind a rate-limit refusal, or the
 // side that refused it otherwise. Rate limits stay apart by where they are counted: the engine's

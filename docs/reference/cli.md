@@ -340,6 +340,8 @@ SUBCOMMANDS:
                               the one before) ended with
   config                      the effective configuration a session ran with (TOML, secrets
                               omitted)
+  limit-changes               every risk limit an operator changed at run time (fastmm-ctl
+                              limits): before, after, --force
   rejects                     refused orders: who refused them (source), and the account's
                               budget then; --summary sums them
   ledger                      one row per execution however many sessions stored it, with
@@ -484,8 +486,9 @@ commands (one per datagram; the reply starts with ok or error)
                                            reply's seq is applied once `params` shows it
   params [--instrument SYM]                the parameters' values, and the sequence
                                            numbers published and applied
-  limits <key>=<value> ...                 new risk limits (the [risk] keys, and
-                                           underlying.<BASE>.max_net)
+  limits <key>=<value> ... [--force]       new risk limits (the [risk] keys, and
+                                           underlying.<BASE>.max_net); turning one
+                                           off (0, false) needs --force
   flatten [--instrument SYM] [--max-slippage-bps N]  work the position off, reduce-only
   kill                                     trip the kill switch (quotes pulled, all
                                            orders cancelled; the position stays)

@@ -469,6 +469,12 @@ inline constexpr std::uint64_t kTripKillStoreFailure = 2;
 // ControlCommand::SetLimits: a ControlMsg with the new limits after it. The prefix is a ControlMsg
 // (same type, same offsets), so the engine's dispatch reads `command` from either and only this
 // command looks past it; hdr.len tells the rings, the journal and a replay how long the record is.
+// ControlLimitsMsg::arg. A record without kLimitsCheckBalance leaves [risk] check_balance alone
+// (journals from before the flag).
+inline constexpr std::uint64_t kLimitsCheckBalance = 1;    // kLimitsCheckBalanceOn is the value
+inline constexpr std::uint64_t kLimitsCheckBalanceOn = 2;  // check_balance = true
+// The operator turned a limit off (fastmm-ctl limits --force); ControlUnderlyingMsg::flags too.
+inline constexpr std::uint64_t kLimitsForced = 4;
 struct ControlLimitsMsg {
   EventHeader hdr;
   ControlCommand command;
@@ -488,7 +494,8 @@ struct ControlUnderlyingMsg {
   EventHeader hdr;
   ControlCommand command;
   std::uint8_t underlying;
-  std::uint8_t pad0_[6];
+  std::uint8_t flags;  // kLimitsForced
+  std::uint8_t pad0_[5];
   std::uint64_t arg;
   FixedString<8> name;
   std::uint8_t pad_[39];

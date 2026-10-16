@@ -719,6 +719,19 @@ bool resolve_venue_env(Config& cfg, bool dry_run, const char* prog) {
   return true;
 }
 
+bool trades_with_keys(const Config& cfg) {
+  venues::register_builtin_venues();
+  return std::any_of(cfg.venues.begin(), cfg.venues.end(), [](const VenueSection& v) {
+    if (v.public_only) return false;
+    if (const auto oe = v.extra.find("order_entry"); oe != v.extra.end() && oe->second == "none")
+      return false;
+    const venues::VenueEntry* entry = venues::VenueRegistry::instance().find(v.kind);
+    if (entry == nullptr || entry->caps.credentials) return !v.api_key.empty();
+    const auto it = v.extra.find("ouch_username");
+    return it != v.extra.end() && !it->second.empty();
+  });
+}
+
 namespace {
 
 int run_session(const Config& cfg, const LiveOptions& opts);
@@ -795,6 +808,14 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     line += ")\n";
     std::fwrite(line.data(), 1, line.size(), stderr);
     return kExitConfig;
+  }
+  // Every [risk] limit is off by default: a session that trades with real keys names a position
+  // limit and a loss limit, or says it means to run without them.
+  if (!opts.dry_run && !via_gateway && trades_with_keys(cfg)) {
+    if (const std::string why = cfg.unlimited_risk(); !why.empty()) {
+      std::fprintf(stderr, "%s: %s.\n", prog, why.c_str());
+      return kExitConfig;
+    }
   }
   const std::string_view strategy_name =
       custom != nullptr ? std::string_view(custom->name) : strategy->name;
@@ -1519,6 +1540,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   deps.engine.flatten_interval = milliseconds(cfg.engine.flatten_interval_ms);
   deps.engine.flatten_timeout = milliseconds(cfg.engine.flatten_timeout_ms);
   deps.engine.flatten_slippage_bps = cfg.engine.flatten_slippage_bps;
+  deps.engine.cancel_unknown_own = cfg.engine.cancel_unknown == "own";
   deps.engine.queue_conservatism_bps = std::llround(cfg.engine.queue_conservatism * 10'000.0);
   deps.engine.max_param_age = milliseconds(cfg.strategy.max_param_age_ms);
   deps.engine.state_file = cfg.strategy.state_file;
@@ -2294,6 +2316,8 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   ControlPlane plane;
   plane.instruments = &instruments;
   plane.limits = cfg.risk_limits();
+  plane.check_balance = cfg.risk.check_balance;
+  plane.totals_one_currency = fx_plan.active() || !instruments.settlement_mix().mixed();
   for (std::size_t u = 0; u < underlying_plan.count; ++u)
     plane.underlyings.push_back(
         {std::string(underlying_plan.names[u].view()), underlying_plan.max_net[u]});
@@ -2334,8 +2358,9 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     };
     out += fmt::format(
         "limits     max_order_qty={} max_order_notional={} max_position={} max_open_orders={} "
-        "price_collar_bps={} fat_finger_bps={} stale_md_ms={} max_loss={} orders_per_sec={} "
-        "burst={} stp={}\n",
+        "price_collar_bps={} fat_finger_bps={} stale_md_ms={} max_loss={} max_gross_notional={} "
+        "max_net_notional={} orders_per_sec={} burst={} stp={} max_feed_lag_ms={} "
+        "check_balance={}\n",
         dec(l.max_order_qty),
         dec(l.max_order_notional),
         dec(l.max_position),
@@ -2344,9 +2369,13 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
         l.fat_finger_bps,
         l.stale_md.millis(),
         dec(l.max_loss),
+        dec(l.max_gross_notional),
+        dec(l.max_net_notional),
         l.orders_per_sec,
         l.burst,
-        l.stp);
+        l.stp,
+        l.max_feed_lag_ms,
+        plane.check_balance);
     for (const auto& [name, max_net] : plane.underlyings)
       out += fmt::format("limits     underlying.{}.max_net={}\n", name, dec(max_net));
     return out;
@@ -2634,8 +2663,8 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
         next_kill_reminder = now + kKilledReminderNs;
         FASTMM_LOG_ERROR(
             "fastmm-live: kill switch engaged ({}, flags={:#x}) and [engine] on_kill = \"stay\": "
-            "quoting is off and no new orders are sent; stop the process (SIGINT/SIGTERM) to "
-            "cancel all and exit",
+            "quoting is off and only fastmm-ctl flatten sends orders; stop the process "
+            "(SIGINT/SIGTERM) to cancel all and exit",
             engine_kill,
             live.kill_flags);
       }

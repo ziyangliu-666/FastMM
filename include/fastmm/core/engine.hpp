@@ -118,7 +118,8 @@ struct EngineStats {
   std::uint64_t batch_ends = 0;  // on_batch_end calls (ctx.request_batch_end)
   std::uint64_t crossed_pulls = 0;
   std::uint64_t unknown_order_cancels = 0;
-  std::uint64_t kills = 0;        // global kill switch trips
+  std::uint64_t unknown_orders_kept = 0;  // not FastMM's, left alone ([engine] cancel_unknown)
+  std::uint64_t kills = 0;                // global kill switch trips
   std::uint64_t venue_kills = 0;  // per-venue kill switch trips (ControlCommand::TripVenueKill)
   std::uint64_t unconverted_fees = 0;    // fills whose commission asset is neither base nor quote
   std::uint64_t invalid_fee_assets = 0;  // fills whose fee_asset is out of range (booked as quote)
@@ -1564,6 +1565,13 @@ class Engine {
     account_record(records_.put(r.hdr));
   }
 
+  // An operator's `limits` the engine applied, for the store's limit history.
+  void emit_limits(LimitsRecord& r) noexcept {
+    if (!records_.enabled()) return;
+    records_.init(r, RecordType::Limits, InstrumentId{}, VenueId::invalid(), now_, now_);
+    account_record(records_.put(r.hdr));
+  }
+
   // The venue's execution replay ended complete: the records before this one hold every
   // execution it made until now.
   void emit_replayed(VenueId venue) noexcept {
@@ -1798,9 +1806,7 @@ class Engine {
     book_missed_fill(u);
     report_unresolved(u);
     report_forgotten(u);
-    if (u.action == OmsAction::CancelUnknown) {
-      cancel_unknown(h, u);
-    }
+    if (u.action == OmsAction::CancelUnknown) cancel_unknown(h, u);
     if (u.action == OmsAction::ReconcileNeeded) request_reconcile(u);
     if (u.known && u.handle.valid() && instruments_.contains(u.order.instrument)) {
       Placer place{this};
@@ -2252,24 +2258,52 @@ class Engine {
         // journal) is ignored rather than read out of bounds.
         if (c.hdr.len >= sizeof(ControlLimitsMsg)) {
           const auto& m = msg_cast<ControlLimitsMsg>(&c.hdr);
+          LimitsRecord r{};
+          r.before = risk_.limits();
+          r.after = m.limits;
+          r.check_balance_before = static_cast<std::uint8_t>(balances_->check_enabled());
+          r.forced = static_cast<std::uint8_t>((m.arg & kLimitsForced) != 0);
           risk_.set_limits(m.limits, now_);
           feed_lag_limit_ = milliseconds(m.limits.max_feed_lag_ms);
-          FASTMM_LOG_WARN(
-              "risk limits replaced by the operator: max_position={} max_order_qty={} "
-              "price_collar_bps={} orders_per_sec={}",
-              m.limits.max_position,
-              m.limits.max_order_qty,
-              m.limits.price_collar_bps,
-              m.limits.orders_per_sec);
+          if ((m.arg & kLimitsCheckBalance) != 0)
+            balances_->set_check((m.arg & kLimitsCheckBalanceOn) != 0);
+          r.check_balance_after = static_cast<std::uint8_t>(balances_->check_enabled());
+          for_each_changed_limit(r.before, r.after, [&](std::string_view k, auto from, auto to) {
+            FASTMM_LOG_WARN("risk limit replaced by the operator: {} {} -> {}{}",
+                            k,
+                            from,
+                            to,
+                            r.forced != 0 ? " (--force)" : "");
+          });
+          if (r.check_balance_before != r.check_balance_after) {
+            FASTMM_LOG_WARN("risk limit replaced by the operator: check_balance {} -> {}{}",
+                            r.check_balance_before != 0,
+                            r.check_balance_after != 0,
+                            r.forced != 0 ? " (--force)" : "");
+          }
+          emit_limits(r);
         }
         break;
       case ControlCommand::SetUnderlyingLimit: {
         const auto& m = msg_cast<ControlUnderlyingMsg>(&c.hdr);
         const Qty max_net = Qty::from_raw(static_cast<std::int64_t>(m.arg));
+        const Qty before = risk_.underlying_limit(m.underlying);
         if (risk_.set_underlying_limit(m.underlying, max_net)) {
-          FASTMM_LOG_WARN("risk limit replaced by the operator: underlying {} max_net={}",
+          FASTMM_LOG_WARN("risk limit replaced by the operator: underlying.{}.max_net {} -> {}{}",
                           m.name.view(),
-                          max_net);
+                          before,
+                          max_net,
+                          (m.flags & kLimitsForced) != 0 ? " (--force)" : "");
+          LimitsRecord r{};
+          r.kind = LimitsRecord::kUnderlying;
+          r.before = r.after = risk_.limits();
+          r.check_balance_before = r.check_balance_after =
+              static_cast<std::uint8_t>(balances_->check_enabled());
+          r.underlying_before = before.raw;
+          r.underlying_after = max_net.raw;
+          r.underlying = m.name;
+          r.forced = static_cast<std::uint8_t>((m.flags & kLimitsForced) != 0);
+          emit_limits(r);
         } else {
           FASTMM_LOG_WARN("underlying limit for index {} ({}) ignored: not in this session",
                           m.underlying,
@@ -2635,6 +2669,9 @@ class Engine {
     }
     pull_all_quotes();
     mass_cancel();
+    // A flatten keeps working the position off through a kill (its reduce-only orders pass the
+    // kill switch), but not through the session's own shutdown.
+    if (planned_stop && flatten_state_ == FlattenState::Working) end_flatten(FlattenState::Stopped);
     publish_live(latency_pub_.load());
   }
   // One venue is unusable: new orders to it are refused by risk (VenueKilled), its quotes are
@@ -2903,11 +2940,13 @@ class Engine {
   }
 
   // `flatten`: the engine is working a position off (flatten_instrument). The order passes the
-  // same checks as any other except two, both expressed as missing RiskInputs: the position cap
-  // (a reduce-only slice exists to get under it) and self-trade prevention (the flatten cancelled
-  // every order of its scope before the first slice, so the only resting orders it could cross are
-  // already cancelled -- and a cancel the venue never acknowledges must not leave the position on).
-  // The price collar, the fat-finger band, the size, notional and rate limits all still apply.
+  // global kill switch (RiskInputs::flatten: a killed session can still work its inventory off)
+  // and the same checks as any other except two, both expressed as missing RiskInputs: the position
+  // cap (a reduce-only slice exists to get under it) and self-trade prevention (the flatten
+  // cancelled every order of its scope before the first slice, so the only resting orders it could
+  // cross are already cancelled -- and a cancel the venue never acknowledges must not leave the
+  // position on). The price collar, the fat-finger band, the size, notional and rate limits all
+  // still apply.
   Result<ClientOrderId, RejectReason> submit_new(const NewOrderRequest& req,
                                                  bool flatten = false) noexcept {
     if (FASTMM_UNLIKELY(!instruments_.contains(req.instrument)))
@@ -2959,6 +2998,7 @@ class Engine {
     // A member of a killed primary trades nothing either: the primary's kill is the pool's.
     in.primary_killed = account != inst.venue && risk_.venue_killed(inst.venue);
     in.account_full = window_full;
+    in.flatten = flatten;
     const RejectReason rr = risk_.check_new(oi, inst, in);
     if (FASTMM_UNLIKELY(rr != RejectReason::None)) {
       ++stats_.risk_rejects;
@@ -3307,10 +3347,18 @@ class Engine {
     return RejectReason::PoolExhausted;
   }
 
+  // An order of ours: a FastMM client order id from this engine's epochs, this session's or an
+  // earlier one's.
+  [[nodiscard]] bool own_order_id(ClientOrderId id) const noexcept {
+    const std::uint16_t epoch = cl_ord_id_epoch(id);
+    return id.valid() && epoch != 0 && epoch <= cfg_.session_epoch;
+  }
+
   void cancel_unknown(const EventHeader& h, const OmsUpdate&) noexcept {
     // Never leave an unknown live order at the venue (5.8). We do not have an OMS record,
-    // so send a bare cancel keyed by the venue's ids from the message.
-    ++stats_.unknown_order_cancels;
+    // so send a bare cancel keyed by the venue's ids from the message. With [engine]
+    // cancel_unknown = "own" an order whose id is not ours (a manual order, another program's)
+    // stays.
     OutCancelMsg m{};
     init_header(m, EventType::OutCancel, h.instrument, h.venue);
     m.hdr.recv_ts = now_;
@@ -3323,6 +3371,14 @@ class Engine {
       m.cl_ord_id = r.cl_ord_id;
       m.venue_order_id = r.venue_order_id;
     }
+    if (cfg_.cancel_unknown_own && !own_order_id(m.cl_ord_id)) {
+      ++stats_.unknown_orders_kept;
+      FASTMM_LOG_INFO(
+          "leaving open order {} alone: not FastMM's ([engine] cancel_unknown = \"own\")",
+          m.venue_order_id.view());
+      return;
+    }
+    ++stats_.unknown_order_cancels;
     FASTMM_LOG_WARN("cancelling unknown live order {}", encode_cl_ord_id(m.cl_ord_id));
     queue_out(m.hdr);
     ++stats_.cancels_sent;

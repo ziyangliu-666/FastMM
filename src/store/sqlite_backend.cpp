@@ -74,6 +74,18 @@ class Bind {
   int n_ = 0;
 };
 
+// A [risk] value as the configuration writes it.
+std::string limit_text(bool v) {
+  return v ? "true" : "false";
+}
+std::string limit_text(std::int64_t v) {
+  return std::to_string(v);
+}
+template <class Tag>
+std::string limit_text(Fixed<Tag> v) {
+  return decimal(v.raw);
+}
+
 std::string to_str(const FixedString<40>& s) {
   return std::string(s.view());
 }
@@ -437,6 +449,44 @@ class SqliteBackend final : public Backend {
     }
   }
 
+  // One row per key the command changed. The values are as [risk] writes them; a command that
+  // changed nothing (it named the values the session had) is one row with key '' so the request
+  // is still on record.
+  void limits(const LimitsRecord& r) override {
+    if (db_ == nullptr) return;
+    const auto row =
+        [&](std::string_view key, const std::string& before, const std::string& after) {
+          Bind b(ins_limit_.get());
+          b.u(r.hdr.session_id);
+          b.u(r.hdr.seq);
+          b.i(r.hdr.engine_ts.ns);
+          b.t(utc_day(r.hdr.engine_ts.ns));
+          b.t(key);
+          b.t(before);
+          b.t(after);
+          b.b(r.forced != 0);
+          step(ins_limit_.get(), "insert limit change");
+        };
+    std::size_t rows = 0;
+    if (r.kind == LimitsRecord::kUnderlying) {
+      row("underlying." + std::string(r.underlying.view()) + ".max_net",
+          decimal(r.underlying_before),
+          decimal(r.underlying_after));
+      return;
+    }
+    for_each_changed_limit(r.before, r.after, [&](std::string_view key, auto before, auto after) {
+      row(key, limit_text(before), limit_text(after));
+      ++rows;
+    });
+    if (r.check_balance_before != r.check_balance_after) {
+      row("check_balance",
+          limit_text(r.check_balance_before != 0),
+          limit_text(r.check_balance_after != 0));
+      ++rows;
+    }
+    if (rows == 0) row("", "", "");
+  }
+
   void reject(const RejectRecord& r) override {
     if (db_ == nullptr) return;
     const std::uint32_t id = r.hdr.instrument.value;
@@ -552,6 +602,7 @@ class SqliteBackend final : public Backend {
     ins_param_update_.reset();
     ins_param_value_.reset();
     ins_reject_.reset();
+    ins_limit_.reset();
     ins_funding_.reset();
     ins_pnl_.reset();
     ins_repeat_.reset();
@@ -890,6 +941,7 @@ class SqliteBackend final : public Backend {
         {&ins_reject_,
          "INSERT OR IGNORE INTO rejects VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
          "?,?,?,?,?,?,?,?)"},
+        {&ins_limit_, "INSERT OR IGNORE INTO limit_changes VALUES (?,?,?,?,?,?,?,?)"},
         {&ins_funding_,
          "INSERT OR IGNORE INTO funding (session_id, seq, ts_ns, day, exch_ns, instrument_id,"
          " venue_id, symbol, funding_id, asset, amount_raw, position_qty_raw,"
@@ -940,6 +992,7 @@ class SqliteBackend final : public Backend {
   Stmt ins_param_update_;
   Stmt ins_param_value_;
   Stmt ins_reject_;
+  Stmt ins_limit_;
   std::vector<std::string> venue_names_;  // the session's [venues.<name>] by VenueId
   // The session's parameter table, the last raw value of each (instrument, field) (the instrument
   // kAllInstruments for an update to every one), and the strategy's refreshes that changed nothing.

@@ -597,7 +597,23 @@ CREATE VIEW pnl_by_day AS
   GROUP BY day, account, symbol, settlement_ccy;
 )SQL";
 
-constexpr std::array<Migration, 10> kMigrations{Migration{1, kV1},
+// Version 11: the operator's risk limit changes (fastmm-ctl limits), one row per key that changed.
+constexpr std::string_view kV11 = R"SQL(
+CREATE TABLE limit_changes (
+  session_id INTEGER NOT NULL,
+  seq        INTEGER NOT NULL,
+  ts_ns      INTEGER NOT NULL,
+  day        TEXT    NOT NULL,
+  key        TEXT    NOT NULL,
+  before     TEXT    NOT NULL,
+  after      TEXT    NOT NULL,
+  forced     INTEGER NOT NULL,
+  PRIMARY KEY (session_id, seq, key)
+);
+CREATE INDEX limit_changes_time ON limit_changes(ts_ns);
+)SQL";
+
+constexpr std::array<Migration, 11> kMigrations{Migration{1, kV1},
                                                 Migration{2, kV2},
                                                 Migration{3, kV3},
                                                 Migration{4, kV4},
@@ -606,7 +622,8 @@ constexpr std::array<Migration, 10> kMigrations{Migration{1, kV1},
                                                 Migration{7, kV7},
                                                 Migration{8, kV8},
                                                 Migration{9, kV9},
-                                                Migration{10, kV10}};
+                                                Migration{10, kV10},
+                                                Migration{11, kV11}};
 
 // days since 1970-01-01 -> y/m/d (Howard Hinnant's civil_from_days).
 void civil_from_days(std::int64_t z, int& y, unsigned& m, unsigned& d) {

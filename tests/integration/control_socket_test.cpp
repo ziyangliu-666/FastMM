@@ -140,7 +140,7 @@ TEST_CASE("integration.control: flatten carries the slippage allowance") {
 
 TEST_CASE("integration.control: limits sends the whole limit set, edited") {
   Fake f;
-  const std::string reply = f.run("limits max_position=2.5 orders_per_sec=10 stp=false");
+  const std::string reply = f.run("limits max_position=2.5 orders_per_sec=10 stp=false --force");
   CHECK(reply.starts_with("ok"));
   REQUIRE(f.sent.back().size() == sizeof(ControlLimitsMsg));
   const auto& m = *reinterpret_cast<const ControlLimitsMsg*>(f.sent.back().data());
@@ -148,6 +148,7 @@ TEST_CASE("integration.control: limits sends the whole limit set, edited") {
   CHECK(m.limits.max_position == qt("2.5"));
   CHECK(m.limits.orders_per_sec == 10);
   CHECK_FALSE(m.limits.stp);
+  CHECK(m.arg == (kLimitsCheckBalance | kLimitsCheckBalanceOn | kLimitsForced));
   // The keys it does not name keep what the session runs with, and the copy follows.
   CHECK(f.plane.limits.max_position == qt("2.5"));
   CHECK(f.run("limits price_collar_bps=50").starts_with("ok"));
@@ -176,14 +177,19 @@ TEST_CASE(
   CHECK(static_cast<std::int64_t>(m.arg) == qt("20").raw);
   CHECK(f.plane.underlyings[1].second == qt("20"));
 
-  // With a [risk] key: the SetLimits first, then the underlying.
-  CHECK(f.run("limits max_position=3 underlying.BTC.max_net=0").starts_with("ok"));
+  CHECK(m.flags == 0);
+
+  // With a [risk] key: the SetLimits first, then the underlying. Lifting BTC's limit needs --force.
+  CHECK(f.run("limits max_position=3 underlying.BTC.max_net=0")
+            .find("turns off underlying.BTC.max_net") != std::string::npos);
+  CHECK(f.run("limits max_position=3 underlying.BTC.max_net=0 --force").starts_with("ok"));
   REQUIRE(f.sent.size() == 3);
   CHECK(reinterpret_cast<const ControlMsg*>(f.sent[1].data())->command ==
         ControlCommand::SetLimits);
   const auto& m2 = *reinterpret_cast<const ControlUnderlyingMsg*>(f.sent[2].data());
   CHECK(m2.underlying == 0);
   CHECK(m2.arg == 0);
+  CHECK(m2.flags == kLimitsForced);
 
   // Nothing is sent when any key is wrong.
   CHECK(f.run("limits underlying.SOL.max_net=1").find("no [risk.underlying] section") !=
@@ -193,6 +199,56 @@ TEST_CASE(
   CHECK(f.run("limits underlying..max_net=1").starts_with("error"));
   CHECK(f.run("limits max_position=1 underlying.SOL.max_net=1").starts_with("error"));
   CHECK(f.sent.size() == 3);
+}
+
+TEST_CASE("integration.control: limits refuses to turn a limit off without --force") {
+  Fake f;
+  f.plane.limits.max_loss = Notional::from_decimal("100").value();
+  // Tighter or looser is not off.
+  CHECK(f.run("limits max_loss=50 max_position=7").starts_with("ok"));
+  CHECK((f.last().arg & kLimitsForced) == 0);
+  REQUIRE(f.sent.size() == 1);
+
+  const std::string reply = f.run("limits max_loss=0 orders_per_sec=0 burst=0");
+  CHECK(reply.starts_with("error"));
+  CHECK(reply.find("max_loss, orders_per_sec") != std::string::npos);
+  CHECK(reply.find("burst") == std::string::npos);  // 0 is the rate, not off
+  CHECK(f.run("limits check_balance=false").find("turns off check_balance") != std::string::npos);
+  CHECK(f.sent.size() == 1);
+  CHECK(f.plane.limits.max_loss == Notional::from_decimal("50").value());  // nothing changed
+
+  CHECK(f.run("limits --force max_loss=0").starts_with("ok"));
+  const auto& m = *reinterpret_cast<const ControlLimitsMsg*>(f.sent.back().data());
+  CHECK(m.limits.max_loss.is_zero());
+  CHECK((m.arg & kLimitsForced) != 0);
+  // Off already: setting it to 0 again turns nothing off.
+  CHECK(f.run("limits max_loss=0").starts_with("ok"));
+  CHECK((f.last().arg & kLimitsForced) == 0);
+}
+
+TEST_CASE("integration.control: limits changes the exposure caps and check_balance") {
+  Fake f;
+  CHECK(f.run("limits max_gross_notional=5000 max_net_notional=2000").starts_with("ok"));
+  const auto& m = *reinterpret_cast<const ControlLimitsMsg*>(f.sent.back().data());
+  CHECK(m.limits.max_gross_notional == Notional::from_decimal("5000").value());
+  CHECK(m.limits.max_net_notional == Notional::from_decimal("2000").value());
+  CHECK(m.arg == (kLimitsCheckBalance | kLimitsCheckBalanceOn));
+
+  CHECK(f.run("limits check_balance=off --force").starts_with("ok"));
+  CHECK(f.last().arg == (kLimitsCheckBalance | kLimitsForced));
+  CHECK_FALSE(f.plane.check_balance);
+  CHECK(f.run("limits check_balance=true").starts_with("ok"));
+  CHECK(f.last().arg == (kLimitsCheckBalance | kLimitsCheckBalanceOn));
+  CHECK(f.run("limits check_balance=maybe").starts_with("error"));
+
+  // Instruments in several currencies and no [accounting]: a loss or exposure limit the session
+  // started without would sum unrelated numbers.
+  Fake g;
+  g.plane.totals_one_currency = false;
+  CHECK(g.run("limits max_loss=10").find("more than one currency") != std::string::npos);
+  CHECK(g.run("limits max_gross_notional=10").starts_with("error"));
+  CHECK(g.sent.empty());
+  CHECK(g.run("limits max_position=2").starts_with("ok"));
 }
 
 TEST_CASE("integration.control: param is validated on the control thread, never on the ring") {

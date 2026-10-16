@@ -29,8 +29,9 @@ constexpr std::string_view kUsage =
     "                                           reply's seq is applied once `params` shows it\n"
     "  params [--instrument SYM]                the parameters' values, and the sequence\n"
     "                                           numbers published and applied\n"
-    "  limits <key>=<value> ...                 new risk limits (the [risk] keys, and\n"
-    "                                           underlying.<BASE>.max_net)\n"
+    "  limits <key>=<value> ... [--force]       new risk limits (the [risk] keys, and\n"
+    "                                           underlying.<BASE>.max_net); turning one\n"
+    "                                           off (0, false) needs --force\n"
     "  flatten [--instrument SYM] [--max-slippage-bps N]  work the position off, reduce-only\n"
     "  kill                                     trip the kill switch (quotes pulled, all\n"
     "                                           orders cancelled; the position stays)\n"
@@ -183,6 +184,17 @@ std::string submit_control(ControlPlane& plane,
   return ok(std::string(what) + scope_text(plane, scope));
 }
 
+std::string parse_bool(bool& out, std::string_view value) {
+  if (value == "true" || value == "1" || value == "on") {
+    out = true;
+  } else if (value == "false" || value == "0" || value == "off") {
+    out = false;
+  } else {
+    return "'" + std::string(value) + "' is not true or false";
+  }
+  return {};
+}
+
 // `limits key=value ...`: the session's current limits with the named keys replaced.
 std::string parse_limit(RiskLimits& l, std::string_view key, std::string_view value) {
   const auto decimal = [&](auto& field) -> std::string {
@@ -204,6 +216,8 @@ std::string parse_limit(RiskLimits& l, std::string_view key, std::string_view va
   if (key == "max_order_notional") return decimal(l.max_order_notional);
   if (key == "max_position") return decimal(l.max_position);
   if (key == "max_loss") return decimal(l.max_loss);
+  if (key == "max_gross_notional") return decimal(l.max_gross_notional);
+  if (key == "max_net_notional") return decimal(l.max_net_notional);
   if (key == "max_open_orders") return integer(l.max_open_orders);
   if (key == "price_collar_bps") return integer(l.price_collar_bps);
   if (key == "fat_finger_bps") return integer(l.fat_finger_bps);
@@ -218,19 +232,23 @@ std::string parse_limit(RiskLimits& l, std::string_view key, std::string_view va
     l.stale_md = milliseconds(ms);
     return {};
   }
-  if (key == "stp") {
-    if (value == "true" || value == "1" || value == "on") {
-      l.stp = true;
-    } else if (value == "false" || value == "0" || value == "off") {
-      l.stp = false;
-    } else {
-      return "'" + std::string(value) + "' is not true or false";
-    }
-    return {};
-  }
+  if (key == "stp") return parse_bool(l.stp, value);
   return "unknown limit '" + std::string(key) +
          "' (max_order_qty, max_order_notional, max_position, max_open_orders, price_collar_bps, "
-         "fat_finger_bps, stale_md_ms, max_loss, orders_per_sec, burst, stp, max_feed_lag_ms)";
+         "fat_finger_bps, stale_md_ms, max_loss, max_gross_notional, max_net_notional, "
+         "orders_per_sec, burst, stp, max_feed_lag_ms, check_balance)";
+}
+
+// The limit is on: a positive number, or true.
+constexpr bool limit_on(bool v) noexcept {
+  return v;
+}
+constexpr bool limit_on(std::int64_t v) noexcept {
+  return v > 0;
+}
+template <class Tag>
+constexpr bool limit_on(Fixed<Tag> v) noexcept {
+  return v.is_positive();
 }
 
 }  // namespace
@@ -296,11 +314,22 @@ std::string control_command(std::string_view request, ControlPlane& plane) {
     return ok(plane.describe_params(scope.instrument));
   }
   if (verb == "limits") {
+    // --force: the operator means to turn a limit off.
+    std::vector<std::string_view> rest;
+    bool force = false;
+    for (const std::string_view a : args) {
+      if (a == "--force") {
+        force = true;
+      } else {
+        rest.push_back(a);
+      }
+    }
     Scope scope;
-    if (const std::string err = parse_args(plane, args, false, false, true, scope); !err.empty())
+    if (const std::string err = parse_args(plane, rest, false, false, true, scope); !err.empty())
       return error(err);
     if (scope.values.empty()) return error("limits needs at least one key=value");
     RiskLimits next = plane.limits;
+    bool check_balance = plane.check_balance;
     bool plain = false;
     // underlying.<BASE>.max_net: one message per underlying, after the [risk] keys.
     std::vector<std::pair<std::size_t, Qty>> und;
@@ -325,24 +354,56 @@ std::string control_command(std::string_view request, ControlPlane& plane) {
         und.emplace_back(u, *q);
         continue;
       }
-      if (const std::string err = parse_limit(next, key, value); !err.empty()) return error(err);
+      if (key == "check_balance") {
+        if (const std::string err = parse_bool(check_balance, value); !err.empty())
+          return error(err);
+      } else if (const std::string err = parse_limit(next, key, value); !err.empty()) {
+        return error(err);
+      }
       plain = true;
     }
+    // A limit that is on and would be off: refused without --force.
+    std::vector<std::string> off;
+    for_each_changed_limit(plane.limits, next, [&](std::string_view k, auto before, auto after) {
+      if (k != "burst" && limit_on(before) && !limit_on(after)) off.emplace_back(k);
+    });
+    if (plane.check_balance && !check_balance) off.emplace_back("check_balance");
+    for (const auto& [u, max_net] : und) {
+      if (plane.underlyings[u].second.is_positive() && max_net.is_zero())
+        off.push_back("underlying." + plane.underlyings[u].first + ".max_net");
+    }
+    if (!off.empty() && !force) {
+      std::string names;
+      for (const std::string& k : off) names += (names.empty() ? "" : ", ") + k;
+      return error("this turns off " + names + "; add --force to mean it");
+    }
+    // A loss or exposure limit turned on where the totals add unrelated currencies would compare
+    // a meaningless sum (fastmm-live refuses max_loss at start-up there).
+    if (!plane.totals_one_currency && next.reads_totals() && !plane.limits.reads_totals())
+      return error(
+          "the instruments settle in more than one currency and [accounting] does not convert "
+          "them: max_loss, max_gross_notional and max_net_notional would compare unrelated sums");
     if (!plane.submit) return error("this session has no control ring");
     if (plain) {
       ControlLimitsMsg m{};
       init_header(m, EventType::Control);
       m.command = ControlCommand::SetLimits;
+      m.arg = kLimitsCheckBalance | (check_balance ? kLimitsCheckBalanceOn : 0) |
+              (off.empty() ? 0 : kLimitsForced);
       m.limits = next;
       m.hdr.recv_ts = wall_now();
       if (!plane.submit(m.hdr)) return error("the control ring is full; try again");
       plane.limits = next;
+      plane.check_balance = check_balance;
     }
     for (const auto& [u, max_net] : und) {
       ControlUnderlyingMsg m{};
       init_header(m, EventType::Control);
       m.command = ControlCommand::SetUnderlyingLimit;
       m.underlying = static_cast<std::uint8_t>(u);
+      m.flags = plane.underlyings[u].second.is_positive() && max_net.is_zero()
+                    ? static_cast<std::uint8_t>(kLimitsForced)
+                    : std::uint8_t{0};
       m.arg = static_cast<std::uint64_t>(max_net.raw);
       m.name = UnderlyingName(plane.underlyings[u].first);
       m.hdr.recv_ts = wall_now();

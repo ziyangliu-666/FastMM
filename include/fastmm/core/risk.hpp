@@ -138,6 +138,10 @@ struct RiskInputs {
   // is at the cap (the engine's no_order_room). Refused before the token bucket, so an order no
   // connector would take does not spend a token the other accounts could have used.
   bool account_full = false;
+  // The engine's operator flatten (Engine::flatten_instrument): a reduce-only order for at most
+  // the position, which the global kill switch lets through so a killed session can work its
+  // inventory off. A venue's kill still refuses it.
+  bool flatten = false;
 };
 
 struct RiskStats {
@@ -493,7 +497,7 @@ class RiskEngine {
                         Qty exclude_open,
                         bool count_order) noexcept {
     const std::uint32_t kill = kill_.load(std::memory_order_acquire);
-    if (FASTMM_UNLIKELY((kill & 1U) != 0)) return RejectReason::KillSwitch;
+    if (FASTMM_UNLIKELY((kill & 1U) != 0) && !in.flatten) return RejectReason::KillSwitch;
     if (FASTMM_UNLIKELY((kill & venue_bit(o.venue)) != 0)) return RejectReason::VenueKilled;
     if (FASTMM_UNLIKELY(!inst.enabled() || o.instrument.value >= kMaxInstruments))
       return RejectReason::InstrumentDisabled;

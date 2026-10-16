@@ -166,6 +166,8 @@ class BalanceBook {
 
   [[nodiscard]] bool live() const noexcept { return live_; }
   [[nodiscard]] bool check_enabled() const noexcept { return check_; }
+  // [risk] check_balance at run time (fastmm-ctl limits check_balance=...).
+  void set_check(bool on) noexcept { check_ = on; }
   [[nodiscard]] const BalanceStats& stats() const noexcept { return stats_; }
   [[nodiscard]] std::size_t size() const noexcept { return rows_.size(); }
   [[nodiscard]] const Row& row(std::size_t i) const noexcept { return rows_[i]; }

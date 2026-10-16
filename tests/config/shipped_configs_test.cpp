@@ -54,6 +54,14 @@ std::string check_config(const std::filesystem::path& path) {
       ::setenv(name.c_str(), ("placeholder-" + name).c_str(), 1);
     const Config cfg = Config::load(path.string());
     if (!cfg.warnings.empty()) return "warning: " + cfg.warnings.front();
+    // fastmm-live refuses a session that trades with keys and sets no position and loss limits
+    // (live::trades_with_keys: an api_key, or an OUCH login).
+    const bool keyed = std::any_of(cfg.venues.begin(), cfg.venues.end(), [](const auto& v) {
+      return !v.public_only && (!v.api_key.empty() || v.extra.contains("ouch_username"));
+    });
+    if (keyed) {
+      if (std::string why = cfg.unlimited_risk(); !why.empty()) return why;
+    }
     const InstrumentTable instruments = load_instruments(cfg);
     if (cfg.strategy.name.empty()) {
       if (!cfg.strategy.params.empty()) return "[strategy.params] without [strategy] name";
@@ -129,6 +137,39 @@ TEST_CASE("config.shipped: the check reports bad parameters and schema errors") 
   err = check_config(
       mutated_copy("sim-local.toml", R"(name = "basic_mm")", R"(name = "no_such_strategy")"));
   CHECK_MESSAGE(err.find("unknown strategy 'no_such_strategy'") != std::string::npos, err);
+  // A keyed config without a loss limit is what fastmm-live refuses; allow_unlimited lets it run.
+  err = check_config(mutated_copy("binance-testnet.toml", "max_loss = ", "# no max_loss"));
+  CHECK_MESSAGE(err.find("[risk] sets no max_loss") != std::string::npos, err);
+  err = check_config(mutated_copy("binance-testnet.toml", "max_loss = ", "allow_unlimited = true"));
+  CHECK_MESSAGE(err.empty(), err);
+}
+
+TEST_CASE("config: unlimited_risk names the limits a keyed session lacks") {
+  const char* const head = R"([venues.sim]
+kind = "sim"
+
+[[instruments]]
+venue = "sim"
+symbol = "BTCUSDT"
+tick = "0.01"
+lot = "0.00001"
+
+)";
+  std::string why = Config::parse(head).unlimited_risk();
+  CHECK(why.find("no max_position (or max_order_notional) and max_loss") != std::string::npos);
+  why =
+      Config::parse(std::string(head) + "[risk]\nmax_order_notional = \"100\"\n").unlimited_risk();
+  CHECK(why.find("no max_loss,") != std::string::npos);
+  why = Config::parse(std::string(head) + "[risk]\nmax_loss = \"10\"\n").unlimited_risk();
+  CHECK(why.find("no max_position (or max_order_notional),") != std::string::npos);
+  CHECK(Config::parse(std::string(head) + "[risk]\nmax_position = \"1\"\nmax_loss = \"10\"\n")
+            .unlimited_risk()
+            .empty());
+  const Config open = Config::parse(std::string(head) + "[risk]\nallow_unlimited = true\n");
+  CHECK(open.unlimited_risk().empty());
+  // It is part of the effective configuration only when set.
+  CHECK(open.effective_toml().find("allow_unlimited = true") != std::string::npos);
+  CHECK(Config::parse(head).effective_toml().find("allow_unlimited") == std::string::npos);
 }
 
 TEST_CASE("config: unknown [risk] and [backtest] keys are errors with their line") {
