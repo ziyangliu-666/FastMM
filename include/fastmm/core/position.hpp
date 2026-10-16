@@ -32,6 +32,27 @@ struct alignas(kCacheLine) Position {
 };
 static_assert(sizeof(Position) == 64 && std::is_trivially_copyable_v<Position>);
 
+// The part of an order of `side` for `qty` that position `q` does not absorb once `ahead` (our
+// open orders on that side) has taken its share of the way to zero: what the order opens, raw.
+// Zero: the order only reduces the position. All raw Qty.
+[[nodiscard]] constexpr std::int64_t opening_qty(std::int64_t q,
+                                                 Side side,
+                                                 std::int64_t ahead,
+                                                 std::int64_t qty) noexcept {
+  if (q == 0 || (q > 0) == (side == Side::Buy)) return qty;
+  const std::int64_t room = (q < 0 ? -q : q) - ahead;
+  if (room <= 0) return qty;
+  return qty > room ? qty - room : 0;
+}
+// `part` of an order of `qty` whose notional is `n`, rounded up (a cap check is not lenient).
+[[nodiscard]] inline Notional notional_share(Notional n,
+                                             std::int64_t part,
+                                             std::int64_t qty) noexcept {
+  if (part >= qty || qty <= 0) return n;
+  const Int128 x = static_cast<Int128>(n.raw) * part;
+  return Notional::from_raw(static_cast<std::int64_t>((x + qty - 1) / qty));
+}
+
 // PnL totals over every instrument (StrategyContext::portfolio()), in the reporting currency when
 // the tracker converts (PositionTracker::set_accounting).
 struct Portfolio {

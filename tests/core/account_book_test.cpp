@@ -149,29 +149,42 @@ TEST_CASE("core.account_book: a resync naming one instrument clears that copy on
   CHECK_FALSE(b.book(kEth)->has_snapshot());
 }
 
-TEST_CASE("core.account_book: the exposure check lets an order that reduces its position through") {
+TEST_CASE("core.account_book: the exposure check passes the close of a position, not past zero") {
   Position flat{};
   Position longp{};
   longp.qty = qt("1");
+  const Qty one = qt("1");
   const Notional n = nt("60");
   // gross 50 + 60 > 100
-  CHECK(check_exposure(flat, Side::Buy, n, nt("50"), nt("50"), nt("100"), Notional{}) ==
+  CHECK(check_exposure(flat, Side::Buy, one, n, nt("50"), nt("50"), nt("100"), Notional{}) ==
         RejectReason::GatewayGrossNotional);
-  CHECK(check_exposure(longp, Side::Buy, n, nt("50"), nt("50"), nt("100"), Notional{}) ==
+  CHECK(check_exposure(longp, Side::Buy, one, n, nt("50"), nt("50"), nt("100"), Notional{}) ==
         RejectReason::GatewayGrossNotional);
-  CHECK(check_exposure(longp, Side::Sell, n, nt("50"), nt("50"), nt("100"), Notional{}) ==
+  CHECK(check_exposure(longp, Side::Sell, one, n, nt("50"), nt("50"), nt("100"), Notional{}) ==
         RejectReason::None);
-  CHECK(check_exposure(flat, Side::Buy, n, nt("30"), nt("30"), nt("100"), Notional{}) ==
+  CHECK(check_exposure(flat, Side::Buy, one, n, nt("30"), nt("30"), nt("100"), Notional{}) ==
         RejectReason::None);
   // net 50 + 60 > 100; a sell takes the net towards zero and passes even when flat here
-  CHECK(check_exposure(flat, Side::Buy, n, nt("50"), nt("50"), Notional{}, nt("100")) ==
+  CHECK(check_exposure(flat, Side::Buy, one, n, nt("50"), nt("50"), Notional{}, nt("100")) ==
         RejectReason::GatewayNetNotional);
-  CHECK(check_exposure(flat, Side::Sell, n, nt("50"), nt("50"), Notional{}, nt("100")) ==
+  CHECK(check_exposure(flat, Side::Sell, one, n, nt("50"), nt("50"), Notional{}, nt("100")) ==
         RejectReason::None);
   // already over the net cap: an order that brings it towards zero is how you get back under
-  CHECK(check_exposure(flat, Side::Sell, n, nt("150"), nt("150"), Notional{}, nt("100")) ==
+  CHECK(check_exposure(flat, Side::Sell, one, n, nt("150"), nt("150"), Notional{}, nt("100")) ==
         RejectReason::None);
-  CHECK(check_exposure(flat, Side::Buy, n, nt("0"), nt("0"), Notional{}, Notional{}) ==
+  CHECK(check_exposure(flat, Side::Buy, one, n, nt("0"), nt("0"), Notional{}, Notional{}) ==
+        RejectReason::None);
+  // Long 1, selling 3 (180): 1 closes, the 2 past zero (120) open exposure. Gross 50 + 120 > 100;
+  // the net goes from +50 to -130, past 100 and further from zero.
+  CHECK(check_exposure(
+            longp, Side::Sell, qt("3"), nt("180"), nt("50"), nt("50"), nt("100"), Notional{}) ==
+        RejectReason::GatewayGrossNotional);
+  CHECK(check_exposure(
+            longp, Side::Sell, qt("3"), nt("180"), nt("50"), nt("50"), Notional{}, nt("100")) ==
+        RejectReason::GatewayNetNotional);
+  // Selling 1.5 opens 0.5 (30): gross 80, net -40.
+  CHECK(check_exposure(
+            longp, Side::Sell, qt("1.5"), nt("90"), nt("50"), nt("50"), nt("100"), nt("100")) ==
         RejectReason::None);
 }
 

@@ -253,6 +253,10 @@ TEST_CASE("core.fx: an unknown or stale rate refuses exposure in its currency, n
   RiskInputs reducing = in;
   reducing.position = &longp;
   CHECK(risk.check_new(sell, inv, reducing) == RejectReason::None);
+  // Selling past zero opens BTC exposure: refused without the rate.
+  longp.qty = qt("9");
+  CHECK(risk.check_new(sell, inv, reducing) == RejectReason::FxRateUnknown);
+  longp.qty = qt("10");
   // A flatten (no position input) is not gated either.
   RiskInputs flatten = in;
   flatten.position = nullptr;
@@ -283,9 +287,10 @@ TEST_CASE("core.fx: an unknown or stale rate refuses exposure in its currency, n
     CHECK(risk.check_new(most, inv, in) == RejectReason::None);
     most.qty = qt("31");
     CHECK(risk.check_new(most, inv, in) == RejectReason::MaxGrossNotional);
-    // The side that reduces a position has no bound.
+    // The side that reduces a position: its close (10 contracts, 0.02 BTC at the mid) and the
+    // gross room past zero.
     const RiskHeadroom hr = risk.headroom(inv, reducing, reducing, Notional{});
-    CHECK(hr.exposure_sell_notional == Notional::max());
+    CHECK(hr.exposure_sell_notional == nt("0.08"));
     CHECK(hr.exposure_buy_notional == nt("0.06"));
   }
 
@@ -312,8 +317,7 @@ TEST_CASE("core.fx: an unknown or stale rate refuses exposure in its currency, n
   risk.on_fx_book(1, false);
   CHECK(risk.check_new(buy, inv, in) == RejectReason::FxRateUnknown);
   CHECK(risk.headroom(inv, in, in, Notional{}).exposure_buy_notional == Notional{});
-  CHECK(risk.headroom(inv, reducing, reducing, Notional{}).exposure_sell_notional ==
-        Notional::max());
+  CHECK(risk.headroom(inv, reducing, reducing, Notional{}).exposure_sell_notional == nt("0.02"));
   CHECK(risk.check_new(sell, inv, reducing) == RejectReason::None);
 
   // stale_fx_ms = 0: any valid book prices, however old; an invalid one still does not.

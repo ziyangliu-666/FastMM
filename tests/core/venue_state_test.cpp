@@ -139,16 +139,30 @@ TEST_CASE("core.venue_state: gross and net exposure rooms are what check_new adm
   CHECK(r.order(Side::Buy, qty_of(h.gross_notional)) == RejectReason::None);
   CHECK(r.order(Side::Buy, qty_of(h.gross_notional) + lot) == RejectReason::MaxGrossNotional);
 
-  // The two caps as one order's notional per side: the tighter of the two, and no bound for the
-  // side that reduces the position (the caps never refuse that).
+  // The two caps as one order's notional per side: the tighter of the two. On the side that
+  // reduces the position, the close (never refused) plus the gross room for what goes past zero,
+  // within the net room of the whole order.
   CHECK(h.exposure_buy_notional == nt("500"));
   CHECK(h.exposure_sell_notional == nt("400"));
   r.pos.qty = qt("0.3");
   CHECK(r.headroom().exposure_buy_notional == nt("500"));
-  CHECK(r.headroom().exposure_sell_notional == Notional::max());
-  CHECK(r.order(Side::Sell, qty_of(nt("5000"))) == RejectReason::None);
+  CHECK(r.headroom().exposure_sell_notional == nt("400"));
+  CHECK(r.order(Side::Sell, qty_of(nt("400"))) == RejectReason::None);
+  CHECK(r.order(Side::Sell, qty_of(nt("400")) + lot) == RejectReason::MaxNetNotional);
+  CHECK(r.order(Side::Sell, qty_of(nt("5000"))) == RejectReason::MaxGrossNotional);
+  // Gross 900: the room past zero is 100, the close 30 at the mid.
+  r.buy.gross_exposure = r.sell.gross_exposure = nt("900");
+  CHECK(r.headroom().exposure_sell_notional == nt("130"));
+  CHECK(r.order(Side::Sell, qty_of(nt("130"))) == RejectReason::None);
+  CHECK(r.order(Side::Sell, qty_of(nt("130")) + lot) == RejectReason::MaxGrossNotional);
+  // Gross at the cap: only the close.
+  r.buy.gross_exposure = r.sell.gross_exposure = nt("1000");
+  CHECK(r.headroom().exposure_sell_notional == nt("30"));
+  CHECK(r.order(Side::Sell, qty_of(nt("30"))) == RejectReason::None);
+  CHECK(r.order(Side::Sell, qty_of(nt("30")) + lot) == RejectReason::MaxGrossNotional);
+  r.buy.gross_exposure = r.sell.gross_exposure = nt("500");
   r.pos.qty = qt("-0.3");
-  CHECK(r.headroom().exposure_buy_notional == Notional::max());
+  CHECK(r.headroom().exposure_buy_notional == nt("530"));
   CHECK(r.headroom().exposure_sell_notional == nt("400"));
   r.pos.qty = Qty{};
 

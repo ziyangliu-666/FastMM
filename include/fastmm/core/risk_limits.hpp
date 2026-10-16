@@ -60,16 +60,17 @@ struct RiskHeadroom {
   // rounded down to the lot; zero while an inverse contract of the underlying has no mark.
   Qty underlying_buy_qty = Qty::max();
   Qty underlying_sell_qty = Qty::max();
-  // Exposure an order that does not reduce its position may add: max_gross_notional minus the
-  // gross exposure, and per direction the net room of max_net_notional.
+  // Exposure an order may open: max_gross_notional minus the gross exposure, and per direction
+  // the net room of max_net_notional.
   Notional gross_notional = Notional::max();
   Notional net_buy_notional = Notional::max();
   Notional net_sell_notional = Notional::max();
   // The same two caps as the notional of one order on this instrument, in its settlement
   // currency (the engine converts with the rate the check uses): the largest buy / sell notional
-  // that passes both. max() when neither cap is on and for the side that reduces the position
-  // (the caps never refuse that); zero while the currency's rate is unknown, where an order that
-  // adds exposure is refused (FxRateUnknown).
+  // that passes both. max() when neither cap is on. On the side that reduces the position, the
+  // part that closes it (after the open orders on that side, at the book's mid) is added to the
+  // gross room, as the caps never refuse it. Only that part while the currency's rate is unknown,
+  // where an order that opens exposure is refused (FxRateUnknown).
   Notional exposure_buy_notional = Notional::max();
   Notional exposure_sell_notional = Notional::max();
   // max_loss plus the net PnL it is measured against; the kill switch trips at zero or below.

@@ -241,12 +241,66 @@ TEST_CASE("core.risk: portfolio exposure caps what a new order may add") {
   CHECK(r.check_new(intent(Side::Buy, "100", "4"), inst, in) == RejectReason::None);
   CHECK(r.check_new(intent(Side::Buy, "100", "6"), inst, in) == RejectReason::MaxGrossNotional);
 
-  // An order that reduces the instrument's position is never refused by the portfolio caps.
+  // The part of an order that takes the instrument's position towards zero is never refused by
+  // the portfolio caps; what goes past zero is checked as a new order would be.
   Position longs{};
   longs.qty = Qty::from_int(5);
   longs.avg_px = Price::from_decimal("100").value();
-  RiskInputs reducing{now, &longs, Notional::from_int(9'500), Notional{}, Qty{}, 0, Price{}};
-  CHECK(r.check_new(intent(Side::Sell, "100", "6"), inst, reducing) == RejectReason::None);
+  RiskInputs reducing{now, &longs, Notional::from_int(9'800), Notional{}, Qty{}, 0, Price{}};
+  CHECK(r.check_new(intent(Side::Sell, "100", "3"), inst, reducing) == RejectReason::None);
+  CHECK(r.check_new(intent(Side::Sell, "100", "5"), inst, reducing) == RejectReason::None);
+  // 7 opens 2 short: 9,800 + 200 is the cap. 8 opens 3: 10,100.
+  CHECK(r.check_new(intent(Side::Sell, "100", "7"), inst, reducing) == RejectReason::None);
+  CHECK(r.check_new(intent(Side::Sell, "100", "8"), inst, reducing) ==
+        RejectReason::MaxGrossNotional);
+  // Sells of 2 already open close that much first, as for max_position: 3 more is exactly flat,
+  // 6 more opens 3.
+  reducing.open_same_side = Qty::from_int(2);
+  CHECK(r.check_new(intent(Side::Sell, "100", "3"), inst, reducing) == RejectReason::None);
+  CHECK(r.check_new(intent(Side::Sell, "100", "6"), inst, reducing) ==
+        RejectReason::MaxGrossNotional);
+  // A replace of one of them leaves its leaves out.
+  Order existing{};
+  existing.side = Side::Sell;
+  existing.qty = Qty::from_int(2);
+  CHECK(r.check_replace(intent(Side::Sell, "100", "7"), existing, inst, reducing) ==
+        RejectReason::None);
+}
+
+TEST_CASE("core.risk: an order through zero is not a reduction for the exposure caps") {
+  // Long 1, selling 100: 1 closes, 99 open a short the caps see.
+  const Instrument inst = make_inst();
+  RiskLimits l = limits();
+  l.max_order_qty = Qty{};
+  l.max_position = Qty{};
+  l.max_gross_notional = Notional::from_int(5'000);
+  const Timestamp now{seconds(100).ns};
+  RiskEngine gross(l, now);
+  gross.on_book(InstrumentId{0}, Price::from_decimal("100").value(), now);
+  gross.on_trade(InstrumentId{0}, Price::from_decimal("100").value());
+  Position long1{};
+  long1.qty = Qty::from_int(1);
+  long1.avg_px = Price::from_decimal("100").value();
+  RiskInputs in{now, &long1, Notional::from_int(100), Notional::from_int(100), Qty{}, 0, Price{}};
+  CHECK(gross.check_new(intent(Side::Sell, "100", "100"), inst, in) ==
+        RejectReason::MaxGrossNotional);
+  CHECK(gross.check_new(intent(Side::Sell, "100", "1"), inst, in) == RejectReason::None);
+  CHECK(gross.check_new(intent(Side::Sell, "100", "0.5"), inst, in) == RejectReason::None);
+
+  l.max_gross_notional = Notional{};
+  l.max_net_notional = Notional::from_int(5'000);
+  RiskEngine net(l, now);
+  net.on_book(InstrumentId{0}, Price::from_decimal("100").value(), now);
+  net.on_trade(InstrumentId{0}, Price::from_decimal("100").value());
+  // The whole order moves the net: +100 to -9,900.
+  CHECK(net.check_new(intent(Side::Sell, "100", "100"), inst, in) == RejectReason::MaxNetNotional);
+  CHECK(net.check_new(intent(Side::Sell, "100", "1"), inst, in) == RejectReason::None);
+  // Hedged elsewhere (net -4,950 with this long 1): the exact close still passes, though the
+  // net it leaves (-5,050) is past the cap; one lot more opens a short and is refused.
+  in.net_exposure = Notional::from_int(-4'950);
+  CHECK(net.check_new(intent(Side::Sell, "100", "1"), inst, in) == RejectReason::None);
+  CHECK(net.check_new(intent(Side::Sell, "100", "1.001"), inst, in) ==
+        RejectReason::MaxNetNotional);
 }
 
 TEST_CASE("core.risk: the net cap lets a hedged pair through and stops a one-way build") {

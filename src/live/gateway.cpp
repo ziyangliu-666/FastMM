@@ -703,7 +703,8 @@ std::size_t mark_account(VenueRouter& v) noexcept {
 
 // The account's exposure limits for one order on this venue, `notional` in the reporting currency:
 // the totals every venue published (this one's are its positions: it publishes every change).
-RejectReason check_account(const VenueRouter& v, InstrumentId inst, Side side, Notional notional) {
+RejectReason check_account(
+    const VenueRouter& v, InstrumentId inst, Side side, Qty qty, Notional notional) {
   const Account& a = *v.acct;
   const PositionTracker& p = v.book->positions();
   Notional gross{};
@@ -715,6 +716,7 @@ RejectReason check_account(const VenueRouter& v, InstrumentId inst, Side side, N
   }
   return check_exposure(p.get(inst),
                         side,
+                        qty,
                         notional,
                         gross,
                         net,
@@ -1394,7 +1396,7 @@ RejectReason check_order(VenueRouter& v,
   if (FASTMM_UNLIKELY(a.fx.active()) && (a.max_loss > 0 || a.exposure_limits())) {
     const std::uint8_t c = a.fx.ccy[inst.value];
     const std::int64_t q = v.book->positions().get(inst).qty.raw;
-    const bool adds = side == nullptr || q == 0 || (q > 0) == (*side == Side::Buy);
+    const bool adds = side == nullptr || opening_qty(q, *side, 0, qty.raw) > 0;
     if (c != 0 && adds) {
       const FxRate rate = a.current_rate(c, steady_now().ns);
       if (!rate.known()) return RejectReason::GatewayFxRateUnknown;
@@ -1402,7 +1404,8 @@ RejectReason check_order(VenueRouter& v,
     }
   }
   if (a.exposure_limits() && side != nullptr) {
-    if (const RejectReason why = check_account(v, inst, *side, exposure); why != RejectReason::None)
+    if (const RejectReason why = check_account(v, inst, *side, qty, exposure);
+        why != RejectReason::None)
       return why;
   }
   if (FASTMM_UNLIKELY(a.und.active())) {

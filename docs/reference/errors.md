@@ -61,9 +61,9 @@ Checked in the order listed, which is not numeric order; the first failure decid
 | 10 | `MaxOrderQty` | `[risk] max_order_qty` | the order is smaller |
 | 11 | `MaxOrderNotional` | `[risk] max_order_notional` | the order is smaller |
 | 12 | `MaxPosition` | `[risk] max_position` | the position or the same-side open orders shrink |
-| 19 | `FxRateUnknown` | `[accounting]` | the source of the order's settlement currency has a valid book that updated within `[accounting] stale_fx_ms`; an order that reduces its instrument's position is not refused |
-| 17 | `MaxGrossNotional` | `[risk] max_gross_notional` | the portfolio's \|position\| shrinks, or the order reduces its instrument's position |
-| 18 | `MaxNetNotional` | `[risk] max_net_notional` | the signed sum moves back, or the order reduces its instrument's position |
+| 19 | `FxRateUnknown` | `[accounting]` | the source of the order's settlement currency has a valid book that updated within `[accounting] stale_fx_ms`; an order that only takes its instrument's position towards zero is not refused |
+| 17 | `MaxGrossNotional` | `[risk] max_gross_notional` | the portfolio's \|position\| shrinks, or the order only takes its instrument's position towards zero (what goes past zero counts) |
+| 18 | `MaxNetNotional` | `[risk] max_net_notional` | the signed sum moves back, or the order only takes its instrument's position towards zero |
 | 22 | `UnderlyingMarkUnknown` | `[risk.underlying]` | every inverse contract of the underlying with a position or open orders (and the order's own, if inverse) has a valid book no older than `stale_md_ms` |
 | 21 | `MaxUnderlyingNet` | `[risk.underlying.<BASE>] max_net` | the underlying's position or same-side open orders shrink, or the order brings the net towards zero |
 | 23 | `BalanceShort` | `[risk] check_balance` | the venue reports more free balance, or our orders on that asset end or fill ([Balance check](../explanation/risk-model.md#balance-check)) |
@@ -98,7 +98,7 @@ A strategy attached to `fastmm-gateway` gets these back from the gateway's accou
 | 49 | `GatewayOpenNotional` | `[gateway] max_open_notional`: the notional working at the venue, over every attached strategy |
 | 50 | `GatewayNotOwner` | the order's instrument is not one this strategy claimed when it attached |
 | 51 | `GatewayAccountKilled` | `[gateway] max_loss` tripped the account's kill switch |
-| 52 | `GatewayGrossNotional` | `[gateway] max_gross_notional`: the account's positions at the marks plus this order; an order that reduces its instrument's position passes |
+| 52 | `GatewayGrossNotional` | `[gateway] max_gross_notional`: the account's positions at the marks plus what this order opens; the part of it that takes its instrument's position towards zero passes |
 | 53 | `GatewayNetNotional` | `[gateway] max_net_notional`: the same for the signed sum |
 | 54 | `GatewayFxRateUnknown` | `[accounting]`: the order adds to exposure in a currency whose source has no valid book in the gateway, or none that updated within `[accounting] stale_fx_ms` |
 | 55 | `GatewayUnderlyingNet` | `[gateway.underlying.<BASE>] max_net`: the account's net position in the base asset over every venue, with the orders working on the order's side and this one, would move further past the limit |

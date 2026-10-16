@@ -24,6 +24,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: an execution a replay re-sends thousands of executions later is no longer booked twice.
 - store: `fastmm-pnl pnl` counts each execution once: an estimate an execution named, a repeat.
 - store: fills, positions and the day roll-up carry the account's name (`account`, schema 10).
+- core: the `[risk]` and `[gateway]` exposure caps check an order past zero (long 1, sell 100).
 
 ## [0.6.0] - 2026-10-13
 

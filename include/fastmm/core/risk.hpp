@@ -230,8 +230,8 @@ class RiskEngine {
   // exposure caps, at the mid of its currency's FX source. The rate is usable while the source's
   // book is valid (on_fx_book) and, with the plan's `stale` ([accounting] stale_fx_ms, not
   // [risk] stale_md_ms: a quiet FX book updates seldom) set, no older than that. Without a usable
-  // rate an order that adds to exposure in that currency is refused (FxRateUnknown) while
-  // max_loss or an exposure cap is set; one that reduces it passes.
+  // rate an order that opens exposure in that currency is refused (FxRateUnknown) while max_loss
+  // or an exposure cap is set; one that only takes its position towards zero passes.
   void set_fx(const FxPlan& plan) noexcept {
     fx_on_ = plan.active();
     fx_stale_ = plan.stale;
@@ -397,17 +397,27 @@ class RiskEngine {
     if (portfolio_ && buy.position != nullptr && inst.id.value < kMaxInstruments) {
       const std::int64_t q = buy.position->qty.raw;
       const std::uint8_t c = fx_ccy_[inst.id.value];
+      const Price mid = md_[inst.id.value].mid;
       const auto room = [&](bool is_buy, Notional net) {
-        if (q != 0 && (q > 0) != is_buy) return Notional::max();  // reduces: never refused
-        Notional r = std::min(h.gross_notional, net);
-        if (!fx_gate_ || c == 0) return r;
-        const FxRate rate = fx_rate(c, buy.now);
-        if (!rate.known()) return Notional{};
-        if (r == Notional::max() || rate.num == rate.den) return r;
-        // Rounded down, so that converting it back stays inside the room.
-        const Int128 n = static_cast<Int128>(r.raw) * rate.den / rate.num;
-        return n >= Notional::max().raw ? Notional::max()
-                                        : Notional::from_raw(static_cast<std::int64_t>(n));
+        // The part that closes the position (after our open orders on the side) passes whatever
+        // the caps; at the mid it is worth `closes`. Past it the order opens exposure: the gross
+        // room for that part, the net room for the whole order.
+        const std::int64_t ahead = (is_buy ? buy : sell).open_same_side.raw;
+        const std::int64_t left = q != 0 && (q > 0) != is_buy ? (q < 0 ? -q : q) - ahead : 0;
+        const Notional closes =
+            left > 0 && mid.is_positive() ? inst.notional(mid, Qty::from_raw(left)) : Notional{};
+        Notional g = h.gross_notional;
+        Notional n = net;
+        if (fx_gate_ && c != 0) {
+          const FxRate rate = fx_rate(c, buy.now);
+          if (!rate.known()) return closes;
+          g = to_own(g, rate);
+          n = to_own(n, rate);
+        }
+        const Notional opened = g == Notional::max() || closes.raw > Notional::max().raw - g.raw
+                                    ? Notional::max()
+                                    : closes + g;
+        return std::max(closes, std::min(opened, n));
       };
       h.exposure_buy_notional = room(true, h.net_buy_notional);
       h.exposure_sell_notional = room(false, h.net_sell_notional);
@@ -498,7 +508,7 @@ class RiskEngine {
         (!md.book_ts.valid() || in.now - md.book_ts > limits_.stale_md)) {
       return RejectReason::StaleMarketData;
     }
-    if (FASTMM_UNLIKELY(in.feed_lagged) && may_rest(o) && !reduces_position(o, in))
+    if (FASTMM_UNLIKELY(in.feed_lagged) && may_rest(o) && !reduces_position(o, in, exclude_open))
       return RejectReason::FeedLag;
     if (o.type != OrderType::Market && md.collar_hi.is_positive() &&
         (o.price < md.collar_lo || o.price > md.collar_hi)) {
@@ -526,30 +536,35 @@ class RiskEngine {
         return RejectReason::MaxPosition;
     }
     // Portfolio exposure: what this order would add on top of what is already marked. Like
-    // max_position, an order that reduces exposure is never refused by it. One flag covers the
-    // caps and the FX gate, so a session with neither pays one branch.
+    // max_position, the part of the order that takes its position towards zero (after our open
+    // orders on its side) is never refused by it; what goes past zero opens exposure and is checked
+    // as a new order would be. One flag covers the caps and the FX gate, so a session with neither
+    // pays one branch.
     if (FASTMM_UNLIKELY(portfolio_) && in.position != nullptr) {
-      // In another settlement currency than the reporting one, the exposure this order adds is
-      // measured at its currency's rate, and without a usable rate it is not added at all.
-      Notional exposure = notional;
-      const std::uint8_t c = fx_ccy_[o.instrument.value];
-      const std::int64_t q = in.position->qty.raw;
-      if (fx_gate_ && c != 0 && (q == 0 || (q > 0) == (o.side == Side::Buy))) {
-        const FxRate rate = fx_rate(c, in.now);
-        if (!rate.known()) return RejectReason::FxRateUnknown;
-        exposure = convert(notional, rate);
-      }
-      const std::int64_t dir = sign(o.side);
-      const bool reduces = in.position->qty.raw != 0 && (in.position->qty.raw > 0) != (dir > 0);
-      if (!reduces) {
+      const std::int64_t opens = opening_qty(
+          in.position->qty.raw, o.side, in.open_same_side.raw - exclude_open.raw, o.qty.raw);
+      if (opens > 0) {
+        // In another settlement currency than the reporting one, the exposure is measured at its
+        // currency's rate, and without a usable rate the order is refused.
+        Notional exposure = notional;
+        const std::uint8_t c = fx_ccy_[o.instrument.value];
+        if (fx_gate_ && c != 0) {
+          const FxRate rate = fx_rate(c, in.now);
+          if (!rate.known()) return RejectReason::FxRateUnknown;
+          exposure = convert(notional, rate);
+        }
+        // Gross: the part opened on top of the gross now (the close is not credited). Net: what
+        // the whole order leaves, since every unit of it moves the signed sum.
         if (limits_.max_gross_notional.is_positive() &&
-            in.gross_exposure + exposure > limits_.max_gross_notional) {
+            in.gross_exposure + notional_share(exposure, opens, o.qty.raw) >
+                limits_.max_gross_notional) {
           return RejectReason::MaxGrossNotional;
         }
         if (limits_.max_net_notional.is_positive()) {
           // The net can be over the cap already (a mark moved, or a limit was tightened); an order
           // that brings it towards zero is how you get back under it.
-          const Notional net = in.net_exposure + (dir > 0 ? exposure : Notional{} - exposure);
+          const Notional net =
+              in.net_exposure + (o.side == Side::Buy ? exposure : Notional{} - exposure);
           if (net.abs() > limits_.max_net_notional && net.abs() > in.net_exposure.abs())
             return RejectReason::MaxNetNotional;
         }
@@ -589,11 +604,13 @@ class RiskEngine {
     return o.type != OrderType::Market && o.tif != TimeInForce::Ioc && o.tif != TimeInForce::Fok;
   }
   // The order, with our open orders on its side, only takes the position towards zero.
-  static constexpr bool reduces_position(const OrderIntent& o, const RiskInputs& in) noexcept {
-    if (in.position == nullptr) return false;
-    const std::int64_t q = in.position->qty.raw;
-    if (q == 0 || (q > 0) == (o.side == Side::Buy)) return false;
-    return in.open_same_side.raw + o.qty.raw <= (q < 0 ? -q : q);
+  static constexpr bool reduces_position(const OrderIntent& o,
+                                         const RiskInputs& in,
+                                         Qty exclude_open) noexcept {
+    return in.position != nullptr && opening_qty(in.position->qty.raw,
+                                                 o.side,
+                                                 in.open_same_side.raw - exclude_open.raw,
+                                                 o.qty.raw) == 0;
   }
   void update_flags() noexcept {
     fx_gate_ = fx_on_ && limits_.reads_totals();
@@ -607,6 +624,14 @@ class RiskEngine {
     return side == Side::Buy ? px >= own_opposite : px <= own_opposite;
   }
 
+  // A room in the reporting currency as notional in the currency `rate` converts from, rounded
+  // down so that converting it back stays inside the room.
+  static Notional to_own(Notional r, const FxRate& rate) noexcept {
+    if (r == Notional::max() || rate.num == rate.den) return r;
+    const Int128 n = static_cast<Int128>(r.raw) * rate.den / rate.num;
+    return n >= Notional::max().raw ? Notional::max()
+                                    : Notional::from_raw(static_cast<std::int64_t>(n));
+  }
   static Qty lot_floor(const Instrument& inst, std::int64_t raw) noexcept {
     if (raw <= 0) return Qty{};
     if (!inst.lot.is_positive()) return Qty::from_raw(raw);

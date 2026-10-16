@@ -231,22 +231,25 @@ class AccountBook {
   std::vector<std::unique_ptr<Book>> books_;
 };
 
-// The account's exposure limits on one order, as RiskEngine checks [risk]'s: the order's notional
-// on top of the positions marked now. An order that reduces its instrument's position always
-// passes, and so does one that brings a net already over the cap towards zero. 0 = no limit.
+// The account's exposure limits on one order of `qty`, as RiskEngine checks [risk]'s: the order's
+// notional on top of the positions marked now. The part of it that takes its instrument's
+// position towards zero always passes; past zero, the gross cap takes the part opened and the net
+// cap the whole order, which passes when it brings a net already over the cap towards zero.
+// 0 = no limit.
 [[nodiscard]] inline RejectReason check_exposure(const Position& pos,
                                                  Side side,
+                                                 Qty qty,
                                                  Notional notional,
                                                  Notional gross,
                                                  Notional net,
                                                  Notional max_gross,
                                                  Notional max_net) noexcept {
-  const std::int64_t dir = sign(side);
-  if (pos.qty.raw != 0 && (pos.qty.raw > 0) != (dir > 0)) return RejectReason::None;
-  if (max_gross.is_positive() && gross + notional > max_gross)
+  const std::int64_t opens = opening_qty(pos.qty.raw, side, 0, qty.raw);
+  if (opens == 0) return RejectReason::None;
+  if (max_gross.is_positive() && gross + notional_share(notional, opens, qty.raw) > max_gross)
     return RejectReason::GatewayGrossNotional;
   if (max_net.is_positive()) {
-    const Notional after = net + (dir > 0 ? notional : Notional{} - notional);
+    const Notional after = net + (side == Side::Buy ? notional : Notional{} - notional);
     if (after.abs() > max_net && after.abs() > net.abs()) return RejectReason::GatewayNetNotional;
   }
   return RejectReason::None;
