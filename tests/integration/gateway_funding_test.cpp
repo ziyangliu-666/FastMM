@@ -463,16 +463,18 @@ TEST_CASE(
                   "gateway: " << fastmm::test::read_file(gw_log));
   CHECK(p->shared == 1);
   CHECK(p->unattributed_raw == 0);
-  // The log says so once a second (the strategies in the order they attached).
+  // The log says so whenever a share changes. The last such line: one logged before the second
+  // strategy's share was seeded names the first alone, and the status counts both traders sooner.
   std::string warned;
   REQUIRE(wait_until(
       [&] {
         const std::string text = fastmm::test::read_file(gw_log);
-        const std::size_t at = text.find(
+        const std::size_t at = text.rfind(
             "account position bybit_linear:BTCUSDT -0.015 does not match its strategies' (shared:");
         if (at == std::string::npos) return false;
         warned = text.substr(at, text.find('\n', at) - at);
-        return true;
+        return warned.find(" gw-psh-a=") != std::string::npos &&
+               warned.find(" gw-psh-b=") != std::string::npos;
       },
       5000));
   INFO(warned);
