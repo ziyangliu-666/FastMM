@@ -137,10 +137,11 @@ validation:
 nav:
   - Home: README.md
   - Get started:
-      - getting-started/install.md
       - getting-started/quickstart.md
+      - getting-started/install.md
       - python.md
-      - Your first market maker:
+      - getting-started/cpp-quickstart.md
+      - Your first market maker in C++:
           - tutorials/first-strategy/README.md
           - tutorials/first-strategy/01-set-up.md
           - tutorials/first-strategy/02-the-model.md

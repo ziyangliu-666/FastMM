@@ -1,6 +1,6 @@
 # 5. Backtest in C++
 
-`examples/cpp/tutorial/first_mm_backtest.cpp` backtests `first_mm` for 60 s on a synthetic market and checks the result; like the quick start, it needs no registration.
+`examples/cpp/tutorial/first_mm_backtest.cpp` backtests `first_mm` for 60 s on a synthetic market and checks the result; like the [C++ quick start](../../getting-started/cpp-quickstart.md), it needs no registration.
 
 ## The configuration
 

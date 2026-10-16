@@ -1,4 +1,4 @@
-# The quick start: one strategy header and a main that backtests it (docs/getting-started/quickstart.md).
+# The C++ quick start: one strategy header and a main that backtests it (docs/getting-started/cpp-quickstart.md).
 #
 #   cmake -S examples/quickstart -B build/quickstart -G Ninja -DCMAKE_BUILD_TYPE=Release
 #   cmake --build build/quickstart && ./build/quickstart/my_mm_backtest

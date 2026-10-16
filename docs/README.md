@@ -18,7 +18,7 @@ fastmm init my-mm && cd my-mm
 python backtest.py
 ```
 
-The wheel needs Linux x86-64 and CPython 3.10 or later, and no keys. On Debian and Ubuntu, `sudo apt install python3-venv` first. To build the C++ programs, see [Install](getting-started/install.md).
+The wheel needs Linux x86-64 and CPython 3.10 or later, and no keys. On Debian and Ubuntu, `sudo apt install python3-venv` first. To write the strategy in C++, see the [Quick start in C++](getting-started/cpp-quickstart.md); to build the C++ programs, [Install](getting-started/install.md#build-from-source).
 
 The same strategy trades live against the simulated exchange on this machine:
 
@@ -43,7 +43,8 @@ python -m fastmm run strategy:MyMm --config sim.toml --duration 60s
 
 ## Where to go next
 
-- [Quickstart](getting-started/quickstart.md): a strategy, a backtest and a live session against the local exchange.
+- [Quick start](getting-started/quickstart.md): a Python strategy, a backtest and a live session against the local exchange.
+- [Quick start in C++](getting-started/cpp-quickstart.md): a C++ strategy backtested from a CMake project.
 - [Your first market maker](tutorials/first-strategy/README.md): a C++ strategy from its header to Binance Demo, in nine steps.
 - [Quote on one venue, hedge on another](how-to/strategies/xmm.md): run `xmm` on Binance Demo.
 - [Run on a testnet or Binance Demo](how-to/operations/run-on-testnet.md): keys, a dry run and a first keyed session.

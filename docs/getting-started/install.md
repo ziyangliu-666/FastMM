@@ -137,6 +137,6 @@ TLS connections, from the `fastmm-live` program or the Python package, trust the
 
 ## Use FastMM from your own project
 
-- The [Quick start](quickstart.md) pulls FastMM into a CMake project with `FetchContent`; the [Tutorial: your first market maker](../tutorials/first-strategy/README.md) continues from there.
+- The [Quick start in C++](cpp-quickstart.md) pulls FastMM into a CMake project with `FetchContent`; the [Tutorial: your first market maker](../tutorials/first-strategy/README.md) continues from there.
 - [Register a strategy](../how-to/strategies/register-a-strategy.md) builds a project against an installed FastMM (`find_package(fastmm)`) or a source tree (`add_subdirectory`).
 - Build your project with the compiler that built FastMM: a release install contains GCC LTO objects.

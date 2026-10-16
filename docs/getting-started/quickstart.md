@@ -1,139 +1,61 @@
 # Quick start
 
-Requires a FastMM build ([Install](install.md)). The code is in `examples/quickstart/`; CI builds and runs it (ctest `examples.quickstart`).
+The package on PyPI is `fastmm-engine`, imported as `fastmm`. `pip install fastmm` installs a different project.
 
-## 1. The strategy
+The wheels need Linux x86-64 and CPython 3.10 or later; on macOS or Windows, run the steps in a container ([Install](install.md#without-building-it)). Nothing here needs an account or API keys. To write the strategy in C++ instead, see the [Quick start in C++](cpp-quickstart.md).
 
-`MyMM` quotes one bid and one ask `half_spread_bps` away from the mid on every book update:
-
-<!-- snippet: examples/quickstart/my_mm.hpp#strategy -->
-```cpp
-#include "fastmm/strategy.hpp"
-
-using namespace fastmm;
-
-struct MyParams {
-  FASTMM_PARAMS(MyParams)
-  FASTMM_PARAM_BPS(half_spread_bps, 0.005_bps, 0_bps, 1000_bps, "half spread around the mid, bps")
-  FASTMM_PARAM(Qty, quote_qty, 0.001_qty, 0_qty, 1000_qty, "quantity per side, base units")
-};
-
-struct MyMM : StrategyBase<MyParams> {
-  static constexpr std::string_view name() noexcept { return "my_mm"; }
-
-  void on_book(auto& ctx, InstrumentId id, const auto& book) noexcept {
-    if (!book.is_valid()) return ctx.pull_quotes(id);  // empty or crossed
-    const Instrument& inst = ctx.instrument(id);
-    const Price half = book.mid() * params().half_spread_bps;
-    DesiredQuotes q;
-    q.bid(inst.round_price(book.mid() - half, Side::Buy), inst.round_qty(params().quote_qty));
-    q.ask(inst.round_price(book.mid() + half, Side::Sell), inst.round_qty(params().quote_qty));
-    ctx.set_quotes(id, q);  // diffed against resting orders
-  }
-};
-```
-
-- `FASTMM_PARAM_BPS` and `FASTMM_PARAM` declare typed parameters with a default, a range and a description. `Ratio` (basis points) and `Qty` are 64-bit fixed-point values.
-- `on_book` is a hook: the engine calls it after each book update. Other hooks cover trades, fills, timers and connection changes ([Strategy API](../reference/strategy-api.md)).
-- `set_quotes` sets the desired quotes; the engine sends new, cancel and replace messages for the difference.
-
-## 2. The backtest
-
-<!-- snippet: examples/quickstart/main.cpp#main -->
-```cpp
-#include "my_mm.hpp"
-
-#include "fastmm/backtest/backtest_runner.hpp"
-
-#include <cstdio>
-
-int main(int argc, char** argv) {
-  auto cfg = bt::BacktestConfig::single_instrument("BTCUSDT", 0.01_px, 0.00001_qty);
-  cfg.generator.market_qty_median_lots = 1500;  // synthetic market: larger taker orders
-  cfg.transport.fees = sim::FeeModel::from_bps(10.0, 10.0);  // Binance spot VIP 0: 0.1 % both sides
-  auto source = bt::open_data(argc > 1 ? argv[1] : "synthetic");  // .fmj, .csv or synthetic
-  const bt::BacktestResult result = bt::run_backtest<MyMM>(cfg, source.get());
-  std::fputs(result.summary_table().c_str(), stdout);
-
-  const char* out = argc > 2 ? argv[2] : "runs/quickstart";  // equity, fills, orders, summary
-  if (!result.write_all(out)) {
-    std::fprintf(stderr, "cannot write the results to %s\n", out);
-    return 1;
-  }
-  std::printf("\nresults in %s/ -- for the HTML report: fastmm report %s\n", out, out);
-}
-```
-
-`run_backtest<MyMM>` builds the engine with your strategy, a simulated venue with a matching engine and latency, and runs it for 60 s of simulated time.
-
-## 3. Build and run
-
-In the FastMM build tree:
+## 1. A project and a backtest
 
 ```bash
-cmake --build --preset release --target my_mm_backtest
-./build/release/examples/quickstart/my_mm_backtest   # writes runs/quickstart/
-python3 tools/report.py runs/quickstart              # writes runs/quickstart/report.html
+python3 -m venv .venv && . .venv/bin/activate     # Debian, Ubuntu: sudo apt install python3-venv
+pip install "fastmm-engine[hot]"
+fastmm init my-mm && cd my-mm
+python backtest.py
 ```
 
-Open `runs/quickstart/report.html`: one self-contained page with the equity curve, the inventory, where the PnL came from, the markouts and the fill quality ([Run report](../reference/run-report.md)). `python3 tools/report.py` needs nothing but Python 3; with the Python package installed the same command is `fastmm report runs/quickstart`.
+`fastmm init` writes:
 
-In your own project, copy `examples/quickstart/`. Its `CMakeLists.txt` fetches FastMM:
+| File | What |
+|---|---|
+| `strategy.py` | `MyMm`, a `fastmm.Strategy` whose hooks are marked `@fastmm.hot` and compiled by Numba |
+| `config.toml` | the simulated market the backtest runs on: instrument, fees, risk limits |
+| `backtest.py` | runs the strategy on that market and prints the summary, the PnL decomposition and the markouts |
+| `sim.toml` | the same strategy live against the simulated exchange on this machine |
+| `live.toml` | the same strategy on Binance Spot Demo Mode |
+| `README.md` | what to change first |
 
-<!-- snippet: examples/quickstart/CMakeLists.txt#cmake -->
-```cmake
-cmake_minimum_required(VERSION 3.25)
-project(my_mm LANGUAGES CXX)
-set(CMAKE_CXX_STANDARD 20)
-
-if(NOT TARGET fastmm::backtest)
-  include(FetchContent)
-  set(FASTMM_BUILD_NET OFF CACHE BOOL "backtests need no networking")
-  FetchContent_Declare(fastmm GIT_REPOSITORY https://github.com/ziyangliu-666/FastMM
-    GIT_TAG v0.6.0 GIT_SHALLOW TRUE)
-  FetchContent_MakeAvailable(fastmm)
-endif()
-
-add_executable(my_mm_backtest main.cpp)
-target_link_libraries(my_mm_backtest PRIVATE fastmm::backtest)
-```
+The backtest writes its fills, orders and equity curve to `runs/backtest/`. Two more commands:
 
 ```bash
-cmake -S examples/quickstart -B build/quickstart -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build/quickstart && ./build/quickstart/my_mm_backtest
+python backtest.py --sweep half_spread_bps=0.005,0.01,0.02,0.05   # one backtest per value
+fastmm report runs/backtest                                       # runs/backtest/report.html
 ```
 
-Add `-DFETCHCONTENT_SOURCE_DIR_FASTMM=$PWD` to the first command to build against this checkout instead of downloading FastMM.
+The report is one HTML page: equity, inventory, where the PnL came from, markouts and fill quality ([Run report](../reference/run-report.md)). The quotes earn less than the fees at the default fee level; [Backtesting](../explanation/backtesting.md) explains how to read the decomposition.
 
-## 4. Read the result
+## 2. Live against the simulated exchange
 
-The report is the whole run on one page; the summary table it printed is the same numbers:
+`fastmm-engine[live]` adds the venue connectors and `fastmm sim`, a Binance Spot-compatible exchange with its own order flow on 127.0.0.1:9080:
 
-<!-- output: my_mm_backtest -->
-```text
-backtest my_mm  seed=1  md_events=7129  steps=7694  wall=0.01s
-  net pnl                        -2.1594
-  realized / unrealized / fees   0.0011 / 0.0001 / 2.1606
-  fills (maker / taker)          37 (37 / 0)
-  orders / cancels / replaces    283 / 245 / 0
-  inventory mean / |mean| / max  ...
-  outbound messages / sha256     ... / ...
-
-where the PnL came from (quote currency, 2160.60 traded notional)
-  gross spread capture                 0.0005  +0.004 bps of 1320.60, over the 23 of 37 fills that had a venue mid
-  fees paid                           -2.1606
-  = net                               -2.1594
-  ...
+```bash
+pip install "fastmm-engine[live]"
+fastmm sim &
+fastmm run strategy:MyMm --config sim.toml --duration 60s
 ```
 
-- Money is in the quote currency (USDT), quantities in the base currency (BTC).
-- `fills (maker / taker)`: quotes are post-only, so taker is 0.
-- The run charges Binance spot VIP 0 fees, 10 bps each side, so the spread this strategy captures does not cover them ([Backtesting](../explanation/backtesting.md)).
-- `outbound messages / sha256`: a hash of the order messages sent; it is identical on every run ([Determinism](../explanation/determinism.md)).
+The session sends real orders over WebSocket to the simulator and writes a journal to `runs/`. Ctrl-C stops it and cancels its orders.
 
-The report adds what a table cannot show: when the losses arrived, how much inventory the strategy carried while it earned them, and whether the mid kept moving against the fills afterwards.
+## 3. Binance Demo
+
+```bash
+fastmm run strategy:MyMm --config live.toml --dry-run --duration 60s
+```
+
+`--dry-run` reads Binance Spot Demo Mode's market data and quotes on paper, with no keys. To send orders, export Demo Trading keys as `FASTMM_BINANCE_API_KEY` and `FASTMM_BINANCE_API_SECRET` and drop `--dry-run` ([Run on a testnet or Binance Demo](../how-to/operations/run-on-testnet.md)).
 
 ## Next
 
-- [Tutorial: your first market maker](../tutorials/first-strategy/README.md) adds unit tests, inventory limits, registration, the command-line tools, the simulated exchange and Binance Demo.
-- [Strategy API](../reference/strategy-api.md) lists the hooks, context methods and helpers.
+- [Write hot hooks in Python](../how-to/strategies/python-hot-hooks.md): parameters, hooks and the context.
+- [Python](../python.md): backtests on recorded data, results as numpy and pandas, sweeps.
+- [Run a Python strategy live](../how-to/strategies/python-live.md): the simulated exchange, then a venue.
+- [Python strategy API](../reference/python-api.md).
