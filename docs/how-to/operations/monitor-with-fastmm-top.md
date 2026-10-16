@@ -1,6 +1,6 @@
 # Monitoring a live session
 
-`fastmm-live` writes its counters, PnL, kill-switch state, latency percentiles and each venue's status to a memory-mapped file every 250 ms without touching the engine thread; the engine's values in it refresh every second. The file is `/dev/shm/fastmm-<engine name>.status` unless `--status <path>` is given; `--no-status` turns it off.
+`fastmm-live` writes its counters, PnL, kill-switch state, latency percentiles and each venue's status to a memory-mapped file every 250 ms without touching the engine thread; the engine's values in it refresh every second. The file is `/dev/shm/fastmm-<engine name>.status` unless `--status <path>` is given; `--no-status` turns it off. `fastmm run` writes the same file. `fastmm-top` itself is a C++ program, from a build or the [release tarball](deploy.md); the pip package does not install it.
 
 ```bash
 ./build/release/bin/fastmm-live --config configs/binance-demo.toml &

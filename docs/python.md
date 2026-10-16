@@ -83,6 +83,8 @@ df = fastmm.sweep_frame(points)           # one row per grid point
 
 Points run on a C++ thread pool (GIL released), every worker with its own cursor over `data`; results come back in grid order with the first parameter varying slowest.
 
+`fastmm.sweep` and `fastmm.walk_forward` take a built-in strategy only: the one `cfg.strategy` names, or `strategy="basic_mm"` (`fastmm.strategies()` lists them). A Python class cannot be passed. To sweep a Python strategy, call `run_backtest` once per point, as `python backtest.py --sweep` does in a project `fastmm init` wrote.
+
 ### Walk-forward
 
 The best point of a sweep is the luckiest one on that data. `fastmm.walk_forward` scores it on data it was not chosen on:

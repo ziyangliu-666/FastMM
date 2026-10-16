@@ -12,12 +12,15 @@ To build both packages from a checkout instead: [Install from source](../../gett
 
 ## Run against the simulated exchange
 
-Start the simulated exchange, a C++ program from a build or from the unpacked [release tarball](../operations/deploy.md), which holds the same `configs/` and the TLS certificate it reads:
+Start the simulated exchange. `fastmm sim` runs the one `fastmm-engine-live` ships, on 127.0.0.1:9080 without TLS; a build and the unpacked [release tarball](../operations/deploy.md) have it as a C++ program, with the same `configs/` and the TLS certificate it reads:
 
 ```bash
+fastmm sim                                                          # pip install
 ./build/release/bin/fastmm-sim-exchange --config configs/sim.toml   # checkout
 bin/fastmm-sim-exchange --config configs/sim.toml                   # in fastmm-<version>-x86_64/
 ```
+
+The steps below use `configs/` and `examples/` from a checkout. With only the pip package, the project `fastmm init` writes has `sim.toml` for the same session ([Quick start](../../getting-started/quickstart.md#2-live-against-the-simulated-exchange)).
 
 Copy `configs/sim-local.toml` to `sim-py.toml` and set `name = "py:BasicMMHot"` in its `[strategy]` table, so its `[strategy.params]` apply to the class. In another terminal:
 

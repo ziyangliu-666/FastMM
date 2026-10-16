@@ -11,7 +11,7 @@ Two configs ship:
 | [`configs/xmm-binance-demo.toml`](../../../configs/xmm-binance-demo.toml) | Binance Spot Demo Mode, BTCUSDT | Binance USDⓈ-M Demo Trading, BTCUSDT perpetual |
 | [`configs/xmm-demo.toml`](../../../configs/xmm-demo.toml) | Binance USDⓈ-M Demo Trading, BTCUSDT perpetual | Bybit testnet, BTCUSDT linear perpetual |
 
-1. Build: `cmake --preset release && cmake --build --preset release -j`.
+1. Build: `cmake --preset release && cmake --build --preset release -j`. `xmm` runs in `fastmm-live`, from a build or the [release tarball](../operations/deploy.md); `fastmm run` from the pip package runs Python classes only.
 2. Check the market data of both venues with a dry run. It needs no keys and sends no order:
 
     ```bash

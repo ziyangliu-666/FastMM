@@ -4,7 +4,9 @@ FastMM ships configs for eight practice environments: Binance Spot Demo Mode, Bi
 
 Before a longer session, read [Kill switch and shutdown](kill-switch-and-shutdown.md).
 
-## 1. Build
+## 1. Get the programs
+
+The shipped configs trade built-in C++ strategies (`basic_mm`; `options_mm` on Deribit) with `fastmm-live`, and this page also uses `fastmm-top`, `fastmm-ctl` and `fastmm-pnl`. These are C++ programs: build them, or take them from the [release tarball](deploy.md), which also holds `configs/`. The pip package does not install them.
 
 ```bash
 cmake --preset release && cmake --build --preset release -j
@@ -12,6 +14,8 @@ ctest --preset release -j"$(nproc)"
 ```
 
 The binaries are in `build/release/bin/`.
+
+With `pip install "fastmm-engine[hot,live]"` alone, a Python strategy runs on the same environments through `fastmm run`: copy a config from the repository, set `[strategy] name = "py:<Class>"` and run `fastmm run <module>:<Class> --config <copy> --dry-run` ([Run a Python strategy live](../strategies/python-live.md)). The project `fastmm init` writes has `live.toml` for Binance Spot Demo Mode.
 
 ## 2. Keys in the environment
 

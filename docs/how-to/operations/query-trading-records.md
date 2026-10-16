@@ -1,6 +1,6 @@
 # Query what you traded
 
-Read what a deployment traded from the store its sessions wrote, without replaying a journal. The store is `runs/<engine name>.db` unless `[storage] path` says otherwise; the schema and what it guarantees are in [Storage](../../reference/storage.md).
+Read what a deployment traded from the store its sessions wrote, without replaying a journal. The store is `runs/<engine name>.db` unless `[storage] path` says otherwise; the schema and what it guarantees are in [Storage](../../reference/storage.md). `fastmm-pnl`, used below, is a C++ program from a build or the [release tarball](deploy.md); with only the pip package, `fastmm.open_store(path)` reads its fills, orders, positions, PnL, funding payments and kill events as DataFrames ([Python](../../python.md#other-helpers)).
 
 It is on by default:
 
