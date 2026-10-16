@@ -67,8 +67,11 @@ namespace {
 // The shutdown's venue cancel-all waits this long at most for the engine to take the kill switch.
 constexpr std::int64_t kKillTakenWaitNs = 2'000'000'000;
 
-volatile std::sig_atomic_t g_signal = 0;
-volatile std::sig_atomic_t g_hup = 0;  // SIGHUP: clear the kill switch and resume quoting
+// Set by the signal handler, read by the thread that runs the session, which need not be the one
+// the signal lands on: an atomic, lock-free so the handler may store it.
+std::atomic<int> g_signal{0};
+static_assert(std::atomic<int>::is_always_lock_free);
+std::atomic<int> g_hup{0};  // SIGHUP: clear the kill switch and resume quoting
 std::atomic<std::int64_t> g_first_signal_ns{0};
 std::atomic<ShutdownWatchdog*> g_watchdog{nullptr};
 static_assert(std::atomic<std::int64_t>::is_always_lock_free);
