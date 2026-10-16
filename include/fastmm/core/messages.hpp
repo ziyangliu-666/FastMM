@@ -462,6 +462,9 @@ static_assert(sizeof(ControlMsg) == 128);
 // ControlCommand::TripKill's arg for a stop that was asked for (fastmm-live's --duration, a signal,
 // fastmm-ctl stop): the engine pulls its quotes and cancels as for any trip, and logs it as a stop.
 inline constexpr std::uint64_t kTripKillPlannedStop = 1;
+// ControlCommand::TripKill's arg when the store failed or dropped records and [storage]
+// kill_on_failure is set: the engine trips with KillReason::StoreFailure.
+inline constexpr std::uint64_t kTripKillStoreFailure = 2;
 
 // ControlCommand::SetLimits: a ControlMsg with the new limits after it. The prefix is a ControlMsg
 // (same type, same offsets), so the engine's dispatch reads `command` from either and only this

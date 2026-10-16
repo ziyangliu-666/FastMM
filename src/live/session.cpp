@@ -2077,6 +2077,12 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     snap.estimated_fills = live.stats.estimated_fills;
     snap.estimates_pending = live.stats.estimates_pending;
     snap.estimates_forgotten = live.stats.estimates_forgotten;
+    snap.store_enabled = store_thread && owner ? 1 : 0;
+    if (store_thread) {
+      snap.store_rows = store_thread->backend().rows();
+      snap.store_errors = store_thread->backend().errors();
+    }
+    snap.store_dropped = live.stats.records_dropped;
     if (treasury) snap.treasury = treasury->stats();
     snap.venue_rejects = live.stats.venue_rejects;
     set_status_rejects(snap.risk_reject_reasons, live.stats.risk_rejects_by_reason);
@@ -2239,6 +2245,36 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   KillReason engine_kill = KillReason::None;  // the unrequested global kill, once seen
   std::int64_t next_kill_reminder = 0;
   std::uint32_t reported_venue_kills = 0;  // venue kill bits already logged
+  // A store that fails or drops records leaves the next start an incomplete record to restore
+  // from: logged when it first happens, and with [storage] kill_on_failure the kill switch trips
+  // (KillReason::StoreFailure) on every new failure.
+  const bool kill_on_store_failure = cfg.storage.get_bool("kill_on_failure", false);
+  std::uint64_t store_faults = 0;  // errors + dropped records already acted on
+  const auto check_store = [&](const EngineLiveStats& live) {
+    if (!store_thread || !owner) return;
+    const std::uint64_t errors = store_thread->backend().errors();
+    const std::uint64_t dropped = live.stats.records_dropped;
+    if (errors + dropped <= store_faults) return;
+    const bool first = store_faults == 0;
+    store_faults = errors + dropped;
+    if (kill_on_store_failure && (live.kill_flags & 1U) == 0) {
+      FASTMM_LOG_ERROR(
+          "store: {} write error(s), {} record(s) dropped and [storage] kill_on_failure = true: "
+          "tripping the kill switch",
+          errors,
+          dropped);
+      if (!push_control(
+              control_ring, ControlCommand::TripKill, VenueId::invalid(), kTripKillStoreFailure))
+        FASTMM_LOG_ERROR("control ring full: the store failure did not trip the kill switch");
+      feed.notify();
+    } else if (first) {
+      FASTMM_LOG_ERROR(
+          "store: {} write error(s), {} record(s) dropped: a restart restores positions from an "
+          "incomplete record",
+          errors,
+          dropped);
+    }
+  };
 
   // ---- control socket ---------------------------------------------------------------------
   // Everything an operator can do to a running session besides the signals, over an AF_UNIX
@@ -2611,6 +2647,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     }
     if (now >= next_status) {
       next_status = now + 250'000'000;
+      check_store(live);
       persist_kill(live);
       publish_status(StatusRunState::Running, live);
       save_strategy_state();

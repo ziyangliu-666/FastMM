@@ -2279,7 +2279,8 @@ class Engine {
       }
       case ControlCommand::TripKill:
         risk_.trip();
-        on_kill(KillReason::Requested, c.arg == kTripKillPlannedStop);
+        on_kill(c.arg == kTripKillStoreFailure ? KillReason::StoreFailure : KillReason::Requested,
+                c.arg == kTripKillPlannedStop);
         break;
       case ControlCommand::TripVenueKill:
         on_venue_kill(c.hdr.venue, static_cast<KillReason>(static_cast<std::uint8_t>(c.arg)));

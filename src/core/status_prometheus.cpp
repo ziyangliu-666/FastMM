@@ -384,6 +384,16 @@ void engine_metrics(Exposition& e, const StatusSnapshot& s) {
             "estimated fills whose order was forgotten before an execution named them: one "
             "replayed later would be booked again",
             s.estimates_forgotten);
+  e.gauge("fastmm_store_enabled",
+          "1 when a [storage] backend records the session",
+          static_cast<double>(s.store_enabled));
+  e.counter("fastmm_store_rows_total", "rows the store backend wrote", s.store_rows);
+  e.counter("fastmm_store_errors_total",
+            "store writes that failed: a restart restores from an incomplete record",
+            s.store_errors);
+  e.counter("fastmm_store_records_dropped_total",
+            "records the engine dropped because the ring to the store was full",
+            s.store_dropped);
   if (s.risk_tokens >= 0)
     e.gauge("fastmm_risk_tokens",
             "[risk] orders_per_sec bucket: whole tokens left, shared by every account",

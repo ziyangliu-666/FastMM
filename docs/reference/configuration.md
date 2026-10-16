@@ -736,6 +736,16 @@ BTC = "binance:BTCUSDT"     # BTC in USDT: the mid of BTCUSDT
 | `status_interval_s` | integer |  | seconds between the per-venue status lines, 0 = none (default 1 with a log file, 10 on stderr) |
 <!-- END config-keys -->
 
+## `[storage]`
+
+Free-form: each backend reads its own keys ([Storage](storage.md#configuration)). The keys every backend shares:
+
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `backend` | string |  | `sqlite` or `none` (default sqlite) |
+| `ring_bytes` | integer |  | engine-to-store ring, bytes, a power of two (default 4194304) |
+| `kill_on_failure` | boolean |  | fastmm-live: trip the kill switch (`StoreFailure`) when a store write fails or the ring drops a record (default false) |
+
 ## `[backtest]`
 
 Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`src/backtest/backtest_config.cpp`); the section is free-form in the schema. The engine, risk and strategy settings come from the sections above; each instrument pays its own venue's `fees` table (or its own `maker_bps` / `taker_bps`), self-trade prevention follows `[risk] stp`, and in-place replace follows `[engine] supports_replace`, unless `[backtest.venues.<name>]` sets them for one venue.

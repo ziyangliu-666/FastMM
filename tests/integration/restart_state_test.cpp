@@ -1,14 +1,17 @@
 // What a restarted fastmm-live session carries over, checked against the store before it trades
-// (live/restart_check.hpp):
+// (live/restart_check.hpp), and the store's own health while it runs:
 //   * the epoch file gone while the store holds sessions: exit 9, nothing sent; the counter written
 //     back as the message says, the session runs on a later epoch;
 //   * the kill file gone after a max-loss trip the store recorded: exit 6; --clear-kill runs;
 //   * a store whose newest session booked an execution twice, on a venue that reports no position
 //     of its own: exit 9; --accept-position or restore_position = false runs;
+//   * a store that fails to write shows in the status file, and with [storage] kill_on_failure the
+//     kill switch trips (StoreFailure) and the session exits 6.
 #include "../store/store_test_util.hpp"
 #include "integration_util.hpp"
 
 #include "fastmm/core/session_state.hpp"
+#include "fastmm/core/status_segment.hpp"
 #include "fastmm/live/restart_check.hpp"
 #include "fastmm/live/session.hpp"
 #include "fastmm/store/registry.hpp"
@@ -16,9 +19,14 @@
 #include "fastmm/strategies/builtin.hpp"
 #include "fastmm/strategies/registry.hpp"
 
+#include <signal.h>
+#include <unistd.h>
+
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 
 using namespace fastmm;
 using namespace fastmm::integration;
@@ -99,6 +107,12 @@ void seed_store(const Config& cfg, std::uint64_t session, std::int64_t minute, B
   body(*backend);
   backend->commit();
   backend->close();
+}
+
+bool read_status(const std::string& path, StatusSnapshot& out) {
+  StatusReader r;
+  std::string err;
+  return r.open(path, &err) && r.read(out);
 }
 
 }  // namespace
@@ -233,4 +247,92 @@ TEST_CASE("restart state: a venue that reports its own position replaces a doubl
   CHECK(r.message.find("--accept-position") != std::string::npos);
   // Not restored at all (the venue cannot replay): nothing to refuse.
   CHECK(live::wrong_positions(prev, {}).empty());
+}
+
+namespace {
+
+// Holds the store's write lock from another connection: every write of the session waits out the
+// backend's busy timeout and fails.
+struct StoreBlocker {
+  std::unique_ptr<store::Backend> backend = store::make_sqlite_backend();
+  GenericSection section;
+  explicit StoreBlocker(const std::string& path) {
+    section.values["path"] = path;
+    store::BackendOptions o;
+    o.config = &section;
+    o.engine_name = "blocker";
+    REQUIRE(backend->open(o));
+    store::SessionOpen s = fastmm::test::store_session(99, fastmm::test::kDay1Ns);
+    s.engine_name = "blocker";
+    REQUIRE(backend->session_open(s));
+    backend->begin();
+    backend->kill(fastmm::test::store_kill(99, 1, fastmm::test::kDay1Ns, KillReason::Requested));
+  }
+  void release() {
+    if (!backend) return;
+    backend->commit();
+    backend->close();
+    backend.reset();
+  }
+  ~StoreBlocker() { release(); }
+  StoreBlocker(const StoreBlocker&) = delete;
+  StoreBlocker& operator=(const StoreBlocker&) = delete;
+};
+
+void failing_store(bool kill) {
+  register_strategies_once();
+  const std::string name = kill ? "state-store-kill" : "state-store";
+  first_start(name);
+  ServerFixture fx;
+  Config cfg = state_config(fx, name);
+  if (kill) cfg.storage.values["kill_on_failure"] = "true";
+  const live::LiveOptions o = state_options(name, 40);
+  std::atomic<int> rc{-1};
+  std::thread session([&] { rc = live::run_live(cfg, o); });
+  StatusSnapshot st;
+  REQUIRE(wait_until(
+      [&] {
+        return read_status(o.status_path, st) && st.store_rows > 0 &&
+               fx.server.stats().orders_accepted > 0;
+      },
+      20000));
+  CHECK(st.store_enabled == 1);
+  CHECK(st.store_errors == 0);
+  {
+    StoreBlocker blocker(cfg.storage.get_string("path"));
+    const bool failed =
+        wait_until([&] { return read_status(o.status_path, st) && st.store_errors > 0; }, 20000);
+    if (kill) {
+      CHECK(wait_until(
+          [&] {
+            return read_status(o.status_path, st) &&
+                   st.kill_reason == static_cast<std::uint8_t>(KillReason::StoreFailure);
+          },
+          15000));
+    }
+    blocker.release();
+    CHECK(failed);
+  }
+  if (!kill) {
+    // Still trading: the store's errors are reported, not acted on.
+    const std::uint64_t accepted = fx.server.stats().orders_accepted;
+    CHECK(wait_until([&] { return fx.server.stats().orders_accepted > accepted; }, 10000));
+    CHECK(st.kill_reason == static_cast<std::uint8_t>(KillReason::None));
+    ::kill(::getpid(), SIGTERM);  // run_live's handler: the normal shutdown
+  }
+  session.join();
+  CHECK(rc == (kill ? live::kExitKilled : live::kExitOk));
+  REQUIRE(read_status(o.status_path, st));
+  CHECK(st.store_errors > 0);
+  if (kill) CHECK(st.kill_reason == static_cast<std::uint8_t>(KillReason::StoreFailure));
+}
+
+}  // namespace
+
+TEST_CASE("restart state: a failing store shows in the status file and trading goes on") {
+  failing_store(false);
+}
+
+TEST_CASE("restart state: with [storage] kill_on_failure a failing store trips the kill switch") {
+  failing_store(true);
 }

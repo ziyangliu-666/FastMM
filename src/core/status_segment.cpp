@@ -510,6 +510,13 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                    s.estimates_pending,
                    s.estimates_forgotten);
   }
+  if (s.store_enabled != 0 && (s.store_errors != 0 || s.store_dropped != 0)) {
+    fmt::format_to(std::back_inserter(out),
+                   "store      rows={} errors={} dropped={}\n",
+                   s.store_rows,
+                   s.store_errors,
+                   s.store_dropped);
+  }
   fmt::format_to(std::back_inserter(out),
                  "pnl        realized={} unrealized={} fees={} carried={} budget_used={}\n\n",
                  money(s.realized_pnl_raw),
@@ -1189,6 +1196,7 @@ std::string format_status_json(const StatusSnapshot& s) {
                  "\"orders_sent\": {}, \"cancels_sent\": {}, \"replaces_sent\": {}, \"fills\": {}, "
                  "\"risk_rejects\": {}, \"venue_rejects\": {}, \"balance_withheld\": {}, "
                  "\"estimates\": {{\"fills\": {}, \"pending\": {}, \"forgotten\": {}}}, "
+                 "\"store\": {{\"enabled\": {}, \"rows\": {}, \"errors\": {}, \"dropped\": {}}}, "
                  "\"kill_flags\": {}, "
                  "\"kill_reason\": \"{}\", \"kill_latched\": {}, \"pnl_carry_raw\": {}, "
                  "\"flatten_state\": \"{}\", \"flatten_instruments_left\": {}, "
@@ -1216,6 +1224,10 @@ std::string format_status_json(const StatusSnapshot& s) {
                  s.estimated_fills,
                  s.estimates_pending,
                  s.estimates_forgotten,
+                 s.store_enabled != 0,
+                 s.store_rows,
+                 s.store_errors,
+                 s.store_dropped,
                  s.kill_flags,
                  to_string(static_cast<KillReason>(s.kill_reason)),
                  s.kill_latched != 0,

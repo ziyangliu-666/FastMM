@@ -12,7 +12,7 @@
 
 The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The writer makes the counter odd, writes the snapshot, then makes it even again. A reader copies the snapshot when the counter is even and unchanged across the copy, and retries otherwise; it never blocks the writer.
 
-- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 22) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
+- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 23) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
 - The layout is internal ([Public API](public-api.md)); read it with `fastmm-top` from the same build.
 
 ## Snapshot fields
@@ -33,6 +33,8 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The 
 | `fills` | u64 | executions |
 | `risk_rejects`, `venue_rejects` | u64 | orders refused by the pre-trade checks, by a venue |
 | `estimated_fills`, `estimates_pending`, `estimates_forgotten` | u64 | fills booked from a cumulative quantity no fill message reported, at the order's price with no fee; the orders whose estimate no execution has named yet; estimates whose order the OMS forgot before one did, so that an execution replayed for it later is booked again ([Executions the private stream never delivered](venues.md#executions-the-private-stream-never-delivered)) |
+| `store_enabled` | u8 | 1 while a `[storage]` backend records the session (0: `backend = "none"`, a dry run, a warm standby before it takes over) |
+| `store_rows`, `store_errors`, `store_dropped` | u64 | rows the backend wrote, writes that failed, and records the engine dropped because the ring to the store was full. Either of the last two means a restart restores from an incomplete record ([Storage](storage.md#what-a-backend-guarantees)) |
 | `risk_reject_reasons`, `venue_reject_reasons` | 6 x {u64 count, u8 reason} | the most frequent `RejectReason`s, most frequent first; count 0 marks an unused entry |
 | `kills`, `kill_flags`, `venue_kills` | u64, u32, u32 | global kill switch trips, the current flag word, per-venue kill switch trips |
 | `kill_latched` | u8 | 1 while a `max_loss` trip is latched in `[engine] kill_file` |

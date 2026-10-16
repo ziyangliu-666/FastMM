@@ -18,7 +18,8 @@
 //     commit costs ring space, not engine latency, but a backend that blocks for seconds will
 //     overflow the ring and lose records.
 //   * Never throw across the interface, and never abort the process. A failure is counted in
-//     errors() and described by last_error(); the session keeps trading.
+//     errors() and described by last_error(); the session keeps trading unless [storage]
+//     kill_on_failure is set.
 //
 // Everything here runs off the engine thread and may allocate.
 #include "fastmm/config/config.hpp"
@@ -132,6 +133,7 @@ class Backend {
   [[nodiscard]] virtual Result<void, std::string> session_close(const SessionClose& s) = 0;
   virtual void close() = 0;
 
+  // Any thread: fastmm-live reads them for the status file while the store thread writes.
   [[nodiscard]] virtual std::uint64_t rows() const noexcept = 0;
   [[nodiscard]] virtual std::uint64_t errors() const noexcept = 0;
   [[nodiscard]] virtual std::string last_error() const = 0;

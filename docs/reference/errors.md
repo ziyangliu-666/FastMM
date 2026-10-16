@@ -140,6 +140,7 @@ The connectors map each venue's error codes onto these (`*_error_map.hpp` per ve
 | 12 | `DeadMansSwitchLost` | one venue | when it is the last venue | the venue refused the countdown refresh for a whole window |
 | 13 | `GatewayMaxLoss` | every venue | yes | the gateway's account: `[gateway] max_loss` over every strategy |
 | 14 | `GatewayOperator` | every venue | yes | an operator's `kill` on the gateway's control socket |
+| 15 | `StoreFailure` | global | yes | the store failed a write or dropped records, with `[storage] kill_on_failure = true`: the disk, the store file, `[storage] ring_bytes` |
 
 A running session's kill switch is cleared by `fastmm-ctl unkill` or SIGHUP; with `on_kill = "exit"` the process has already exited. A latched `max_loss` trip refuses the next start (exit 6) until `--clear-kill`. What each reason does to quoting and orders: [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md).
 

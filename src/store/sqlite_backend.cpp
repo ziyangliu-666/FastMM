@@ -9,6 +9,7 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -562,8 +563,12 @@ class SqliteBackend final : public Backend {
     }
   }
 
-  [[nodiscard]] std::uint64_t rows() const noexcept override { return rows_; }
-  [[nodiscard]] std::uint64_t errors() const noexcept override { return errors_; }
+  [[nodiscard]] std::uint64_t rows() const noexcept override {
+    return rows_.load(std::memory_order_relaxed);
+  }
+  [[nodiscard]] std::uint64_t errors() const noexcept override {
+    return errors_.load(std::memory_order_relaxed);
+  }
   [[nodiscard]] std::string last_error() const override { return last_error_; }
 
  private:
@@ -760,8 +765,8 @@ class SqliteBackend final : public Backend {
   }
 
   void note(std::string e) {
-    ++errors_;
-    if (errors_ == 1) FASTMM_LOG_ERROR("store: {}", std::string_view(e));
+    if (errors_.fetch_add(1, std::memory_order_relaxed) == 0)
+      FASTMM_LOG_ERROR("store: {}", std::string_view(e));
     last_error_ = std::move(e);
   }
 
@@ -912,8 +917,9 @@ class SqliteBackend final : public Backend {
   sqlite3* db_ = nullptr;
   std::string path_;
   bool in_batch_ = false;
-  std::uint64_t rows_ = 0;
-  std::uint64_t errors_ = 0;
+  // Read by the control thread for the status file while the store thread writes them.
+  std::atomic<std::uint64_t> rows_{0};
+  std::atomic<std::uint64_t> errors_{0};
   std::string last_error_;
   std::vector<std::string> symbols_;
   std::vector<std::string> ccy_;

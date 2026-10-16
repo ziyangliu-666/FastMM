@@ -100,6 +100,20 @@ TEST_CASE("core.status_prometheus: estimated fills, those still pending and thos
   CHECK(has(text, "fastmm_estimates_forgotten_total 1\n"));
 }
 
+TEST_CASE("core.status_prometheus: the store's rows, errors and dropped records") {
+  StatusSnapshot s = sample();
+  CHECK(has(format_status_prometheus(s, s.updated_ns), "fastmm_store_enabled 0\n"));
+  s.store_enabled = 1;
+  s.store_rows = 120;
+  s.store_errors = 1;
+  s.store_dropped = 3;
+  const std::string text = format_status_prometheus(s, s.updated_ns);
+  CHECK(has(text, "fastmm_store_enabled 1\n"));
+  CHECK(has(text, "fastmm_store_rows_total 120\n"));
+  CHECK(has(text, "fastmm_store_errors_total 1\n"));
+  CHECK(has(text, "fastmm_store_records_dropped_total 3\n"));
+}
+
 TEST_CASE("core.status_prometheus: an engine exports the max_loss it applies") {
   StatusSnapshot s = sample();
   s.max_loss_raw = 25'000'000'000;  // 250

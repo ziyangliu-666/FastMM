@@ -23,12 +23,14 @@ Prices, quantities and PnL are raw fixed-point `int64` (1e-8) in the columns who
 backend = "sqlite"        # "none" disables the store
 path = "runs/mm1.db"      # sqlite: default "<[engine] journal_dir>/<[engine] name>.db"
 ring_bytes = 4194304      # engine-to-store ring, a power of two (default 4194304)
+kill_on_failure = false   # trip the kill switch when a write fails or a record is dropped
 ```
 
 | Key | Backend | Meaning |
 |---|---|---|
 | `backend` | all | backend name, or `none` (default `sqlite`) |
 | `ring_bytes` | all | bytes of the ring the engine writes records into, a power of two (default 4194304) |
+| `kill_on_failure` | all | `fastmm-live`: trip the kill switch (`StoreFailure`) on every new failed write or dropped record (default false) |
 | `path` | sqlite | store file (default `<journal_dir>/<engine name>.db`) |
 
 `backend = "none"` allocates no ring and starts no thread, and the engine's `RecordWriter` is disabled. A backend that cannot be opened stops the session before it trades, with exit code 3.
@@ -58,7 +60,7 @@ Session metadata (`session_open`, `session_close`, the instrument table) is writ
 
 - Ordering: Records arrive on one thread in the order the engine made them; `seq` is strictly increasing within a session.
 - At most once: A record the ring dropped, or a batch the process died inside of, is gone. A backend must not invent one. Records carry keys (session id plus `seq`, and a venue exec id on a fill) so re-ingesting the same record is a no-op.
-- No back pressure: The store never signals the engine. A ring that fills drops records on the engine side and counts them in `EngineStats::records_dropped`; the count is logged at shutdown and stored in `sessions.records_dropped`. A backend that fails counts the error, logs the first one and keeps going. Neither stops trading: the journal is the authority for anything lost.
+- No back pressure: The store never signals the engine. A ring that fills drops records on the engine side and counts them in `EngineStats::records_dropped`; the count is logged at shutdown and stored in `sessions.records_dropped`. A backend that fails counts the error, logs the first one and keeps going. The journal is the authority for anything lost, but a restart restores positions from the store, so `fastmm-live` logs the first failure or drop as an ERROR, publishes the counts (`store_errors`, `store_dropped` in the [status file](status-file.md), `fastmm_store_errors_total` and `fastmm_store_records_dropped_total` in the metrics, alert `FastMMStoreFailing`), and with `kill_on_failure = true` trips the kill switch.
 - No exceptions across the interface and no `abort()`.
 
 `fastmm-live` logs the totals when a session ends:

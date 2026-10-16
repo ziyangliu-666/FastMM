@@ -42,6 +42,7 @@ While the session runs:
 | `clock_offset_ms` | well below `recv_window_ms` and `[risk] stale_md_ms` | it approaches either |
 | `reconnects`, `rest_errors`, `rate_limit_cooldowns` | flat | rising |
 | `fill_audit_missing`, `fill_audit_phantom`, `fill_audit_mismatched` | 0 | any: `fill audit` lines in the log name the executions |
+| `store` line | absent | present: the store failed writes or dropped records, and the next start restores from it. The first `store:` ERROR says why; `[storage] kill_on_failure = true` stops trading on it |
 | realised PnL and fees | fees below realised | fees exceed realised: the strategy is paying the venue ([Economics](../../explanation/economics.md)) |
 
 After each session:
@@ -74,6 +75,7 @@ The reason is in the log (`kill switch engaged (<reason>, flags=<hex>)`), in `fa
 | `StrategyError` | a Python hot hook raised, called `ctx.fail` or produced a non-finite value | reproduce it in a backtest from the session's journal |
 | `FeedLost` | a `nasdaq_itch` feed could not rebuild its books | check `glimpse_url`, the recovery buffer size and the line's packet loss ([Venue connectors](../../reference/venues.md#startup-and-recovery)) |
 | `GatewayMaxLoss`, `GatewayOperator` | `fastmm-gateway` tripped the account: `[gateway] max_loss`, or `fastmm-ctl --gateway <name> kill` | see [Run behind a gateway](run-behind-a-gateway.md) |
+| `StoreFailure` | the store failed a write or dropped records and `[storage] kill_on_failure = true` | the first `store:` ERROR names the SQLite error; check the disk and the store file. Dropped records: raise `[storage] ring_bytes`. The store now misses rows, so the next start restores from an incomplete record: compare its restored position with the venue's |
 
 After any of them, confirm the venue shows no open orders before starting anything again.
 

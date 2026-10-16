@@ -49,7 +49,8 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 //     what works there, the obstacle and since when, the strategy's note) and the strategy's
 //     metrics.
 // 22: estimated fills: booked, pending (no execution has named them yet), forgotten.
-inline constexpr std::uint32_t kStatusVersion = 22;
+// 23: the store: whether one runs, its rows, its errors and the records the engine dropped.
+inline constexpr std::uint32_t kStatusVersion = 23;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 inline constexpr std::size_t kStatusMaxUnderlyings = 8;    // kMaxUnderlyings
@@ -390,6 +391,16 @@ struct StatusSnapshot {
   std::uint64_t estimated_fills = 0;
   std::uint64_t estimates_pending = 0;
   std::uint64_t estimates_forgotten = 0;
+  // [storage]: store_enabled 1 when a backend records the session (0: backend = "none", a dry
+  // run, a warm standby before it takes over); the rows it wrote, the writes that failed
+  // (Backend::errors) and the records the engine dropped because the ring to it was full
+  // (records_dropped). A restart restores positions from the store: an error or a drop means it
+  // restores from an incomplete record.
+  std::uint8_t store_enabled = 0;
+  std::uint8_t pad4_[7] = {};
+  std::uint64_t store_rows = 0;
+  std::uint64_t store_errors = 0;
+  std::uint64_t store_dropped = 0;
   // The most frequent reasons, most frequent first; the totals above include reasons that did not
   // fit (set_status_rejects).
   StatusRejectCount risk_reject_reasons[kStatusMaxRejectReasons];

@@ -70,6 +70,12 @@ groups:
         annotations:
           summary: "{{ $labels.instance }}: clock {{ $value }} s off {{ $labels.venue }}'s: signed requests risk the recvWindow"
 
+      - alert: FastMMStoreFailing
+        expr: increase(fastmm_store_errors_total[5m]) > 0 or increase(fastmm_store_records_dropped_total[5m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.instance }}: the store failed to write or dropped records: a restart restores positions from an incomplete record"
+
       - alert: FastMMLossNearLimit
         expr: >
           fastmm_max_loss > 0 and
