@@ -43,7 +43,7 @@ min_qty = "0.00001"
 min_notional = "5"
 
 [strategy]
-name = "@NAME@"
+name = "strategy:@NAME_CLASS@"  # module:Class; run_backtest(cfg) imports it
 
 # The Param defaults of strategy.py; every key here has to be one of them.
 [strategy.params]
@@ -155,15 +155,63 @@ class @NAME_CLASS@(fastmm.Strategy):
             requote(self, ctx, book)
 '''
 
-LIVE_TOML = '''\
-# @NAME_CLASS@ on BTCUSDT on Binance Spot Demo Mode: real-time market data, demo balances, no real
-# money (docs: https://ziy.bio/FastMM/how-to/operations/run-on-testnet/).
+LIVE_HEADERS = {
+    "binance-demo": '''\
+# @NAME_CLASS@ on BTCUSDT on Binance Spot Demo Mode (fastmm init --venue binance-demo): realistic
+# market data in real time, demo balances, no real money
+# (docs: https://ziy.bio/FastMM/how-to/operations/run-on-testnet/).
 #   python -m fastmm run strategy:@NAME_CLASS@ --config live.toml --dry-run --duration 60s
 # --dry-run sends no orders and needs no keys. Orders need Demo Trading keys (API Key Management
-# after switching to Demo Trading on binance.com), not testnet or live keys:
+# after switching to Demo Trading on binance.com), not Spot testnet or live keys:
 #   export FASTMM_BINANCE_API_KEY=... FASTMM_BINANCE_API_SECRET=...
 #   python -m fastmm run strategy:@NAME_CLASS@ --config live.toml
+''',
+    "binance-testnet": '''\
+# @NAME_CLASS@ on BTCUSDT on the Binance Spot testnet at testnet.binance.vision
+# (fastmm init --venue binance-testnet): the testnet's own order book and test balances, no real
+# money. Its book is thin and its prices are not the real market's
+# (docs: https://ziy.bio/FastMM/how-to/operations/run-on-testnet/).
+#   python -m fastmm run strategy:@NAME_CLASS@ --config live.toml --dry-run --duration 60s
+# --dry-run sends no orders and needs no keys. Orders need Spot testnet keys (log in at
+# https://testnet.binance.vision and generate an HMAC key), not Demo Trading or live keys:
+#   export FASTMM_BINANCE_API_KEY=... FASTMM_BINANCE_API_SECRET=...
+#   python -m fastmm run strategy:@NAME_CLASS@ --config live.toml
+''',
+    "binance": '''\
+# @NAME_CLASS@ on BTCUSDT on Binance Spot itself (fastmm init --venue binance): the real market.
+#   python -m fastmm run strategy:@NAME_CLASS@ --config live.toml --dry-run --duration 1h
+# --dry-run sends no orders and needs no keys: it quotes on paper and records the real BTCUSDT
+# book and trades to runs/*.fmj, which python backtest.py --config live.toml --data <file> replays.
+# Without --dry-run the orders trade real money with live keys; read the go-live checklist first
+# (https://ziy.bio/FastMM/how-to/operations/go-live-checklist/).
+''',
+}
 
+# The endpoints of each venue and whether it is a test environment: `testnet` is true for any
+# environment without real money (the Spot testnet and Demo Mode alike), false for the real venue.
+LIVE_ENDPOINTS = {
+    "binance-demo": '''\
+ws_url = "wss://demo-stream.binance.com/stream"
+ws_api_url = "wss://demo-ws-api.binance.com/ws-api/v3"
+rest_url = "https://demo-api.binance.com"
+testnet = true               # a test environment, no real money: Demo Mode
+''',
+    "binance-testnet": '''\
+ws_url = "wss://stream.testnet.binance.vision/stream"
+ws_api_url = "wss://ws-api.testnet.binance.vision/ws-api/v3"
+rest_url = "https://testnet.binance.vision"
+testnet = true               # a test environment, no real money: the Spot testnet
+''',
+    "binance": '''\
+ws_url = "wss://stream.binance.com:9443/stream"
+ws_api_url = "wss://ws-api.binance.com:443/ws-api/v3"
+rest_url = "https://api.binance.com"
+testnet = false              # the real venue: orders trade real money
+''',
+}
+
+LIVE_TOML = '''\
+@LIVE_HEADER@
 [engine]
 name = "@NAME@"
 journal = true               # runs/*.fmj: python backtest.py --config live.toml --data <file>
@@ -177,15 +225,11 @@ supports_replace = true
 
 [venues.binance]
 kind = "binance_spot"
-ws_url = "wss://demo-stream.binance.com/stream"
-ws_api_url = "wss://demo-ws-api.binance.com/ws-api/v3"
-rest_url = "https://demo-api.binance.com"
-api_key = "${FASTMM_BINANCE_API_KEY}"
+@LIVE_ENDPOINTS@api_key = "${FASTMM_BINANCE_API_KEY}"
 api_secret = "${FASTMM_BINANCE_API_SECRET}"
-testnet = true
 supports_replace = true
 recv_window_ms = 3000
-stale_ms = 10000             # Demo Mode has quiet spells; 2 s would resync the book in them
+stale_ms = 10000             # the book has quiet spells; 2 s would resync it in them
 
 [venues.binance.fees]
 maker_bps = 10.0
@@ -204,7 +248,7 @@ min_qty = "0.00001"
 min_notional = "5"
 
 [strategy]
-name = "py:@NAME_CLASS@"
+name = "strategy:@NAME_CLASS@"
 
 # A 15 bps half spread keeps 5 bps a fill after the 10 bps maker fee, before adverse selection.
 # requote_ticks is in 0.01 USDT ticks: 100 is about 1.3 bps at 77,000 USDT.
@@ -256,7 +300,7 @@ ws_api_url = "ws://127.0.0.1:9080/ws-api/v3"
 rest_url = "http://127.0.0.1:9080"
 api_key = "sim-key"          # the simulator's built-in account
 api_secret = "sim-secret"
-testnet = true
+testnet = true               # a test environment with no real money
 supports_replace = true
 recv_window_ms = 3000
 
@@ -277,7 +321,7 @@ max_qty = "100"
 min_notional = "5"
 
 [strategy]
-name = "py:@NAME_CLASS@"
+name = "strategy:@NAME_CLASS@"
 
 # The simulator's touch sits about 5 bps from its mid at 60,000 USDT.
 [strategy.params]
@@ -365,6 +409,7 @@ key_type = "ed25519"
 private_key_env = "FASTMM_BINANCE_PRIVATE_KEY"
 md_format = "sbe"
 order_api = "ws"
+testnet = false              # the production venue: real money
 supports_replace = false
 recv_window_ms = 3000
 
@@ -397,7 +442,7 @@ min_qty = "0.00001"
 min_notional = "5"
 
 [strategy]
-name = "py:@NAME_CLASS@"
+name = "strategy:@NAME_CLASS@"
 
 [strategy.params]
 half_spread_bps = 15.0
@@ -505,7 +550,7 @@ README_MD = '''\
 
 A FastMM market maker: `strategy.py` quotes both sides around the mid and shifts the quotes against
 its inventory, `config.toml` describes the simulated market it trades, `backtest.py` runs it, and
-`live.toml` runs the same class on Binance Spot Demo Mode.
+`live.toml` runs the same class on @VENUE_TITLE@.
 
 In the virtual environment that has `fastmm-engine[hot]`:
 
@@ -556,8 +601,8 @@ python backtest.py --config live.toml --data runs/<journal>.fmj
 ```
 
 `--dry-run` takes public market data, sends no orders and needs no keys; the session's journal in
-`runs/` is market data the backtest replays. To send orders, create keys under Demo Trading's API
-Key Management on binance.com and run the same command without `--dry-run`:
+`runs/` is market data the backtest replays. To send orders, @VENUE_KEYS@ and run the same
+command without `--dry-run`:
 
 ```bash
 export FASTMM_BINANCE_API_KEY=... FASTMM_BINANCE_API_SECRET=...
@@ -598,29 +643,53 @@ def _class_name(name: str) -> str:
 PROFILES = ("starter", "production")
 
 
-def render(name: str, profile: str = "starter") -> dict[str, str]:
+# The venue live.toml trades (fastmm init --venue): the README's name for it and how to get keys.
+VENUES = {
+    "binance-demo": ("Binance Spot Demo Mode",
+                     "create keys under Demo Trading's API Key Management on binance.com"),
+    "binance-testnet": ("the Binance Spot testnet (testnet.binance.vision)",
+                        "log in at https://testnet.binance.vision, generate an HMAC key"),
+    "binance": ("Binance Spot itself, the real market (with `--dry-run`, keyless and on paper)",
+                "create live keys under API Management on binance.com (real money)"),
+}
+
+
+def file_names(profile: str = "starter") -> list[str]:
+    """The files `fastmm init` writes for `profile`, in the order it writes them."""
+    names = list(TEMPLATES)
+    return names + ["production.toml"] if profile == "production" else names
+
+
+def render(name: str, profile: str = "starter", venue: str = "binance-demo") -> dict[str, str]:
     """The project's files, keyed by relative path. The production profile adds production.toml
-    and a section of the README about it."""
+    and a section of the README about it; `venue` is the one live.toml trades (VENUES)."""
     if profile not in PROFILES:
         raise ValueError(f"unknown profile '{profile}' (one of {', '.join(PROFILES)})")
+    if venue not in VENUES:
+        raise ValueError(f"unknown venue '{venue}' (one of {', '.join(VENUES)})")
     templates = dict(TEMPLATES)
+    templates["live.toml"] = (LIVE_TOML.replace("@LIVE_HEADER@", LIVE_HEADERS[venue])
+                              .replace("@LIVE_ENDPOINTS@", LIVE_ENDPOINTS[venue]))
+    title, keys = VENUES[venue]
+    templates["README.md"] = README_MD.replace("@VENUE_TITLE@", title).replace("@VENUE_KEYS@", keys)
     if profile == "production":
         templates["production.toml"] = PRODUCTION_TOML
-        templates["README.md"] = README_MD + README_PRODUCTION_MD
+        templates["README.md"] += README_PRODUCTION_MD
     class_name = _class_name(name)
     return {path: text.replace("@NAME_CLASS@", class_name).replace("@NAME@", name)
             for path, text in templates.items()}
 
 
-def write_project(directory: os.PathLike, force: bool = False,
-                  profile: str = "starter") -> list[Path]:
-    """Write the project of `profile` into `directory`, which is created if it does not exist.
+def write_project(directory: os.PathLike, force: bool = False, profile: str = "starter",
+                  venue: str = "binance-demo") -> list[Path]:
+    """Write the project of `profile` into `directory`, which is created if it does not exist, with
+    live.toml for `venue`.
 
     Raises FileExistsError for a file that is already there unless `force`, and ValueError for an
-    unknown profile.
+    unknown profile or venue.
     """
     target = Path(directory)
-    files = render(_project_name(target), profile)
+    files = render(_project_name(target), profile, venue)
     if not force:
         existing = sorted(str(target / p) for p in files if (target / p).exists())
         if existing:

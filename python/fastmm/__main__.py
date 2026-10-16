@@ -1,6 +1,6 @@
 """The ``fastmm`` command, also reachable as ``python -m fastmm``.
 
-    fastmm init [directory] [--profile production]         a starter project (fastmm._scaffold)
+    fastmm init [directory] [--profile p] [--venue v]     a starter project (fastmm._scaffold)
     fastmm sim [fastmm-sim-exchange options]               the simulated exchange (live extra)
     fastmm report <run-dir | session.fmj> [-o out.html]     the HTML report of a run
     fastmm run module:Class --config file.toml [...]        fastmm.run_live from a shell
@@ -29,16 +29,25 @@ def _prog() -> str:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=_prog())
     commands = parser.add_subparsers(dest="command", required=True, metavar="command")
+    from ._scaffold import VENUES, file_names
+
     init = commands.add_parser(
-        "init", help="write a starter project: config, strategy and backtest",
-        description="Write config.toml, strategy.py, backtest.py and README.md into a directory. "
-                    "The project backtests a Python strategy on the simulated market and needs "
-                    "only this package and the hot extra.")
+        "init", help="write a starter project: configs, strategy and backtest",
+        description=f"Write {', '.join(file_names())} into a directory, and production.toml "
+                    "with --profile production. config.toml is the simulated market that "
+                    "backtest.py runs strategy.py on (this package and the hot extra are enough); "
+                    "sim.toml trades it against `fastmm sim`, live.toml on the --venue, both "
+                    "with the live extra.")
     init.add_argument("directory", nargs="?", default=".", help="where to write (default: .)")
     init.add_argument("--force", action="store_true", help="overwrite files that exist")
     init.add_argument("--profile", choices=("starter", "production"), default="starter",
                       help="production also writes production.toml: a Binance Spot account on "
                            "a dedicated host (busy spin, pinned cores, Ed25519, SBE)")
+    init.add_argument("--venue", choices=tuple(VENUES), default="binance-demo",
+                      help="what live.toml trades: binance-demo is Binance Spot Demo Mode "
+                           "(Demo Trading keys), binance-testnet the Spot testnet at "
+                           "testnet.binance.vision (its own keys), binance the real market "
+                           "(--dry-run records it without keys); default binance-demo")
     from . import report as report_command
 
     report_command.add_arguments(commands.add_parser(
@@ -85,11 +94,12 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _init(directory: str, force: bool, profile: str = "starter") -> int:
+def _init(directory: str, force: bool, profile: str = "starter",
+          venue: str = "binance-demo") -> int:
     from ._scaffold import write_project
 
     try:
-        written = write_project(directory, force=force, profile=profile)
+        written = write_project(directory, force=force, profile=profile, venue=venue)
     except (FileExistsError, OSError) as e:
         print(f"fastmm init: {e}", file=sys.stderr)
         return 2
@@ -136,7 +146,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = _parser()
     args = parser.parse_args(args_list)
     if args.command == "init":
-        return _init(args.directory, args.force, args.profile)
+        return _init(args.directory, args.force, args.profile, args.venue)
     if args.command == "report":
         from .report import run_command
 

@@ -13,6 +13,9 @@ All notable changes are recorded here (Keep a Changelog format).
   hooks) and run its points in forked worker processes; `BacktestResult` pickles.
 - python: `run_backtest`, `sweep` and `walk_forward` import a `module:Class` strategy name, given
   as `strategy=` or as `[strategy] name`.
+- python: `fastmm init --venue` writes `live.toml` for Binance Spot Demo Mode (`binance-demo`, the
+  default), the Spot testnet at testnet.binance.vision (`binance-testnet`) or the real market
+  (`binance`, recorded keyless with `--dry-run`).
 
 ### Fixed
 - core: an execution replay naming more than 64 estimated fills no longer books the oldest twice.
@@ -29,6 +32,10 @@ All notable changes are recorded here (Keep a Changelog format).
 - store: `fastmm-pnl pnl` counts each execution once: an estimate an execution named, a repeat.
 - store: fills, positions and the day roll-up carry the account's name (`account`, schema 10).
 - core: the `[risk]` and `[gateway]` exposure caps check an order past zero (long 1, sell 100).
+- python: `fastmm init` names the strategy `strategy:Class` in every config, which resolves;
+  config.toml named the project. `fastmm init --help` lists every file it writes.
+- python: the scaffold's `testnet` says what its venue is: true for Demo Mode, the testnet and the
+  local simulator, false for the real market (`production.toml` left the default, true).
 
 ## [0.6.0] - 2026-10-13
 
