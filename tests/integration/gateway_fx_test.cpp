@@ -127,8 +127,9 @@ TEST_CASE(
   // once the strategies stopped).
   const auto refused = [&] {
     const std::string text = fastmm::test::read_file(g.log);
-    const std::size_t at = text.rfind("gross_notional=");
-    return at == std::string::npos ? 0L : std::strtol(text.c_str() + at + 15, nullptr, 10);
+    // " gross_notional=": the start-up line's max_gross_notional=100000 would read as refusals.
+    const std::size_t at = text.rfind(" gross_notional=");
+    return at == std::string::npos ? 0L : std::strtol(text.c_str() + at + 16, nullptr, 10);
   };
   CHECK_MESSAGE(wait_until([&] { return refused() >= 2; }, 30000),
                 "b: " << fastmm::test::read_file(c.b.config + ".log"));

@@ -145,8 +145,8 @@ struct Harness {
                            : net::HttpServerResponse::text(status, body);
     });
     srv.route("GET", "/api/v3/account", [this](const net::HttpRequest& r) {
+      srv.record("account", std::string(r.query));  // before the count the test waits on
       ++account_requests;
-      srv.record("account", std::string(r.query));
       if (account_fails.load())
         return net::HttpServerResponse::json(500, R"({"code":-1001,"msg":"Internal error."})");
       return net::HttpServerResponse::json(200, account_rest);
