@@ -13,6 +13,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -826,6 +827,7 @@ class SqliteReader final : public Reader {
     rec.strategy = text(st, 3);
     rec.kill_reason = text(st, 4);
     rec.kill_latched = sqlite3_column_int(st, 5) != 0;
+    rec.max_loss_tripped = rec.kill_latched && rec.kill_reason == "MaxLoss";
     rec.clean_shutdown = sqlite3_column_int(st, 6) != 0;
     rec.exit_code = sqlite3_column_int(st, 7);
     const std::int64_t realized = sqlite3_column_int64(st, 8);
@@ -843,6 +845,16 @@ class SqliteReader final : public Reader {
     const std::string engine = text(st, 15);
     const std::int64_t started_ns = sqlite3_column_int64(st, 16);
     sqlite3_finalize(st);
+    if (rec.stopped_utc.empty()) {
+      // Killed before it recorded a shutdown: its kill events say whether max_loss tripped.
+      std::vector<std::string> trips;
+      collect(trips,
+              "SELECT reason FROM kill_events WHERE session_id = ? AND scope = 'global' AND"
+              " reason = 'MaxLoss' LIMIT 1",
+              rec.session_id,
+              [](sqlite3_stmt* s) { return text(s, 0); });
+      rec.max_loss_tripped = !trips.empty();
+    }
 
     QueryFilter one;
     one.session_id = rec.session_id;
@@ -902,8 +914,19 @@ class SqliteReader final : public Reader {
     mine.engine = engine;
     if (auto dup = duplicates(mine); dup) {
       rec.duplicate_count = dup->rows.size();
+      const std::string newest = std::to_string(rec.session_id);
       for (const std::vector<std::string>& row : dup->rows) {
-        if (rec.duplicates.size() == Recovery::kMaxDuplicates) break;
+        if (row[0] == "fill" && names_session(row[9], newest)) {
+          auto it =
+              std::find_if(rec.double_booked.begin(), rec.double_booked.end(), [&](const auto& d) {
+                return d.venue == row[2] && d.symbol == row[3];
+              });
+          if (it == rec.double_booked.end())
+            it = rec.double_booked.insert(rec.double_booked.end(),
+                                          Recovery::DoubleBooked{row[2], row[3], 0});
+          ++it->executions;
+        }
+        if (rec.duplicates.size() == Recovery::kMaxDuplicates) continue;
         Recovery::Duplicate d;
         d.funding = row[0] == "funding";
         d.venue = row[2];
@@ -920,6 +943,17 @@ class SqliteReader final : public Reader {
   }
 
  private:
+  // `sessions` (space separated ids, duplicates()) names `id`.
+  static bool names_session(std::string_view sessions, std::string_view id) {
+    while (!sessions.empty()) {
+      const std::size_t sp = sessions.find(' ');
+      if (sessions.substr(0, sp) == id) return true;
+      if (sp == std::string_view::npos) break;
+      sessions.remove_prefix(sp + 1);
+    }
+    return false;
+  }
+
   // How far a session's engine clock may be off the one before it (a host clock step).
   static constexpr std::int64_t kClockSlackNs = 60'000'000'000;
 

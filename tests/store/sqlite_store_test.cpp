@@ -184,6 +184,7 @@ TEST_CASE("store.sqlite: a session round trips through fills, orders, positions 
     CHECK(r->session_id == 42);
     CHECK(r->kill_latched);
     CHECK(r->kill_reason == "MaxLoss");
+    CHECK(r->max_loss_tripped);
     CHECK(r->clean_shutdown);
     CHECK(r->realized == "1.5");
     CHECK(r->net == "1.49997");

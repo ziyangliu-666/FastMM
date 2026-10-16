@@ -699,6 +699,11 @@ TEST_CASE("store.resume: an execution stored by two sessions is reported as a du
   CHECK(of("2966124873")->copies == 2);
   REQUIRE(of("2966124877") != nullptr);
   CHECK(of("2966124877")->sessions == "6 8");
+  // Session 8, the newest, stored copies of two of them: its position counts both again.
+  REQUIRE(r.double_booked.size() == 1);
+  CHECK(r.double_booked[0].venue == "bybit");
+  CHECK(r.double_booked[0].symbol == "ETHUSDT");
+  CHECK(r.double_booked[0].executions == 2);
   // Reading changed nothing.
   CHECK(scalar(path, "SELECT COUNT(*) FROM fills") == rows);
   // And each id is listed once for the next replay.
@@ -943,4 +948,71 @@ TEST_CASE("store.order_timeline: sent, refused, filled and its last state, in ti
   auto none = reader->order_timeline(f);
   REQUIRE(none);
   CHECK(none->empty());
+}
+
+// A duplicate only earlier sessions hold is not the newest session's: a session started after it
+// (the venue's report replaced the position, or the operator accepted it) carries no new copy.
+TEST_CASE("store.resume: a duplicate of earlier sessions is not booked twice by the newest") {
+  const std::string path = fresh("resume_double_booked_old.db");
+  const std::int64_t minute = 60'000 * kMs;
+  {
+    Writer w(path, 5, kDay1Ns);
+    w.fill(1, kT1, "77");
+  }
+  {
+    Writer w(path, 6, kDay1Ns + minute);
+    w.fill(1, kT1, "77");
+  }
+  {
+    Writer w(path, 7, kDay1Ns + 2 * minute);
+    w.fill(0, kT0, "78");
+  }
+  const Recovery r = recover(path);
+  CHECK(r.duplicate_count == 1);
+  CHECK(r.double_booked.empty());
+}
+
+// The kill a restart refuses on when the kill file is gone: a latched trip at shutdown, or a
+// MaxLoss among the kill events of a session that never recorded one.
+TEST_CASE("store.resume: the newest session's max-loss trip is reported with or without a close") {
+  const std::int64_t minute = 60'000 * kMs;
+  SUBCASE("killed after the trip") {
+    const std::string path = fresh("resume_maxloss_crash.db");
+    {
+      Writer w(path, 5, kDay1Ns);
+      w.backend->kill(fastmm::test::store_kill(5, ++w.seq, kDay1Ns + 1, KillReason::MaxLoss));
+    }
+    CHECK(recover(path).max_loss_tripped);
+  }
+  SUBCASE("a trip on one venue is not a max-loss trip") {
+    const std::string path = fresh("resume_maxloss_venue.db");
+    {
+      Writer w(path, 5, kDay1Ns);
+      KillRecord k = fastmm::test::store_kill(5, ++w.seq, kDay1Ns + 1, KillReason::VenueFatal);
+      k.hdr.flags |= RecordHeader::kVenue;
+      w.backend->kill(k);
+    }
+    CHECK_FALSE(recover(path).max_loss_tripped);
+  }
+  SUBCASE("a clean shutdown after an operator cleared the trip") {
+    const std::string path = fresh("resume_maxloss_cleared.db");
+    {
+      Writer w(path, 5, kDay1Ns);
+      w.backend->kill(fastmm::test::store_kill(5, ++w.seq, kDay1Ns + 1, KillReason::MaxLoss));
+      w.close_cleanly();
+    }
+    CHECK_FALSE(recover(path).max_loss_tripped);
+  }
+  SUBCASE("only the newest session counts") {
+    const std::string path = fresh("resume_maxloss_older.db");
+    {
+      Writer w(path, 5, kDay1Ns);
+      w.backend->kill(fastmm::test::store_kill(5, ++w.seq, kDay1Ns + 1, KillReason::MaxLoss));
+    }
+    {
+      Writer w(path, 6, kDay1Ns + minute);
+      w.close_cleanly();
+    }
+    CHECK_FALSE(recover(path).max_loss_tripped);
+  }
 }

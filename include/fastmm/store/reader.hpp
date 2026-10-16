@@ -58,6 +58,10 @@ struct Recovery {
   std::string strategy;
   std::string kill_reason;
   bool kill_latched = false;
+  // The newest session ended on a max-loss trip: it shut down with the trip latched, or it never
+  // recorded a shutdown and its kill events hold a global MaxLoss. fastmm-live refuses to start on
+  // it when [engine] kill_file is missing.
+  bool max_loss_tripped = false;
   bool clean_shutdown = false;
   int exit_code = 0;
   std::string realized;  // decimal, settlement currency
@@ -196,6 +200,15 @@ struct Recovery {
   static constexpr std::size_t kMaxDuplicates = 32;
   std::vector<Duplicate> duplicates;
   std::uint64_t duplicate_count = 0;
+  // The executions the newest session stored a copy of though the store already held one (or
+  // stored twice itself), per venue and symbol: that session's last position (position_state)
+  // counts them more than once. Funding is left out: it moves the PnL, not the position.
+  struct DoubleBooked {
+    std::string venue;  // its [venues.<name>]; "#<id>" when the store predates schema 3
+    std::string symbol;
+    std::uint64_t executions = 0;
+  };
+  std::vector<DoubleBooked> double_booked;
 };
 
 class Reader {
