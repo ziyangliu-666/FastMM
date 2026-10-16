@@ -72,6 +72,8 @@ Impl::Impl(SimServerConfig c)
   }
   start_mono_ns_ = net::Reactor::now_ns();
   start_epoch_ns_ = cfg_.start_time_ms > 0 ? cfg_.start_time_ms * kNsPerMs : wall_now().ns;
+  if (cfg_.start_time_ms <= 0)
+    trade_id_base_ = static_cast<std::uint64_t>(start_epoch_ns_ / kNsPerMs) * 1000U;
   clock_offset_ms_ = cfg_.clock_offset_ms;
   faults_.delay_ack_ms = cfg_.faults.delay_ack_ms;
   faults_.reject_next = cfg_.faults.reject_next_orders;

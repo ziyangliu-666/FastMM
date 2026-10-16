@@ -267,8 +267,14 @@ void Impl::on_trade(
   if (id.value >= symbols_.size()) return;
   const std::int64_t ms = server_ms();
   std::string data;
-  append_trade(
-      data, ms, symbols_[id.value].cfg.symbol, trade_id, px, qty, ms, aggressor == Side::Sell);
+  append_trade(data,
+               ms,
+               symbols_[id.value].cfg.symbol,
+               trade_id_base_ + trade_id,
+               px,
+               qty,
+               ms,
+               aggressor == Side::Sell);
   publish_md(id.value, StreamKind::Trade, data);
 }
 
@@ -326,7 +332,8 @@ void Impl::on_cancel(const SimOrder& o, CancelReason why, Timestamp) {
 }
 
 void Impl::on_fill(const SimOrder& maker, const SimOrder& taker, Price px, Qty qty, Timestamp) {
-  const std::uint64_t trade_id = ++trade_seq_;  // == the engine's trade id for this match
+  // The engine's trade id for this match, as the public trade stream shows it.
+  const std::uint64_t trade_id = trade_id_base_ + ++trade_seq_;
   if (maker.account != kGeneratorAccount) apply_fill(maker, px, qty, true, trade_id);
   if (taker.account != kGeneratorAccount) apply_fill(taker, px, qty, false, trade_id);
 }

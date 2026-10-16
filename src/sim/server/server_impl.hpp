@@ -390,6 +390,9 @@ struct SimExchangeServer::Impl final : public net::WsSessionHandler, public Matc
   std::int64_t next_order_id_ = 1;
   std::uint64_t next_internal_ = 1;
   std::uint64_t trade_seq_ = 0;
+  // Added to every trade id: the start's wall-clock ms x 1000, so a restarted simulator does not
+  // reuse the ids a kept store already holds; 0 with a fixed start_time_ms.
+  std::uint64_t trade_id_base_ = 0;
   std::int64_t next_execution_id_ = 1;
   std::uint64_t next_generated_id_ = 1;
   std::uint64_t next_fault_order_ = 1;  // counter-orders of fill_open_order()

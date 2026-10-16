@@ -48,6 +48,8 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: `flatten` works the position off while the global kill switch is set.
 
 ### Fixed
+- sim: `fastmm-sim-exchange` numbers trades from its start time, so a restart does not repeat the
+  trade ids a kept store holds (a fixed `start_time_ms` keeps them from 1).
 - core: an execution replay naming more than 64 estimated fills no longer books the oldest twice.
 - core: executions after a replace (old leg, or amended to a new id) correct the earlier estimate.
 - docs: the reference backtest outputs (economics, backtesting, tutorial step 7) are this build's;
