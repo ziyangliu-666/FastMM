@@ -62,6 +62,9 @@ namespace fastmm::live {
 
 namespace {
 
+// The shutdown's venue cancel-all waits this long at most for the engine to take the kill switch.
+constexpr std::int64_t kKillTakenWaitNs = 2'000'000'000;
+
 volatile std::sig_atomic_t g_signal = 0;
 volatile std::sig_atomic_t g_hup = 0;  // SIGHUP: clear the kill switch and resume quoting
 std::atomic<std::int64_t> g_first_signal_ns{0};
@@ -2572,6 +2575,17 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
         "fastmm-live: no venue cancel_all: this standby never took over, and the orders on the "
         "account are another session's");
   } else if (!opts.dry_run) {
+    // The cancel-all sweeps what rests at the venue when it arrives, and the engine quotes until
+    // it reads the kill switch: an order it sent after the sweep stayed open after the session
+    // (integration.handoff, a stop 45 ms after the standby took over, its engine 150 ms behind on
+    // a loaded machine). The sweep waits for the engine to have taken the switch; from then on it
+    // sends nothing new, and an order still in flight is cancelled on its ack (the quotes are
+    // pulled). Bounded: an engine that does not answer does not hold the shutdown.
+    const std::int64_t until = steady_now().ns + kKillTakenWaitNs;
+    while ((runner->live_stats().kill_flags & 1U) == 0 && steady_now().ns < until) {
+      feed.notify();
+      sleep_for(milliseconds(1));
+    }
     for (std::size_t i = 0; i < slots.size(); ++i) {
       if (cfg.venues[i].public_only) continue;  // market data only: nothing to cancel
       cancel_ok = slots[i]->venue->cancel_all() && cancel_ok;

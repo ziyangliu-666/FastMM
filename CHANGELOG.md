@@ -58,6 +58,8 @@ All notable changes are recorded here (Keep a Changelog format).
   docs' examples need.
 - docs: one table maps the metric and column names of `stats()`, `summary.json`, the CSV files,
   the numpy columns and `to_pandas()`.
+- live: a stop's venue cancel-all waits for the engine to take the kill switch; it left open an
+  order the engine sent after it.
 
 ## [0.6.0] - 2026-10-13
 
