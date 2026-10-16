@@ -151,15 +151,15 @@ The event-time range of `data` is cut into `folds` equal consecutive slices and 
 ```text
 walk-forward: 4 folds, 8 points, metric net_pnl, chosen on the previous fold
 fold               time_s  chosen     in_sample  out_of_sample    best     hindsight
-   0         0.000-60.000       -             -              -      #1      0.016073
-   1       60.000-120.000      #1      0.016073       0.139701      #2      0.184945
-   2      120.000-180.000      #2      0.184945       0.163094      #2      0.163094
-   3      180.000-240.000      #2      0.163094      0.0297004      #2     0.0297004
+   0         0.000-60.000       -             -              -      #1     0.0130904
+   1       60.000-120.000      #1     0.0130904       0.150667      #2      0.197885
+   2      120.000-180.000      #2      0.197885       0.173777      #2      0.173777
+   3      180.000-240.000      #2      0.173777      0.0302026      #1     0.0317501
   #1  half_spread_bps=0.005 skew_bps_per_unit=0.01
   #2  half_spread_bps=0.01 skew_bps_per_unit=0.0
-mean in-sample best   0.121371
-mean out-of-sample    0.110832
-mean hindsight best   0.125913
+mean in-sample best   0.128251
+mean out-of-sample    0.118216
+mean hindsight best   0.134471
 choice changes        1 of 2
 ```
 
