@@ -50,18 +50,29 @@ struct OwnQuantity::Index {
     std::uint32_t inst_side = 0;  // inst << 1 | side
     std::uint32_t level = 0;      // 1 + index into `first`, 0: empty
   };
-  [[nodiscard]] static std::uint64_t hash(std::uint32_t inst_side, std::int64_t px) noexcept {
+  [[nodiscard]] static std::uint64_t mix(std::uint32_t inst_side, std::int64_t px) noexcept {
     std::uint64_t x = static_cast<std::uint64_t>(px) * 0x9E37'79B9'7F4A'7C15ULL;
     x ^= static_cast<std::uint64_t>(inst_side) + 0x632B'E59B'D9B4'E019ULL + (x << 6U);
-    x ^= x >> 29U;
-    return x * 0xBF58'476D'1CE4'E5B9ULL >> 32U;
+    return x ^ (x >> 29U);
+  }
+  [[nodiscard]] static std::uint64_t hash(std::uint32_t inst_side, std::int64_t px) noexcept {
+    return mix(inst_side, px) * 0xBF58'476D'1CE4'E5B9ULL >> 32U;
+  }
+  // A bit per (level hash mod the filter's size): a level we never quoted, nearly every lookup,
+  // is told apart in one load from a bit array that stays in cache.
+  [[nodiscard]] std::size_t filter_bit(std::uint32_t inst_side, std::int64_t px) const noexcept {
+    return static_cast<std::size_t>(mix(inst_side, px) * 0x94D0'49BB'1331'11EBULL >> filter_shift);
+  }
+  [[nodiscard]] bool maybe(std::uint32_t is, std::int64_t px) const noexcept {
+    const std::size_t b = filter_bit(is, px);
+    return ((filter[b / 64] >> (b % 64)) & 1U) != 0;
   }
   [[nodiscard]] static std::uint32_t inst_side(std::uint32_t inst, Side side) noexcept {
     return inst << 1U | static_cast<std::uint32_t>(side);
   }
   // The level's index, or -1.
   [[nodiscard]] std::int64_t find(std::uint32_t is, std::int64_t px) const noexcept {
-    if (table.empty()) return -1;
+    if (table.empty() || !maybe(is, px)) return -1;
     for (std::size_t i = hash(is, px) & mask;; i = (i + 1) & mask) {
       const Entry& e = table[i];
       if (e.level == 0) return -1;
@@ -70,6 +81,8 @@ struct OwnQuantity::Index {
   }
   std::vector<Entry> table;
   std::size_t mask = 0;
+  std::vector<std::uint64_t> filter;
+  unsigned filter_shift = 64;
   std::vector<std::uint32_t> first;  // per level, its segments [first[l], first[l + 1])
   std::vector<std::int64_t> starts;  // sorted by start within a level
   std::vector<std::int64_t> ends;    // running maximum of the segments' ends
@@ -461,11 +474,17 @@ void OwnQuantity::index() {
   while (cap < levels.size() * 4) cap *= 2;
   x.table.assign(cap, Index::Entry{});
   x.mask = cap - 1;
+  unsigned fk = 12;  // 2^fk filter bits, 16 or more per level
+  while (fk < 26 && (std::size_t{1} << fk) < levels.size() * 16) ++fk;
+  x.filter.assign((std::size_t{1} << fk) / 64, 0);
+  x.filter_shift = 64 - fk;
   x.first.reserve(levels.size() + 1);
   for (std::size_t l = 0; l < levels.size(); ++l) {
     std::size_t i = Index::hash(keys[l].inst_side, keys[l].px) & x.mask;
     while (x.table[i].level != 0) i = (i + 1) & x.mask;
     x.table[i] = Index::Entry{keys[l].px, keys[l].inst_side, static_cast<std::uint32_t>(l + 1)};
+    const std::size_t fb = x.filter_bit(keys[l].inst_side, keys[l].px);
+    x.filter[fb / 64] |= 1ULL << (fb % 64);
     std::vector<const Segment*>& segs = levels[l];
     std::stable_sort(segs.begin(), segs.end(), [](const Segment* a, const Segment* b) {
       return a->start < b->start;
