@@ -46,6 +46,12 @@ class L2Book {
   // Sets/updates/deletes (qty == 0) one level. Returns false if the level was dropped
   // because the side is full and the price is worse than everything stored.
   FASTMM_FORCE_INLINE bool apply_level(Side side, Price price, Qty qty) noexcept {
+    Qty old;
+    return apply_level(side, price, qty, old);
+  }
+  // The same; `old` is the quantity the level had (zero when absent).
+  FASTMM_FORCE_INLINE bool apply_level(Side side, Price price, Qty qty, Qty& old) noexcept {
+    old = Qty{};
     auto& v = levels(side);
     // Position such that v[i].price is the first level at-or-better than `price` when
     // scanning from the worst (front) - i.e. lower_bound in "goodness" order.
@@ -79,6 +85,7 @@ class L2Book {
       found = i < v.size() && v[i].price == price;
     }
     if (found) {
+      old = v[i].qty;
       if (qty.is_zero()) {
         v.erase_at(i);
       } else {

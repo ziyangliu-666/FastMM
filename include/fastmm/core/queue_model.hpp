@@ -442,9 +442,9 @@ inline void queue_apply_book(L2Book<256>& book,
     const Timestamp since = book.last_update();
     for (Side s : {Side::Buy, Side::Sell}) {
       for (const Level& l : (s == Side::Buy ? d.bids() : d.asks())) {
-        Qty old = level_qty(book, s, l.price);
+        Qty old;
+        book.apply_level(s, l.price, l.qty, old);
         if (tape != nullptr && tape->size() != 0) old = tape->after(s, l.price, old, since);
-        book.apply_level(s, l.price, l.qty);
         for (QueuePositionModel* q : models) q->on_level_change(id, s, l.price, old, l.qty);
       }
     }
