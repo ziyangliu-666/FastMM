@@ -41,6 +41,7 @@
 // the same function, so both see a journal's book the same way.
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/config_macros.hpp"
+#include "fastmm/core/containers/bucket_bits.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/containers/pool.hpp"
 #include "fastmm/core/enums.hpp"
@@ -246,9 +247,7 @@ class QueuePositionModel {
       : conservatism_bps_(conservatism_bps < 0        ? 0
                           : conservatism_bps > 10'000 ? 10'000
                                                       : conservatism_bps),
-        print_order_(std::make_unique<Handle32[]>(kMaxQueuedOrders)),
-        inst_bits_(std::make_unique<std::uint64_t[]>(kInstBuckets * kWords)),
-        inst_words_(std::make_unique<std::uint64_t[]>(kInstBuckets)) {}
+        print_order_(std::make_unique<Handle32[]>(kMaxQueuedOrders)) {}
   QueuePositionModel(const QueuePositionModel&) = delete;
   QueuePositionModel& operator=(const QueuePositionModel&) = delete;
 
@@ -281,7 +280,7 @@ class QueuePositionModel {
     o.instrument = inst;
     o.side = side;
     by_id_.insert(id, h);
-    mark(inst, h.idx);
+    by_inst_.set(InstBits::bucket(inst.value), h.idx);
     return h;
   }
   [[nodiscard]] Handle32 find(ClientOrderId id) const noexcept {
@@ -293,7 +292,7 @@ class QueuePositionModel {
   [[nodiscard]] bool is_live(Handle32 h) const noexcept { return pool_.is_live(h); }
   void remove(Handle32 h) noexcept {
     const QueuedOrder& o = pool_.get(h);
-    unmark(o.instrument, h.idx);
+    by_inst_.clear(InstBits::bucket(o.instrument.value), h.idx);
     by_id_.erase(o.cl_ord_id);
     pool_.free(h);
   }
@@ -382,23 +381,6 @@ class QueuePositionModel {
   }
 
  private:
-  static constexpr std::size_t kWords = (kMaxQueuedOrders + 63) / 64;
-  static_assert(kWords <= 64, "one summary word per instrument bucket");
-  static constexpr std::size_t kInstBuckets = 256;  // power of two
-  [[nodiscard]] static std::size_t bucket(InstrumentId inst) noexcept {
-    return inst.value & (kInstBuckets - 1);
-  }
-  void mark(InstrumentId inst, std::uint32_t idx) noexcept {
-    const std::size_t b = bucket(inst);
-    inst_bits_[b * kWords + idx / 64] |= 1ULL << (idx % 64);
-    inst_words_[b] |= 1ULL << (idx / 64);
-  }
-  void unmark(InstrumentId inst, std::uint32_t idx) noexcept {
-    const std::size_t b = bucket(inst);
-    std::uint64_t& w = inst_bits_[b * kWords + idx / 64];
-    w &= ~(1ULL << (idx % 64));
-    if (w == 0) inst_words_[b] &= ~(1ULL << (idx / 64));
-  }
   // The live orders on `inst` in ascending handle order; F may remove the order it visits.
   template <class F>
   void for_each_mut(InstrumentId inst, F&& f) noexcept {
@@ -406,27 +388,16 @@ class QueuePositionModel {
   }
   template <class Self, class F>
   static void visit(Self& self, InstrumentId inst, F& f) noexcept {
-    const std::size_t b = bucket(inst);
-    const std::uint64_t* const bits = &self.inst_bits_[b * kWords];
-    std::uint64_t words = self.inst_words_[b];
-    while (words != 0) {
-      const auto w = static_cast<std::uint32_t>(__builtin_ctzll(words));
-      words &= words - 1;
-      std::uint64_t m = bits[w];
-      while (m != 0) {
-        const auto idx = (w * 64) + static_cast<std::uint32_t>(__builtin_ctzll(m));
-        m &= m - 1;
-        auto& o = self.pool_.get(Handle32{idx});
-        if (o.instrument == inst) f(Handle32{idx}, o);
-      }
-    }
+    self.by_inst_.for_each(InstBits::bucket(inst.value), [&](std::uint32_t idx) {
+      auto& o = self.pool_.get(Handle32{idx});
+      if (o.instrument == inst) f(Handle32{idx}, o);
+    });
   }
 
   std::int64_t conservatism_bps_;
   std::unique_ptr<Handle32[]> print_order_;  // on_trade's orders in price priority
-  // Per instrument bucket: a bit per order handle, and a bit per non-zero word of those.
-  std::unique_ptr<std::uint64_t[]> inst_bits_;
-  std::unique_ptr<std::uint64_t[]> inst_words_;
+  using InstBits = BucketBits<kMaxQueuedOrders, 256>;
+  InstBits by_inst_;  // the orders of each instrument (of instruments equal mod 256)
   Pool<QueuedOrder, kMaxQueuedOrders> pool_;
   OpenHashMap<ClientOrderId, Handle32, kMaxQueuedOrders * 2> by_id_;
 };

@@ -36,6 +36,7 @@
 // the snapshot was requested (above the Begin's sent watermark) are not marked cancelled.
 #include "fastmm/core/book/book_view.hpp"
 #include "fastmm/core/config_macros.hpp"
+#include "fastmm/core/containers/bucket_bits.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/containers/pool.hpp"
 #include "fastmm/core/containers/recent_map.hpp"
@@ -202,6 +203,7 @@ class Oms {
     }
     live_pos_[h.idx] = static_cast<std::uint32_t>(live_.size());
     static_cast<void>(live_.push_back(h.idx));  // cannot fail: one entry per pool slot
+    by_inst_.set(InstBits::bucket(req.instrument.value), h.idx);
     Order& o = pool_.get(h);
     o = Order{};
     o.cl_ord_id = id;
@@ -624,8 +626,9 @@ class Oms {
   }
   template <class F>
   void for_each_open_order(InstrumentId id, F&& f) const noexcept {
-    pool_.for_each([&](Handle<Order> h, const Order& o) {
-      if (o.instrument == id) f(h, o);
+    by_inst_.for_each(InstBits::bucket(id.value), [&](std::uint32_t idx) {
+      const Order& o = pool_.get(Handle<Order>{idx});
+      if (o.instrument == id) f(Handle<Order>{idx}, o);
     });
   }
   void warm_up() noexcept { pool_.warm_up(); }
@@ -880,6 +883,7 @@ class Oms {
     live_[pos] = last;
     live_pos_[last] = pos;
     live_.pop_back();
+    by_inst_.clear(InstBits::bucket(inst.value), h.idx);
     pool_.free(h);
     if (px == best_own_[inst.value][s]) recompute_best_own(inst, side);
   }
@@ -916,6 +920,9 @@ class Oms {
   // keeps the pool's slot order.
   StaticVector<std::uint32_t, kMaxOpenOrders> live_;
   std::uint32_t live_pos_[kMaxOpenOrders] = {};
+  // The pool slots of each instrument's live orders, for for_each_open_order(id) in slot order.
+  using InstBits = BucketBits<kMaxOpenOrders, kMaxInstruments>;
+  InstBits by_inst_;
   OpenHashMap<ClientOrderId, Handle<Order>, kMaxOpenOrders * 4> by_id_;  // ids + pending ids
   RingBuffer<TerminalRecord, kRecentlyTerminal> recently_terminal_;
   // On the heap: its ring of ids alone is 512 KiB.
