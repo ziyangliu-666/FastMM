@@ -539,14 +539,28 @@ class SimTransport final : public MatchingSink {
   void refresh_own(InstrumentId id, OwnFeed& f) noexcept;
   std::unique_ptr<OwnFeed[]> own_feed_;
   // Recorded events applied ahead of an earlier-recorded one, waiting to be forwarded
-  // (forward_in_order): a min-heap on the position, their bytes in `waiting_bytes_`.
+  // (forward_in_order). A position less than kMaxAhead past next_forward_ waits in `ahead_`, a ring
+  // indexed by the position (VenueOrderSource's are dense, the next one to go is found in one
+  // load); a farther or repeated one in `waiting_`, a min-heap on the position, its bytes in
+  // `waiting_bytes_`.
   struct Waiting {
     std::uint64_t seq;
     Timestamp recorded;
     Timestamp venue;
     std::uint32_t slot;  // kNoSlot: nothing to forward
   };
+  struct Ahead {
+    std::uint64_t seq = 0;  // 0: free
+    Timestamp recorded;
+    Timestamp venue;
+    bool has_md = false;
+    std::vector<std::uint64_t> bytes;
+  };
   static constexpr std::uint32_t kNoSlot = 0xFFFF'FFFF;
+  static constexpr std::size_t kMaxAhead = std::size_t{1} << 20;
+  // Makes `ahead_` hold positions up to `seq` (a power of two size, at most kMaxAhead).
+  void grow_ahead(std::uint64_t seq);
+  std::vector<Ahead> ahead_;
   std::vector<Waiting> waiting_;
   std::vector<std::vector<std::uint64_t>> waiting_bytes_;
   std::vector<std::uint32_t> waiting_free_;

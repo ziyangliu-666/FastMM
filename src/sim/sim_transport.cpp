@@ -387,12 +387,39 @@ void SimTransport::on_source_event(const EventHeader& md) noexcept {
   if (own_feed_ != nullptr) flush_own(now);
 }
 
+void SimTransport::grow_ahead(std::uint64_t seq) {
+  std::size_t cap = ahead_.empty() ? 1024 : ahead_.size();
+  while (cap < kMaxAhead && seq - next_forward_ >= cap) cap *= 2;
+  if (cap == ahead_.size()) return;
+  std::vector<Ahead> next(cap);
+  for (Ahead& a : ahead_) {
+    if (a.seq != 0) next[a.seq & (cap - 1)] = std::move(a);
+  }
+  ahead_ = std::move(next);
+}
+
 void SimTransport::forward_in_order(const EventHeader* md,
                                     std::uint64_t seq,
                                     Timestamp recorded,
                                     Timestamp now) noexcept {
   const auto after = [](const Waiting& a, const Waiting& b) { return a.seq > b.seq; };
   if (seq > next_forward_) {
+    if (seq - next_forward_ >= ahead_.size() && ahead_.size() < kMaxAhead) grow_ahead(seq);
+    if (seq - next_forward_ < ahead_.size()) {
+      Ahead& a = ahead_[seq & (ahead_.size() - 1)];
+      if (a.seq == 0) {
+        a.seq = seq;
+        a.recorded = recorded;
+        a.venue = now;
+        a.has_md = md != nullptr;
+        if (md != nullptr) {
+          const std::size_t words = (md->len + sizeof(std::uint64_t) - 1) / sizeof(std::uint64_t);
+          if (a.bytes.size() < words) a.bytes.resize(words);
+          std::memcpy(a.bytes.data(), md, md->len);
+        }
+        return;
+      }
+    }
     std::uint32_t slot = kNoSlot;
     if (md != nullptr) {
       if (waiting_free_.empty()) {
@@ -413,7 +440,20 @@ void SimTransport::forward_in_order(const EventHeader* md,
   }
   if (md != nullptr) forward(*md, recorded, now);
   if (seq == next_forward_) ++next_forward_;
-  while (!waiting_.empty() && waiting_.front().seq <= next_forward_) {
+  // Every position waiting is past next_forward_ until it moves on: the next to go is at it.
+  for (;;) {
+    if (!ahead_.empty()) {
+      Ahead& a = ahead_[next_forward_ & (ahead_.size() - 1)];
+      if (a.seq == next_forward_) {
+        a.seq = 0;
+        if (a.has_md) {
+          forward(*reinterpret_cast<const EventHeader*>(a.bytes.data()), a.recorded, a.venue);
+        }
+        ++next_forward_;
+        continue;
+      }
+    }
+    if (waiting_.empty() || waiting_.front().seq > next_forward_) break;
     std::pop_heap(waiting_.begin(), waiting_.end(), after);
     const Waiting w = waiting_.back();
     waiting_.pop_back();
