@@ -984,8 +984,8 @@ Qty SimTransport::model_own_at(InstrumentId id, Side side, Price px) const noexc
   if (cfg_.fill_model == FillModel::Matching)
     return me_.account_qty_at(kStrategyAccount, id, side, px);
   Qty sum{};
-  queue_.for_each([&](QueuePositionModel::Handle32, const QueuedOrder& o) {
-    if (o.instrument == id && o.side == side && o.price == px) sum += o.leaves();
+  queue_.for_each(id, [&](QueuePositionModel::Handle32, const QueuedOrder& o) {
+    if (o.side == side && o.price == px) sum += o.leaves();
   });
   return sum;
 }
@@ -1247,8 +1247,8 @@ MatchingEngine::SideExposure SimTransport::strategy_exposure(InstrumentId id,
                                                              Side side) const noexcept {
   if (cfg_.fill_model == FillModel::Matching) return me_.exposure(kStrategyAccount, id, side);
   MatchingEngine::SideExposure e;
-  queue_.for_each([&](QueuePositionModel::Handle32, const QueuedOrder& o) {
-    if (o.instrument != id || o.side != side) return;
+  queue_.for_each(id, [&](QueuePositionModel::Handle32, const QueuedOrder& o) {
+    if (o.side != side) return;
     ++e.orders;
     e.leaves += o.leaves();
     if (e.best.is_zero() || better(side, o.price, e.best)) e.best = o.price;

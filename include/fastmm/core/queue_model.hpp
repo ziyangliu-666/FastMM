@@ -32,7 +32,8 @@
 //                takes its quantity from the queue as the trade tape would have at placement
 //
 // Orders live in a Pool; iteration is in handle order for determinism (a print's in price
-// priority). queue_after_level_change() and queue_after_trade() are the two steps for one order;
+// priority). A bitmap per instrument (a bucket of instruments) gives one instrument's orders without
+// scanning the others'. queue_after_level_change() and queue_after_trade() are the two steps for one order;
 // the engine's live estimate (core/queue_tracker.hpp) calls the same functions.
 //
 // queue_apply_book() is how SimTransport (fill_model = "l2_queue") applies a book message to its
@@ -245,7 +246,9 @@ class QueuePositionModel {
       : conservatism_bps_(conservatism_bps < 0        ? 0
                           : conservatism_bps > 10'000 ? 10'000
                                                       : conservatism_bps),
-        print_order_(std::make_unique<Handle32[]>(kMaxQueuedOrders)) {}
+        print_order_(std::make_unique<Handle32[]>(kMaxQueuedOrders)),
+        inst_bits_(std::make_unique<std::uint64_t[]>(kInstBuckets * kWords)),
+        inst_words_(std::make_unique<std::uint64_t[]>(kInstBuckets)) {}
   QueuePositionModel(const QueuePositionModel&) = delete;
   QueuePositionModel& operator=(const QueuePositionModel&) = delete;
 
@@ -278,6 +281,7 @@ class QueuePositionModel {
     o.instrument = inst;
     o.side = side;
     by_id_.insert(id, h);
+    mark(inst, h.idx);
     return h;
   }
   [[nodiscard]] Handle32 find(ClientOrderId id) const noexcept {
@@ -288,7 +292,9 @@ class QueuePositionModel {
   [[nodiscard]] QueuedOrder& get(Handle32 h) noexcept { return pool_.get(h); }
   [[nodiscard]] bool is_live(Handle32 h) const noexcept { return pool_.is_live(h); }
   void remove(Handle32 h) noexcept {
-    by_id_.erase(pool_.get(h).cl_ord_id);
+    const QueuedOrder& o = pool_.get(h);
+    unmark(o.instrument, h.idx);
+    by_id_.erase(o.cl_ord_id);
     pool_.free(h);
   }
   // Same price and qty <= leaves: keep the queue position (ahead unchanged). The amended order
@@ -310,16 +316,15 @@ class QueuePositionModel {
   // Displayed quantity at (inst, side, px) changed old -> new.
   void on_level_change(InstrumentId inst, Side side, Price px, Qty old_qty, Qty new_qty) noexcept {
     if (new_qty >= old_qty) return;
-    pool_.for_each([&](Handle32, QueuedOrder& o) {
-      if (o.instrument != inst || o.side != side || o.price != px) return;
+    for_each_mut(inst, [&](Handle32, QueuedOrder& o) {
+      if (o.side != side || o.price != px) return;
       o.ahead = queue_after_level_change(o.ahead, old_qty, new_qty, conservatism_bps_);
     });
   }
 
   // A touch newer than the depth book (QueueTouch).
   void on_touch(InstrumentId inst, const QueueTouch& t) noexcept {
-    pool_.for_each([&](Handle32, QueuedOrder& o) {
-      if (o.instrument != inst) return;
+    for_each_mut(inst, [&](Handle32, QueuedOrder& o) {
       o.ahead = queue_after_touch(o.ahead, o.side, o.price, t.px(o.side), t.qty(o.side));
     });
   }
@@ -336,8 +341,7 @@ class QueuePositionModel {
     const Side maker = opposite(aggressor);
     Handle32* const hs = print_order_.get();
     std::size_t n = 0;
-    pool_.for_each([&](Handle32 h, QueuedOrder& o) {
-      if (o.instrument != inst) return;
+    for_each_mut(inst, [&](Handle32 h, QueuedOrder& o) {
       if (ts < o.placed) {
         if (ts > o.view) o.ahead = level_after_print(o.ahead, o.side, o.price, px, qty, aggressor);
         return;
@@ -371,10 +375,58 @@ class QueuePositionModel {
   void for_each(F&& f) const noexcept {
     pool_.for_each([&](Handle32 h, const QueuedOrder& o) { f(h, o); });
   }
+  // The orders on `inst`, in ascending handle order. F(Handle32, const QueuedOrder&).
+  template <class F>
+  void for_each(InstrumentId inst, F&& f) const noexcept {
+    visit(*this, inst, f);
+  }
 
  private:
+  static constexpr std::size_t kWords = (kMaxQueuedOrders + 63) / 64;
+  static_assert(kWords <= 64, "one summary word per instrument bucket");
+  static constexpr std::size_t kInstBuckets = 256;  // power of two
+  [[nodiscard]] static std::size_t bucket(InstrumentId inst) noexcept {
+    return inst.value & (kInstBuckets - 1);
+  }
+  void mark(InstrumentId inst, std::uint32_t idx) noexcept {
+    const std::size_t b = bucket(inst);
+    inst_bits_[b * kWords + idx / 64] |= 1ULL << (idx % 64);
+    inst_words_[b] |= 1ULL << (idx / 64);
+  }
+  void unmark(InstrumentId inst, std::uint32_t idx) noexcept {
+    const std::size_t b = bucket(inst);
+    std::uint64_t& w = inst_bits_[b * kWords + idx / 64];
+    w &= ~(1ULL << (idx % 64));
+    if (w == 0) inst_words_[b] &= ~(1ULL << (idx / 64));
+  }
+  // The live orders on `inst` in ascending handle order; F may remove the order it visits.
+  template <class F>
+  void for_each_mut(InstrumentId inst, F&& f) noexcept {
+    visit(*this, inst, f);
+  }
+  template <class Self, class F>
+  static void visit(Self& self, InstrumentId inst, F& f) noexcept {
+    const std::size_t b = bucket(inst);
+    const std::uint64_t* const bits = &self.inst_bits_[b * kWords];
+    std::uint64_t words = self.inst_words_[b];
+    while (words != 0) {
+      const auto w = static_cast<std::uint32_t>(__builtin_ctzll(words));
+      words &= words - 1;
+      std::uint64_t m = bits[w];
+      while (m != 0) {
+        const auto idx = (w * 64) + static_cast<std::uint32_t>(__builtin_ctzll(m));
+        m &= m - 1;
+        auto& o = self.pool_.get(Handle32{idx});
+        if (o.instrument == inst) f(Handle32{idx}, o);
+      }
+    }
+  }
+
   std::int64_t conservatism_bps_;
   std::unique_ptr<Handle32[]> print_order_;  // on_trade's orders in price priority
+  // Per instrument bucket: a bit per order handle, and a bit per non-zero word of those.
+  std::unique_ptr<std::uint64_t[]> inst_bits_;
+  std::unique_ptr<std::uint64_t[]> inst_words_;
   Pool<QueuedOrder, kMaxQueuedOrders> pool_;
   OpenHashMap<ClientOrderId, Handle32, kMaxQueuedOrders * 2> by_id_;
 };
@@ -410,8 +462,7 @@ inline void queue_apply_book(L2Book<256>& book,
   if (d.is_snapshot()) {
     book.apply_delta(d);
     for (QueuePositionModel* q : models) {
-      q->for_each([&](QueuePositionModel::Handle32 h, const QueuedOrder& o) {
-        if (o.instrument != id) return;
+      q->for_each(id, [&](QueuePositionModel::Handle32 h, const QueuedOrder& o) {
         const Qty shown = level_qty(book, o.side, o.price);
         if (shown < o.ahead) q->get(h).ahead = shown;
       });
