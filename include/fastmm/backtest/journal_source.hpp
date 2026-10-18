@@ -80,7 +80,6 @@ class JournalSource final : public MdSource {
   }
 
  private:
-
   std::vector<JournalReader> parts_;
   std::vector<std::string> paths_;
   std::size_t at_ = 0;  // the part next() is reading

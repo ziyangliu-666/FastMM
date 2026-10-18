@@ -32,9 +32,10 @@
 //                takes its quantity from the queue as the trade tape would have at placement
 //
 // Orders live in a Pool; iteration is in handle order for determinism (a print's in price
-// priority). A bitmap per instrument (a bucket of instruments) gives one instrument's orders without
-// scanning the others'. queue_after_level_change() and queue_after_trade() are the two steps for one order;
-// the engine's live estimate (core/queue_tracker.hpp) calls the same functions.
+// priority). A bitmap per instrument (a bucket of instruments) gives one instrument's orders
+// without scanning the others'. queue_after_level_change() and queue_after_trade() are the two
+// steps for one order; the engine's live estimate (core/queue_tracker.hpp) calls the same
+// functions.
 //
 // queue_apply_book() is how SimTransport (fill_model = "l2_queue") applies a book message to its
 // mirror of the historical levels and to the model; the fill check (backtest/fill_check.hpp) calls
