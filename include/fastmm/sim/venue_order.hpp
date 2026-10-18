@@ -69,8 +69,18 @@ class VenueOrderSource final : public MdSource {
 
   MdSource* src_;
   Duration window_;
-  // Copies of the events held, 8-byte words (a snapshot can be larger than EventBuf).
-  std::vector<std::vector<std::uint64_t>> slots_;
+  // Copies of the events held, in 8-byte words: slot k at arena_[k * kSlotWords], or in big_[k]
+  // when the event is longer than a slot (a snapshot can be larger than EventBuf). A slot's address
+  // takes no load, so the next event out can be prefetched; freed slots are reused last in, first
+  // out, while they are still in cache.
+  static constexpr std::size_t kSlotWords = 32;
+  [[nodiscard]] std::uint64_t* slot_data(std::uint32_t k) noexcept {
+    return is_big_[k] != 0 ? big_[k].data() : &arena_[k * kSlotWords];
+  }
+  std::vector<std::uint64_t> arena_;
+  std::vector<std::vector<std::uint64_t>> big_;
+  std::vector<std::uint8_t> is_big_;
+  std::uint32_t n_slots_ = 0;
   std::vector<std::uint32_t> free_;
   std::vector<Held> heap_;
   static constexpr std::uint32_t kNoSlot = 0xFFFF'FFFF;

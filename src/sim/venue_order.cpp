@@ -11,8 +11,10 @@ std::uint32_t VenueOrderSource::take_slot() {
     free_.pop_back();
     return s;
   }
-  slots_.emplace_back();
-  return static_cast<std::uint32_t>(slots_.size() - 1);
+  arena_.resize(arena_.size() + kSlotWords);
+  big_.emplace_back();
+  is_big_.push_back(0);
+  return n_slots_++;
 }
 
 const EventHeader* VenueOrderSource::next() {
@@ -31,11 +33,18 @@ const EventHeader* VenueOrderSource::next() {
       break;
     }
     const std::uint32_t slot = take_slot();
-    std::vector<std::uint64_t>& b = slots_[slot];
     const std::size_t words = (h->len + sizeof(std::uint64_t) - 1) / sizeof(std::uint64_t);
-    if (b.size() < words) b.resize(words);
-    std::memcpy(b.data(), h, h->len);
-    reinterpret_cast<EventHeader*>(b.data())->seq = ++seq_;
+    std::uint64_t* b = nullptr;
+    if (words <= kSlotWords) {
+      is_big_[slot] = 0;
+      b = &arena_[slot * kSlotWords];
+    } else {
+      is_big_[slot] = 1;
+      if (big_[slot].size() < words) big_[slot].resize(words);
+      b = big_[slot].data();
+    }
+    std::memcpy(b, h, h->len);
+    reinterpret_cast<EventHeader*>(b)->seq = ++seq_;
     const std::int64_t venue = h->exch_ts.valid() ? h->exch_ts.ns : h->recv_ts.ns;
     read_bound_ = std::max(read_bound_, h->recv_ts.valid() ? h->recv_ts.ns : venue);
     heap_push(Held{venue, seq_ << kSlotBits | slot});
@@ -51,11 +60,11 @@ const EventHeader* VenueOrderSource::next() {
   // The next event out is most likely the new earliest, held since long enough to be out of
   // cache: start loading it while the engine works on this one.
   if (!heap_.empty()) {
-    const std::uint64_t* next = slots_[heap_.front().slot()].data();
+    const std::uint64_t* next = slot_data(heap_.front().slot());
     __builtin_prefetch(next);
     __builtin_prefetch(next + 8);
   }
-  return reinterpret_cast<const EventHeader*>(slots_[out_].data());
+  return reinterpret_cast<const EventHeader*>(slot_data(out_));
 }
 
 void VenueOrderSource::heap_push(Held e) noexcept {
@@ -99,7 +108,7 @@ void VenueOrderSource::reset() {
   src_->reset();
   heap_.clear();
   free_.clear();
-  for (std::uint32_t i = 0; i < slots_.size(); ++i) free_.push_back(i);
+  for (std::uint32_t i = 0; i < n_slots_; ++i) free_.push_back(i);
   out_ = kNoSlot;
   seq_ = 0;
   max_out_ = 0;
