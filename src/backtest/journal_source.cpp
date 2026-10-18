@@ -5,45 +5,58 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <span>
+#include <optional>
 #include <stdexcept>
+#include <thread>
+#include <vector>
 
 namespace fastmm::bt {
-
-void JournalSource::open_part(const std::string& path) {
-  JournalReader r;
-  if (auto res = r.open(path); !res) {
-    throw std::runtime_error("JournalSource: cannot open " + path + ": " + r.describe(res.error()));
-  }
-  parts_.push_back(std::move(r));
-  paths_.push_back(path);
-}
 
 JournalSource::JournalSource(const std::string& path,
                              bool strip_own,
                              bool parts,
                              const InstrumentTable* remap)
     : remap_(remap != nullptr) {
-  open_part(path);
-  if (remap != nullptr) {
-    // Every part repeats the first's instrument table, so one map serves them all.
-    for (const Instrument& j : parts_.front().instruments()) {
-      const Instrument* c = remap->find(j.venue, j.symbol.view());
-      for (const Instrument* x = remap->begin(); c == nullptr && x != remap->end(); ++x) {
-        if (x->symbol.view() == j.symbol.view()) c = x;
-      }
-      if (c == nullptr) ++unmapped_;
-      map_.push_back(c == nullptr ? kUnmapped : c->id.value);
-      map_venue_.push_back(c == nullptr ? VenueId{} : c->venue);
-    }
-    rbuf_.resize((kMaxMsgBytes + 7) / 8);
-  }
+  // The parts: `path`, then each next one that exists. Opening one reads all of it (it checks
+  // every block's checksum), so they are opened at once: on a slow file system (a Windows drive
+  // under WSL) reading them side by side takes a fraction of reading them in turn. The checks
+  // between parts then run in order, as they would have one part at a time.
+  std::vector<std::string> paths{path};
   for (std::uint64_t n = 1; parts; ++n) {
-    const std::string next_path = JournalFileWriter::part_path(path, n);
+    std::string next_path = JournalFileWriter::part_path(path, n);
     if (!std::filesystem::exists(next_path)) break;
-    open_part(next_path);
+    paths.push_back(std::move(next_path));
+  }
+  std::vector<JournalReader> readers(paths.size());
+  std::vector<std::optional<JournalError>> failed(paths.size());
+  {
+    std::atomic<std::size_t> todo{0};
+    const auto open_parts = [&] {
+      for (std::size_t k = todo++; k < paths.size(); k = todo++) {
+        if (auto res = readers[k].open(paths[k]); !res) failed[k] = res.error();
+      }
+    };
+    std::vector<std::thread> helpers;
+    const std::size_t n_helpers = std::min<std::size_t>(paths.size(), 8) - 1;
+    helpers.reserve(n_helpers);
+    for (std::size_t k = 0; k < n_helpers; ++k) helpers.emplace_back(open_parts);
+    open_parts();
+    for (std::thread& t : helpers) t.join();
+  }
+  for (std::size_t k = 0; k < paths.size(); ++k) {
+    if (failed[k]) {
+      throw std::runtime_error("JournalSource: cannot open " + paths[k] + ": " +
+                               readers[k].describe(*failed[k]));
+    }
+    parts_.push_back(std::move(readers[k]));
+    paths_.push_back(paths[k]);
+    if (k == 0) continue;
+    const std::string& next_path = paths[k];
     const JournalReader& prev = parts_[parts_.size() - 2];
     JournalReader& cur = parts_.back();
     if (cur.header().session_id != prev.header().session_id) {
@@ -64,6 +77,19 @@ JournalSource::JournalSource(const std::string& path,
       FASTMM_LOG_WARN("journal: {}: a part is missing between them, or the first was cut short",
                       gap_);
     }
+  }
+  if (remap != nullptr) {
+    // Every part repeats the first's instrument table, so one map serves them all.
+    for (const Instrument& j : parts_.front().instruments()) {
+      const Instrument* c = remap->find(j.venue, j.symbol.view());
+      for (const Instrument* x = remap->begin(); c == nullptr && x != remap->end(); ++x) {
+        if (x->symbol.view() == j.symbol.view()) c = x;
+      }
+      if (c == nullptr) ++unmapped_;
+      map_.push_back(c == nullptr ? kUnmapped : c->id.value);
+      map_venue_.push_back(c == nullptr ? VenueId{} : c->venue);
+    }
+    rbuf_.resize((kMaxMsgBytes + 7) / 8);
   }
   if (strip_own) {
     const OwnOrderLog log = collect_own_orders(parts_);

@@ -80,7 +80,6 @@ class JournalSource final : public MdSource {
   }
 
  private:
-  void open_part(const std::string& path);
 
   std::vector<JournalReader> parts_;
   std::vector<std::string> paths_;
