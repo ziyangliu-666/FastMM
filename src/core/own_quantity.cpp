@@ -42,26 +42,39 @@ std::uint64_t numeric_exec_id(const ExecId& id) noexcept {
 
 // Segments of one price level sorted by start, with the running maximum of their ends: a lookup
 // walks back from the last segment starting at or before t while one may still cover t.
+// The levels sit in one open-addressing table (most lookups are of a level we never quoted, a
+// miss in one or two probes) and their segments in flat arrays, a level's contiguous.
 struct OwnQuantity::Index {
-  struct Key {
-    std::uint32_t inst;
-    std::uint8_t side;
-    std::int64_t px;
-    bool operator==(const Key&) const noexcept = default;
+  struct Entry {
+    std::int64_t px = 0;
+    std::uint32_t inst_side = 0;  // inst << 1 | side
+    std::uint32_t level = 0;      // 1 + index into `first`, 0: empty
   };
-  struct KeyHash {
-    std::size_t operator()(const Key& k) const noexcept {
-      std::uint64_t x = static_cast<std::uint64_t>(k.px) * 0x9E37'79B9'7F4A'7C15ULL;
-      x ^= (static_cast<std::uint64_t>(k.inst) << 1U | k.side) + 0x632B'E59B'D9B4'E019ULL +
-           (x << 6U);
-      return x ^ (x >> 29U);
+  [[nodiscard]] static std::uint64_t hash(std::uint32_t inst_side, std::int64_t px) noexcept {
+    std::uint64_t x = static_cast<std::uint64_t>(px) * 0x9E37'79B9'7F4A'7C15ULL;
+    x ^= static_cast<std::uint64_t>(inst_side) + 0x632B'E59B'D9B4'E019ULL + (x << 6U);
+    x ^= x >> 29U;
+    return x * 0xBF58'476D'1CE4'E5B9ULL >> 32U;
+  }
+  [[nodiscard]] static std::uint32_t inst_side(std::uint32_t inst, Side side) noexcept {
+    return inst << 1U | static_cast<std::uint32_t>(side);
+  }
+  // The level's index, or -1.
+  [[nodiscard]] std::int64_t find(std::uint32_t is, std::int64_t px) const noexcept {
+    if (table.empty()) return -1;
+    for (std::size_t i = hash(is, px) & mask;; i = (i + 1) & mask) {
+      const Entry& e = table[i];
+      if (e.level == 0) return -1;
+      if (e.px == px && e.inst_side == is) return static_cast<std::int64_t>(e.level) - 1;
     }
-  };
-  struct Slot {
-    std::vector<Segment> segs;
-    std::vector<std::int64_t> ends;
-  };
-  std::unordered_map<Key, Slot, KeyHash> levels;
+  }
+  std::vector<Entry> table;
+  std::size_t mask = 0;
+  std::vector<std::uint32_t> first;  // per level, its segments [first[l], first[l + 1])
+  std::vector<std::int64_t> starts;  // sorted by start within a level
+  std::vector<std::int64_t> ends;    // running maximum of the segments' ends
+  std::vector<std::int64_t> seg_end;
+  std::vector<Qty> qty;
 };
 
 OwnQuantity::OwnQuantity(bool keep_all, Duration retention)
@@ -90,7 +103,7 @@ std::vector<OwnQuantity::Segment>& OwnQuantity::segs(InstrumentId id) {
 }
 
 bool OwnQuantity::empty() const noexcept {
-  if (index_) return index_->levels.empty();
+  if (index_) return index_->starts.empty();
   return std::all_of(
       by_inst_.begin(), by_inst_.end(), [](const std::vector<Segment>& v) { return v.empty(); });
 }
@@ -396,20 +409,17 @@ void OwnQuantity::gc(Timestamp now) noexcept {
 
 Qty OwnQuantity::own_at(InstrumentId inst, Side side, Price px, Timestamp t) const noexcept {
   if (index_) {
-    const auto it =
-        index_->levels.find(Index::Key{inst.value, static_cast<std::uint8_t>(side), px.raw});
-    if (it == index_->levels.end()) return Qty{};
-    const Index::Slot& lvl = it->second;
+    const Index& x = *index_;
+    const std::int64_t l = x.find(Index::inst_side(inst.value, side), px.raw);
+    if (l < 0) return Qty{};
+    const std::uint32_t lo = x.first[static_cast<std::size_t>(l)];
+    const std::uint32_t hi = x.first[static_cast<std::size_t>(l) + 1];
     auto i = static_cast<std::size_t>(
-        std::upper_bound(lvl.segs.begin(),
-                         lvl.segs.end(),
-                         t.ns,
-                         [](std::int64_t v, const Segment& s) { return v < s.start; }) -
-        lvl.segs.begin());
+        std::upper_bound(x.starts.begin() + lo, x.starts.begin() + hi, t.ns) - x.starts.begin());
     Qty q;
-    while (i > 0 && lvl.ends[i - 1] > t.ns) {
+    while (i > lo && x.ends[i - 1] > t.ns) {
       --i;
-      if (lvl.segs[i].end > t.ns) q += lvl.segs[i].qty;
+      if (x.seg_end[i] > t.ns) q += x.qty[i];
     }
     return q;
   }
@@ -423,25 +433,54 @@ Qty OwnQuantity::own_at(InstrumentId inst, Side side, Price px, Timestamp t) con
 
 void OwnQuantity::index() {
   index_ = std::make_unique<Index>();
+  Index& x = *index_;
+  // Levels in order of their first segment, each level's segments in recorded order.
+  struct Key {
+    std::uint32_t inst_side;
+    std::int64_t px;
+    bool operator==(const Key&) const noexcept = default;
+  };
+  struct KeyHash {
+    std::size_t operator()(const Key& k) const noexcept { return Index::hash(k.inst_side, k.px); }
+  };
+  std::unordered_map<Key, std::uint32_t, KeyHash> ids;
+  std::vector<std::vector<const Segment*>> levels;
+  std::vector<Key> keys;
   for (std::size_t k = 0; k < by_inst_.size(); ++k) {
     for (const Segment& g : by_inst_[k]) {
-      index_
-          ->levels[Index::Key{
-              static_cast<std::uint32_t>(k), static_cast<std::uint8_t>(g.side), g.px.raw}]
-          .segs.push_back(g);
+      const Key key{Index::inst_side(static_cast<std::uint32_t>(k), g.side), g.px.raw};
+      const auto [it, fresh] = ids.try_emplace(key, static_cast<std::uint32_t>(levels.size()));
+      if (fresh) {
+        levels.emplace_back();
+        keys.push_back(key);
+      }
+      levels[it->second].push_back(&g);
     }
   }
-  for (auto& [key, lvl] : index_->levels) {
-    std::stable_sort(lvl.segs.begin(), lvl.segs.end(), [](const Segment& a, const Segment& b) {
-      return a.start < b.start;
+  std::size_t cap = 16;
+  while (cap < levels.size() * 4) cap *= 2;
+  x.table.assign(cap, Index::Entry{});
+  x.mask = cap - 1;
+  x.first.reserve(levels.size() + 1);
+  for (std::size_t l = 0; l < levels.size(); ++l) {
+    std::size_t i = Index::hash(keys[l].inst_side, keys[l].px) & x.mask;
+    while (x.table[i].level != 0) i = (i + 1) & x.mask;
+    x.table[i] = Index::Entry{keys[l].px, keys[l].inst_side, static_cast<std::uint32_t>(l + 1)};
+    std::vector<const Segment*>& segs = levels[l];
+    std::stable_sort(segs.begin(), segs.end(), [](const Segment* a, const Segment* b) {
+      return a->start < b->start;
     });
-    lvl.ends.resize(lvl.segs.size());
+    x.first.push_back(static_cast<std::uint32_t>(x.starts.size()));
     std::int64_t m = std::numeric_limits<std::int64_t>::min();
-    for (std::size_t i = 0; i < lvl.segs.size(); ++i) {
-      m = std::max(m, lvl.segs[i].end);
-      lvl.ends[i] = m;
+    for (const Segment* g : segs) {
+      m = std::max(m, g->end);
+      x.starts.push_back(g->start);
+      x.ends.push_back(m);
+      x.seg_end.push_back(g->end);
+      x.qty.push_back(g->qty);
     }
   }
+  x.first.push_back(static_cast<std::uint32_t>(x.starts.size()));
 }
 
 }  // namespace fastmm
