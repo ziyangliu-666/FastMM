@@ -47,15 +47,24 @@ class VenueOrderSource final : public MdSource {
   [[nodiscard]] std::size_t max_held() const noexcept { return max_held_; }
 
  private:
+  // One held event: 16 bytes, so a node's four children share a cache line. `key` is the recorded
+  // position (high kSlotBits..63) and the slot (low kSlotBits): ordering by key orders by position.
   struct Held {
     std::int64_t venue_ns;
-    std::uint64_t seq;
-    std::uint32_t slot;
+    std::uint64_t key;
+    [[nodiscard]] std::uint64_t seq() const noexcept { return key >> kSlotBits; }
+    [[nodiscard]] std::uint32_t slot() const noexcept {
+      return static_cast<std::uint32_t>(key & ((1ULL << kSlotBits) - 1));
+    }
   };
-  // Min-heap order: earliest venue time, then recorded order.
-  static bool later(const Held& a, const Held& b) noexcept {
-    return a.venue_ns != b.venue_ns ? a.venue_ns > b.venue_ns : a.seq > b.seq;
+  static constexpr unsigned kSlotBits = 24;  // 16 M events held; 2^40 events read
+  // Earliest venue time, then recorded order.
+  [[nodiscard]] static bool before(const Held& a, const Held& b) noexcept {
+    return a.venue_ns != b.venue_ns ? a.venue_ns < b.venue_ns : a.key < b.key;
   }
+  // A 4-ary min-heap on before(): half the depth of a binary one, its children in one line.
+  void heap_push(Held e) noexcept;
+  Held heap_pop() noexcept;
   std::uint32_t take_slot();
 
   MdSource* src_;
