@@ -41,6 +41,20 @@ python -m fastmm run strategy:MyMm --config sim.toml --duration 60s
 
 </div>
 
+## Dashboard
+
+<div class="fastmm-desk">
+<div class="fastmm-desk__text">
+<p><strong>bndesk</strong>: a real-time, read-only dashboard for FastMM on Binance.</p>
+<p><a class="md-button md-button--primary" href="https://ziy.bio/bndesk/">Live demo</a> <a class="md-button" href="https://github.com/ziyangliu-666/bndesk">Source</a></p>
+</div>
+<div class="fastmm-desk__row">
+<a class="fastmm-desk__media" style="--r: 1.6" href="https://ziy.bio/bndesk/"><video autoplay loop muted playsinline preload="metadata" poster="assets/bndesk-desk.jpg" src="assets/bndesk-desk.mp4"></video></a>
+<a class="fastmm-desk__media" style="--r: 1.6" href="https://ziy.bio/bndesk/"><video autoplay loop muted playsinline preload="metadata" poster="assets/bndesk-orders.jpg" src="assets/bndesk-orders.mp4"></video></a>
+<a class="fastmm-desk__media" style="--r: 0.4615" href="https://ziy.bio/bndesk/"><video autoplay loop muted playsinline preload="metadata" poster="assets/bndesk-phone.jpg" src="assets/bndesk-phone.mp4"></video></a>
+</div>
+</div>
+
 ## Where to go next
 
 - [Quick start](getting-started/quickstart.md): a Python strategy, a backtest and a live session against the local exchange.

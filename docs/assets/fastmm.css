@@ -309,3 +309,65 @@
 }
 .md-typeset .fastmm-films a:hover img { transform: translateY(-2px); }
 
+
+/* Home page: the dashboard, bndesk, a caption and two links over three of its recordings (docs/README.md "Dashboard"). */
+.md-typeset .fastmm-desk {
+  margin: 1rem 0 0;
+}
+/* Three recordings in one row at one height: each takes width in proportion to its aspect ratio --r. */
+.md-typeset .fastmm-desk__row {
+  display: flex;
+  gap: 0.8rem;
+}
+.md-typeset .fastmm-desk__media {
+  flex: var(--r) 1 0;
+  min-width: 0;
+  border-radius: 0.3rem;
+  overflow: hidden;
+  background: #000;
+  box-shadow: 0 0 0 1px var(--md-default-fg-color--lightest), 0 0.6rem 1.6rem rgba(11, 31, 68, 0.18);
+  transition: transform 0.15s ease;
+}
+.md-typeset .fastmm-desk__media:hover { transform: translateY(-2px); }
+.md-typeset .fastmm-desk video {
+  display: block;
+  width: 100%;
+  aspect-ratio: var(--r);
+  object-fit: cover;
+}
+@media screen and (max-width: 44.9375em) {
+  .md-typeset .fastmm-desk__row { flex-wrap: wrap; }
+  .md-typeset .fastmm-desk__media:first-child { flex-basis: 100%; }
+}
+.md-typeset .fastmm-desk__text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem 1rem;
+  margin-bottom: 0.9rem;
+}
+.md-typeset .fastmm-desk__text p {
+  margin: 0;
+  color: var(--md-default-fg-color--light);
+}
+.md-typeset .fastmm-desk__text strong { color: var(--md-default-fg-color); }
+.md-typeset .fastmm-desk .md-button {
+  margin: 0 0 0 0.4rem;
+  padding: 0.4em 1.2em;
+  font-size: 0.7rem;
+  border-radius: 0.2rem;
+  color: var(--md-default-fg-color);
+  border-color: var(--md-default-fg-color--lighter);
+}
+.md-typeset .fastmm-desk .md-button--primary {
+  background-color: #0b1f44;
+  border-color: #0b1f44;
+  color: #ffffff;
+}
+[data-md-color-scheme="slate"] .md-typeset .fastmm-desk .md-button--primary {
+  background-color: #e8ebef;
+  border-color: #e8ebef;
+  color: #0b1f44;
+}
+.md-typeset .fastmm-desk .md-button:hover { border-color: var(--md-accent-fg-color); }
