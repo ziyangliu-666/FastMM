@@ -310,9 +310,10 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
     }
     std::vector<sim::SimAccountConfig>& accounts = cfg_.transport.accounts;
     for (const sim::SimAccountConfig& a : *snapshots) {
-      const bool traded = std::any_of(cfg_.instruments.begin(),
-                                      cfg_.instruments.end(),
-                                      [&](const Instrument& i) { return i.venue == a.venue; });
+      const bool traded =
+          std::any_of(cfg_.instruments.begin(), cfg_.instruments.end(), [&](const Instrument& i) {
+            return i.venue == cfg_.transport.pools.primary(a.venue);
+          });
       if (!traded) continue;
       const auto it =
           std::find_if(accounts.begin(), accounts.end(), [&](const sim::SimAccountConfig& c) {

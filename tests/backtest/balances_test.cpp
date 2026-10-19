@@ -375,3 +375,34 @@ TEST_CASE("backtest.balances: a run with balances replays to the identical outbo
     CHECK_THROWS_AS(static_cast<void>(run_backtest(synthetic, "basic_mm")), std::invalid_argument);
   }
 }
+
+TEST_CASE("backtest.balances: a journal's snapshot restores the accounts of a pool's members") {
+  // Venue 1 is a member of venue 0's pool: the instrument trades on venue 0, the member's account
+  // holds the base.
+  BacktestConfig cfg = spot_config(11, seconds(10));
+  REQUIRE(cfg.transport.pools.add(VenueId{1}, VenueId{0}));
+  cfg.engine.pools = cfg.transport.pools;
+  cfg.transport.accounts = {
+      sim::SimAccountConfig{VenueId{0},
+                            {sim::SimBalance{FixedString<8>("BTC"), nt("0")},
+                             sim::SimBalance{FixedString<8>("USDT"), nt("1000000")}}},
+      sim::SimAccountConfig{VenueId{1},
+                            {sim::SimBalance{FixedString<8>("BTC"), nt("1")},
+                             sim::SimBalance{FixedString<8>("USDT"), nt("0")}}}};
+  const auto path = fastmm::test::tmp_dir() / "balances_pool.fmj";
+  std::filesystem::remove(path);
+  cfg.journal_out = path.string();
+  static_cast<void>(run_backtest(cfg, "basic_mm"));
+
+  BacktestConfig next = spot_config(11, seconds(10));
+  REQUIRE(next.transport.pools.add(VenueId{1}, VenueId{0}));
+  next.engine.pools = next.transport.pools;
+  next.balances_from_journal = true;
+  JournalSource src(path.string());
+  REQUIRE(src.balance_snapshots()->size() == 2);
+  BacktestSession session(next, &src, &BasicMM::schema());
+  const sim::SimAccounts* a = session.backend().transport.accounts();
+  REQUIRE(a != nullptr);
+  CHECK(a->total(VenueId{0}, "USDT") == nt("1000000"));
+  CHECK(a->total(VenueId{1}, "BTC") == nt("1"));
+}
