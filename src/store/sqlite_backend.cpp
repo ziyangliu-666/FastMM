@@ -138,6 +138,10 @@ class SqliteBackend final : public Backend {
           !r) {
         return fail(r.error());
       }
+      auto copy = sqlite::backup_before_migrate(db_, path);
+      if (!copy) return fail(copy.error());
+      if (!copy->empty())
+        FASTMM_LOG_WARN("store: {} copied to {} before migrating it", path, *copy);
       if (auto r = sqlite::migrate(db_); !r) return fail(r.error());
       if (auto r = prepare_all(); !r) return fail(r.error());
     } else if (auto r = sqlite::schema_version(db_); !r) {
@@ -175,6 +179,18 @@ class SqliteBackend final : public Backend {
         return fail(error_of(db_, "insert journal"));
     }
     venue_names_ = s.venues;
+    arm_names_.clear();
+    for (std::size_t k = 0; k < s.ab_arms.size(); ++k) {
+      arm_names_.push_back(s.ab_arms[k].name);
+      Bind a(ins_ab_arm_.get());
+      a.u(s.session_id);
+      a.i(static_cast<std::int64_t>(k));
+      a.t(s.ab_test);
+      a.t(s.ab_arms[k].name);
+      a.t(s.ab_arms[k].params);
+      if (sqlite3_step(ins_ab_arm_.get()) != SQLITE_DONE)
+        return fail(error_of(db_, "insert [ab] arm"));
+    }
     for (std::size_t v = 0; v < s.venues.size(); ++v) {
       Bind n(ins_venue_.get());
       n.u(s.session_id);
@@ -274,6 +290,7 @@ class SqliteBackend final : public Backend {
     const std::string account = venue_name(r.hdr.venue.value);
     b.t(account);
     b.i(r.named_qty.raw);
+    bind_arm(b, r.arm);
     const int rc = sqlite3_step(ins_fill_.get());
     if (rc == SQLITE_DONE) {
       // Zero rows changed: this very record again (its session and seq), a no-op.
@@ -334,6 +351,7 @@ class SqliteBackend final : public Backend {
     b.i(o.created.ns);
     b.i(r.hdr.engine_ts.ns);
     b.t(utc_day(r.hdr.engine_ts.ns));
+    bind_arm(b, o.arm);
     step(ins_order_.get(), "upsert order");
   }
 
@@ -402,7 +420,9 @@ class SqliteBackend final : public Backend {
   // keeps the values that changed, and an update that changed nothing is only counted.
   void param(const ParamRecord& r) override {
     if (db_ == nullptr) return;
-    const bool control = r.origin == ParamUpdateMsg::Origin::Control;
+    // An [ab] update is kept whole too: it is the record of the arms' assignment.
+    const bool control = r.origin == ParamUpdateMsg::Origin::Control ||
+                         r.origin == ParamUpdateMsg::Origin::Experiment;
     const std::size_t n = std::min<std::size_t>(r.count, ParamUpdateMsg::kMaxFields);
     const bool all = !r.hdr.instrument.valid();
     const std::uint32_t inst = all ? kAllInstruments : r.hdr.instrument.value;
@@ -428,12 +448,17 @@ class SqliteBackend final : public Backend {
       b.i(inst);
       b.t(symbol(inst));
     }
-    b.t(control ? "control" : "strategy");
+    b.t(origin_name(r.origin));
     b.t(r.source_view());
     b.u(r.publish_seq);
     b.i(static_cast<std::int64_t>(n));
     b.i(static_cast<std::int64_t>(changed));
     b.b(false);
+    if (r.arm == ParamUpdateMsg::kArmNone) {
+      b.t("");
+    } else {
+      bind_arm(b, r.arm);
+    }
     step(ins_param_update_.get(), "insert parameter update");
     for (std::size_t k = 0; k < n; ++k) {
       if (control || differs[k]) {
@@ -603,6 +628,7 @@ class SqliteBackend final : public Backend {
     ins_param_value_.reset();
     ins_reject_.reset();
     ins_limit_.reset();
+    ins_ab_arm_.reset();
     ins_funding_.reset();
     ins_pnl_.reset();
     ins_repeat_.reset();
@@ -635,6 +661,27 @@ class SqliteBackend final : public Backend {
 
   static constexpr std::uint32_t kAllInstruments = 0xFFFFFFFFU;
 
+  // A record's [ab] arm (Order::arm, ParamUpdateMsg::arm): its name, NULL for none.
+  void bind_arm(Bind& b, std::uint8_t arm) const {
+    if (arm == 0 || arm == ParamUpdateMsg::kArmNone) {
+      b.null();
+      return;
+    }
+    const std::size_t k = arm - 1U;
+    b.t(k < arm_names_.size() ? arm_names_[k] : "#" + std::to_string(k));
+  }
+  static std::string_view origin_name(ParamUpdateMsg::Origin o) noexcept {
+    switch (o) {
+      case ParamUpdateMsg::Origin::Control:
+        return "control";
+      case ParamUpdateMsg::Origin::Experiment:
+        return "ab";
+      case ParamUpdateMsg::Origin::Strategy:
+        break;
+    }
+    return "strategy";
+  }
+
   // The parameter table and the starting values (seq 0, origin 'initial').
   [[nodiscard]] Result<void, std::string> session_params(const SessionOpen& s) {
     param_names_.clear();
@@ -666,6 +713,7 @@ class SqliteBackend final : public Backend {
     u.i(static_cast<std::int64_t>(s.params.size()));
     u.i(static_cast<std::int64_t>(s.params.size()));
     u.b(s.params_complete);
+    u.null();
     step(ins_param_update_.get(), "insert starting parameters");
     for (const SessionOpen::ParamValue& v : s.params) {
       std::uint16_t field = 0;
@@ -894,8 +942,8 @@ class SqliteBackend final : public Backend {
          " cl_ord_id, venue_order_id, exec_id, side, liquidity, price_raw, qty_raw,"
          " booked_qty_raw, cum_qty_raw, leaves_qty_raw, fee_raw, fee_amount_raw, fee_asset,"
          " position_qty_raw, position_avg_px_raw, position_realized_raw, position_fees_raw,"
-         " synthetic, late, exch_ns, account, named_qty_raw)"
-         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+         " synthetic, late, exch_ns, account, named_qty_raw, arm)"
+         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
          " ON CONFLICT(session_id, seq) DO NOTHING"},
         {&ins_repeat_,
          "INSERT OR IGNORE INTO fill_repeats (session_id, seq, ts_ns, day, account,"
@@ -915,10 +963,10 @@ class SqliteBackend final : public Backend {
         {&ins_order_,
          "INSERT INTO orders (session_id, cl_ord_id, instrument_id, venue_id, symbol,"
          " venue_order_id, side, type, tif, price_raw, qty_raw, cum_qty_raw, state, reject_reason,"
-         " terminal, user_tag, flags, created_ns, updated_ns, day, updates)"
-         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)"
+         " terminal, user_tag, flags, created_ns, updated_ns, day, arm, updates)"
+         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)"
          " ON CONFLICT(session_id, cl_ord_id) DO UPDATE SET"
-         " venue_order_id=excluded.venue_order_id, price_raw=excluded.price_raw,"
+         " venue_order_id=excluded.venue_order_id, price_raw=excluded.price_raw, arm=excluded.arm,"
          " qty_raw=excluded.qty_raw, cum_qty_raw=excluded.cum_qty_raw, state=excluded.state,"
          " reject_reason=excluded.reject_reason, terminal=excluded.terminal,"
          " updated_ns=excluded.updated_ns, updates=orders.updates+1"},
@@ -936,7 +984,8 @@ class SqliteBackend final : public Backend {
         {&ins_kill_, "INSERT OR IGNORE INTO kill_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"},
         {&ins_param_field_, "INSERT OR REPLACE INTO param_schema VALUES (?,?,?,?)"},
         {&ins_param_update_,
-         "INSERT OR IGNORE INTO param_updates VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"},
+         "INSERT OR IGNORE INTO param_updates VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"},
+        {&ins_ab_arm_, "INSERT OR REPLACE INTO ab_arms VALUES (?,?,?,?,?)"},
         {&ins_param_value_, "INSERT OR IGNORE INTO param_values VALUES (?,?,?,?,?,?)"},
         {&ins_reject_,
          "INSERT OR IGNORE INTO rejects VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
@@ -993,7 +1042,9 @@ class SqliteBackend final : public Backend {
   Stmt ins_param_value_;
   Stmt ins_reject_;
   Stmt ins_limit_;
+  Stmt ins_ab_arm_;
   std::vector<std::string> venue_names_;  // the session's [venues.<name>] by VenueId
+  std::vector<std::string> arm_names_;    // the session's [ab] arms, in order
   // The session's parameter table, the last raw value of each (instrument, field) (the instrument
   // kAllInstruments for an update to every one), and the strategy's refreshes that changed nothing.
   std::vector<std::string> param_names_;

@@ -10,6 +10,8 @@
 #include <charconv>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <system_error>
 
 namespace fastmm::store::sqlite {
 
@@ -613,7 +615,24 @@ CREATE TABLE limit_changes (
 CREATE INDEX limit_changes_time ON limit_changes(ts_ns);
 )SQL";
 
-constexpr std::array<Migration, 11> kMigrations{Migration{1, kV1},
+// Version 12: [ab] tests. ab_arms names each session's arms in order; a fill, an order and a
+// parameter update carry the arm by name: an order the arm it was last sent under, a fill its
+// order's, an update the arm it put its instruments in ('' out of the test). NULL: none.
+constexpr std::string_view kV12 = R"SQL(
+CREATE TABLE ab_arms (
+  session_id INTEGER NOT NULL,
+  arm        INTEGER NOT NULL,
+  test       TEXT    NOT NULL,
+  name       TEXT    NOT NULL,
+  params     TEXT    NOT NULL,
+  PRIMARY KEY (session_id, arm)
+);
+ALTER TABLE fills ADD COLUMN arm TEXT;
+ALTER TABLE orders ADD COLUMN arm TEXT;
+ALTER TABLE param_updates ADD COLUMN arm TEXT;
+)SQL";
+
+constexpr std::array<Migration, 12> kMigrations{Migration{1, kV1},
                                                 Migration{2, kV2},
                                                 Migration{3, kV3},
                                                 Migration{4, kV4},
@@ -623,7 +642,8 @@ constexpr std::array<Migration, 11> kMigrations{Migration{1, kV1},
                                                 Migration{8, kV8},
                                                 Migration{9, kV9},
                                                 Migration{10, kV10},
-                                                Migration{11, kV11}};
+                                                Migration{11, kV11},
+                                                Migration{12, kV12}};
 
 // days since 1970-01-01 -> y/m/d (Howard Hinnant's civil_from_days).
 void civil_from_days(std::int64_t z, int& y, unsigned& m, unsigned& d) {
@@ -688,6 +708,27 @@ Result<int, std::string> schema_version(sqlite3* db) {
   if (sqlite3_step(st) == SQLITE_ROW) v = sqlite3_column_int(st, 0);
   sqlite3_finalize(st);
   return v;
+}
+
+Result<std::string, std::string> backup_before_migrate(sqlite3* db, const std::string& path) {
+  auto cur = schema_version(db);
+  if (!cur) return fail(cur.error());
+  const auto steps = migrations();
+  if (*cur == 0 || steps.empty() || *cur >= steps.back().version || path.empty() ||
+      path == ":memory:")
+    return std::string();
+  std::string out = path + ".v" + std::to_string(*cur) + ".bak";
+  std::error_code ec;
+  if (std::filesystem::exists(out, ec)) return out;  // an earlier attempt's copy
+  std::string quoted;
+  for (const char c : out) {
+    if (c == '\'') quoted += '\'';
+    quoted += c;
+  }
+  const std::string sql = "VACUUM INTO '" + quoted + "'";
+  if (auto r = exec(db, sql.c_str()); !r)
+    return fail("cannot copy the store to " + out + " before migrating it: " + r.error());
+  return out;
 }
 
 Result<int, std::string> migrate(sqlite3* db, int target) {

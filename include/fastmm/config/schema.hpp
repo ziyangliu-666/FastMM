@@ -578,6 +578,68 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "[strategy.params] table: the strategy's parameters"},
     {"strategy.params", "*", KeyType::Any, false, "strategy parameters (validated by the schema)"},
+    // [ab]
+    {"ab",
+     "name",
+     KeyType::String,
+     true,
+     "name of the test, up to 32 letters, digits, '_', '-' or '.'; the store and journal record it "
+     "with every arm assignment"},
+    {"ab",
+     "assignment",
+     KeyType::String,
+     true,
+     "instrument (each instrument stays in one arm, the arms balanced on weights) | time (every "
+     "instrument in the same arm, the arm changing each block) | crossover (instruments split as "
+     "with instrument, each one changing arm each block)"},
+    {"ab",
+     "seed",
+     KeyType::Int,
+     false,
+     "seed of the instrument split and of the order of the arms over the blocks (default 1)"},
+    {"ab",
+     "block_s",
+     KeyType::Int,
+     false,
+     "time, crossover: block length, s; blocks start at multiples of it since 1970-01-01 UTC, and "
+     "each run of as many blocks as there are arms gives every arm one, in an order drawn from "
+     "seed "
+     "(required with time and crossover, refused with instrument)"},
+    {"ab",
+     "start",
+     KeyType::String,
+     false,
+     "UTC time the test starts, YYYY-MM-DD, YYYY-MM-DDTHH:MM or YYYY-MM-DDTHH:MM:SSZ; before it "
+     "the configured parameters run (default: at the start of the session)"},
+    {"ab",
+     "end",
+     KeyType::String,
+     false,
+     "UTC time the test ends, as start; after it the configured parameters run again (default: "
+     "none)"},
+    {"ab",
+     "weights",
+     KeyType::Table,
+     false,
+     "[ab.weights] table: instrument, crossover: the weight of each instrument (\"venue:symbol\" "
+     "or \"symbol\" = number >= 0, e.g. its daily volume), every instrument or none; instruments "
+     "of similar weight go to different arms (default: equal weights)"},
+    {"ab.weights", "*", KeyType::Float, false, "weight of one instrument"},
+    {"ab",
+     "arms",
+     KeyType::Any,
+     true,
+     "[[ab.arms]] tables, 2 to 16, in order: arm 0 is the control the readout compares the others "
+     "with"},
+    {"ab.arms[]", "name", KeyType::String, true, "arm name, up to 16 letters, digits, '_' or '-'"},
+    {"ab.arms[]",
+     "params",
+     KeyType::Table,
+     false,
+     "[ab.arms.params] table: the arm's strategy parameters on top of [strategy.params] (default: "
+     "none, the configured values); the parameters the arms name, 32 at most, belong to the test "
+     "while it runs"},
+    {"ab.arms[].params", "*", KeyType::Any, false, "one strategy parameter of the arm"},
     // [risk]
     {"risk", "max_order_qty", KeyType::Any, false, "largest order quantity, decimal"},
     {"risk",

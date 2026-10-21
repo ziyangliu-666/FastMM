@@ -231,6 +231,25 @@ struct StrategySection {
   std::int64_t state_snapshot_interval_s = 0;  // journal snapshots of state(); 0: none
 };
 
+// [ab]: an A/B test of strategy parameters (strategies/ab_test.hpp). No arms: no test.
+struct AbArmSection {
+  std::string name;
+  ParamMap params;  // on top of [strategy.params]; none: the arm runs the configured values
+};
+struct AbSection {
+  std::string name;
+  std::string assignment;  // "instrument" | "time" | "crossover"
+  std::uint64_t seed = 1;
+  std::int64_t block_s = 0;  // time, crossover: the block, seconds
+  std::string start;         // UTC; empty: from the start of the session
+  std::string end;           // UTC; empty: no end
+  // instrument, crossover: the weight of each instrument ("venue:symbol" or "symbol") the split
+  // balances the arms on; empty: every instrument weighs the same.
+  std::map<std::string, double> weights;
+  std::vector<AbArmSection> arms;
+  [[nodiscard]] bool enabled() const noexcept { return !arms.empty(); }
+};
+
 struct RiskSection {
   std::string max_order_qty;
   std::string max_order_notional;
@@ -317,6 +336,7 @@ class Config {
   std::vector<VenueSection> venues;  // VenueId == index
   std::vector<InstrumentSection> instruments;
   StrategySection strategy;
+  AbSection ab;
   RiskSection risk;
   GatewaySection gateway;
   // [accounting]: the reporting currency and the FX source of each other settlement currency,

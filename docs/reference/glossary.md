@@ -3,7 +3,9 @@
 | Term | Meaning |
 |---|---|
 | **ack** | a venue's confirmation that it accepted an order (`OrderAckMsg`); an order is working only after it |
+| **A/B test** | an `[ab]` section: two or more parameter sets of one strategy run side by side, each instrument in one of them at a time ([Run an A/B test](../how-to/strategies/ab-test.md)) |
 | **adverse selection** | the cost of a maker fill that happened because the price was about to move against the quote; the gap between the quoted half spread and the PnL realised ([Economics](../explanation/economics.md)) |
+| **arm** | one parameter set of an A/B test; arm 0 is the control the others are compared with. An order carries the arm it was sent under (`Order::arm`) |
 | **basis point (bp, bps)** | 0.01 % = 0.0001. `5_bps` is a `Ratio` of 0.0005; 5 bps of 60,000 USDT is 30 USDT |
 | **book** | the price levels of one instrument: an L2 book aggregates quantity per price, an L3 book keeps each order |
 | **book ticker** | a top-of-book update (best bid and ask with quantities) without depth |

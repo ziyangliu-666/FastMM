@@ -15,8 +15,9 @@
 // The copy starts from the parameters passed to the constructor (read them before the engine thread
 // starts) and follows every update that was sent, so it equals what the engine holds once it has
 // consumed the ring. Parameters an update does not name keep their values. With `instruments` > 0
-// the publisher keeps one copy per instrument and an update may name one instrument; a strategy
-// that keeps one parameter set (StrategyBase) publishes to all instruments.
+// the publisher keeps one copy per instrument, and one of the set the updates for every instrument
+// built, and an update may name one instrument; a strategy that keeps one parameter set
+// (ParamScope::Shared) publishes to all instruments.
 //
 // Calls may come from any thread; a mutex serialises them, so the publisher is the ring's only
 // producer. Not for the engine thread: publish allocates.
@@ -76,7 +77,7 @@ class ParamPublisher {
                  const void* current,
                  std::size_t instruments = 0)
       : sink_(sink), schema_(&schema), ops_(ops), per_instrument_(instruments != 0) {
-    const std::size_t n = instruments == 0 ? 1 : instruments;
+    const std::size_t n = instruments == 0 ? 1 : instruments + 1;  // + the shared set, last
     blocks_.reserve(n);
     for (std::size_t i = 0; i < n; ++i) blocks_.push_back(clone(current));
   }
@@ -91,12 +92,14 @@ class ParamPublisher {
   bool publish(const std::vector<ParamValue>& values, InstrumentId inst = kAllInstruments) {
     return publish_as(values, inst, ParamUpdateMsg::Origin::Strategy, {}) != 0;
   }
-  // publish() with the update's origin and source (ParamUpdateMsg::source, cut to 39 bytes).
-  // The update's publish_seq, 0 when the sink refused it or the publisher is closed.
+  // publish() with the update's origin, source (ParamUpdateMsg::source, cut to 39 bytes) and [ab]
+  // arm (ParamUpdateMsg::arm). The update's publish_seq, 0 when the sink refused it or the
+  // publisher is closed.
   std::uint64_t publish_as(const std::vector<ParamValue>& values,
                            InstrumentId inst,
                            ParamUpdateMsg::Origin origin,
-                           std::string_view source) {
+                           std::string_view source,
+                           std::uint8_t arm = ParamUpdateMsg::kArmKeep) {
     const std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) return 0;
     ParamUpdateMsg m{};
@@ -104,6 +107,7 @@ class ParamPublisher {
     if (auto err = build_locked(values, inst, m, &next)) throw std::invalid_argument(*err);
     m.publish_seq = seq_ + 1;
     m.origin = origin;
+    m.arm = arm;
     m.set_source(source);
     m.hdr.recv_ts = wall_now();
     if (!sink_.push(sink_.ctx, m)) {
@@ -143,6 +147,8 @@ class ParamPublisher {
     return refused_;
   }
   [[nodiscard]] const ParamSchema& schema() const { return *schema_; }
+  // An update may name one instrument: the strategy keeps a parameter set per instrument.
+  [[nodiscard]] bool per_instrument() const noexcept { return per_instrument_; }
   // Every parameter of the copy, in schema order: one instrument's, or the shared set.
   struct Value {
     std::string name;
@@ -152,8 +158,7 @@ class ParamPublisher {
   };
   [[nodiscard]] std::vector<Value> values(InstrumentId inst = kAllInstruments) const {
     const std::lock_guard<std::mutex> lock(mutex_);
-    const std::size_t k =
-        per_instrument_ && inst.valid() && inst.value < blocks_.size() ? inst.value : 0;
+    const std::size_t k = block_of(inst);
     std::vector<Value> out;
     out.reserve(schema_->size());
     for (const ParamDesc& d : *schema_)
@@ -163,9 +168,7 @@ class ParamPublisher {
   // `name=value` pairs of the copy: one instrument's, or the shared set.
   [[nodiscard]] std::string describe(InstrumentId inst = kAllInstruments) const {
     const std::lock_guard<std::mutex> lock(mutex_);
-    const std::size_t k =
-        per_instrument_ && inst.valid() && inst.value < blocks_.size() ? inst.value : 0;
-    return detail::describe_params(*schema_, blocks_[k].get());
+    return detail::describe_params(*schema_, blocks_[block_of(inst)].get());
   }
 
  private:
@@ -176,6 +179,11 @@ class ParamPublisher {
         [](void* p) noexcept { delete static_cast<P*>(p); },
         [](const void* p) { return detail::validate_params(*static_cast<const P*>(p)); }};
     return kOps;
+  }
+  // The copy of one instrument, or the shared set.
+  [[nodiscard]] std::size_t block_of(InstrumentId inst) const noexcept {
+    if (!per_instrument_) return 0;
+    return inst.valid() && inst.value + 1 < blocks_.size() ? inst.value : blocks_.size() - 1;
   }
   struct Deleter {
     void (*destroy)(void*) noexcept;
@@ -204,7 +212,7 @@ class ParamPublisher {
             "the strategy keeps one parameter set for all instruments; publish "
             "without an instrument");
       }
-      if (inst.value >= blocks_.size())
+      if (inst.value + 1 >= blocks_.size())
         return "instrument " + std::to_string(inst.value) + " is not in the instrument table";
       first = inst.value;
       last = first + 1;
@@ -227,7 +235,8 @@ class ParamPublisher {
         out.value[i] = d->get_raw(copy.get());
       }
       if (auto err = ops_.validate(copy.get())) {
-        if (per_instrument_) return "instrument " + std::to_string(k) + ": " + *err;
+        if (per_instrument_ && k + 1 < blocks_.size())
+          return "instrument " + std::to_string(k) + ": " + *err;
         return err;
       }
       if (next != nullptr) next->emplace_back(k, std::move(copy));
@@ -239,7 +248,7 @@ class ParamPublisher {
   const ParamSchema* schema_;
   BlockOps ops_;
   bool per_instrument_;
-  std::vector<Block> blocks_;  // one per instrument, or the shared set
+  std::vector<Block> blocks_;  // one per instrument and the shared set last, or the shared set
   mutable std::mutex mutex_;
   std::uint64_t seq_ = 0;
   std::uint64_t refused_ = 0;

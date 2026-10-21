@@ -389,6 +389,12 @@ if(TARGET fastmm-data)
   fastmm_cli_test(apps.fastmm-data.calibrate_missing EXPECT_RC 4
     CMD $<TARGET_FILE:fastmm-data> calibrate /nonexistent/session.fmj
     EXPECT_REGEX "fastmm-data: cannot open /nonexistent/session.fmj")
+  fastmm_cli_test(apps.fastmm-data.ab_missing EXPECT_RC 4
+    CMD $<TARGET_FILE:fastmm-data> ab /nonexistent/session.fmj
+    EXPECT_REGEX "fastmm-data: cannot open /nonexistent/session.fmj")
+  fastmm_cli_test(apps.fastmm-data.ab_without_test EXPECT_RC 4
+    CMD $<TARGET_FILE:fastmm-data> ab ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/journals/sample_1000.fmj
+    EXPECT_REGEX "sample_1000.fmj: no (configuration in the journal|\\[ab\\] in its configuration)")
 endif()
 
 set(_json_builtin ".name.: .options_mm., .transports.: \\[.sim., .replay., .live.\\]")

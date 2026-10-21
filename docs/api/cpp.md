@@ -32,6 +32,8 @@ A strategy is a class template parameter, not a base class with virtual function
 | <a href="classfastmm_1_1StrategyRegistry.html">`StrategyRegistry`</a> | name to factory, for `fastmm-live` and `fastmm-backtest` |
 | <a href="structfastmm_1_1StrategyEntry.html">`StrategyEntry`</a> | one registry entry |
 | <a href="classfastmm_1_1ParamPublisher.html">`ParamPublisher`</a> | publishes parameters to the trading thread |
+| <a href="classfastmm_1_1AbPlan.html">`AbPlan`</a> | which `[ab]` arm each instrument is in at a time |
+| <a href="classfastmm_1_1AbController.html">`AbController`</a> | publishes each arm's parameters as instruments change arm |
 | <a href="classfastmm_1_1sim_1_1StrategyHarness.html">`sim::StrategyHarness`</a> | drives a strategy from a test |
 
 ## Quoting
@@ -97,6 +99,7 @@ A strategy is a class template parameter, not a base class with virtual function
 | <a href="structfastmm_1_1bt_1_1Metrics.html">`bt::Metrics`</a> | PnL, Sharpe, drawdown, fill ratio |
 | <a href="backtest_2replay_8hpp.html">`backtest/replay.hpp`</a> | replays a journal, and <a href="structfastmm_1_1bt_1_1ReplayResult.html">`bt::ReplayResult`</a> |
 | <a href="sweep_8hpp.html">`backtest/sweep.hpp`</a> | parameter sweeps and walk-forward folds, and <a href="structfastmm_1_1bt_1_1SweepPoint.html">`bt::SweepPoint`</a> |
+| <a href="ab__report_8hpp.html">`backtest/ab_report.hpp`</a> | the readout of an `[ab]` test, and <a href="structfastmm_1_1bt_1_1AbReport.html">`bt::AbReport`</a> |
 | <a href="conceptfastmm_1_1bt_1_1DataSourceLike.html">`bt::DataSourceLike`</a> | what a data source must provide |
 | <a href="classfastmm_1_1bt_1_1CsvSource.html">`bt::CsvSource`</a> | CSV input |
 | <a href="classfastmm_1_1bt_1_1JournalSource.html">`bt::JournalSource`</a> | a recorded session as input |

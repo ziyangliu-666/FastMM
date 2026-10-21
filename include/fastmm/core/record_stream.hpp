@@ -129,7 +129,8 @@ struct FillRecord {
   Side side;                    // 250
   Liquidity liquidity;          // 251
   FeeAsset fee_asset;           // 252
-  std::uint8_t pad_[3];         // -> 256
+  std::uint8_t arm;             // 253 its order's Order::arm
+  std::uint8_t pad_[2];         // -> 256
 };
 static_assert(sizeof(FillRecord) == 256 && std::is_trivially_copyable_v<FillRecord>);
 static_assert(offsetof(FillRecord, named_qty) == 160 &&
@@ -211,7 +212,8 @@ struct ParamRecord {
   RecordHeader hdr;
   std::uint32_t count;                              // 64  pairs used
   ParamUpdateMsg::Origin origin;                    // 68
-  std::uint8_t pad0_[3];                            //
+  std::uint8_t arm;                                 // 69 ParamUpdateMsg::arm
+  std::uint8_t pad0_[2];                            //
   std::uint64_t publish_seq;                        // 72
   std::uint16_t field[ParamUpdateMsg::kMaxFields];  // 80  index in the parameter table
   char source[ParamUpdateMsg::kSourceLen];          // 144 NUL-terminated
@@ -228,6 +230,7 @@ static_assert(sizeof(ParamRecord) == sizeof(ParamUpdateMsg) &&
               std::is_trivially_copyable_v<ParamRecord>);
 static_assert(offsetof(ParamRecord, count) == offsetof(ParamUpdateMsg, count) &&
               offsetof(ParamRecord, origin) == offsetof(ParamUpdateMsg, origin) &&
+              offsetof(ParamRecord, arm) == offsetof(ParamUpdateMsg, arm) &&
               offsetof(ParamRecord, publish_seq) == offsetof(ParamUpdateMsg, publish_seq) &&
               offsetof(ParamRecord, field) == offsetof(ParamUpdateMsg, field) &&
               offsetof(ParamRecord, source) == offsetof(ParamUpdateMsg, source) &&

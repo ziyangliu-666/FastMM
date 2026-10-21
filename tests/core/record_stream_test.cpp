@@ -271,6 +271,60 @@ TEST_CASE("core.records: a kill switch trip is recorded with the reason and the 
   CHECK(kr.kills == 1);
 }
 
+TEST_CASE("core.records: an [ab] arm reaches the orders sent after it, their fills and records") {
+  Fixture f;
+  ParamUpdateMsg u{};
+  init_header(u, EventType::ParamUpdate, InstrumentId{0});
+  u.origin = ParamUpdateMsg::Origin::Experiment;
+  u.arm = 2;  // arm 1
+  f.push(u);
+  f.push_book("100.00", "100.02", 1);
+  f.drain();
+  const ClientOrderId id = f.first_order();
+  REQUIRE(id.valid());
+  for (const auto& bytes : f.transport.out) {
+    const auto* h = reinterpret_cast<const EventHeader*>(bytes.data());
+    if (h->type == EventType::OutNewOrder)
+      CHECK(reinterpret_cast<const OutNewOrderMsg*>(bytes.data())->arm == 2);
+  }
+  OrderFillMsg fill{};
+  init_header(fill, EventType::OrderFill, InstrumentId{0}, VenueId{0});
+  fill.cl_ord_id = id;
+  fill.side = Side::Buy;
+  fill.price = px("100.00");
+  fill.qty = qt("0.01");
+  fill.cum_qty = qt("0.01");
+  fill.exec_id = "E1";
+  f.push(fill);
+  f.drain();
+  Records r;
+  r.drain(f.record_ring);
+  CHECK(r.first<FillRecord>(RecordType::Fill).arm == 2);
+  CHECK(r.first<OrderRecord>(RecordType::Order).order.arm == 2);
+  CHECK(r.first<ParamRecord>(RecordType::Param).arm == 2);
+
+  // An update for every instrument without an arm leaves them in theirs; kArmNone takes them out.
+  for (const std::uint8_t then : {ParamUpdateMsg::kArmKeep, ParamUpdateMsg::kArmNone}) {
+    Fixture g;
+    ParamUpdateMsg into{};
+    init_header(into, EventType::ParamUpdate);
+    into.arm = 2;
+    g.push(into);
+    ParamUpdateMsg next{};
+    init_header(next, EventType::ParamUpdate);
+    next.arm = then;
+    g.push(next);
+    g.push_book("100.00", "100.02", 1);
+    g.drain();
+    REQUIRE(g.first_order().valid());
+    for (const auto& bytes : g.transport.out) {
+      const auto* h = reinterpret_cast<const EventHeader*>(bytes.data());
+      if (h->type == EventType::OutNewOrder)
+        CHECK(reinterpret_cast<const OutNewOrderMsg*>(bytes.data())->arm == (then == 0 ? 2 : 0));
+    }
+  }
+}
+
 TEST_CASE("core.records: finish writes the last position of every instrument that traded") {
   Fixture f;
   f.push_book("100.00", "100.02", 1);

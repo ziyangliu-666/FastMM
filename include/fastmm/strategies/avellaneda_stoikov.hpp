@@ -49,7 +49,7 @@ struct AvellanedaStoikovParams {
       double, sigma_init, 0.0, 0.0, 1e12, "initial sigma (price units / sqrt(s)); 0 = 1 tick")
 };
 
-class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
+class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams, ParamScope::PerInstrument> {
  public:
   static constexpr std::string_view name() noexcept { return "avellaneda_stoikov"; }
 
@@ -82,7 +82,7 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
     const Timestamp now = ctx.now();
     update_variance(s, mid, now, inst);
     if (s.quoted_mid.is_positive() &&
-        (mid - s.quoted_mid).abs() < inst.ticks(params().requote_threshold_ticks)) {
+        (mid - s.quoted_mid).abs() < inst.ticks(params(id).requote_threshold_ticks)) {
       return;
     }
     requote(ctx, id, mid, inst, now);
@@ -114,7 +114,7 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
 
   template <class Ctx>
   void on_trade(Ctx& ctx, InstrumentId id, const TradeMsg& t) noexcept {
-    if (!params().estimate_kappa) return;
+    if (!params(id).estimate_kappa) return;
     const auto& book = ctx.book(id);
     if (!book.is_valid()) return;
     State& s = st_[id.value];
@@ -140,7 +140,7 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
                                              Qty position,
                                              const Instrument& inst,
                                              Timestamp now) const noexcept {
-    const AvellanedaStoikovParams& p = params();
+    const AvellanedaStoikovParams& p = params(id);
     DesiredQuotes q;
     if (p.quote_qty.is_zero()) return q;
     const State& s = st_[id.value];
@@ -148,7 +148,7 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
     const double tick = inst.tick.to_double();
     const double sigma2 =
         s.have_var ? s.var : (p.sigma_init > 0.0 ? p.sigma_init * p.sigma_init : tick * tick);
-    const double tau = p.infinite_horizon ? 1.0 : horizon_left(now);
+    const double tau = p.infinite_horizon ? 1.0 : horizon_left(now, p.horizon_s);
     const double gamma = p.gamma;
     const double kappa = (p.estimate_kappa && s.kappa_est > 0.0) ? s.kappa_est : p.kappa;
     const double qinv = static_cast<double>(position.raw) / static_cast<double>(p.quote_qty.raw);
@@ -178,21 +178,20 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
     const bool taken = ctx.set_quotes(id, compute_quotes(id, mid, ctx.position(id).qty, inst, now));
     st_[id.value].quoted_mid = taken ? mid : Price{};
   }
-  void update_variance(State& s, Price mid, Timestamp now, const Instrument&) noexcept {
+  void update_variance(State& s, Price mid, Timestamp now, const Instrument& inst) noexcept {
     if (s.last_ts.valid() && s.last_mid.is_positive() && now > s.last_ts) {
       const double dt = static_cast<double>((now - s.last_ts).ns) / 1e9;
       const double dm = (mid - s.last_mid).to_double();
       const double inst_var = dm * dm / dt;  // variance rate
-      const double alpha = 1.0 - std::exp(-dt / params().sigma_window_s);
+      const double alpha = 1.0 - std::exp(-dt / params(inst.id).sigma_window_s);
       s.var = s.have_var ? (1.0 - alpha) * s.var + alpha * inst_var : inst_var;
       s.have_var = true;
     }
     s.last_ts = now;
     s.last_mid = mid;
   }
-  [[nodiscard]] double horizon_left(Timestamp now) const noexcept {
+  [[nodiscard]] double horizon_left(Timestamp now, double h) const noexcept {
     const double elapsed = static_cast<double>((now - start_).ns) / 1e9;
-    const double h = params().horizon_s;
     const double left = h - std::fmod(elapsed, h);
     return left < 0.05 * h ? 0.05 * h : left;
   }

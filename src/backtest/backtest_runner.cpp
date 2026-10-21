@@ -10,6 +10,7 @@
 #include "fastmm/core/session_state.hpp"
 #include "fastmm/sim/sim_treasury.hpp"
 #include "fastmm/sim/venue_order.hpp"
+#include "fastmm/strategies/ab_test.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -371,6 +372,59 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
   deps_.backend = backend_.get();
 }
 
+// [ab]: the test's publisher puts each update on the schedule at the time it is asked for, which
+// the schedule asks one change ahead of the clock (ParamSchedule::set_refill). The arms at the
+// start go straight into the engine's feed, ahead of the first event.
+struct BacktestSession::AbRun {
+  sim::ParamSchedule* schedule = nullptr;
+  InlineFeed* feed = nullptr;  // set while the start's arms are published
+  Timestamp at{};
+  std::unique_ptr<ParamPublisher> publisher;
+  std::unique_ptr<AbController> controller;
+
+  static Timestamp refill(void* ctx, Timestamp due) {
+    auto* run = static_cast<AbRun*>(ctx);
+    run->at = due;
+    static_cast<void>(run->controller->poll(due));
+    return run->controller->next_change(due);
+  }
+};
+
+void BacktestSession::enable_ab(StrategyEntry::PublisherFactory publisher) {
+  if (!cfg_.ab.enabled()) return;
+  if (publisher == nullptr) {
+    throw std::invalid_argument(
+        "backtest: [ab] needs a strategy whose parameters are a FASTMM_PARAMS struct");
+  }
+  if (cfg_.params_from_journal) {
+    throw std::invalid_argument(
+        "backtest: [ab] and params_from_journal both set the strategy's parameters; turn one off");
+  }
+  auto run = std::make_unique<AbRun>();
+  const ParamSink sink{run.get(), [](void* c, const ParamUpdateMsg& m) noexcept {
+                         auto* r = static_cast<AbRun*>(c);
+                         if (r->feed != nullptr) {
+                           ParamUpdateMsg copy = m;
+                           copy.hdr.recv_ts = r->at;
+                           return r->feed->push(copy.hdr);
+                         }
+                         try {
+                           r->schedule->at(r->at, m);
+                           return true;
+                         } catch (...) {
+                           return false;
+                         }
+                       }};
+  run->publisher = publisher(sink, cfg_.params, cfg_.instruments.size());
+  try {
+    run->controller = std::make_unique<AbController>(
+        AbPlan(cfg_.ab, cfg_.instruments, cfg_.venue_names), *run->publisher);
+  } catch (const ConfigError& e) {
+    throw std::invalid_argument(std::string("backtest: ") + e.what());
+  }
+  ab_ = std::move(run);
+}
+
 BacktestSession::~BacktestSession() {
   if (impl_ && impl_->journal_file) impl_->journal_file->stop();
 }
@@ -400,6 +454,14 @@ BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,
       schedule = own_params_.get();
     }
     for (const ParamUpdateMsg& m : journal_params_) schedule->at(m.hdr.recv_ts, m);
+  }
+  if (cfg_.ab.enabled()) {
+    if (!ab_) throw std::invalid_argument("backtest: [ab] needs enable_ab() before run()");
+    if (schedule == nullptr) {
+      own_params_ = std::make_unique<sim::ParamSchedule>();
+      schedule = own_params_.get();
+    }
+    ab_->schedule = schedule;
   }
   driver.set_param_schedule(schedule);
   std::unique_ptr<TreasuryTier> tier;
@@ -431,6 +493,15 @@ BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,
   if (!start_positions_.empty()) b.transport.publish_positions(b.clock.now(), start_positions_);
   driver.start();
   const Timestamp start = b.clock.now();
+  if (ab_) {
+    ab_->feed = &b.feed;
+    ab_->at = start;
+    const bool all = ab_->controller->poll(start);
+    ab_->feed = nullptr;
+    if (!all)
+      throw std::runtime_error("backtest: [ab]: the engine's feed has no room for the arms");
+    schedule->set_refill(b.clock, ab_.get(), &AbRun::refill, ab_->controller->next_change(start));
+  }
   Timestamp bar_end = start + cfg_.equity_bar;
   // The loop stops at every equity bar and at every markout horizon that has come due, and never
   // runs longer than the shortest horizon at a time, so a fill made inside one step still has its
@@ -527,6 +598,7 @@ BacktestResult run_backtest(const BacktestConfig& cfg,
   if (entry == nullptr)
     throw std::invalid_argument("backtest: unknown strategy '" + std::string(strategy) + "'");
   BacktestSession session(cfg, source, entry->schema);
+  if (cfg.ab.enabled()) session.enable_ab(entry->publisher);
   std::unique_ptr<IEngineRunner> runner =
       StrategyRegistry::instance().make(strategy, TransportKind::Sim, session.deps());
   if (runner == nullptr) {

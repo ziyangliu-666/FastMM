@@ -32,6 +32,12 @@ constexpr std::string_view kUsage =
     "  limits <key>=<value> ... [--force]       new risk limits (the [risk] keys, and\n"
     "                                           underlying.<BASE>.max_net); turning one\n"
     "                                           off (0, false) needs --force\n"
+    "  ab                                       the [ab] test: its arms, the block, the end\n"
+    "                                           and each instrument's arm\n"
+    "  ab stop                                  end it: every instrument back on the\n"
+    "                                           configured parameters\n"
+    "  ab promote <arm>                         end it with every instrument on that arm's\n"
+    "                                           parameters\n"
     "  flatten [--instrument SYM] [--max-slippage-bps N]  work the position off, reduce-only\n"
     "  kill                                     trip the kill switch (quotes pulled, all\n"
     "                                           orders cancelled; the position stays)\n"
@@ -305,6 +311,19 @@ std::string control_command(std::string_view request, ControlPlane& plane) {
     if (r.seq != 0) what += " seq=" + std::to_string(r.seq);
     if (!scope.source.empty()) what += " source=" + scope.source;
     return ok(what + scope_text(plane, scope));
+  }
+  if (verb == "ab") {
+    if (!plane.ab) return error("this session runs no [ab] test");
+    ControlPlane::AbRequest req;
+    if (args.size() == 1 && args[0] == "stop") {
+      req.kind = ControlPlane::AbRequest::Kind::Stop;
+    } else if (args.size() == 2 && args[0] == "promote") {
+      req.kind = ControlPlane::AbRequest::Kind::Promote;
+      req.arm = std::string(args[1]);
+    } else if (!args.empty()) {
+      return error("ab takes nothing, stop, or promote <arm>");
+    }
+    return plane.ab(req);
   }
   if (verb == "params") {
     Scope scope;

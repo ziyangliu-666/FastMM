@@ -103,6 +103,8 @@ struct BacktestConfig {
   // The data journal's parameter updates reach the strategy at the times the session received
   // them (sim::RecordedParams), mapped by name and type onto its schema.
   bool params_from_journal = false;
+  // [ab]: an A/B test of the strategy's parameters (strategies/ab_test.hpp); no arms: none.
+  AbSection ab;
   // Recorded data reaches the simulated venue in venue-time order (sim/venue_order.hpp), assuming
   // no event was received more than this after its venue time; zero keeps the recorded order.
   Duration reorder_window = milliseconds(1000);

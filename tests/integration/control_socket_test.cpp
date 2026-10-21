@@ -289,6 +289,28 @@ TEST_CASE("integration.control: params reports the sequence numbers and the valu
   CHECK(f.run("params").starts_with("error"));
 }
 
+TEST_CASE("integration.control: ab shows the test, stops it or promotes an arm") {
+  Fake f;
+  CHECK(f.run("ab") == "error this session runs no [ab] test\n");
+  std::vector<ControlPlane::AbRequest> asked;
+  f.plane.ab = [&](const ControlPlane::AbRequest& r) {
+    asked.push_back(r);
+    return std::string("ok done\n");
+  };
+  CHECK(f.run("ab") == "ok done\n");
+  CHECK(f.run("ab stop") == "ok done\n");
+  CHECK(f.run("ab promote wide") == "ok done\n");
+  REQUIRE(asked.size() == 3);
+  CHECK(asked[0].kind == ControlPlane::AbRequest::Kind::Status);
+  CHECK(asked[1].kind == ControlPlane::AbRequest::Kind::Stop);
+  CHECK(asked[2].kind == ControlPlane::AbRequest::Kind::Promote);
+  CHECK(asked[2].arm == "wide");
+  CHECK(f.run("ab promote").starts_with("error ab takes"));
+  CHECK(f.run("ab stop now").starts_with("error ab takes"));
+  CHECK(asked.size() == 3);
+  CHECK(f.run("help").find("ab promote <arm>") != std::string::npos);
+}
+
 TEST_CASE("integration.control: kill, unkill, stop, status and the refusals") {
   Fake f;
   CHECK(f.run("kill").starts_with("ok"));

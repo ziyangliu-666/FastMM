@@ -11,6 +11,10 @@
 //
 // Pending updates do not keep a run alive: SimDriver ends when its data does.
 //
+// set_refill() adds a source that knows when its next updates are due (an [ab] test,
+// strategies/ab_test.hpp): it is asked for them one change ahead of the clock, so they are queued
+// before the driver reaches their time.
+//
 // threaded_sink() also accepts updates from other threads (a model thread of a Python strategy):
 // they wait in an inbox until SimDriver next looks at the schedule, and are delivered delay() after
 // the simulated time of that moment, which depends on thread timing.
@@ -21,6 +25,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <thread>
@@ -71,6 +76,18 @@ class ParamSchedule {
             }};
   }
 
+  // `refill(ctx, due)` adds the updates due at `due` (at() with that time) and returns when the
+  // next ones are due (Timestamp::max(): none). The first call asks for `first`; each later one
+  // comes once `clock` has reached the time the call before it asked for.
+  using Refill = Timestamp (*)(void* ctx, Timestamp due);
+  void set_refill(const SimClock& clock, void* ctx, Refill refill, Timestamp first) noexcept {
+    refill_clock_ = &clock;
+    refill_ctx_ = ctx;
+    refill_ = refill;
+    refill_gate_ = Timestamp{std::numeric_limits<std::int64_t>::min()};
+    refill_next_ = first;
+  }
+
   // Any thread: holds `m` until the next collect().
   void post(const ParamUpdateMsg& m) {
     const std::lock_guard<std::mutex> lock(inbox_mutex_);
@@ -80,6 +97,11 @@ class ParamSchedule {
   // Driver thread: schedules the posted updates delay() after the clock's time (the clock passed to
   // sink() or threaded_sink()). Cheap when nothing was posted.
   void collect() {
+    if (FASTMM_UNLIKELY(refill_ != nullptr) && refill_next_ != Timestamp::max() &&
+        refill_clock_->now() >= refill_gate_) {
+      refill_gate_ = refill_next_;
+      refill_next_ = refill_(refill_ctx_, refill_next_);
+    }
     if (FASTMM_LIKELY(!inbox_pending_.load(std::memory_order_acquire))) return;
     const std::lock_guard<std::mutex> lock(inbox_mutex_);
     const Timestamp ts = clock_ != nullptr ? clock_->now() + delay_ : Timestamp{};
@@ -107,6 +129,11 @@ class ParamSchedule {
   Duration delay_{};
   const SimClock* clock_ = nullptr;
   std::thread::id driver_thread_{};
+  const SimClock* refill_clock_ = nullptr;
+  void* refill_ctx_ = nullptr;
+  Refill refill_ = nullptr;
+  Timestamp refill_gate_{};
+  Timestamp refill_next_ = Timestamp::max();
   std::mutex inbox_mutex_;
   std::vector<ParamUpdateMsg> inbox_;
   std::atomic<bool> inbox_pending_{false};

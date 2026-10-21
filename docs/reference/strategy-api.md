@@ -511,6 +511,21 @@ struct AllHooksParams {
 - A strategy whose parameters name instruments can declare `std::optional<std::string> check_instruments(const InstrumentTable&) const`; it runs after `configure()`, before the engine is built, and an error stops the session the way a bad parameter does. `lead_mm` uses it for its `target`, `leader` and `fx` indices.
 - The schema drives configuration checks, `--list-strategies`, `--param key=value` and `fastmm.strategies()` in Python.
 
+### Parameters per instrument
+
+`StrategyBase<Params>` keeps one parameter set for every instrument. With `ParamScope::PerInstrument` it also keeps a set per instrument, and `params(id)` reads the instrument's:
+
+```cpp
+class MyMM : public StrategyBase<MyParams, ParamScope::PerInstrument> {
+  // ... params(id).half_spread_bps where the instrument is known, params() where it is not
+};
+```
+
+- `params()` is the set every instrument starts from: the configuration and the updates that named no instrument. `params(id)` is that set with the updates that named `id` on top. For a `Shared` strategy (the default) `params(id)` is `params()`.
+- Its publisher takes updates for one instrument: `fastmm-ctl param --instrument`, and an `[ab]` test that gives instruments different arms ([Run an A/B test](../how-to/strategies/ab-test.md)). A `Shared` strategy refuses both.
+- A parameter the strategy reads through `params()` only, or only in `on_start`, does not change per instrument; read it through `params(id)` where it should.
+- `basic_mm` and `avellaneda_stoikov` are `PerInstrument`.
+
 ## Parameter updates
 
 A running engine takes new parameter values as an input event. `ParamPublisher` (`fastmm/strategies/param_publisher.hpp`) builds the event on another thread and pushes it into a ring of the engine's feed; in a backtest, `sim::ParamSchedule` (`fastmm/sim/param_schedule.hpp`) delivers events at simulated times through `bt::BacktestSession::set_param_schedule`.
@@ -522,7 +537,7 @@ bool sent = pub.publish({{"half_spread_bps", "7.5"}, {"quote_qty", "0.02"}});
 
 - `publish(values, inst)` parses each value with the parameter's type and range into a copy of the parameters, then runs `validate()`. An unknown name, a name given twice, a value that does not parse or is out of range, a failed `validate()` and more than 32 values throw `std::invalid_argument`; nothing is sent then.
 - It returns false when the ring is full or after `close()`; the engine never waits for the publisher.
-- The copy starts from the parameters passed to the constructor and follows every update that was sent. A `StrategyBase` keeps one parameter set, so its updates name no instrument and apply to all.
+- The copy starts from the parameters passed to the constructor and follows every update that was sent. An update names no instrument and applies to all, or with `ParamScope::PerInstrument` may name one ([above](#parameters-per-instrument)).
 - The engine assigns all values of an update at one event, journals it and then calls `on_params(ctx)`. Parameters the update does not name keep their values.
 - `[strategy] max_param_age_ms` (0, the default, is off) disables quoting before the first update and whenever none was applied for that long in engine time: the engine pulls the quotes, `set_quotes` returns false and `on_quoting(false)` fires. The next update fires `on_quoting(true)`.
 - Replay applies the journaled updates at the same events and matches their fields to the strategy's parameters by name ([Journal format](journal-format.md#parameter-updates)).

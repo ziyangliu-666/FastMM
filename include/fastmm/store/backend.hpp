@@ -81,6 +81,14 @@ struct SessionOpen {
   };
   std::vector<ParamValue> params;
   bool params_complete = false;
+  // [ab]: the test's name and its arms in order (ParamUpdateMsg::arm k + 1 names ab_arms[k]), each
+  // with its parameters as "name=value ..."; empty without a test.
+  std::string ab_test;
+  struct AbArm {
+    std::string name;
+    std::string params;
+  };
+  std::vector<AbArm> ab_arms;
 };
 
 // Written once, after the last record.

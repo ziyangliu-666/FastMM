@@ -464,6 +464,70 @@ TEST_CASE(
   CHECK_FALSE(engine->params_stale());
 }
 
+// [ab]: an arm's update for one instrument, its parameters in that instrument's set, and the orders
+// and records that carry the arm.
+TEST_CASE("hotpath.noalloc: engine applies an [ab] arm to one instrument's parameters") {
+  InstrumentTable table;
+  REQUIRE(table.add(make_inst()));
+  SimClock clock{Timestamp{seconds(1000).ns}};
+  NullTransport transport;
+  InlineFeed feed{1 << 20};
+  MsgRing journal_ring{1 << 20};
+  MsgRing record_ring{1 << 20};
+  BasicMM strategy;
+  REQUIRE_FALSE(strategy.configure(
+      {{"half_spread_bps", "10"}, {"quote_qty", "0.01"}, {"max_inventory", "0.05"}}));
+  EngineConfig cfg;
+  cfg.risk.max_order_qty = qt("1");
+  cfg.risk.max_position = qt("1");
+  cfg.risk.max_open_orders = 8;
+  cfg.quotes.min_requote_interval = Duration{};
+  using E = Engine<BasicMM, SimClock, NullTransport, InlineFeed>;
+  auto engine = std::make_unique<E>(
+      cfg, table, clock, transport, feed, strategy, &journal_ring, &record_ring);
+  engine->warm_up();
+  engine->start();
+  const ParamPublisher pub(ParamSink{}, strategy.params(), table.size());
+  ParamUpdateMsg wide{};
+  ParamUpdateMsg back{};
+  REQUIRE_FALSE(pub.build({{"half_spread_bps", "20"}}, InstrumentId{0}, wide));
+  REQUIRE_FALSE(pub.build({{"half_spread_bps", "10"}}, InstrumentId{0}, back));
+  wide.origin = back.origin = ParamUpdateMsg::Origin::Experiment;
+  wide.arm = 2;
+  back.arm = ParamUpdateMsg::kArmNone;
+  const auto book = [&](const char* bid, const char* ask) {
+    std::byte* p = feed.reserve(BookDeltaMsg::size_for(1, 1));
+    REQUIRE(p != nullptr);
+    auto* d = reinterpret_cast<BookDeltaMsg*>(p);
+    init_header(
+        *d, EventType::BookSnapshot, InstrumentId{0}, VenueId{0}, BookDeltaMsg::size_for(1, 1));
+    d->hdr.flags |= EventHeader::kSnapshot;
+    d->hdr.recv_ts = clock.now();
+    d->bid_count = d->ask_count = 1;
+    d->levels()[0] = Level{px(bid), qt("5")};
+    d->levels()[1] = Level{px(ask), qt("5")};
+    feed.commit();
+  };
+  book("100.00", "100.02");
+  bool pushed = true;
+  {
+    NoAllocScope guard(true);
+    while (engine->step() > 0) {
+    }
+    pushed = pushed && feed.push(wide.hdr);
+    while (engine->step() > 0) {
+    }
+    clock.advance(milliseconds(10));
+    pushed = pushed && feed.push(back.hdr);
+    while (engine->step() > 0) {
+    }
+  }
+  CHECK(pushed);
+  CHECK(strategy.params(InstrumentId{0}).half_spread_bps == Ratio::from_bps(10));
+  CHECK(engine->stats().param_updates == 2);
+  CHECK(engine->stats().orders_sent > 0);
+}
+
 namespace {
 // BasicMM that reads the perp table in its hook.
 struct PerpMM : BasicMM {

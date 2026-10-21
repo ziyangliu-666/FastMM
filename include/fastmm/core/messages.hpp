@@ -651,21 +651,27 @@ static_assert(sizeof(EngineTimeMsg) == 128);
 // of an integer or bool, the raw fixed-point value of Price, Qty, Notional and Ratio, the
 // nanoseconds of a Duration and the IEEE-754 bits of a double. `origin` names the publisher (the
 // control socket's sequence is the one fastmm-ctl waits on) and `source` who asked for the change
-// (`fastmm-ctl param --source`), both zero in journals written before they existed.
+// (`fastmm-ctl param --source`), both zero in journals written before they existed. `arm` moves
+// the update's instruments into an arm of the [ab] test (strategies/ab_test.hpp): kArmKeep leaves
+// them where they are, kArmNone takes them out of the test, k + 1 puts them in arm k.
 struct ParamUpdateMsg {
   static constexpr std::size_t kMaxFields = 32;
   static constexpr std::size_t kSourceLen = 40;  // `source`, NUL-terminated
+  static constexpr std::uint8_t kArmKeep = 0;
+  static constexpr std::uint8_t kArmNone = 0xFF;
   // hdr.instrument of an update for every instrument: the invalid id.
   static constexpr InstrumentId kAllInstruments{};
   enum class Origin : std::uint8_t {
-    Strategy = 0,  // the strategy's own publisher (a slow tier, a model), or not recorded
-    Control = 1,   // the control socket (fastmm-ctl param)
+    Strategy = 0,    // the strategy's own publisher (a slow tier, a model), or not recorded
+    Control = 1,     // the control socket (fastmm-ctl param)
+    Experiment = 2,  // the [ab] test: an arm's parameters at a block boundary, a stop, a promote
   };
 
   EventHeader hdr;
   std::uint32_t count;              // pairs used
   Origin origin;                    //
-  std::uint8_t pad0_[3];            //
+  std::uint8_t arm;                 // kArmKeep, kArmNone or arm + 1
+  std::uint8_t pad0_[2];            //
   std::uint64_t publish_seq;        // the publisher's sequence number, from 1
   std::uint16_t field[kMaxFields];  // schema index of each pair
   char source[kSourceLen];          // who asked for it, e.g. "manual", "scheduled:drain"
@@ -686,8 +692,8 @@ struct ParamUpdateMsg {
 };
 static_assert(sizeof(ParamUpdateMsg) == 448 && std::is_trivially_copyable_v<ParamUpdateMsg>);
 static_assert(offsetof(ParamUpdateMsg, count) == 64 && offsetof(ParamUpdateMsg, origin) == 68 &&
-              offsetof(ParamUpdateMsg, field) == 80 && offsetof(ParamUpdateMsg, source) == 144 &&
-              offsetof(ParamUpdateMsg, value) == 192);
+              offsetof(ParamUpdateMsg, arm) == 69 && offsetof(ParamUpdateMsg, field) == 80 &&
+              offsetof(ParamUpdateMsg, source) == 144 && offsetof(ParamUpdateMsg, value) == 192);
 
 // ---- outbound (engine -> venue) --------------------------------------------------------
 
@@ -700,9 +706,10 @@ struct OutNewOrderMsg {
   OrderType type;
   TimeInForce tif;
   std::uint8_t reduce_only;
-  std::uint8_t pad_[36];
+  std::uint8_t arm;  // the [ab] arm it was sent under: 0 none, k + 1 arm k (Order::arm)
+  std::uint8_t pad_[35];
 };
-static_assert(sizeof(OutNewOrderMsg) == 128);
+static_assert(sizeof(OutNewOrderMsg) == 128 && offsetof(OutNewOrderMsg, arm) == 92);
 
 struct OutCancelMsg {
   EventHeader hdr;
@@ -720,9 +727,10 @@ struct OutReplaceMsg {
   std::uint8_t pad0_[7];
   Price price;
   Qty qty;
-  std::uint8_t pad_[48];
+  std::uint8_t arm;  // the [ab] arm it was sent under: 0 none, k + 1 arm k (Order::arm)
+  std::uint8_t pad_[47];
 };
-static_assert(sizeof(OutReplaceMsg) == 192);
+static_assert(sizeof(OutReplaceMsg) == 192 && offsetof(OutReplaceMsg, arm) == 144);
 
 // ---- L3 (ITCH-style) -------------------------------------------------------------------
 

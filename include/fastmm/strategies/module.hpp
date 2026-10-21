@@ -27,6 +27,7 @@
 #include "fastmm/strategies/registry.hpp"
 #include "fastmm/strategies/strategy.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
@@ -69,11 +70,14 @@ namespace detail {
 template <class S>
 constexpr StrategyEntry::PublisherFactory publisher_factory() {
   if constexpr (requires { typename S::params_type; }) {
-    return [](ParamSink sink, const ParamMap& params) {
+    return [](ParamSink sink, const ParamMap& params, std::size_t instruments) {
       typename S::params_type p{};
       if (auto err = p.apply(params)) throw std::invalid_argument(*err);
       if (auto err = validate_params(p)) throw std::invalid_argument(*err);
-      return std::make_unique<ParamPublisher>(sink, p);
+      bool per_instrument = false;
+      if constexpr (requires { S::param_scope; })
+        per_instrument = S::param_scope == ParamScope::PerInstrument;
+      return std::make_unique<ParamPublisher>(sink, p, per_instrument ? instruments : 0);
     };
   } else {
     return nullptr;

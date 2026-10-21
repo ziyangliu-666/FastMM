@@ -611,6 +611,54 @@ quote_qty = 0.001
 - `--strategy` and `--param` override this section ([Command lines](cli.md#fastmm-live)).
 - `max_param_age_ms` bounds the age of parameter updates sent while the session runs ([Strategy API](strategy-api.md#parameter-updates)).
 
+## `[ab]`
+
+An A/B test of strategy parameters, in `fastmm-live` and in a backtest ([Run an A/B test](../how-to/strategies/ab-test.md)).
+
+<!-- BEGIN config-keys ab -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `name` | string | yes | name of the test, up to 32 letters, digits, '_', '-' or '.'; the store and journal record it with every arm assignment |
+| `assignment` | string | yes | instrument (each instrument stays in one arm, the arms balanced on weights) \| time (every instrument in the same arm, the arm changing each block) \| crossover (instruments split as with instrument, each one changing arm each block) |
+| `seed` | integer |  | seed of the instrument split and of the order of the arms over the blocks (default 1) |
+| `block_s` | integer |  | time, crossover: block length, s; blocks start at multiples of it since 1970-01-01 UTC, and each run of as many blocks as there are arms gives every arm one, in an order drawn from seed (required with time and crossover, refused with instrument) |
+| `start` | string |  | UTC time the test starts, YYYY-MM-DD, YYYY-MM-DDTHH:MM or YYYY-MM-DDTHH:MM:SSZ; before it the configured parameters run (default: at the start of the session) |
+| `end` | string |  | UTC time the test ends, as start; after it the configured parameters run again (default: none) |
+| `weights` | table |  | [ab.weights] table: instrument, crossover: the weight of each instrument ("venue:symbol" or "symbol" = number >= 0, e.g. its daily volume), every instrument or none; instruments of similar weight go to different arms (default: equal weights) |
+| `arms` | any | yes | [[ab.arms]] tables, 2 to 16, in order: arm 0 is the control the readout compares the others with |
+<!-- END config-keys -->
+
+Each `[[ab.arms]]` table is one arm:
+
+<!-- BEGIN config-keys ab.arms[] -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `name` | string | yes | arm name, up to 16 letters, digits, '_' or '-' |
+| `params` | table |  | [ab.arms.params] table: the arm's strategy parameters on top of [strategy.params] (default: none, the configured values); the parameters the arms name, 32 at most, belong to the test while it runs |
+<!-- END config-keys -->
+
+```toml
+[ab]
+name = "spread-1"
+assignment = "crossover"
+block_s = 3600
+
+[ab.weights]
+BTCUSDT = 2.1e9
+ETHUSDT = 9.5e8
+
+[[ab.arms]]
+name = "control"
+
+[[ab.arms]]
+name = "wide"
+params = { half_spread_bps = 8, levels = 2 }
+```
+
+- The arms' parameters are checked against the strategy's schema and `validate()` when the session or backtest starts; an unknown parameter or a value out of range is an error, exit code 3.
+- `instrument` and `crossover` give instruments different parameters, so the strategy must keep a set per instrument (`ParamScope::PerInstrument`, [Strategy API](strategy-api.md#parameters-per-instrument)); `time` works with any strategy that takes parameter updates.
+- While the test runs, `fastmm-ctl param` refuses the parameters the arms name.
+
 ## `[risk]`
 
 Every limit is off when it is `0` or omitted. A `fastmm-live` session that trades with real keys (a venue with an `api_key`, or an OUCH login, that is not `public_only`; not `--dry-run`) refuses to start, exit code 3, unless `[risk]` sets `max_position` or `max_order_notional`, and `max_loss`; `allow_unlimited = true` starts it without them. A dry run, a backtest, a replay and a strategy behind `fastmm-gateway` are not checked. [Risk model](../explanation/risk-model.md) describes the checks and their order.

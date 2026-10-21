@@ -14,11 +14,12 @@
 // it can already send the process a signal. It carries no secrets and answers no queries beyond
 // what the status file already publishes.
 //
-// Everything but `param`, `status`, `stop` and `handoff` becomes a message on the engine's control
-// ring, so the journal records it and a replay reproduces it (docs/explanation/determinism.md).
-// `param` is validated by ParamPublisher on this thread and reaches the engine as a ParamUpdate,
-// which the journal records too. `stop` is exactly what SIGTERM does; `handoff` is `stop` for a
-// successor waiting on the instance lock.
+// Everything but `param`, `ab`, `status`, `stop` and `handoff` becomes a message on the engine's
+// control ring, so the journal records it and a replay reproduces it
+// (docs/explanation/determinism.md). `param` is validated by ParamPublisher on this thread and
+// reaches the engine as a ParamUpdate, which the journal records too; so do the updates of `ab
+// stop` and `ab promote`. `stop` is exactly what SIGTERM does; `handoff` is `stop` for a successor
+// waiting on the instance lock.
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/risk_limits.hpp"
@@ -60,6 +61,14 @@ struct ControlPlane {
   // strategy's parameters have once those are equal (of one instrument, or the shared set), one
   // `name=value` per line. Unset: `params` is refused.
   std::function<std::string(InstrumentId)> describe_params;
+  // `ab`, `ab stop`, `ab promote <arm>`: the session's [ab] test (strategies/ab_test.hpp). The
+  // reply, starting with ok or error. Unset: the session runs no test.
+  struct AbRequest {
+    enum class Kind : std::uint8_t { Status, Stop, Promote };
+    Kind kind = Kind::Status;
+    std::string arm;  // Promote
+  };
+  std::function<std::string(const AbRequest&)> ab;
   // The answer to `status`, one topic per line.
   std::function<std::string()> status;
   // Runs the shutdown SIGTERM runs (kill switch, cancel-all on every venue, stop).

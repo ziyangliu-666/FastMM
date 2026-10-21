@@ -159,6 +159,7 @@ nav:
           - how-to/strategies/xmm.md
           - how-to/strategies/hedge-executor.md
           - how-to/strategies/register-a-strategy.md
+          - how-to/strategies/ab-test.md
           - how-to/strategies/python-hot-hooks.md
           - how-to/strategies/python-slow-methods.md
           - how-to/strategies/python-live.md

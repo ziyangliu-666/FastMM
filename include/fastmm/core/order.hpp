@@ -23,7 +23,8 @@ struct Order {
 
   ClientOrderId cl_ord_id;          // 8
   VenueOrderId venue_order_id;      // 41 -> 49
-  std::uint8_t pad0_[7];            // -> 56
+  std::uint8_t arm;                 // 1 [ab] arm at its last new or replace: 0 none, k + 1 arm k
+  std::uint8_t pad0_[6];            // -> 56
   InstrumentId instrument;          // 4 -> 60
   VenueId venue;                    // 1
   Side side;                        // 1

@@ -1620,6 +1620,7 @@ class Engine {
     r.side = side;
     r.liquidity = msg != nullptr ? msg->liquidity : Liquidity::Unknown;
     r.fee_asset = fee_asset;
+    r.arm = u.order.arm;
     r.venue_order_id = msg != nullptr ? msg->venue_order_id : u.order.venue_order_id;
     if (msg != nullptr) {
       r.exec_id = msg->exec_id;
@@ -2189,6 +2190,14 @@ class Engine {
     last_param_ = m;
     last_param_ts_ = now_;
     if (m.origin == ParamUpdateMsg::Origin::Control) control_param_seq_ = m.publish_seq;
+    if (m.arm != ParamUpdateMsg::kArmKeep) {
+      const std::uint8_t arm = m.arm == ParamUpdateMsg::kArmNone ? 0 : m.arm;
+      if (m.all_instruments()) {
+        ab_arm_.fill(arm);
+      } else if (m.hdr.instrument.value < kMaxInstruments) {
+        ab_arm_[m.hdr.instrument.value] = arm;
+      }
+    }
     emit_param(m);
     if constexpr (requires { strategy_.apply_param_update(m); }) strategy_.apply_param_update(m);
     if (cfg_.max_param_age.ns > 0) {
@@ -3030,6 +3039,8 @@ class Engine {
     r.account = account;
     auto h = oms_.submit(r, id, now);
     if (FASTMM_UNLIKELY(!h)) return fail(h.error());
+    const std::uint8_t arm = ab_arm_[req.instrument.value];  // submit checked the id
+    oms_.get(*h).arm = arm;
     if (FASTMM_UNLIKELY(balances_live_)) {
       const std::int64_t amount = order_hold(oms_.get(*h));
       holds_[h->idx] = amount;
@@ -3046,6 +3057,7 @@ class Engine {
     m.type = req.post_only && req.type == OrderType::Limit ? OrderType::PostOnly : req.type;
     m.tif = req.tif;
     m.reduce_only = req.reduce_only ? 1 : 0;
+    m.arm = arm;
     own_outbound(m.hdr);
     queue_out(m.hdr);
     ++stats_.orders_sent;
@@ -3201,6 +3213,8 @@ class Engine {
     if (FASTMM_UNLIKELY(!new_id.valid())) return fail(on_ids_exhausted());
     auto r = oms_.request_replace(h, new_id, px, qty, now);
     if (!r) return r;
+    const std::uint8_t arm = ab_arm_[o.instrument.value];
+    oms_.get(h).arm = arm;
     OutReplaceMsg m{};
     init_header(m, EventType::OutReplace, o.instrument, o.venue);
     m.hdr.recv_ts = now;
@@ -3209,6 +3223,7 @@ class Engine {
     m.venue_order_id = o.venue_order_id;
     m.price = px;
     m.qty = qty;
+    m.arm = arm;
     own_outbound(m.hdr);
     queue_out(m.hdr);
     ++stats_.replaces_sent;
@@ -3662,6 +3677,9 @@ class Engine {
   ParamUpdateMsg last_param_{};
   Timestamp last_param_ts_{};
   std::uint64_t control_param_seq_ = 0;
+  // [ab]: the arm each instrument is in (ParamUpdateMsg::arm), 0 none, k + 1 arm k. A new order
+  // or replace takes its instrument's (Order::arm).
+  std::array<std::uint8_t, kMaxInstruments> ab_arm_{};
   Timestamp now_{};  // valid while latched_
 
   alignas(kCacheLine) std::byte out_storage_[kOutBatch * kOutSlotBytes] = {};

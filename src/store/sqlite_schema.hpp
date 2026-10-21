@@ -23,6 +23,11 @@ struct Migration {
 // Runs every migration above the database's current version, up to `target` (0: the newest), and
 // records it in schema_version. A database newer than this build is refused.
 [[nodiscard]] Result<int, std::string> migrate(sqlite3* db, int target = 0);
+// Before migrate() changes an existing store: a copy at "<path>.v<version>.bak" (VACUUM INTO), its
+// path; empty when there is nothing to migrate. A copy already there from an earlier attempt is
+// kept.
+[[nodiscard]] Result<std::string, std::string> backup_before_migrate(sqlite3* db,
+                                                                     const std::string& path);
 // The version recorded in schema_version, or 0 when the table does not exist.
 [[nodiscard]] Result<int, std::string> schema_version(sqlite3* db);
 

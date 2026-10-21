@@ -4,6 +4,7 @@
 #include "fastmm/config/env_subst.hpp"
 #include "fastmm/config/schema.hpp"
 #include "fastmm/core/journal.hpp"
+#include "fastmm/strategies/ab_test.hpp"
 
 #include <fmt/format.h>
 #include <toml++/toml.hpp>
@@ -11,10 +12,13 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <optional>
+#include <set>
 #include <sstream>
 
 namespace fastmm {
@@ -158,6 +162,97 @@ void get(const toml::table& t, std::string_view key, T& out) {
 void get_decimal(const toml::table& t, std::string_view key, std::string& out) {
   if (const auto* n = t.get(key)) out = stringify(*n);
 }
+// Letters, digits and `extra`, 1 to `max` characters.
+bool plain_name(std::string_view s, std::size_t max, std::string_view extra) noexcept {
+  if (s.empty() || s.size() > max) return false;
+  for (const char c : s) {
+    const bool alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+    if (!alnum && extra.find(c) == std::string_view::npos) return false;
+  }
+  return true;
+}
+
+// [ab] and its [[ab.arms]]. The parameters are checked against the strategy's schema when a
+// session or backtest starts (strategies/ab_test.hpp); this checks the shape.
+void parse_ab(const toml::table& t, AbSection& ab) {
+  validate_table(t, "ab");
+  get(t, "name", ab.name);
+  if (!plain_name(ab.name, 32, "_-."))
+    fail_at(*t.get("name"), "ab.name must be 1 to 32 letters, digits, '_', '-' or '.'");
+  get(t, "assignment", ab.assignment);
+  const bool by_time = ab.assignment == "time" || ab.assignment == "crossover";
+  if (!by_time && ab.assignment != "instrument")
+    fail_at(*t.get("assignment"), "ab.assignment must be instrument, time or crossover");
+  get(t, "seed", ab.seed);
+  get(t, "block_s", ab.block_s);
+  if (by_time && ab.block_s <= 0) {
+    if (const auto* n = t.get("block_s")) fail_at(*n, "ab.block_s must be > 0");
+    fail_at(t, fmt::format("ab.assignment = \"{}\" needs block_s", ab.assignment));
+  }
+  if (!by_time && t.contains("block_s"))
+    fail_at(*t.get("block_s"), "ab.block_s: assignment = \"instrument\" has no blocks");
+  std::int64_t start_ns = 0;
+  std::int64_t end_ns = 0;
+  for (const std::string_view key : {std::string_view("start"), std::string_view("end")}) {
+    const auto* n = t.get(key);
+    if (n == nullptr) continue;
+    std::string& text = key == "start" ? ab.start : ab.end;
+    text = n->value_or(std::string{});
+    const std::optional<std::int64_t> ns = parse_utc_time(text);
+    if (!ns)
+      fail_at(*n, fmt::format("ab.{}: '{}' is not a UTC time YYYY-MM-DD[THH:MM[:SS]]", key, text));
+    (key == "start" ? start_ns : end_ns) = *ns;
+  }
+  if (!ab.start.empty() && !ab.end.empty() && end_ns <= start_ns)
+    fail_at(*t.get("end"), "ab.end must be after ab.start");
+  if (const auto* w = t.get_as<toml::table>("weights")) {
+    if (ab.assignment == "time")
+      fail_at(*w, "ab.weights: assignment = \"time\" puts every instrument in the same arm");
+    validate_table(*w, "ab.weights");
+    for (const auto& [k, v] : *w) {
+      const double x = v.value_or(-1.0);
+      if (!(x >= 0.0) || !std::isfinite(x))
+        fail_at(v, fmt::format("ab.weights.\"{}\" must be a number >= 0", k.str()));
+      ab.weights[std::string(k.str())] = x;
+    }
+  }
+  const toml::node* arms = t.get("arms");
+  const toml::array* list = arms != nullptr ? arms->as_array() : nullptr;
+  if (list == nullptr || !list->is_array_of_tables())
+    fail_at(arms != nullptr ? *arms : static_cast<const toml::node&>(t),
+            "ab.arms must be [[ab.arms]] tables");
+  if (list->size() < 2 || list->size() > kMaxAbArms)
+    fail_at(*arms, fmt::format("[ab] needs 2 to {} [[ab.arms]], got {}", kMaxAbArms, list->size()));
+  std::set<std::string> owned;
+  for (const toml::node& node : *list) {
+    const toml::table& a = *node.as_table();
+    validate_table(a, "ab.arms[]");
+    AbArmSection arm;
+    get(a, "name", arm.name);
+    if (!plain_name(arm.name, 16, "_-"))
+      fail_at(*a.get("name"), "ab.arms.name must be 1 to 16 letters, digits, '_' or '-'");
+    for (const AbArmSection& other : ab.arms) {
+      if (other.name == arm.name)
+        fail_at(*a.get("name"), fmt::format("ab.arms: two arms are named '{}'", arm.name));
+    }
+    if (const auto* p = a.get_as<toml::table>("params")) {
+      validate_table(*p, "ab.arms[].params");
+      for (const auto& [k, v] : *p) {
+        if (v.is_table() || v.is_array())
+          fail_at(v, fmt::format("ab.arms.params.{} must be a scalar", k.str()));
+        arm.params[std::string(k.str())] = stringify(v);
+        owned.insert(std::string(k.str()));
+      }
+    }
+    ab.arms.push_back(std::move(arm));
+  }
+  if (owned.size() > ParamUpdateMsg::kMaxFields)
+    fail_at(*arms,
+            fmt::format("[ab]: the arms name {} parameters; at most {}",
+                        owned.size(),
+                        ParamUpdateMsg::kMaxFields));
+}
+
 // [risk.underlying] / [gateway.underlying]: one table per base asset, each with max_net (base
 // units, a non-negative decimal).
 void get_underlying(const toml::table& parent, std::string_view section, UnderlyingSpec& out) {
@@ -472,6 +567,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
                                                         "venues",
                                                         "instruments",
                                                         "strategy",
+                                                        "ab",
                                                         "risk",
                                                         "gateway",
                                                         "accounting",
@@ -811,6 +907,13 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     }
   } else if (doc.contains("strategy")) {
     fail_at(*doc.get("strategy"), "[strategy] must be a table");
+  }
+
+  // [ab]
+  if (const auto* t = doc["ab"].as_table()) {
+    parse_ab(*t, cfg.ab);
+  } else if (doc.contains("ab")) {
+    fail_at(*doc.get("ab"), "[ab] must be a table");
   }
 
   // [risk]
@@ -1167,6 +1270,26 @@ std::string Config::redacted() const {
     out += "\n[strategy.params]\n";
     for (const auto& [k, v] : strategy.params) kq(k, v);
   }
+  if (ab.enabled()) {
+    out += "\n[ab]\n";
+    kq("name", ab.name);
+    kq("assignment", ab.assignment);
+    kv("seed", ab.seed);
+    if (ab.block_s != 0) kv("block_s", ab.block_s);
+    if (!ab.start.empty()) kq("start", ab.start);
+    if (!ab.end.empty()) kq("end", ab.end);
+    if (!ab.weights.empty()) {
+      out += "\n[ab.weights]\n";
+      for (const auto& [k, v] : ab.weights) kv(fmt::format("\"{}\"", k), v);
+    }
+    for (const AbArmSection& a : ab.arms) {
+      out += "\n[[ab.arms]]\n";
+      kq("name", a.name);
+      if (a.params.empty()) continue;
+      out += "\n[ab.arms.params]\n";
+      for (const auto& [k, v] : a.params) kq(k, v);
+    }
+  }
   out += "\n[risk]\n";
   if (!risk.max_order_qty.empty()) kq("max_order_qty", risk.max_order_qty);
   if (!risk.max_order_notional.empty()) kq("max_order_notional", risk.max_order_notional);
@@ -1435,6 +1558,35 @@ std::string Config::effective_toml() const {
   for (const auto& [k, v] : strategy.params) params.insert_or_assign(k, v);
   st.insert("params", std::move(params));
   root.insert("strategy", std::move(st));
+
+  // Only when set, so a configuration without it keeps its effective text and hash.
+  if (ab.enabled()) {
+    toml::table t;
+    t.insert("name", ab.name);
+    t.insert("assignment", ab.assignment);
+    t.insert("seed", static_cast<std::int64_t>(ab.seed));
+    if (ab.block_s != 0) t.insert("block_s", ab.block_s);
+    if (!ab.start.empty()) t.insert("start", ab.start);
+    if (!ab.end.empty()) t.insert("end", ab.end);
+    if (!ab.weights.empty()) {
+      toml::table w;
+      for (const auto& [k, v] : ab.weights) w.insert_or_assign(k, v);
+      t.insert("weights", std::move(w));
+    }
+    toml::array arms;
+    for (const AbArmSection& a : ab.arms) {
+      toml::table x;
+      x.insert("name", a.name);
+      if (!a.params.empty()) {
+        toml::table p;
+        for (const auto& [k, v] : a.params) p.insert_or_assign(k, v);
+        x.insert("params", std::move(p));
+      }
+      arms.push_back(std::move(x));
+    }
+    t.insert("arms", std::move(arms));
+    root.insert("ab", std::move(t));
+  }
 
   toml::table r;
   r.insert("max_order_qty", risk.max_order_qty);

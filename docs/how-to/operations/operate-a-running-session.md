@@ -8,7 +8,7 @@ fastmm-ctl --name sim-local pull --instrument BTCUSDT
 fastmm-ctl --name sim-local flatten --max-slippage-bps 30
 ```
 
-Every command except `param`, `status`, `stop` and `handoff` becomes a message on the engine's control ring, so the journal records it and a replay reproduces the session exactly ([Determinism](../../explanation/determinism.md)). `param` is validated against the strategy's schema on the control thread and reaches the engine as a `ParamUpdate`, which the journal records too, with its `--source`.
+Every command except `param`, `ab`, `status`, `stop` and `handoff` becomes a message on the engine's control ring, so the journal records it and a replay reproduces the session exactly ([Determinism](../../explanation/determinism.md)). `param` is validated against the strategy's schema on the control thread and reaches the engine as a `ParamUpdate`, which the journal records too, with its `--source`.
 
 ## The socket
 
@@ -35,6 +35,9 @@ The control thread reads the socket every 50 ms. A command reaches the engine at
 | `param <name>=<value> ... [--instrument SYM] [--source WHO]` | New strategy parameters. Validated here first: an unknown name, a value out of range or a failed `validate()` is refused and nothing is published ([Strategy parameters](../../reference/strategy-api.md#parameters)). The reply `ok param queued seq=N` means the update is on the engine's ring, not that the engine has applied it ([below](#confirm-a-parameter-change)). `--source` records who asked for it (`manual`, `scheduled:drain`, at most 39 bytes) in the journal and the status. |
 | `params [--instrument SYM]` | The control socket's sequence numbers, published and applied, the source of the last update, then the parameters' values, one `name=value` per line ([below](#confirm-a-parameter-change)). |
 | `limits <key>=<value> ... [--force]` | New risk limits. The keys are the `[risk]` keys, `check_balance` included, and `underlying.<BASE>.max_net` for a base asset with a `[risk.underlying.<BASE>]` section; the ones you do not name keep the values they have. Setting a limit that is on to `0` (or `stp`, `check_balance` to `false`) turns it off and is refused without `--force` ([below](#change-a-limit)). |
+| `ab` | The `[ab]` test: its arms, the block and the end, and each instrument's arm ([Run an A/B test](../strategies/ab-test.md#run-it-live)). |
+| `ab stop` | Ends the test: every instrument back on the configured parameters, out of any arm. |
+| `ab promote <arm>` | Ends the test with every instrument on that arm's parameters. |
 | `flatten [--instrument SYM] [--max-slippage-bps N]` | The engine works the position off itself ([below](#flatten)), also while the kill switch is set. |
 | `kill` | Trips the global kill switch: quoting off, every quote pulled, every working order cancelled. The position stays; `flatten` works it off. |
 | `unkill` | Clears it and resumes quoting, as `SIGHUP` does, including a latched `max_loss` trip ([Kill switch and shutdown](kill-switch-and-shutdown.md#the-latched-loss-budget)). |

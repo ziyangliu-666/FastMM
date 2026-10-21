@@ -196,7 +196,7 @@ The flags override `[backtest]` ([Configuration](configuration.md#backtest)).
 
 ## fastmm-data
 
-Lists the market-data sources a backtest can read and packs any of them into a journal ([Market-data sources](data-sources.md)). Downloading the files a source reads is `python3 -m fastmm.data fetch`. `fill-check` compares a live session's fills with the `l2_queue` fill model ([Check the fill model against live fills](../how-to/operations/journals-replay-pnl.md#check-the-fill-model-against-live-fills)); `calibrate` fits its conservatism and the simulated latencies to several sessions and prints the `[backtest]` keys ([Calibrating against live sessions](../explanation/backtesting.md#calibrating-against-live-sessions)).
+Lists the market-data sources a backtest can read and packs any of them into a journal ([Market-data sources](data-sources.md)). Downloading the files a source reads is `python3 -m fastmm.data fetch`. `fill-check` compares a live session's fills with the `l2_queue` fill model ([Check the fill model against live fills](../how-to/operations/journals-replay-pnl.md#check-the-fill-model-against-live-fills)); `calibrate` fits its conservatism and the simulated latencies to several sessions and prints the `[backtest]` keys ([Calibrating against live sessions](../explanation/backtesting.md#calibrating-against-live-sessions)). `ab` reads an `[ab]` test out of the journals that ran it ([Run an A/B test](../how-to/strategies/ab-test.md#read-it-out)); its options are `--horizons-ms`, `--maker-rebate-bps`, `--resamples`, `--aa <file.fmj>...`, `--json` and `--csv`.
 
 <!-- BEGIN cli-help fastmm-data -->
 ```text
@@ -216,7 +216,8 @@ OPTIONS:
   --conservatism <c,...>      fill-check, calibrate: queue_conservatism values to compare
                               (default 0,0.5,1; calibrate 0,0.25,0.5,0.75,1)
   --csv <file.csv>            fill-check: also write one row per order; calibrate: one row
-                              per session, inputs and conservatism
+                              per session, inputs and conservatism; ab: one row per
+                              instrument, arm and block
 
 SUBCOMMANDS:
   list                        registered data sources, their options and what each one
@@ -229,6 +230,9 @@ SUBCOMMANDS:
                               captured and markouts per horizon, from its journal
   calibrate                   fit queue_conservatism and the latencies to live sessions,
                               cross-validated, and print the [backtest] keys
+  ab                          the readout of an [ab] test: each arm's fills, markouts, fees
+                              and net, and each arm against the first, paired as the test
+                              assigned them, from the journals that ran it
 
 Downloading what a source reads: python3 -m fastmm.data fetch --help
 ```
@@ -239,8 +243,8 @@ Downloading what a source reads: python3 -m fastmm.data fetch --help
 | 0 | the command ran |
 | 2 | bad command line |
 | 3 | bad configuration (`convert`, `calibrate --backtest`) |
-| 4 | the source is unknown, its options are wrong, or its files are missing; a journal given to `fill-check` or `calibrate` cannot be read; a `calibrate --backtest` run failed |
-| 5 | the journal, or the `--csv` file of `fill-check` or `calibrate`, could not be written |
+| 4 | the source is unknown, its options are wrong, or its files are missing; a journal given to `fill-check`, `calibrate` or `ab` cannot be read, or one given to `ab` ran no `[ab]` test; a `calibrate --backtest` run failed |
+| 5 | the journal, or the `--csv` file of `fill-check`, `calibrate` or `ab`, could not be written |
 
 ## fastmm-replay
 
@@ -489,6 +493,12 @@ commands (one per datagram; the reply starts with ok or error)
   limits <key>=<value> ... [--force]       new risk limits (the [risk] keys, and
                                            underlying.<BASE>.max_net); turning one
                                            off (0, false) needs --force
+  ab                                       the [ab] test: its arms, the block, the end
+                                           and each instrument's arm
+  ab stop                                  end it: every instrument back on the
+                                           configured parameters
+  ab promote <arm>                         end it with every instrument on that arm's
+                                           parameters
   flatten [--instrument SYM] [--max-slippage-bps N]  work the position off, reduce-only
   kill                                     trip the kill switch (quotes pulled, all
                                            orders cancelled; the position stays)

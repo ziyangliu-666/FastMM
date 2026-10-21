@@ -16,6 +16,7 @@ tier1 fastmm/strategies/strategy.hpp
 tier1 fastmm/strategies/hooks.hpp
 tier1 fastmm/strategies/params.hpp
 tier1 fastmm/strategies/param_publisher.hpp
+tier1 fastmm/strategies/ab_test.hpp
 tier1 fastmm/strategies/quoting.hpp
 tier1 fastmm/strategies/hedge_executor.hpp
 tier1 fastmm/strategies/registry.hpp
@@ -57,6 +58,7 @@ tier1 fastmm/backtest/result.hpp
 tier1 fastmm/backtest/metrics.hpp
 tier1 fastmm/backtest/markout.hpp
 tier1 fastmm/backtest/live_analysis.hpp
+tier1 fastmm/backtest/ab_report.hpp
 tier1 fastmm/backtest/fee_model.hpp
 tier1 fastmm/backtest/sweep.hpp
 tier1 fastmm/backtest/replay.hpp

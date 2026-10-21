@@ -16,6 +16,7 @@
 #include "fastmm/backtest/synthetic_source.hpp"
 #include "fastmm/core/engine_runner.hpp"
 #include "fastmm/sim/sim_backend.hpp"
+#include "fastmm/strategies/module.hpp"
 #include "fastmm/strategies/registry.hpp"
 
 #include <memory>
@@ -39,6 +40,10 @@ class BacktestSession {
   [[nodiscard]] sim::SimBackend& backend() noexcept { return *backend_; }
   // Parameter updates delivered at simulated times during run() (not owned; may be null).
   void set_param_schedule(sim::ParamSchedule* schedule) noexcept { params_ = schedule; }
+  // [ab]: builds the test's publisher with `publisher` (StrategyEntry::publisher), so the arms'
+  // updates reach the engine at their times during run(). A configuration with [ab] needs it.
+  // Throws std::invalid_argument when the arms do not fit the strategy (ab_test.hpp).
+  void enable_ab(StrategyEntry::PublisherFactory publisher);
   // Code run at simulated times during run() (sim::SimDriver::set_slow_hooks).
   void set_slow_hooks(const sim::SlowHooks& hooks) noexcept { slow_ = hooks; }
   // Runs to the end of the data / horizon. `runner` (may be null) supplies engine stats and, with
@@ -66,11 +71,14 @@ class BacktestSession {
   RunnerDeps deps_;
   sim::ParamSchedule* params_ = nullptr;
   sim::SlowHooks slow_{};
+  struct AbRun;
+  std::unique_ptr<AbRun> ab_;
 };
 
 template <StrategyLike S>
 BacktestResult run_backtest(const BacktestConfig& cfg, MdSource* source = nullptr) {
   BacktestSession session(cfg, source, &S::schema());
+  if (cfg.ab.enabled()) session.enable_ab(detail::publisher_factory<S>());
   std::unique_ptr<IEngineRunner> runner = session.backend().template make_runner<S>(session.deps());
   return session.run(session.backend().hooks, runner.get(), S::name());
 }

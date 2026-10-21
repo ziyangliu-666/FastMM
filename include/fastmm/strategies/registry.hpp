@@ -63,10 +63,13 @@ struct StrategyEntry {
   using Factory = std::unique_ptr<IEngineRunner> (*)(TransportKind, RunnerDeps&);
   // Builds a publisher for this strategy's parameters over `sink`, its copy seeded with the
   // values the session configured the strategy with, so fastmm-live can accept parameter changes
-  // while it runs (src/live/control_socket.cpp). Null when the parameters are not a FASTMM_PARAMS
-  // struct (a hot strategy builds its schema at run time and brings its own publisher). Throws
-  // std::invalid_argument on a value the schema refuses (startup only).
-  using PublisherFactory = std::unique_ptr<ParamPublisher> (*)(ParamSink, const ParamMap&);
+  // while it runs (src/live/control_socket.cpp). With ParamScope::PerInstrument it keeps one copy
+  // for each of `instruments` and takes updates for one instrument. Null when the parameters are
+  // not a FASTMM_PARAMS struct (a hot strategy builds its schema at run time and brings its own
+  // publisher). Throws std::invalid_argument on a value the schema refuses (startup only).
+  using PublisherFactory = std::unique_ptr<ParamPublisher> (*)(ParamSink,
+                                                               const ParamMap&,
+                                                               std::size_t instruments);
   std::string_view name;  // must outlive the registry (S::name() returns a literal)
   const ParamSchema* schema = nullptr;
   std::array<Factory, kTransportKinds> factories{};  // indexed by TransportKind

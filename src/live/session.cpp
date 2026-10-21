@@ -26,6 +26,7 @@
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/store/registry.hpp"
 #include "fastmm/store/store_thread.hpp"
+#include "fastmm/strategies/ab_test.hpp"
 #include "fastmm/strategies/param_publisher.hpp"
 #include "fastmm/strategies/registry.hpp"
 #include "fastmm/venues/event_sink.hpp"
@@ -1963,10 +1964,31 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     // The publisher shares the control ring, so a `param` and the `pull` after it reach the
     // engine in the order the operator typed them. This thread is the ring's only producer.
     try {
-      publisher = strategy->publisher(control_sink, cfg.strategy.params);
+      publisher = strategy->publisher(control_sink, cfg.strategy.params, instruments.size());
     } catch (const std::exception& e) {
       FASTMM_LOG_WARN("parameter updates are not available: {}", std::string_view(e.what()));
     }
+  }
+  // [ab]: the test's arm changes go out through the control socket's publisher, from this thread.
+  std::unique_ptr<AbController> ab;
+  if (cfg.ab.enabled()) {
+    if (!publisher) {
+      std::fprintf(stderr,
+                   "%s: [ab] needs a strategy whose parameters fastmm-live can update (a "
+                   "FASTMM_PARAMS struct)\n",
+                   prog);
+      return kExitConfig;
+    }
+    try {
+      ab = std::make_unique<AbController>(AbPlan(cfg.ab, instruments, venue_names), *publisher);
+    } catch (const std::exception& e) {
+      std::fprintf(stderr, "%s: %s\n", prog, e.what());
+      return kExitConfig;
+    }
+    FASTMM_LOG_INFO("[ab] {}: {} arms, assignment {}",
+                    cfg.ab.name,
+                    cfg.ab.arms.size(),
+                    std::string_view(cfg.ab.assignment));
   }
   // The session's rows: a warm standby's from when it takes over.
   const auto start_store = [&]() -> int {
@@ -1987,6 +2009,17 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     so.dry_run = opts.dry_run;
     so.pnl_carry_raw = kill_state.carry().raw;
     so.venues = venue_names;
+    if (cfg.ab.enabled()) {
+      so.ab_test = cfg.ab.name;
+      for (const AbArmSection& a : cfg.ab.arms) {
+        std::string params;
+        for (const auto& [k, v] : a.params) {
+          if (!params.empty()) params += ' ';
+          params.append(k).append("=").append(v);
+        }
+        so.ab_arms.push_back({a.name, params});
+      }
+    }
     // The parameter table, and the parameters the session starts with: all of them, defaults
     // included, from the control socket's publisher; the configured ones otherwise.
     if (param_schema != nullptr) {
@@ -2019,6 +2052,8 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   if (!warm) {
     if (const int rc = start_store(); rc != 0) return rc;
   }
+  // The arms the instruments start in, ahead of the first event the engine takes.
+  if (ab && !warm) static_cast<void>(ab->poll(wall_now()));
   if (journal) journal->start();
   std::thread engine_thread;
   if (single) {
@@ -2415,6 +2450,14 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   if (publisher) {
     plane.params = [&](const ControlPlane::ParamRequest& req) {
       ControlPlane::ParamResult r;
+      if (ab && ab->state(wall_now()) != AbController::State::Ended) {
+        for (const auto& [name, value] : req.values) {
+          if (!ab->owns(name)) continue;
+          r.error = "parameter '" + name + "' belongs to the [ab] test " + cfg.ab.name +
+                    " until `ab stop` or `ab promote <arm>`";
+          return r;
+        }
+      }
       try {
         r.seq = publisher->publish_as(
             req.values,
@@ -2438,6 +2481,27 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
       return ControlPlane::ParamResult{custom->set_params(req.values, req.instrument), 0};
     };
     plane.describe_params = describe_params;
+  }
+  if (ab) {
+    plane.ab = [&](const ControlPlane::AbRequest& req) -> std::string {
+      const Timestamp now = wall_now();
+      if (req.kind == ControlPlane::AbRequest::Kind::Status) return "ok " + ab->status(now);
+      if (ab->state(now) == AbController::State::Ended)
+        return "error the [ab] test " + cfg.ab.name + " has ended\n";
+      int promote = AbPlan::kNoArm;
+      if (req.kind == ControlPlane::AbRequest::Kind::Promote) {
+        promote = ab->arm(req.arm);
+        if (promote == AbPlan::kNoArm) return "error no arm named '" + req.arm + "'\n";
+      }
+      ab->stop(promote);
+      const bool sent = ab->poll(now);
+      FASTMM_LOG_WARN("control socket: [ab] {} ended, every instrument on {}",
+                      cfg.ab.name,
+                      promote == AbPlan::kNoArm ? std::string("the configured parameters")
+                                                : "arm " + req.arm + "'s parameters");
+      return std::string("ok ab ") + (promote == AbPlan::kNoArm ? "stop" : "promote " + req.arm) +
+             (sent ? " queued\n" : " waits for room in the control ring\n");
+    };
   }
   ControlSocket control_socket;
   // A warm standby's from when it takes over: until then the path is the running session's.
@@ -2605,6 +2669,8 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
       if (standby_rc != 0) reason = 11;
     }
     control_socket.poll(plane);
+    // A full control ring leaves the rest of a block change to the next turn.
+    if (ab && owner) static_cast<void>(ab->poll(wall_now()));
     if (g_signal != 0) reason = 2;
     const std::int64_t now = steady_now().ns;
     if (opts.duration_ns > 0 && now - start >= opts.duration_ns) reason = reason == 0 ? 1 : reason;

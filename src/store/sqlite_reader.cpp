@@ -245,8 +245,9 @@ class SqliteReader final : public Reader {
     std::string sql = std::string("SELECT ts_ns, ") + (version_ >= 10 ? "account, " : "") +
                       "symbol, side, liquidity, price_raw, qty_raw, " +
                       (version_ >= 10 ? "named_qty_raw, " : "") +
-                      "fee_raw, fee_asset, cl_ord_id, exec_id, synthetic, position_qty_raw,"
-                      " session_id FROM fills";
+                      "fee_raw, fee_asset, cl_ord_id, exec_id, synthetic, position_qty_raw, " +
+                      (version_ >= 12 ? "COALESCE(arm, '') AS arm, " : "") +
+                      "session_id FROM fills";
     Where w;
     w.session(f);
     w.symbol(f);
@@ -413,9 +414,11 @@ class SqliteReader final : public Reader {
   }
 
   [[nodiscard]] Result<Rows, std::string> orders(const QueryFilter& f) override {
-    std::string sql =
-        "SELECT updated_ns, symbol, cl_ord_id, side, type, price_raw, qty_raw, cum_qty_raw,"
-        " state, reject_reason, terminal, updates, session_id FROM orders";
+    std::string sql = std::string(
+                          "SELECT updated_ns, symbol, cl_ord_id, side, type, price_raw, qty_raw,"
+                          " cum_qty_raw, state, reject_reason, terminal, updates, ") +
+                      (version_ >= 12 ? "COALESCE(arm, '') AS arm, " : "") +
+                      "session_id FROM orders";
     Where w;
     w.session(f);
     w.symbol(f);

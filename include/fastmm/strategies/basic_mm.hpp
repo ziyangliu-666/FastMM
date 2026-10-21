@@ -45,7 +45,7 @@ struct BasicMMParams {
   FASTMM_PARAM(int, level_step_ticks, 1, 1, 100000, "tick distance between successive levels")
 };
 
-class BasicMM : public StrategyBase<BasicMMParams> {
+class BasicMM : public StrategyBase<BasicMMParams, ParamScope::PerInstrument> {
  public:
   static constexpr std::string_view name() noexcept { return "basic_mm"; }
   static constexpr std::uint64_t kStaleTimer = 0x5741'4c45;  // "STALE"
@@ -67,7 +67,7 @@ class BasicMM : public StrategyBase<BasicMMParams> {
     const Price mid = book.mid();
     const Instrument& inst = ctx.instrument(id);
     const Price& last = last_mid_[id.value];
-    if (last.is_positive() && (mid - last).abs() < inst.ticks(params().requote_threshold_ticks))
+    if (last.is_positive() && (mid - last).abs() < inst.ticks(params(id).requote_threshold_ticks))
       return;
     requote(ctx, id, book, inst);
   }
@@ -86,7 +86,7 @@ class BasicMM : public StrategyBase<BasicMMParams> {
     for (const Instrument& inst : ctx.instruments()) {
       const auto& book = ctx.book(inst.id);
       if (book.last_update().valid() &&
-          (now - book.last_update()).millis() > params().pull_on_stale_ms.millis()) {
+          (now - book.last_update()).millis() > params(inst.id).pull_on_stale_ms.millis()) {
         ctx.pull_quotes(inst.id);
         last_mid_[inst.id.value] = Price{};
       }
@@ -134,7 +134,7 @@ class BasicMM : public StrategyBase<BasicMMParams> {
   [[nodiscard]] DesiredQuotes compute_quotes(Price mid,
                                              Qty position,
                                              const Instrument& inst) const noexcept {
-    const BasicMMParams& p = params();
+    const BasicMMParams& p = params(inst.id);
     DesiredQuotes q;
     if (p.quote_qty.is_zero()) return q;
     const std::int64_t inventory_units = position / p.quote_qty;  // signed, truncating

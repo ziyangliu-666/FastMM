@@ -5,6 +5,7 @@
 - **[Account pools](reference/venues.md#account-pools).** Several sub-accounts trade behind one venue, and orders spread across them.
 - **[Gateway](how-to/operations/run-behind-a-gateway.md).** One `fastmm-gateway` holds the exchange connections; several strategy processes attach to it and can stop or restart without dropping them.
 - **[Live control](how-to/operations/operate-a-running-session.md).** `fastmm-ctl` changes a running session's parameters without a restart.
+- **[A/B tests](how-to/strategies/ab-test.md).** Parameter sets run side by side, split by instrument, by time block or both, and are compared on markouts and net with paired intervals.
 - **[Low-latency tuning](how-to/operations/running-in-production.md#host-tuning).** Core pinning, busy polling, and AF_XDP or DPDK receive for UDP multicast feeds. Order entry runs on the kernel TCP stack, which OpenOnload or XLIO can replace through `LD_PRELOAD`.
 
 <video class="fastmm-video" controls preload="none" poster="assets/explainer-poster.jpg" src="https://github.com/ziyangliu-666/FastMM/releases/download/v0.5.1/fastmm-explainer.mp4"></video>

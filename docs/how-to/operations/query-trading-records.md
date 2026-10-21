@@ -122,11 +122,13 @@ build/release/bin/fastmm-pnl fills --engine mm1 --session 1709510400123456789
 ```
 
 ```text
-ts                   account  symbol   side  liquidity  price      qty    named_qty  fee      fee_asset  cl_ord_id         exec_id   synthetic  position_qty  session_id
-2024-03-04 09:14:02  binance  BTCUSDT  Buy   Maker      61250.10   0.002  0          0.00061  quote      fm000300000a1b    88213401  0          0.002         1709510400123456789
+ts                   account  symbol   side  liquidity  price      qty    named_qty  fee      fee_asset  cl_ord_id         exec_id   synthetic  position_qty  arm      session_id
+2024-03-04 09:14:02  binance  BTCUSDT  Buy   Maker      61250.10   0.002  0          0.00061  quote      fm000300000a1b    88213401  0          0.002         control  1709510400123456789
 ```
 
 A `synthetic` row is an estimate the engine booked from a venue's filled quantity before the execution arrived; `named_qty` on it is how much of it executions named since, and on an execution how much of it named an estimate. Count an execution whole and a synthetic row for `qty - named_qty`.
+
+`arm` is the `[ab]` arm the order was sent under, empty outside a test ([Run an A/B test](../strategies/ab-test.md)).
 
 `fastmm-pnl orders --session <id>` lists each order in its last state; `fastmm-pnl positions --session <id>` the last position per instrument.
 

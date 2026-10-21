@@ -7,6 +7,8 @@
 //       [--horizons-ms 100,1000,10000] [--pre-ms 100] [--market recorded.fmj]
 //   fastmm-data calibrate a.fmj b.fmj c.fmj [--conservatism ...] [--backtest [--config f.toml]]
 //       [--from-live-state] [--csv grid.csv]
+//   fastmm-data ab runs/mm-*.fmj [--aa runs/aa-*.fmj] [--maker-rebate-bps 0.8] [--json]
+//       [--csv cells.csv]
 //
 // Downloading the files themselves is `python3 -m fastmm.data fetch` (no third-party packages).
 //
@@ -14,6 +16,7 @@
 // failure.
 #include "command_line.hpp"
 
+#include "fastmm/backtest/ab_report.hpp"
 #include "fastmm/backtest/backtest_config.hpp"
 #include "fastmm/backtest/calibrate.hpp"
 #include "fastmm/backtest/data_registry.hpp"
@@ -59,6 +62,9 @@ int data(int argc, char** argv) {
   bool json = false;
   double pre_ms = 100;
   std::string market;
+  std::vector<std::string> aa_journals;
+  double rebate_bps = 0;
+  std::size_t resamples = 2000;
 
   CLI::App app("Lists the market-data sources a backtest can read and packs them into journals.",
                program);
@@ -122,6 +128,30 @@ int data(int argc, char** argv) {
                       "calibrate --backtest: start both runs from the strategy state and positions "
                       "the session recorded and replay its parameter updates ([backtest] "
                       "initial_state = \"journal\", params_from_journal = true)");
+  CLI::App* ab = app.add_subcommand(
+      "ab",
+      "the readout of an [ab] test: each arm's fills, markouts, fees and net, and each arm "
+      "against the first, paired as the test assigned them, from the journals that ran it");
+  ab->add_option("journals", journals, "journals of the sessions or backtests that ran the test")
+      ->option_text("<file.fmj>...")
+      ->required();
+  ab->add_option("--horizons-ms", horizons_ms, "markout horizons, in ms (default 1000,10000,60000)")
+      ->option_text("<ms,...>")
+      ->delimiter(',')
+      ->check(CLI::PositiveNumber);
+  ab->add_option("--maker-rebate-bps",
+                 rebate_bps,
+                 "a rebate the venue pays on maker volume apart from the fills' fees, bps "
+                 "(default 0)")
+      ->option_text("<bps>");
+  ab->add_option("--resamples", resamples, "resamples of the 95% intervals (default 2000)")
+      ->option_text("<n>")
+      ->check(CLI::Range(std::size_t{100}, std::size_t{1000000}));
+  ab->add_option("--aa",
+                 aa_journals,
+                 "journals of an A/A test: the half-widths of its intervals, beside each metric")
+      ->option_text("<file.fmj>...");
+  ab->add_flag("--json", json, "one JSON object instead of tables");
   for (CLI::App* sub : app.get_subcommands({})) sub->fallthrough();
   app.require_subcommand(0, 1);
   app.add_option("--data", spec, "convert: source, e.g. binance:BTCUSDT,2024-03-27")
@@ -145,7 +175,7 @@ int data(int argc, char** argv) {
   app.add_option("--csv",
                  csv,
                  "fill-check: also write one row per order; calibrate: one row per session, "
-                 "inputs and conservatism")
+                 "inputs and conservatism; ab: one row per instrument, arm and block")
       ->option_text("<file.csv>");
   if (const std::optional<int> rc = parse(app, argc, argv)) return *rc;
 
@@ -167,8 +197,8 @@ int data(int argc, char** argv) {
     return 0;
   }
   if (!list->parsed() && !convert->parsed() && !fill_check->parsed() && !calibrate->parsed() &&
-      !analyze->parsed())
-    return usage_error(app, "a command is required: list, convert, fill-check or calibrate");
+      !analyze->parsed() && !ab->parsed())
+    return usage_error(app, "a command is required: list, convert, fill-check, calibrate or ab");
   const auto write_csv = [&](const std::string& text) {
     std::ofstream f(csv, std::ios::trunc);
     f << text;
@@ -176,6 +206,23 @@ int data(int argc, char** argv) {
     std::fprintf(stderr, "%s: cannot write %s\n", prog, csv.c_str());
     return false;
   };
+  if (ab->parsed()) {
+    bt::AbReportOptions opt;
+    for (const double h : horizons_ms) opt.horizons_ns.push_back(std::llround(h * 1e6));
+    opt.maker_rebate_bps = rebate_bps;
+    opt.resamples = resamples;
+    bt::AbReport r;
+    try {
+      r = bt::ab_report(journals, opt);
+      if (!aa_journals.empty()) bt::add_noise_floor(r, bt::ab_report(aa_journals, opt));
+    } catch (const std::exception& e) {
+      std::fprintf(stderr, "%s: %s\n", prog, e.what());
+      return kExitData;
+    }
+    std::fputs((json ? bt::ab_report_json(r) : bt::format_ab_report(r)).c_str(), stdout);
+    if (!csv.empty() && !write_csv(bt::ab_cells_csv(r))) return kExitWrite;
+    return 0;
+  }
   if (calibrate->parsed()) {
     if (conservatism.empty()) conservatism = {0.0, 0.25, 0.5, 0.75, 1.0};
     bt::Calibration c;

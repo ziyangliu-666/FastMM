@@ -401,6 +401,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   t.own_orders_in_feed = bt.get_bool("own_orders_in_feed", true);
   b.balances_from_journal = bt.get_bool("balances_from_journal", false);
   b.params_from_journal = bt.get_bool("params_from_journal", false);
+  b.ab = cfg.ab;
   if (const std::string s = bt.get_string("initial_state", "state_file"); s == "journal") {
     b.initial_state = InitialState::Journal;
   } else if (s == "none") {

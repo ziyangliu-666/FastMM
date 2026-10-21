@@ -81,7 +81,7 @@ The SQLite backend opens the file with `journal_mode=WAL` and `synchronous=NORMA
 
 ## Schema
 
-Version 11 (`kSqliteSchemaVersion`). The SQL is `src/store/sqlite_schema.cpp`, one migration step per version; an existing store is migrated in place at open, and a store written by a newer FastMM is refused with the version it holds.
+Version 12 (`kSqliteSchemaVersion`). The SQL is `src/store/sqlite_schema.cpp`, one migration step per version; an existing store is migrated in place at open, and a store written by a newer FastMM is refused with the version it holds. Before it migrates an existing store, the backend copies it to `<path>.v<version>.bak` (`VACUUM INTO`, logged), the version it had; a copy already there is kept.
 
 ### sessions
 
@@ -136,6 +136,7 @@ One row per execution, keyed `(session_id, seq)`, with a unique index on `(sessi
 | `late` | 1 for a fill that arrived after the order was already terminal |
 | `account` | the `[venues.<name>]` it executed on (version 10) |
 | `named_qty_raw` | on a synthetic fill, how much of it executions have named since; on an execution, how much of it named an estimate (version 10) |
+| `arm` | the `[ab]` arm its order was sent under, by name; NULL outside a test (version 12) |
 
 A synthetic fill is an estimate: the venue reported filled quantity (a cancel ack, an expiry, a reconciliation snapshot) before the execution behind it arrived, so the engine booked it at the order's price. When the execution comes, it corrects the estimate's price and fee instead of moving the position again: its `booked_qty_raw` excludes the `named_qty_raw` the estimate already moved. Both rows stay. Summing the table therefore counts an execution whole and a synthetic fill for `qty_raw - named_qty_raw`, the part still estimated; anything else counts the named quantity twice (on Binance spot a cancel ack often overtakes the fill). Rows from before version 10 are backfilled from `booked_qty_raw`.
 
@@ -166,6 +167,8 @@ One row per order, keyed `(session_id, cl_ord_id)`, updated in place: the row ho
 
 A fill that arrives after its order ended (the cancel ack overtook the execution) updates the row's `cum_qty` and, when it completes the order, its state: `Canceled` becomes `Filled`.
 
+`arm` (version 12) is the `[ab]` arm the order was last sent or replaced under, by name; NULL outside a test.
+
 ### positions
 
 One row per position snapshot, keyed `(session_id, seq)`: `qty_raw`, `avg_px_raw`, `realized_raw`, `unrealized_raw`, `fees_raw`, `gross_traded_raw`, `fills`, the portfolio totals `total_realized_raw`, `total_unrealized_raw`, `total_fees_raw`, `pnl_carry_raw`, (version 4) `funding_raw` and `total_funding_raw`, and (version 10) `account`.
@@ -193,10 +196,10 @@ Version 8. The strategy parameters over time: what each session started with and
 | Table | Rows |
 |---|---|
 | `param_schema` | one per `(session_id, field)`: the session's parameter table, `name` and `type` (`int`, `double`, `bool`, `decimal`, `bps`, `ms`), by the field index a `ParamRecord` names |
-| `param_updates` | one per `(session_id, seq)`: `seq` 0 is the set the session started with (`origin` `initial`, `complete` 1 when it holds every parameter, defaults included; 0 when the strategy brings its own publisher and only the configured ones are known), then one per update with the record's `seq`, `ts_ns` (when the engine applied it), `instrument_id` and `symbol` (NULL for every instrument), `origin` (`control` or `strategy`), `source` (`fastmm-ctl param --source`), `publish_seq`, and how many `fields` it carried and how many `changed` |
+| `param_updates` | one per `(session_id, seq)`: `seq` 0 is the set the session started with (`origin` `initial`, `complete` 1 when it holds every parameter, defaults included; 0 when the strategy brings its own publisher and only the configured ones are known), then one per update with the record's `seq`, `ts_ns` (when the engine applied it), `instrument_id` and `symbol` (NULL for every instrument), `origin` (`control`, `ab` or `strategy`), `source` (`fastmm-ctl param --source`, `ab:<test>` for the `[ab]` test), `publish_seq`, how many `fields` it carried and how many `changed`, and (version 12) the `arm` it put its instruments in: the arm's name, `''` out of the test, NULL for an update that is not the test's |
 | `param_values` | one per `(session_id, seq, name)`: the `value` as the parameter formats it, its `raw` value (NULL when not known) and `changed` against the value before it in that scope |
 
-A control update is stored whole, unchanged values included: someone asked for it. An update of the strategy's own publisher keeps only the values that changed, and one that changed nothing writes no row: `sessions.param_refreshes` counts those. An update to every instrument replaces what single instruments had.
+A control or `[ab]` update is stored whole, unchanged values included: someone asked for it, or it records an arm assignment. An update of the strategy's own publisher keeps only the values that changed, and one that changed nothing writes no row: `sessions.param_refreshes` counts those. An update to every instrument replaces what single instruments had.
 
 ### rejects
 
@@ -212,6 +215,10 @@ Version 9. One row per refused order the engine recorded, keyed `(session_id, se
 | `venue` | the venue (`venue_code`, `text`) |
 
 Refusals of the same instrument, side, account, reason, source and flags (`reduces`, `reduce_only`) within 100 ms of the last row recorded for them are counted, not written one by one: `count` is 1 plus those folded into the row, so `SUM(count)` is exact per account. A count no further refusal follows is written with the next once-a-second publication, or at the end of the session. The budget of a folded row is the one at the row's time.
+
+### ab_arms
+
+Version 12. One row per arm of the session's `[ab]` test, keyed `(session_id, arm)`: `arm` its index (arm 0 is the control), `test` the test's `name`, `name` the arm's, and `params` the arm's parameters as `name=value` separated by spaces (empty: the configured ones). `fastmm-pnl fills` and `orders` show each row's arm; the markouts and the paired comparison need the journal's mids ([Run an A/B test](../how-to/strategies/ab-test.md#read-it-out)).
 
 ### limit_changes
 
