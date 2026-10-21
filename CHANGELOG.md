@@ -4,6 +4,34 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-22
+
+A/B tests of strategy parameters: an `[ab]` section runs arms side by side in `fastmm-live` and in
+backtests, split by instrument, by time block or both, every order carrying its arm into the journal
+and the store, and `fastmm-data ab` compares the arms with paired, resampled intervals.
+
+### Breaking changes
+- store: schema 12; a store opened by 0.8.0 does not open in 0.7.
+- strategies: `StrategyEntry::PublisherFactory` takes the number of instruments.
+
+### Added
+- core: `[ab]` runs parameter arms by `instrument`, `time` block or `crossover`, live and backtest.
+- live: `fastmm-ctl ab` shows the test; `ab stop` and `ab promote <arm>` end it.
+- core: `ParamScope::PerInstrument` keeps a parameter set per instrument; `params(id)` reads it.
+- strategies: `basic_mm` and `avellaneda_stoikov` keep their parameters per instrument.
+- core: orders carry the `[ab]` arm they were sent under (`Order::arm`), in the journal too.
+- store: `ab_arms`, and an `arm` column in `fills`, `orders` and `param_updates`.
+- backtest: `fastmm-data ab` reads a test from its journals: markouts, net, paired intervals.
+- store: an older store is copied to `<path>.v<version>.bak` before it is migrated.
+
+### Changed
+- store: `fastmm-pnl fills` and `orders` print each row's `arm`.
+- backtest: the parts of a journal load in parallel.
+- backtest: a book update visits only its instrument's own orders in the queue model and the OMS.
+
+### Fixed
+- backtest: `balances_from_journal` restores the balances of an account pool's members.
+
 ## [0.7.0] - 2026-10-16
 
 A live session now refuses to start where its limits, its store or its position cannot be trusted,
