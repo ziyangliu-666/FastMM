@@ -16,7 +16,11 @@ namespace binance {
 
 // errors.md "Filter failures" table -> engine reasons.
 [[nodiscard]] constexpr ErrorMapping map_filter_failure(std::string_view msg) noexcept {
-  if (contains_ci(msg, "PRICE_FILTER") || contains_ci(msg, "PERCENT_PRICE"))
+  // PERCENT_PRICE and PERCENT_PRICE_BY_SIDE: the price is outside the band the venue keeps around
+  // its average price, as USD-M's -4131 and OKX's 51006 are; a moving market, not the config.
+  if (contains_ci(msg, "PERCENT_PRICE"))
+    return {RejectReason::PriceCollar, VenueAction::None, true};
+  if (contains_ci(msg, "PRICE_FILTER"))
     return {RejectReason::InvalidTick, VenueAction::DisableInstrument, true};
   if (contains_ci(msg, "MARKET_LOT_SIZE") || contains_ci(msg, "LOT_SIZE"))
     return {RejectReason::InvalidLot, VenueAction::DisableInstrument, true};

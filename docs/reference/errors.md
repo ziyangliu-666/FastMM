@@ -57,7 +57,7 @@ Checked in the order listed, which is not numeric order; the first failure decid
 | 6 | `BelowMinNotional` | `min_notional` | the order is larger |
 | 7 | `StaleMarketData` | `[risk] stale_md_ms` | the book updates (its age is measured on the engine clock from when the engine applied it) |
 | 20 | `FeedLag` | `[risk] max_feed_lag_ms` | 100 ms pass without a market-data message of the venue later than its baseline by more than the limit; IOC, FOK and market orders and orders that only reduce the position are not refused ([Feed-lag gate](../explanation/risk-model.md#feed-lag-gate)) |
-| 8 | `PriceCollar` | `[risk] price_collar_bps` | the mid moves to the price, or the price moves to the mid |
+| 8 | `PriceCollar` | `[risk] price_collar_bps`, or the venue's own price band (Binance `PERCENT_PRICE`, USDⓈ-M -4131, OKX 51006) | the mid moves to the price, or the price moves to the mid |
 | 9 | `FatFinger` | `[risk] fat_finger_bps` | a trade prints nearer the price |
 | 10 | `MaxOrderQty` | `[risk] max_order_qty` | the order is smaller |
 | 11 | `MaxOrderNotional` | `[risk] max_order_notional` | the order is smaller |

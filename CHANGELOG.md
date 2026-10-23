@@ -39,6 +39,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - backtest: `calibrate` prints the latency shape it fitted with (`latency_*_sigma`).
 
 ### Fixed
+- venues: a Binance Spot `PERCENT_PRICE` or `PERCENT_PRICE_BY_SIDE` refusal is `PriceCollar`, not `InvalidTick` with a config error.
 - core: an L3 book recentre no longer moves its whole price window (about 850x faster at 2^16 ticks).
 - core: an L3 book's `clear()` on a resync costs the resting orders, not its capacity.
 - core: an L2 book loads a deep snapshot in linear time.
