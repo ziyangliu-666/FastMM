@@ -154,7 +154,17 @@ A session with five accounts behind one venue and a hedge venue has seven hot th
 
 A core in a deep idle state (C-state) takes tens to hundreds of microseconds to wake. A busy-spinning thread keeps its own core awake; an adaptive thread blocked in a wait, and the core that takes the NIC's interrupt, do not.
 
-`[engine] cpu_dma_latency_us = <us>` opens `/dev/cpu_dma_latency`, writes the value and keeps the descriptor open until the session ends: while it is open, no CPU enters an idle state whose exit latency exceeds `<us>`. `0` keeps every CPU polling in C0; a few microseconds still allows C1. The request applies to every CPU of the host, which then draws more power and leaves less turbo headroom to the others. The log says `cpu_dma_latency: CPUs held at <us> us exit latency or less`.
+Cloud VMs have these states too. An 8-vCPU Sapphire Rapids VM (`intel_idle`, C6 at 190 µs exit latency) measured:
+
+| | default | `cpu_dma_latency_us = 10` | `cpu_dma_latency_us = 0` |
+|---|---:|---:|---:|
+| A thread blocked in `epoll_wait` on another CPU, woken by an `eventfd` write, p50 / p99 | 114 / 166 µs | 8.1 / 8.9 µs | 3.3 / 3.8 µs |
+
+With the NIC's interrupts on a CPU allowed into C6, a UDP request to the network's DNS resolver was answered to a busy-polling thread in 118 µs at the median; with C6 disabled on that one CPU, in 64 µs. A busy session pays the second cost on every packet that arrives after a quiet spell.
+
+When no request is held, `fastmm-live` names the slow states at start: `idle states: CPUs 0-7 may enter C6 (190 us exit latency): ...`.
+
+`[engine] cpu_dma_latency_us = <us>` opens `/dev/cpu_dma_latency`, writes the value and keeps the descriptor open until the session ends: while it is open, no CPU enters an idle state whose exit latency exceeds `<us>`. `0` keeps every CPU polling in C0; a few microseconds still allows C1. The request applies to every CPU of the host, which then draws more power and leaves less turbo headroom to the others. The log says `cpu_dma_latency: CPUs held at <us> us exit latency or less (intel_idle)`, naming the cpuidle driver; on a host with none the request changes nothing and the log says so.
 
 The device is root's, mode 0600. Let the service's group write it with a udev rule, then `sudo udevadm trigger --name-match=cpu_dma_latency`:
 
@@ -173,7 +183,7 @@ sudo scripts/host-setup.sh cstates limit 10 --cpus 2-3       # disable the state
 sudo scripts/host-setup.sh cstates restore --cpus 2-3        # enable them again
 ```
 
-`--dry-run` prints the changes without making them, and needs no root. `scripts/host-setup.sh tune --cstate-max-latency 10 --cstate-cpus 2-3` runs the same limit after the other tuning. A VM usually has no cpuidle states to change.
+`--dry-run` prints the changes without making them, and needs no root. `scripts/host-setup.sh tune --cstate-max-latency 10 --cstate-cpus 2-3` runs the same limit after the other tuning. Include the CPUs that take the NIC's interrupts.
 
 ### NIC interrupts
 

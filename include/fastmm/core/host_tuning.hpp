@@ -44,6 +44,27 @@ class CpuLatencyRequest {
   int fd_ = -1;
 };
 
+// The cpuidle driver of the host (<sys_root>/devices/system/cpu/cpuidle/current_driver):
+// "intel_idle", "acpi_idle", "haltpoll", ...; "none" when there is none or it cannot be read. Only
+// a driver honours a CpuLatencyRequest: without one an idle CPU halts (HLT), and in a VM the
+// hypervisor takes it off the core until an interrupt wakes it.
+[[nodiscard]] std::string cpuidle_driver(const std::string& sys_root = "/sys");
+
+// An idle state the online CPUs in `cpus` may enter, slower to leave than the caller allows.
+struct SlowIdleState {
+  std::string name;  // "C6"
+  int exit_us = 0;   // the state's exit latency
+  std::string cpus;  // "0-7"
+};
+
+// The enabled cpuidle states with an exit latency above `max_exit_us`, one entry per state name
+// and latency (<sys_root>/devices/system/cpu/cpuN/cpuidle/stateK: name, latency, disable). A
+// thread blocked on such a CPU, and the network processing of an interrupt that lands on one,
+// start that much later. Cloud VMs expose them too (C6 at 190 us on a Sapphire Rapids guest).
+// Empty when there are none or nothing can be read.
+[[nodiscard]] std::vector<SlowIdleState> slow_idle_states(int max_exit_us,
+                                                          const std::string& sys_root = "/sys");
+
 // "0-3,6" -> {0, 1, 2, 3, 6}; nullopt when malformed. An empty or blank list is empty.
 [[nodiscard]] std::optional<std::vector<int>> parse_cpu_list(std::string_view list);
 

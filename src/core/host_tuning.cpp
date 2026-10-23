@@ -214,6 +214,52 @@ std::vector<IrqReportLine> irq_affinity_report(std::span<const NicIrqs> nics,
   return out;
 }
 
+std::string cpuidle_driver(const std::string& sys_root) {
+  std::ifstream in(fs::path(sys_root) / "devices/system/cpu/cpuidle/current_driver");
+  std::string line;
+  if (!std::getline(in, line)) return "none";
+  const std::string_view name = trim(line);
+  return name.empty() ? std::string("none") : std::string(name);
+}
+
+std::vector<SlowIdleState> slow_idle_states(int max_exit_us, const std::string& sys_root) {
+  std::vector<SlowIdleState> found;  // one per (name, exit latency), in the order found
+  std::vector<std::vector<int>> cpus;
+  const fs::path cpu_root = fs::path(sys_root) / "devices/system/cpu";
+  std::ifstream online_in(cpu_root / "online");
+  std::string list;
+  if (!std::getline(online_in, list)) return found;
+  const auto online = parse_cpu_list(list);
+  if (!online) return found;
+  const auto read_line = [](const fs::path& path) {
+    std::ifstream in(path);
+    std::string line;
+    std::getline(in, line);
+    return std::string(trim(line));
+  };
+  for (const int cpu : *online) {
+    const fs::path idle = cpu_root / ("cpu" + std::to_string(cpu)) / "cpuidle";
+    for (int s = 0;; ++s) {
+      const fs::path state = idle / ("state" + std::to_string(s));
+      std::error_code ec;
+      if (!fs::is_directory(state, ec)) break;
+      int exit_us = 0;
+      if (!parse_int(read_line(state / "latency"), exit_us) || exit_us <= max_exit_us) continue;
+      if (read_line(state / "disable") == "1") continue;
+      const std::string name = read_line(state / "name");
+      std::size_t i = 0;
+      while (i < found.size() && (found[i].name != name || found[i].exit_us != exit_us)) ++i;
+      if (i == found.size()) {
+        found.push_back({name, exit_us, {}});
+        cpus.emplace_back();
+      }
+      cpus[i].push_back(cpu);
+    }
+  }
+  for (std::size_t i = 0; i < found.size(); ++i) found[i].cpus = cpu_ranges(cpus[i]);
+  return found;
+}
+
 std::map<int, std::uint64_t> cpu_cores(const std::string& sys_root) {
   std::map<int, std::uint64_t> out;
   const fs::path cpu_root = fs::path(sys_root) / "devices/system/cpu";

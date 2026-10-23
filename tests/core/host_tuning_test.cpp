@@ -189,6 +189,41 @@ TEST_CASE("core.host_tuning: cpu_cores maps each online CPU to its physical core
   CHECK(cpu_cores((std::filesystem::path(FASTMM_TEST_TMP_DIR) / "no_such_tree").string()).empty());
 }
 
+TEST_CASE("core.host_tuning: cpuidle_driver reads the driver, none when there is none") {
+  const auto sys = std::filesystem::path(FASTMM_TEST_TMP_DIR) / "cpuidle_tree";
+  std::filesystem::remove_all(sys);
+  CHECK(cpuidle_driver(sys.string()) == "none");
+  write_file(sys / "devices/system/cpu/cpuidle/current_driver", "haltpoll\n");
+  CHECK(cpuidle_driver(sys.string()) == "haltpoll");
+  write_file(sys / "devices/system/cpu/cpuidle/current_driver", "none\n");
+  CHECK(cpuidle_driver(sys.string()) == "none");
+}
+
+TEST_CASE("core.host_tuning: slow_idle_states names the enabled states slower than the limit") {
+  const auto sys = std::filesystem::path(FASTMM_TEST_TMP_DIR) / "idle_tree";
+  std::filesystem::remove_all(sys);
+  CHECK(slow_idle_states(20, sys.string()).empty());
+  write_file(sys / "devices/system/cpu/online", "0-3\n");
+  const auto state = [&](int cpu, int k, const char* name, int us, int disabled) {
+    const auto d = sys / "devices/system/cpu" / ("cpu" + std::to_string(cpu)) / "cpuidle" /
+                   ("state" + std::to_string(k));
+    write_file(d / "name", std::string(name) + "\n");
+    write_file(d / "latency", std::to_string(us) + "\n");
+    write_file(d / "disable", std::to_string(disabled) + "\n");
+  };
+  for (int cpu = 0; cpu < 4; ++cpu) {
+    state(cpu, 0, "POLL", 0, 0);
+    state(cpu, 1, "C1E", 2, 0);
+    state(cpu, 2, "C6", 190, cpu == 2 ? 1 : 0);  // disabled on CPU 2 (host-setup.sh cstates)
+  }
+  const std::vector<SlowIdleState> slow = slow_idle_states(20, sys.string());
+  REQUIRE(slow.size() == 1);
+  CHECK(slow[0].name == "C6");
+  CHECK(slow[0].exit_us == 190);
+  CHECK(slow[0].cpus == "0-1,3");
+  CHECK(slow_idle_states(200, sys.string()).empty());
+}
+
 TEST_CASE("core.host_tuning: the topology check names hot threads that share a core") {
   TopologyInput in;
   in.cores = cpu_cores(cpu_tree("cpu_tree_crowded", {0, 1, 0, 1}).string());

@@ -77,6 +77,10 @@ constexpr std::int64_t kSettleWaitNs = 1'000'000'000;
 // engine and this thread alike, and the engine is not to blame for it.
 constexpr std::int64_t kStallTurnCapNs = 100'000'000;
 
+// Idle states slower to leave than this are named at start when no cpu_dma_latency request is
+// held. C1 and C1E take a few microseconds; C6 in a cloud VM took 110 us to wake a blocked thread.
+constexpr int kSlowIdleExitUs = 20;
+
 // Set by the signal handler, read by the thread that runs the session, which need not be the one
 // the signal lands on: an atomic, lock-free so the handler may store it.
 std::atomic<int> g_signal{0};
@@ -1950,9 +1954,27 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
                       cfg.engine.cpu_dma_latency_us,
                       kCpuDmaLatencyPath,
                       std::strerror(err));
+    } else if (const std::string driver = cpuidle_driver(); driver == "none") {
+      FASTMM_LOG_WARN(
+          "cpu_dma_latency: held, but this host has no cpuidle driver, so it changes nothing: an "
+          "idle CPU halts (in a VM the hypervisor may take it off the core) and pays the wake-up");
     } else {
-      FASTMM_LOG_INFO("cpu_dma_latency: CPUs held at {} us exit latency or less",
-                      cfg.engine.cpu_dma_latency_us);
+      FASTMM_LOG_INFO("cpu_dma_latency: CPUs held at {} us exit latency or less ({})",
+                      cfg.engine.cpu_dma_latency_us,
+                      driver);
+    }
+  }
+  // Busy threads never idle, but the CPUs that take the NIC's interrupts do, and so does a thread
+  // that blocks: each wake-up from a deep state comes that much later.
+  if (!cpu_latency.active()) {
+    for (const SlowIdleState& s : slow_idle_states(kSlowIdleExitUs)) {
+      FASTMM_LOG_WARN(
+          "idle states: CPUs {} may enter {} ({} us exit latency): a packet whose interrupt lands "
+          "there, or a thread blocked there, waits for the CPU to wake. Set [engine] "
+          "cpu_dma_latency_us or disable the state on those CPUs (scripts/host-setup.sh cstates)",
+          s.cpus,
+          s.name,
+          s.exit_us);
     }
   }
   if (cfg.engine.log_irq_affinity) log_irq_affinity(cfg, single);
