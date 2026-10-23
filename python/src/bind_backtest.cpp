@@ -1060,8 +1060,14 @@ void bind_backtest(py::module_& m) {
             throw py::value_error("_walk_forward_report: one result per grid point");
           py::list pts;
           for (std::size_t i = 0; i < points.size(); ++i) {
+            // Scoring reads the metrics and the window; the fills, equity and orders stay with the
+            // Python results the report hands back.
             const auto r = results[i].cast<ResultPtr>();
-            f.points.push_back(bt::SweepPoint{points[i], *r});
+            bt::SweepPoint p{points[i], {}};
+            p.result.metrics = r->metrics;
+            p.result.start_ts = r->start_ts;
+            p.result.end_ts = r->end_ts;
+            f.points.push_back(std::move(p));
             pts.append(py::make_tuple(grid_params(g, points[i]), results[i]));
           }
           rep.folds.push_back(std::move(f));
