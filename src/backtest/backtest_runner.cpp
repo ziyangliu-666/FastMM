@@ -13,6 +13,8 @@
 #include "fastmm/sim/venue_order.hpp"
 #include "fastmm/strategies/ab_test.hpp"
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
@@ -35,6 +37,9 @@ constexpr std::size_t kReserveBars = 1U << 12;
 //   * the start of trading ([backtest] start_at): the strategy restores its checkpoint as at a warm
 //     standby's take-over (ControlCommand::TakeOver), then every venue an order can go to
 //     reconciles with the start positions, and the engine trades from there;
+//   * with balances_from_journal, the session's account events at their times: each recorded flow
+//     of money in or out of an account (AccountFlowMsg), and a full snapshot of an account when the
+//     session's connector refreshed it;
 //   * a slow tier the caller set (a Python strategy's), at its own times.
 struct RunTier {
   sim::SimTransport* transport = nullptr;
@@ -48,6 +53,11 @@ struct RunTier {
   std::uint32_t trade_venues = 0;
   bool take_over = false;
   std::vector<ReconcileMsg> positions;
+  std::span<const AccountFlowMsg> flows;  // in time order
+  std::size_t next_flow = 0;
+  std::uint64_t flows_short = 0;  // the account had less free than left it live
+  std::span<const std::pair<VenueId, Timestamp>> refreshes;
+  std::size_t next_refresh = 0;
   sim::SlowHooks user{};
   Timestamp user_next = Timestamp::max();
 
@@ -81,13 +91,34 @@ struct RunTier {
     trade_at = Timestamp::max();
   }
 
+  void account_events(Timestamp now) {
+    for (; next_flow < flows.size() && sim::account_time(flows[next_flow].hdr) <= now;
+         ++next_flow) {
+      const AccountFlowMsg& f = flows[next_flow];
+      if (transport->move_money(f.hdr.venue, f.asset.view(), f.amount, now) != f.amount)
+        ++flows_short;
+    }
+    for (; next_refresh < refreshes.size() && refreshes[next_refresh].second <= now; ++next_refresh)
+      transport->publish_snapshot(refreshes[next_refresh].first, now);
+  }
+
   [[nodiscard]] Timestamp next() const noexcept {
-    return std::min({user_next, next_look, port ? port->next_due() : Timestamp::max(), trade_at});
+    const Timestamp flow =
+        next_flow < flows.size() ? sim::account_time(flows[next_flow].hdr) : Timestamp::max();
+    const Timestamp refresh =
+        next_refresh < refreshes.size() ? refreshes[next_refresh].second : Timestamp::max();
+    return std::min({user_next,
+                     next_look,
+                     port ? port->next_due() : Timestamp::max(),
+                     trade_at,
+                     flow,
+                     refresh});
   }
 
   static Timestamp run(void* ctx, Timestamp now) {
     auto& tier = *static_cast<RunTier*>(ctx);
     if (now >= tier.trade_at) tier.start_trading(now);
+    tier.account_events(now);
     if (tier.port) tier.port->settle(now);
     if (tier.user.run != nullptr && now >= tier.user_next)
       tier.user_next = tier.user.run(tier.user.ctx, now);
@@ -391,6 +422,55 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
         accounts.push_back(a);
       }
     }
+    // The account events after the balances the accounts start from: the flows of money in and
+    // out, and the connector's refreshes. A pool whose treasury the run simulates moves its own
+    // money: the session's flows of its accounts are left out.
+    const auto traded_venue = [&](VenueId v) {
+      return std::any_of(
+          cfg_.instruments.begin(), cfg_.instruments.end(), [&](const Instrument& i) {
+            return i.venue == cfg_.transport.pools.primary(v);
+          });
+    };
+    const auto treasury_member = [&](VenueId v) {
+      return std::any_of(
+          cfg_.treasuries.begin(), cfg_.treasuries.end(), [&](const TreasuryConfig& t) {
+            return std::find(t.members.begin(), t.members.end(), v) != t.members.end();
+          });
+    };
+    const std::vector<std::pair<VenueId, Timestamp>> refreshes = recorded->refreshes();
+    const auto origin = [&](VenueId v) {
+      if (trade_at_.valid()) return trade_at_;
+      for (const auto& [venue, t] : refreshes) {
+        if (venue == v) return t;  // the first snapshot
+      }
+      return Timestamp{};
+    };
+    std::size_t left_out = 0;
+    for (const AccountFlowMsg& f : recorded->flows) {
+      const VenueId v = f.hdr.venue;
+      if (!traded_venue(v) || sim::account_time(f.hdr) <= origin(v)) continue;
+      if (treasury_member(v)) {
+        ++left_out;
+        continue;
+      }
+      flows_.push_back(f);
+    }
+    std::stable_sort(
+        flows_.begin(), flows_.end(), [](const AccountFlowMsg& x, const AccountFlowMsg& y) {
+          return sim::account_time(x.hdr) < sim::account_time(y.hdr);
+        });
+    for (const auto& [v, t] : refreshes) {
+      if (traded_venue(v) && t > origin(v)) refreshes_.emplace_back(v, t);
+    }
+    std::stable_sort(refreshes_.begin(), refreshes_.end(), [](const auto& x, const auto& y) {
+      return x.second < y.second;
+    });
+    FASTMM_LOG_INFO(
+        "backtest: the accounts follow {} recorded flows of money and {} refreshes{}",
+        flows_.size(),
+        refreshes_.size(),
+        left_out > 0 ? fmt::format(" ({} flows of a simulated treasury's pool left out)", left_out)
+                     : std::string());
   }
   Timestamp start = cfg_.start;
   if (source_ != nullptr && source_->start_ts().valid()) start = source_->start_ts();
@@ -532,7 +612,7 @@ BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,
   }
   driver.set_param_schedule(schedule);
   std::unique_ptr<RunTier> tier;
-  if (!cfg_.treasuries.empty() || trade_at_.valid()) {
+  if (!cfg_.treasuries.empty() || trade_at_.valid() || !flows_.empty() || !refreshes_.empty()) {
     tier = std::make_unique<RunTier>();
     tier->transport = &b.transport;
     tier->feed = &b.feed;
@@ -559,6 +639,15 @@ BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,
       tier->trade_venues = trade_venues_;
       tier->positions = start_positions_;
     }
+    // Those before the run's start are in the balances the accounts start from.
+    tier->flows = flows_;
+    tier->refreshes = refreshes_;
+    while (tier->next_flow < flows_.size() &&
+           sim::account_time(flows_[tier->next_flow].hdr) < b.clock.now())
+      ++tier->next_flow;
+    while (tier->next_refresh < refreshes_.size() &&
+           refreshes_[tier->next_refresh].second < b.clock.now())
+      ++tier->next_refresh;
     tier->user = slow_;
     tier->user_next = slow_.run != nullptr ? slow_.first : Timestamp::max();
     sim::SlowHooks tier_hooks;
@@ -653,6 +742,12 @@ BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,
       r.treasury.dry_run_plans += ts.dry_run_plans;
     }
     if (tier->port) r.treasury.transfers = tier->port->records();
+    if (tier->flows_short > 0) {
+      FASTMM_LOG_INFO(
+          "backtest: {} recorded flows out of an account moved less than live: the account had "
+          "less free",
+          tier->flows_short);
+    }
   }
   r.start_ts = start.ns;
   r.end_ts = b.clock.now().ns;

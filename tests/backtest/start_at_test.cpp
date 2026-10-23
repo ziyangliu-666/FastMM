@@ -279,3 +279,78 @@ TEST_CASE(
                        doctest::Contains("no checkpoint at or before start_at"),
                        std::invalid_argument);
 }
+
+namespace {
+// Sends nothing.
+class Idle : public StrategyBase<BasicMMParams> {
+ public:
+  static constexpr std::string_view name() noexcept { return "idle"; }
+};
+}  // namespace
+
+TEST_CASE("backtest.start_at: the accounts follow the session's flows of money and its refreshes") {
+  // A session's journal: the account's first snapshot, 25 USDT in at 2 s, 500 out at 3 s (more
+  // than the run will have free), a refresh at 4 s, books until 6 s.
+  const std::string path = tmp_path("start_at_flows.fmj");
+  constexpr std::int64_t kT0 = 1'700'000'000'000'000'000;
+  constexpr std::int64_t kS = 1'000'000'000;
+  {
+    JournalBuilder j(path, true);
+    j.now = kT0;
+    j.venue = kT0;
+    j.book(true, {{"100.00", "5"}}, {{"100.02", "5"}});
+    j.balance("BTC", "1", BalanceMsg::kSnapshot);
+    j.balance("USDT", "100", BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd);
+    for (int s = 1; s <= 6; ++s) {
+      j.now = kT0 + s * kS;
+      j.venue = j.now;
+      if (s == 2) j.flow("USDT", "25");
+      if (s == 3) j.flow("USDT", "-500");
+      if (s == 4) {
+        j.balance("BTC", "1", BalanceMsg::kSnapshot);
+        j.balance("USDT", "0", BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd);
+      }
+      const std::string bid = std::to_string(4 + s);
+      j.book(false, {{"100.00", bid.c_str()}}, {});
+    }
+  }
+  BacktestConfig cfg = BacktestConfig::single_instrument("BTCUSDT", px("0.01"), qt("0.001"));
+  Instrument i = cfg.instruments.get(InstrumentId{0});
+  i.base = "BTC";
+  i.quote = "USDT";
+  InstrumentTable t;
+  REQUIRE(t.add(i));
+  cfg.instruments = t;
+  cfg.transport.fill_model = sim::FillModel::L2Queue;
+  cfg.markout_horizons.clear();
+  cfg.measure_wall_clock = false;
+  cfg.balances_from_journal = true;
+  cfg.journal_out = tmp_path("start_at_flows_out.fmj");
+  JournalSource src(path);
+  {
+    BacktestSession session(cfg, &src, &Idle::schema());
+    std::unique_ptr<IEngineRunner> runner = session.backend().make_runner<Idle>(session.deps());
+    static_cast<void>(session.run(session.backend().hooks, runner.get(), "idle"));
+    const sim::SimAccounts* a = session.backend().transport.accounts();
+    REQUIRE(a != nullptr);
+    CHECK(a->total(VenueId{0}, "USDT").is_zero());  // 100 + 25, then all of it out
+    CHECK(a->total(VenueId{0}, "BTC") == Notional::from_decimal("1").value());
+  }
+  // The run's own account reports: its first snapshot, the two flows' updates, the refresh.
+  JournalReader r;
+  REQUIRE(r.open(cfg.journal_out));
+  std::vector<std::int64_t> snapshots;
+  int updates = 0;
+  r.for_each([&](const EventHeader* h) {
+    if (h->type != EventType::Balance) return;
+    const auto& m = msg_cast<BalanceMsg>(h);
+    if ((m.flags & BalanceMsg::kSnapshotEnd) != 0) {
+      snapshots.push_back(h->exch_ts.ns);
+    } else if ((m.flags & BalanceMsg::kSnapshot) == 0) {
+      ++updates;
+    }
+  });
+  REQUIRE(snapshots.size() == 2);
+  CHECK(snapshots[1] == kT0 + 4 * kS);
+  CHECK(updates == 2);
+}

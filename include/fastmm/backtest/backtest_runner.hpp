@@ -68,6 +68,10 @@ class BacktestSession {
   Timestamp trade_at_{};
   std::uint32_t trade_venues_ = 0;
   std::string staged_state_;
+  // balances_from_journal: the session's flows of money and account refreshes after the balances
+  // the accounts start from.
+  std::vector<AccountFlowMsg> flows_;
+  std::vector<std::pair<VenueId, Timestamp>> refreshes_;
   // params_from_journal: the session's updates on this strategy's schema, and the schedule they go
   // to when the caller sets none.
   std::vector<ParamUpdateMsg> journal_params_;

@@ -332,6 +332,20 @@ bool SimAccounts::transfer(VenueId from,
   return true;
 }
 
+Notional SimAccounts::move(VenueId venue, std::string_view asset, Notional amount) noexcept {
+  if (!enabled(venue) || amount.is_zero()) return Notional{};
+  const std::uint16_t r = find(venue, asset);
+  if (r == kNone) return Notional{};
+  std::int64_t raw = amount.raw;
+  if (raw < 0) {
+    const std::int64_t free = std::max<std::int64_t>(0, rows_[r].total + upnl(r) - rows_[r].locked);
+    raw = std::max(raw, -free);
+  }
+  rows_[r].total += raw;
+  touch(r);
+  return Notional::from_raw(raw);
+}
+
 Notional SimAccounts::free(VenueId venue, std::string_view asset) const noexcept {
   const std::uint16_t r = find(venue, asset);
   return r == kNone ? Notional{} : Notional::from_raw(rows_[r].total + upnl(r) - rows_[r].locked);

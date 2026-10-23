@@ -1048,6 +1048,22 @@ TransferState SimTransport::transfer(
   return TransferState::Done;
 }
 
+Notional SimTransport::move_money(VenueId venue,
+                                  std::string_view asset,
+                                  Notional amount,
+                                  Timestamp ts) noexcept {
+  if (accounts_ == nullptr) return Notional{};
+  const Notional moved = accounts_->move(venue, asset, amount);
+  if (Link* l = link_of_venue(venue); l != nullptr && !moved.is_zero()) publish_account(*l, ts);
+  return moved;
+}
+
+void SimTransport::publish_snapshot(VenueId venue, Timestamp ts) noexcept {
+  Link* l = link_of_venue(venue);
+  if (accounts_ == nullptr || l == nullptr || !accounts_->enabled(venue)) return;
+  accounts_->snapshot(venue, ts, [&](BalanceMsg& m) { push_balance(*l, m); });
+}
+
 void SimTransport::publish_account(Link& l, Timestamp venue_ts) noexcept {
   if (accounts_ != nullptr)
     accounts_->publish(l.id, venue_ts, [&](BalanceMsg& m) { push_balance(l, m); });

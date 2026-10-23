@@ -309,6 +309,14 @@ class SimTransport final : public MatchingSink {
   // refuse it.
   TransferState transfer(
       VenueId from, VenueId to, std::string_view asset, Notional amount, Timestamp ts) noexcept;
+  // Money in or out of `venue`'s account other than by trades, at venue time `ts`
+  // (SimAccounts::move), and the account's update to the engine. Returns what moved.
+  Notional move_money(VenueId venue,
+                      std::string_view asset,
+                      Notional amount,
+                      Timestamp ts) noexcept;
+  // `venue`'s account as one snapshot at `ts`, as a live connector's account refresh sends it.
+  void publish_snapshot(VenueId venue, Timestamp ts) noexcept;
   // The strategy's accounts; null when no venue has one.
   [[nodiscard]] const SimAccounts* accounts() const noexcept { return accounts_.get(); }
   // The pool member an open order of the strategy went to; invalid for an order the venue does

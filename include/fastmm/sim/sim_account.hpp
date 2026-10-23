@@ -163,6 +163,12 @@ class SimAccounts {
   // The rows are published with the next publish() of each venue.
   bool transfer(VenueId from, VenueId to, std::string_view asset, Notional amount) noexcept;
 
+  // Money that enters (positive) or leaves the account other than by its trades: a deposit, a
+  // withdrawal, a transfer to or from an account outside the run. What leaves is at most what is
+  // free. Returns what moved (zero: the venue has no account or no row of the asset). The row is
+  // published with the venue's next publish().
+  Notional move(VenueId venue, std::string_view asset, Notional amount) noexcept;
+
   // The venue's amounts (raw, in the asset); zero for a row it does not keep.
   [[nodiscard]] Notional free(VenueId venue, std::string_view asset) const noexcept;
   [[nodiscard]] Notional locked(VenueId venue, std::string_view asset) const noexcept;
