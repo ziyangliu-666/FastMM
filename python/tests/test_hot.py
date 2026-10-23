@@ -439,6 +439,7 @@ def test_parameter_writes_through_an_alias_do_not_persist_and_state_does(example
     with pytest.raises(fastmm.StrategyError) as ei:
         _fixture_run(example_config, Alias)
     assert ei.value.fail_code == 9
+    assert ei.value.symbol == "BTCUSDT" and "ctx.fail(9) on BTCUSDT" in str(ei.value)
 
 
 def test_warm_up_leaves_state_untouched(example_config):

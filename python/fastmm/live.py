@@ -282,8 +282,8 @@ def _run_live(strategy: Any, config: Union[str, "os.PathLike[str]"],
         what = compiler._WHAT.get(error["status"], f"returned status {error['status']}")
         if error["status"] == compiler.abi.FAILED:
             what = f"called ctx.fail({error['fail_code']})"
-        _error(f"{name}.{hook} {what} (engine time {error['now_ns']} ns); kill switch tripped: "
-               "StrategyError")
+        _error(f"{name}.{hook} {what} on {error['symbol']} (engine time {error['now_ns']} ns); "
+               "kill switch tripped: StrategyError")
     failure = int(channel.failure()) if slow else 0
     if rc == EXIT_SLOW_TIER or failure != 0:
         _report_slow_failure(name, failure, runner, channel, thread)

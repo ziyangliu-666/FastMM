@@ -10,6 +10,7 @@
 #include "fastmm/backtest/backtest_runner.hpp"
 #include "fastmm/backtest/replay.hpp"
 #include "fastmm/backtest/result.hpp"
+#include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/engine.hpp"
 #include "fastmm/core/engine_runner.hpp"
 #include "fastmm/core/enums.hpp"
@@ -44,13 +45,12 @@ namespace {
 using HotSimEngine = Engine<HotStrategy, SimClock, sim::SimTransport, InlineFeed>;
 using HotReplayEngine = Engine<HotStrategy, SimClock, sim::ReplayTransport, sim::JournalFeed>;
 
-// Hook calls of the hot backtest running in this process, published after every engine step, and
-// whether one is running. Read by _hot_hold_gil (tests); two concurrent runs share them.
+// For _hot_hold_gil (tests): whether a hot backtest is running in this process and, while a test
+// watches, its hook calls after every engine step. Two concurrent runs share them. Without a
+// watcher an engine step only reads g_hot_watch, which nothing writes.
 std::atomic<std::uint64_t> g_hot_calls{0};
 std::atomic<int> g_hot_running{0};
-// The slow channel of the hot backtest running on this thread: EngineHooks::stopped gets only the
-// engine as its context.
-thread_local const SlowChannel* t_slow_channel = nullptr;
+std::atomic<bool> g_hot_watch{false};
 
 // NOLINTBEGIN(bugprone-macro-parentheses)
 #define FASTMM_HOT_OFFSET(d, T, f) (d)[#f] = offsetof(T, f);
@@ -223,9 +223,9 @@ py::tuple run_hot_strategy(const bt::BacktestConfig& cfg,
   sim::EngineHooks hooks = session.backend().hooks;
   hooks.stopped = [](void* c) {
     auto* e = static_cast<HotSimEngine*>(c);
-    g_hot_calls.store(e->strategy().calls(), std::memory_order_relaxed);
-    return e->stopped() ||
-           (t_slow_channel != nullptr && t_slow_channel->failure() != SlowFailure::None);
+    if (FASTMM_UNLIKELY(g_hot_watch.load(std::memory_order_relaxed)))
+      g_hot_calls.store(e->strategy().calls(), std::memory_order_relaxed);
+    return e->stopped() || e->strategy().slow_failed();
   };
   std::shared_ptr<bt::BacktestResult> result;
   {
@@ -233,17 +233,13 @@ py::tuple run_hot_strategy(const bt::BacktestConfig& cfg,
     strategy.warm_up(er->engine().instruments());
     g_hot_calls.store(0, std::memory_order_relaxed);
     g_hot_running.store(1, std::memory_order_relaxed);
-    t_slow_channel = channel.get();
     struct Running {
       Running() = default;
       Running(const Running&) = delete;
       Running& operator=(const Running&) = delete;
       Running(Running&&) = delete;
       Running& operator=(Running&&) = delete;
-      ~Running() {
-        g_hot_running.store(0, std::memory_order_relaxed);
-        t_slow_channel = nullptr;
-      }
+      ~Running() { g_hot_running.store(0, std::memory_order_relaxed); }
     } const running;
     result = std::make_shared<bt::BacktestResult>(session.run(hooks, runner.get(), cfg.strategy));
   }
@@ -258,7 +254,8 @@ py::tuple run_hot_strategy(const bt::BacktestConfig& cfg,
         e.timer,
         e.at.ns,
         er->engine().stats().events,
-        std::string(to_string(er->engine().kill_reason())));
+        std::string(to_string(er->engine().kill_reason())),
+        std::string(e.symbol.view()));
   }
   const int failure = channel ? static_cast<int>(channel->failure()) : 0;
   return py::make_tuple(
@@ -387,6 +384,15 @@ void bind_hot(py::module_& m) {
       [](std::uint64_t min_calls, double timeout_s) {
         const auto deadline =
             std::chrono::steady_clock::now() + std::chrono::duration<double>(timeout_s);
+        g_hot_watch.store(true, std::memory_order_relaxed);
+        struct Unwatch {
+          Unwatch() = default;
+          Unwatch(const Unwatch&) = delete;
+          Unwatch& operator=(const Unwatch&) = delete;
+          Unwatch(Unwatch&&) = delete;
+          Unwatch& operator=(Unwatch&&) = delete;
+          ~Unwatch() { g_hot_watch.store(false, std::memory_order_relaxed); }
+        } const unwatch;
         {
           const py::gil_scoped_release release;
           while (g_hot_running.load(std::memory_order_relaxed) == 0 &&

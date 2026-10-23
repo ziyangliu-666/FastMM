@@ -119,6 +119,7 @@ struct HotError {
   std::int32_t hook = -1;               // a HotHook, or -1 for a timer hook
   std::int32_t timer = -1;              // the timer hook's index
   Timestamp at{};
+  Symbol symbol{};  // the instrument the hook ran for
 };
 
 class HotStrategy {
@@ -355,6 +356,10 @@ class HotStrategy {
   // ---- state ----------------------------------------------------------------------------------
 
   [[nodiscard]] bool failed() const noexcept { return error_.status != FASTMM_HOT_OK; }
+  // The attached slow channel recorded a failure (a slow method raised, the fills ring overflowed).
+  [[nodiscard]] bool slow_failed() const noexcept {
+    return slow_ != nullptr && slow_->failure() != SlowFailure::None;
+  }
   [[nodiscard]] const HotError& error() const noexcept { return error_; }
   [[nodiscard]] std::uint64_t calls() const noexcept { return calls_; }
   [[nodiscard]] std::size_t record_size() const noexcept { return record_size_; }
@@ -472,7 +477,7 @@ class HotStrategy {
     ++calls_;
     const std::int32_t rc = fn(self, &c, &bk_);
     if (FASTMM_UNLIKELY(rc != FASTMM_HOT_OK)) {
-      fail(ctx, rc, c.fail_code, hook, timer);
+      fail(ctx, inst, rc, c.fail_code, hook, timer);
       return;
     }
     if (c.action == FASTMM_HOT_ACTION_NONE) return;
@@ -486,7 +491,7 @@ class HotStrategy {
         keep_passive(q_, book.best_bid().price, book.best_ask().price, inst.tick);
       static_cast<void>(ctx.set_quotes(id, q_));
     } else {
-      fail(ctx, FASTMM_HOT_BAD_VALUE, 0, hook, timer);
+      fail(ctx, inst, FASTMM_HOT_BAD_VALUE, 0, hook, timer);
     }
   }
 
@@ -535,6 +540,7 @@ class HotStrategy {
 
   template <class Ctx>
   FASTMM_NOINLINE void fail(Ctx& ctx,
+                            const Instrument& inst,
                             std::int32_t status,
                             std::int32_t code,
                             std::int32_t hook,
@@ -545,6 +551,7 @@ class HotStrategy {
       error_.hook = hook;
       error_.timer = timer;
       error_.at = ctx.now();
+      error_.symbol = inst.symbol;
     }
     hooks_.fill(nullptr);
     for (HotProgram::Timer& t : program_.timers) t.fn = nullptr;

@@ -580,10 +580,11 @@ def run(config: Any, data: Any, instance: Any, name: str, spec: HotSpec, cache: 
         slow["events"] = events
     if error is None:
         return result, None, calls
-    status, code, hook, timer, at_ns, events, kill_reason = error
+    status, code, hook, timer, at_ns, events, kill_reason, symbol = error
     hook_name = hook or compiled(type(instance), spec, cache).timer_names[timer]
     what = _WHAT.get(status, f"returned status {status}")
     if status == abi.FAILED:
         what = f"called ctx.fail({code})"
     return result, {"hook": hook_name, "status": status, "fail_code": code, "now_ns": at_ns,
-                    "events": events, "kill_reason": kill_reason, "what": what}, calls
+                    "events": events, "kill_reason": kill_reason, "what": what,
+                    "symbol": symbol}, calls

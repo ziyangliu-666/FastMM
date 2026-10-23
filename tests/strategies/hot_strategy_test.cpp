@@ -179,6 +179,7 @@ TEST_CASE(
   CHECK(s.failed());
   CHECK(s.error().status == FASTMM_HOT_EXCEPTION);
   CHECK(s.error().hook == static_cast<std::int32_t>(HotHook::Book));
+  CHECK(s.error().symbol.view() == "BTCUSDT");
   CHECK(h.engine().kill_reason() == KillReason::StrategyError);
   CHECK(to_string(KillReason::StrategyError) == "StrategyError");
   h.advance(milliseconds(1));

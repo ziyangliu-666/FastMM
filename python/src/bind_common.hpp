@@ -52,8 +52,9 @@ py::tuple run_python_strategy(const bt::BacktestConfig& cfg,
 // hook addresses, timers, the initial record, the parameter block size and the parameter fields;
 // `metadata` goes into the journal. `slow` is None or a dict with the slow runner and the channel
 // settings. Returns (BacktestResult, error, hook calls, slow error, slow failure code, engine
-// events); error is None or (status, fail_code, hook, timer, at_ns, engine_events, kill_reason),
-// slow error None or the exception a slow method raised, and the run stopped early after either.
+// events); error is None or (status, fail_code, hook, timer, at_ns, engine_events, kill_reason,
+// symbol), slow error None or the exception a slow method raised, and the run stopped early after
+// either.
 py::tuple run_hot_strategy(const bt::BacktestConfig& cfg,
                            sim::MdSource* source,
                            const py::dict& program,

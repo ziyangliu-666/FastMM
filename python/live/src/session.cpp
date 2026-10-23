@@ -276,6 +276,7 @@ py::tuple run(const std::string& path,
     d["hook"] = e.hook >= 0 ? std::string(to_string(static_cast<HotHook>(e.hook))) : std::string();
     d["timer"] = e.timer;
     d["now_ns"] = e.at.ns;
+    d["symbol"] = std::string(e.symbol.view());
     err = std::move(d);
   }
   return py::make_tuple(rc, err, calls);

@@ -127,7 +127,8 @@ class StrategyError(RuntimeError):
 
     def __init__(self, message: str, result: "Optional[BacktestResult]" = None,
                  hook: str = "", now_ns: int = 0, events: int = 0, status: int = 0,
-                 fail_code: int = 0, kill_reason: str = "", slow_failure: str = "") -> None:
+                 fail_code: int = 0, kill_reason: str = "", slow_failure: str = "",
+                 symbol: str = "") -> None:
         super().__init__(message)
         self.result = result
         self.hook = hook
@@ -138,6 +139,8 @@ class StrategyError(RuntimeError):
         self.status = status
         self.fail_code = fail_code
         self.kill_reason = kill_reason
+        # Hot hooks: the instrument the failing call ran for.
+        self.symbol = symbol
         # Slow methods: "exception" or "fills overflow" when the slow tier stopped the run.
         self.slow_failure = slow_failure
 
@@ -635,11 +638,12 @@ def _run_hot(config: "BacktestConfig", data: Any, instance: Strategy, name: str,
         result._set_slow_methods(runner.timing_rows())
     if error is not None:
         raise StrategyError(
-            f"{name}.{error['hook']} {error['what']} (engine time {error['now_ns']} ns, after "
-            f"{error['events']} engine events); kill switch tripped: {error['kill_reason']}",
+            f"{name}.{error['hook']} {error['what']} on {error['symbol']} (engine time "
+            f"{error['now_ns']} ns, after {error['events']} engine events); kill switch tripped: "
+            f"{error['kill_reason']}",
             result=result, hook=error["hook"], now_ns=error["now_ns"], events=error["events"],
             status=error["status"], fail_code=error["fail_code"],
-            kill_reason=error["kill_reason"])
+            kill_reason=error["kill_reason"], symbol=error["symbol"])
     if slow is None or runner is None:
         return result
 

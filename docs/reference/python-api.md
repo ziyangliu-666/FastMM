@@ -283,6 +283,7 @@ A hook that raises, calls `ctx.fail(code)`, or sets a float price or quantity th
 | `status` | 1 raised, 2 `ctx.fail`, 3 bad float level |
 | `fail_code` | the code passed to `ctx.fail` |
 | `kill_reason` | `"StrategyError"` |
+| `symbol` | the instrument the failing call ran for |
 | `now_ns`, `events`, `result` | engine time, engine events and the partial `BacktestResult` |
 
 Numba keeps neither the type nor the message of the exception.
