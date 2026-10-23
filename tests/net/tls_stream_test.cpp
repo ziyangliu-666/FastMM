@@ -5,6 +5,8 @@
 #include "fastmm/net/memory_transport.hpp"
 #include "fastmm/net/reactor.hpp"
 
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 
@@ -329,4 +331,37 @@ FASTMM_BACKEND_TEST("tls: loopback sockets driven by the reactor", test_tls_stre
   REQUIRE(run_until(reactor, [&] { return client.received.size() == msg.size(); }));
   CHECK(client.received == msg);
   CHECK(client.error == 0);
+}
+
+TEST_CASE("tls: shared_client hands out one context per trust and verification") {
+  const std::string fixture = tls_fixture("cert.pem").string();
+  const auto a = TlsContext::shared_client(fixture, false);
+  CHECK(a.get() == TlsContext::shared_client(fixture, false).get());
+  CHECK_FALSE(a->insecure());
+  const auto insecure = TlsContext::shared_client(fixture, true);
+  CHECK(insecure.get() != a.get());
+  CHECK(insecure->insecure());
+  const auto system = TlsContext::shared_client({}, false);
+  CHECK(system.get() != a.get());
+  CHECK(system.get() == TlsContext::shared_client({}, false).get());
+
+  // A bundle rewritten in place is read again.
+  const std::filesystem::path copy =
+      std::filesystem::path(FASTMM_TEST_TMP_DIR) / "shared_client_ca.pem";
+  std::filesystem::copy_file(fixture, copy, std::filesystem::copy_options::overwrite_existing);
+  const auto before = TlsContext::shared_client(copy.string(), false);
+  {
+    std::ofstream out(copy, std::ios::app);
+    out << "\n";
+  }
+  CHECK(TlsContext::shared_client(copy.string(), false).get() != before.get());
+
+  // It verifies like a context of its own.
+  MemoryLink link;
+  TlsContext sctx = server_ctx();
+  MemTls client(*a, link.end_a(), "localhost");
+  MemTls server(sctx, link.end_b());
+  const auto o = pump_handshake(client, server);
+  CAPTURE(client.last_error());
+  CHECK(o.both_ok());
 }

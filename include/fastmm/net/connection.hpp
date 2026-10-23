@@ -117,8 +117,12 @@ class Connection {
                 "Connection supports PlainStream and TlsStream<PlainStream>");
 
  public:
-  // For TLS streams a context is created from cfg.tls unless one is supplied.
-  Connection(Reactor& reactor, ConnectionConfig cfg, Handler& handler, TlsContext* tls = nullptr)
+  // For TLS streams the process's client context for cfg.tls is used unless one is supplied
+  // (TlsContext::shared_client).
+  Connection(Reactor& reactor,
+             ConnectionConfig cfg,
+             Handler& handler,
+             const TlsContext* tls = nullptr)
       : reactor_(reactor),
         cfg_(std::move(cfg)),
         handler_(handler),
@@ -127,10 +131,8 @@ class Connection {
     validate_connection_config(cfg_, url_);
     if constexpr (kTls) {
       if (tls == nullptr) {
-        owned_tls_ = std::make_unique<TlsContext>();
-        if (!cfg_.tls.ca_file.empty()) owned_tls_->set_ca_file(cfg_.tls.ca_file);
-        owned_tls_->set_insecure(cfg_.tls.insecure);
-        tls = owned_tls_.get();
+        shared_tls_ = TlsContext::shared_client(cfg_.tls.ca_file, cfg_.tls.insecure);
+        tls = shared_tls_.get();
       }
     }
     tls_ = tls;
@@ -552,8 +554,8 @@ class Connection {
   Url url_;
   std::string host_;
   std::string target_;
-  std::unique_ptr<TlsContext> owned_tls_;
-  TlsContext* tls_ = nullptr;
+  std::shared_ptr<const TlsContext> shared_tls_;
+  const TlsContext* tls_ = nullptr;
   ExponentialBackoff backoff_;
   AsyncResolver resolver_;
   std::shared_ptr<int> alive_ = std::make_shared<int>(0);

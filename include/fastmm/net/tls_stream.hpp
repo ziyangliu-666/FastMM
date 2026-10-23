@@ -35,6 +35,11 @@ class TlsContext {
   // Client context: TLS 1.2+, peer verification against the CA certificates that
   // find_ca_locations() selects (net/ca_locations.hpp).
   TlsContext();  // throws std::runtime_error
+  // A client context shared by the process's connections that trust the same CA certificates
+  // (find_ca_locations(), or `ca_file` as it is on disk now) with the same verification. Made on
+  // first use and kept: loading a CA bundle takes milliseconds, which every connection made on a
+  // network thread used to pay there. Thread-safe; throws like TlsContext() and set_ca_file().
+  static std::shared_ptr<const TlsContext> shared_client(const std::string& ca_file, bool insecure);
   // Server context loading a PEM certificate chain + private key (sim server / tests).
   static TlsContext server(const std::string& cert_pem_path, const std::string& key_pem_path);
   // The same from PEM text: leaf certificate first, then the chain.
@@ -73,7 +78,7 @@ class TlsEngine {
   static constexpr std::size_t kBioBufferSize = std::size_t{64} * 1024;
 
   // Client mode: SNI + hostname verification for `host` (IP literals verified as IPs).
-  TlsEngine(TlsContext& ctx, std::string_view host);  // throws std::runtime_error
+  TlsEngine(const TlsContext& ctx, std::string_view host);  // throws std::runtime_error
   ~TlsEngine();
   TlsEngine(TlsEngine&& o) noexcept
       : ssl_(std::exchange(o.ssl_, nullptr)), net_bio_(std::exchange(o.net_bio_, nullptr)) {
@@ -119,7 +124,7 @@ template <ByteStream Transport>
 class TlsStream {
  public:
   // `host` is the SNI / verification name (ignored for server contexts).
-  TlsStream(TlsContext& ctx, Transport&& transport, std::string_view host = {})
+  TlsStream(const TlsContext& ctx, Transport&& transport, std::string_view host = {})
       : transport_(std::move(transport)), engine_(ctx, host) {}
   TlsStream(TlsStream&&) noexcept = default;
   TlsStream& operator=(TlsStream&&) = delete;

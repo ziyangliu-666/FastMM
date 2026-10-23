@@ -13,8 +13,11 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
+#include <string>
 #include <system_error>
 
 namespace fastmm::net {
@@ -99,6 +102,36 @@ TlsContext::TlsContext(Mode mode) : mode_(mode) {
 
 TlsContext::TlsContext() : TlsContext(Mode::Client) {}
 
+std::shared_ptr<const TlsContext> TlsContext::shared_client(const std::string& ca_file,
+                                                            bool insecure) {
+  // The key names what the context trusts: the default locations as they resolve now (the
+  // environment can change them), or the file with its size and time, so a bundle rewritten in
+  // place gets a context of its own.
+  std::string key = insecure ? "insecure|" : "verify|";
+  if (ca_file.empty()) {
+    const CaLocations ca = find_ca_locations();
+    key.append(ca_source_name(ca.source)).append("|").append(ca.file).append("|").append(ca.dir);
+  } else {
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(ca_file, ec);
+    const auto time = std::filesystem::last_write_time(ca_file, ec);
+    key.append(ca_file)
+        .append("|")
+        .append(std::to_string(ec ? 0 : size))
+        .append("|")
+        .append(std::to_string(ec ? 0 : time.time_since_epoch().count()));
+  }
+  static std::mutex mutex;
+  static std::map<std::string, std::shared_ptr<const TlsContext>> contexts;
+  const std::lock_guard lock(mutex);
+  if (const auto it = contexts.find(key); it != contexts.end()) return it->second;
+  auto ctx = std::make_shared<TlsContext>();
+  if (!ca_file.empty()) ctx->set_ca_file(ca_file);
+  ctx->set_insecure(insecure);
+  contexts.emplace(std::move(key), ctx);
+  return ctx;
+}
+
 TlsContext TlsContext::server(const std::string& cert_pem_path, const std::string& key_pem_path) {
   TlsContext ctx(Mode::Server);
   if (SSL_CTX_use_certificate_chain_file(ctx.ctx_, cert_pem_path.c_str()) != 1) {
@@ -163,7 +196,7 @@ void TlsContext::set_ca_file(const std::string& path) {
 
 namespace detail {
 
-TlsEngine::TlsEngine(TlsContext& ctx, std::string_view host) {
+TlsEngine::TlsEngine(const TlsContext& ctx, std::string_view host) {
   ssl_ = SSL_new(ctx.native());
   if (ssl_ == nullptr) throw_openssl("SSL_new");
   BIO* internal = nullptr;
