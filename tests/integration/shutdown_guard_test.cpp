@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <chrono>
 #include <thread>
 
 using namespace fastmm;
@@ -57,6 +58,15 @@ TEST_CASE("live.shutdown_guard: the watchdog fires its bound after the stop, not
     sleep_ms(300);
   }
   CHECK(done_first.load() == 0);
+}
+
+TEST_CASE("live.shutdown_guard: a finished shutdown does not wait out the watchdog's poll period") {
+  const auto t0 = std::chrono::steady_clock::now();
+  {
+    ShutdownWatchdog w(60'000 * kMs, nullptr, nullptr, 10'000 * kMs);
+    sleep_ms(20);  // the thread is in its wait
+  }
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(1));
 }
 
 TEST_CASE("live.shutdown_guard: a shutdown that never finishes ends with kExitRuntime") {

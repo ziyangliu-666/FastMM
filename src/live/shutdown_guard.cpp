@@ -6,6 +6,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstring>
 
 namespace fastmm::live {
@@ -73,10 +74,22 @@ void ShutdownWatchdog::stop_requested(std::int64_t now_ns) noexcept {
   stop_ns_.compare_exchange_strong(expected, now_ns == 0 ? 1 : now_ns, std::memory_order_acq_rel);
 }
 
+void ShutdownWatchdog::done() noexcept {
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    done_.store(true, std::memory_order_release);
+  }
+  wake_.notify_all();
+}
+
 void ShutdownWatchdog::run() noexcept {
-  const timespec pause{poll_ns_ / 1'000'000'000, poll_ns_ % 1'000'000'000};
   while (!done_.load(std::memory_order_acquire)) {
-    ::nanosleep(&pause, nullptr);
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      wake_.wait_for(lock, std::chrono::nanoseconds(poll_ns_), [this] {
+        return done_.load(std::memory_order_acquire);
+      });
+    }
     const std::int64_t since = stop_ns_.load(std::memory_order_acquire);
     if (since == 0 || done_.load(std::memory_order_acquire)) continue;
     if (monotonic_ns() - since < bound_ns_) continue;

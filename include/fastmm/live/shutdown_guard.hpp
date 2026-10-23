@@ -9,7 +9,9 @@
 // Both write one line to stderr and _exit(kExitRuntime) without cancel_all: what still rests at the
 // venue is cancelled by its dead man's switch where it has one, and by the next start's sweep.
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
 #include <thread>
 
 namespace fastmm::live {
@@ -57,8 +59,9 @@ class ShutdownWatchdog {
   [[nodiscard]] std::int64_t stop_requested_at() const noexcept {
     return stop_ns_.load(std::memory_order_acquire);
   }
-  // The shutdown finished: the watchdog will not fire.
-  void done() noexcept { done_.store(true, std::memory_order_release); }
+  // The shutdown finished: the watchdog will not fire. Wakes the thread, so that the destructor
+  // does not wait out a poll period to join it.
+  void done() noexcept;
   [[nodiscard]] bool fired() const noexcept { return fired_.load(std::memory_order_acquire); }
 
  private:
@@ -70,6 +73,8 @@ class ShutdownWatchdog {
   std::int64_t poll_ns_;
   std::atomic<std::int64_t> stop_ns_{0};
   std::atomic<bool> done_{false};
+  std::mutex mutex_;  // the thread's wait; stop_requested() (a signal handler) never takes it
+  std::condition_variable wake_;
   std::atomic<bool> fired_{false};
   std::thread thread_;
 };

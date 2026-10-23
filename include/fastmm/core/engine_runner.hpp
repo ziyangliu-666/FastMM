@@ -189,6 +189,9 @@ std::string format_runner_stats(const RunnerStats& s);
 // network loop on the engine thread; returns the number of things it handled (0: idle).
 using InlinePollFn = std::size_t (*)(void* ctx) noexcept;
 
+// IEngineRunner::killed_open_orders() before the engine has turned with the kill switch engaged.
+inline constexpr std::uint32_t kUnknownOpenOrders = 0xFFFF'FFFFU;
+
 class IEngineRunner {
  public:
   virtual ~IEngineRunner() = default;
@@ -205,6 +208,11 @@ class IEngineRunner {
   // Engine::heartbeat(): moves while run() turns; 0 before, and for a runner without one. Any
   // thread.
   [[nodiscard]] virtual std::uint64_t heartbeat() const noexcept { return 0; }
+  // Engine::killed_open_orders(): the orders still open once the kill switch is engaged;
+  // kUnknownOpenOrders before the engine has turned with it engaged, and for a runner without one.
+  [[nodiscard]] virtual std::uint32_t killed_open_orders() const noexcept {
+    return kUnknownOpenOrders;
+  }
   [[nodiscard]] virtual std::string_view strategy_name() const = 0;
   // The strategy's state taken since the last call (every EngineConfig::state_interval and at the
   // end), to be written to EngineConfig::state_file; false: none, or the strategy keeps no state.
@@ -233,6 +241,9 @@ class EngineRunner final : public IEngineRunner {
   [[nodiscard]] RunnerStats stats() const override { return engine_->runner_stats(); }
   [[nodiscard]] EngineLiveStats live_stats() const override { return engine_->live_stats(); }
   [[nodiscard]] std::uint64_t heartbeat() const noexcept override { return engine_->heartbeat(); }
+  [[nodiscard]] std::uint32_t killed_open_orders() const noexcept override {
+    return engine_->killed_open_orders();
+  }
   [[nodiscard]] std::string_view strategy_name() const override { return Strategy::name(); }
   bool take_strategy_state(std::string& out) override { return engine_->take_strategy_state(out); }
   void stage_strategy_state(std::string bytes) override {

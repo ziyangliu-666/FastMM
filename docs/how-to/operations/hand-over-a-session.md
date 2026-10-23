@@ -50,7 +50,7 @@ What happens, in order, when the new process can wait warm ([below](#warm-standb
 | 6 | Takes the lock (it polls every 10 ms): `standby: instance lock <path> taken over`. Reads the kill file, the strategy state and the store's positions, opens the store, the status file and the control socket, and opens each venue's private channels: `standby: took over after <n> ms warm` | |
 | 7 | Replays the venue's executions since the store's last fill, reconciles, quotes: `every venue has reconciled its orders and executions since the start; orders are sent from now on` | |
 
-Against the local simulator the warm standby's first order follows the old process's exit by a few tens of milliseconds, a cold start's by a few hundred. On a real venue the warm pause is the private channels' connect and the reconciliation; the books are already there.
+Against the local simulator the warm standby's first order follows the `handoff` by about 35 ms, the old process's cancel-all, the venue's confirmations and its exit included; a cold start's follows the old process's exit by 100 to 200 ms. On a real venue the warm pause is the private channels' connect and the reconciliation; the books are already there.
 
 Where a standby cannot wait warm it waits at the end of step 1, before it connects at all, and does all of step 6 and 7 plus the market-data connect and the book snapshots after the lock.
 

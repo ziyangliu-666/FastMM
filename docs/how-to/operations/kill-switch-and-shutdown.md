@@ -117,8 +117,8 @@ At shutdown the venue's REST cancel-all still runs. After a fatal key error it u
    - Binance USDⓈ-M: `DELETE /fapi/v1/allOpenOrders`.
    - Bybit: `/v5/order/cancel-all`.
    - Deribit: `private/cancel_all_by_instrument`.
-4. It waits 200 ms so that the engine's queued cancels reach the wire, then stops the engine thread.
-5. Each network thread sends what is still queued, runs its reactor for up to 100 ms more and disconnects. The journal is flushed and closed with a trailer block.
+4. It lets the engine run until no order is open: the venue has confirmed the engine's own cancels, and an order that was still in flight when the kill tripped has been acknowledged and cancelled. That takes a round trip to the venue; after 1 s it stops waiting and logs `fastmm-live: <n> order(s) still open 1000 ms after the cancel-all` (WARN). Then it stops the engine thread.
+5. Each network thread sends what is still queued, runs its reactor until a 5 ms wait finds nothing more to send or receive (100 ms at most) and disconnects. The journal is flushed and closed with a trailer block.
 6. The summary lines are logged: engine counters (`fastmm-live: events=... risk_rejects=<n> venue_rejects=<n>`), the rejects per reason for each kind that had any (`fastmm-live: risk_rejects by reason: MaxPosition 12, RateLimit 5`), PnL (`fastmm-live: realized_pnl=... unrealized_pnl=... fees=...`, and `funding=` when any was booked), one `[<venue>] final:` line per venue, the clock statistics, after a kill that was not requested or any venue kill `fastmm-live: kill switch flags=<hex> reason=<reason> kills=<n> venue_kills=<n>` (ERROR), then `fastmm-live: shutdown took <n> ms (cancel_all ok)` or `(cancel_all FAILED)`.
 7. The status file is marked `stopped` and left in place. The store records the session's close.
 8. A session holding the instance lock releases it (`instance lock <path> released`): a process waiting with `--standby` or `--takeover` starts from here ([Hand over a running session](hand-over-a-session.md)).

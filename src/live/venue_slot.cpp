@@ -229,7 +229,11 @@ void net_loop(
     }
   }
   s.venue->on_wake();  // flush cancels the engine queued during shutdown
-  for (int i = 0; i < 20; ++i) s.reactor->run_once(5);
+  // Writes the sockets did not take at once go out on their writable events: run the reactor until
+  // a 5 ms wait finds nothing to do, 100 ms at most.
+  const std::int64_t linger_until = net::Reactor::now_ns() + 100'000'000;
+  while (s.reactor->run_once(5) > 0 && net::Reactor::now_ns() < linger_until) {
+  }
   s.venue->disconnect();
   s.reactor->run_once(0);
 }

@@ -416,9 +416,12 @@ class Engine {
     unlatch_clock();
     in_engine_ = false;
   }
-  // The engine thread is the only writer: a plain increment, no read-modify-write.
+  // The engine thread is the only writer: a plain increment, no read-modify-write. With the kill
+  // switch engaged the turn also publishes how many orders are still open (killed_open_orders).
   FASTMM_FORCE_INLINE void beat() noexcept {
     beat_.store(beat_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    if (FASTMM_UNLIKELY(risk_.killed()))
+      killed_open_.store(oms_.open_count(), std::memory_order_relaxed);
   }
   void stop() noexcept {
     stop_.store(true, std::memory_order_release);
@@ -483,6 +486,13 @@ class Engine {
   // stall_ms): an idle engine turns at least every kMaxIdleWait.
   [[nodiscard]] std::uint64_t heartbeat() const noexcept {
     return beat_.load(std::memory_order_relaxed);
+  }
+  // The orders not yet over (cancelled, filled, refused) as of the engine's last turn with the
+  // global kill switch engaged; kUnknownOpenOrders before such a turn. A shutdown waits for 0:
+  // every cancel the kill queued has been confirmed, and every order still in flight when it
+  // tripped has been acknowledged and cancelled. Any thread.
+  [[nodiscard]] std::uint32_t killed_open_orders() const noexcept {
+    return killed_open_.load(std::memory_order_relaxed);
   }
   [[nodiscard]] bool quoting_enabled() const noexcept {
     return quoting_enabled_ && !reconciling() && !params_stale_ && !risk_.killed();
@@ -3722,6 +3732,7 @@ class Engine {
 
   // heartbeat(): on a line of its own, which the watching thread reads now and then.
   alignas(kCacheLine) std::atomic<std::uint64_t> beat_{0};
+  std::atomic<std::uint32_t> killed_open_{kUnknownOpenOrders};
   alignas(kCacheLine) std::byte out_storage_[kOutBatch * kOutSlotBytes] = {};
   StaticVector<const EventHeader*, kOutBatch> out_batch_;
 

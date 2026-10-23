@@ -68,6 +68,9 @@ namespace {
 
 // The shutdown's venue cancel-all waits this long at most for the engine to take the kill switch.
 constexpr std::int64_t kKillTakenWaitNs = 2'000'000'000;
+// After the cancel-all, the engine runs on until the venues have confirmed every cancel and
+// acknowledged (and so let it cancel) every order still in flight, this long at most.
+constexpr std::int64_t kSettleWaitNs = 1'000'000'000;
 // [engine] stall_ms counts the control loop's turns while the engine's heartbeat stands still, each
 // for at most this long: a host that stopped the whole process (a VM paused, SIGSTOP) stopped the
 // engine and this thread alike, and the engine is not to blame for it.
@@ -2912,8 +2915,22 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
       cancel_ok = slots[i]->venue->cancel_all() && cancel_ok;
     }
   }
-  // Let queued cancels reach the wire, then stop the engine and the net threads.
-  sleep_for(milliseconds(200));
+  // The engine's own cancels and the acks of orders still in flight when the kill tripped come back
+  // through it: it runs until no order is open (or kSettleWaitNs), then stops, and the network
+  // threads after it.
+  {
+    const std::int64_t until = steady_now().ns + kSettleWaitNs;
+    std::uint32_t open = runner->killed_open_orders();
+    while (open != 0 && steady_now().ns < until) {
+      feed.notify();
+      sleep_for(microseconds(200));
+      open = runner->killed_open_orders();
+    }
+    if (open != 0 && open != kUnknownOpenOrders)
+      FASTMM_LOG_WARN("fastmm-live: {} order(s) still open {} ms after the cancel-all",
+                      open,
+                      kSettleWaitNs / 1'000'000);
+  }
   runner->stop();
   engine_thread.join();
   save_strategy_state();  // the state finish() captured, after on_stop
