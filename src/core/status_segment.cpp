@@ -1350,7 +1350,7 @@ void json_venues(std::string& out, const StatusSnapshot& s) {
                    "\"line_skew_max_ns\": [{}, {}], \"gaps\": {}, \"recovered\": {}, "
                    "\"unrecovered\": {}, \"snapshot_recoveries\": {}, \"recovery_overflows\": {}, "
                    "\"reorder_high_water\": {}, \"requests\": {}, \"malformed\": {}, "
-                   "\"book_errors\": {}, ",
+                   "\"book_errors\": {}, \"book_recentres\": {}, \"book_recentre_failures\": {}, ",
                    feed_state_name(f.state),
                    f.backend == 1   ? "af_xdp"
                    : f.backend == 2 ? "dpdk"
@@ -1374,7 +1374,9 @@ void json_venues(std::string& out, const StatusSnapshot& s) {
                    f.reorder_high_water,
                    f.requests,
                    f.malformed,
-                   f.book_errors);
+                   f.book_errors,
+                   f.book_recentres,
+                   f.book_recentre_failures);
     json_latency(out, "kernel_to_t0", f.kernel_to_t0);
     fmt::format_to(it,
                    ", \"xdp_rx_dropped\": {}, \"xdp_rx_invalid_descs\": {}, \"xdp_rx_ring_full\": "

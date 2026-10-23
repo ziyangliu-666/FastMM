@@ -193,7 +193,7 @@ TEST_CASE("codecs.itch: simulated order flow through ITCH rebuilds the matching 
 // Stub quotes far from the market and a drifting reference price through a 64-tick window: most
 // levels live in the overflow store and the touches keep leaving the window.
 TEST_CASE("codecs.itch: stub quotes and a drifting market through a small L3 window") {
-  std::uint32_t recentres = 0;
+  std::uint64_t recentres = 0;
   std::size_t max_overflow = 0;
   for (std::uint64_t seed = 1; seed <= 8; ++seed) {
     CAPTURE(seed);

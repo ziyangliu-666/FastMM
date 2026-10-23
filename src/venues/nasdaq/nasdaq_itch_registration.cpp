@@ -112,8 +112,8 @@ constexpr VenueKeySpec kNasdaqItchKeys[] = {
     {"price_window_ticks",
      KeyType::Int,
      false,
-     "L3 book price window per side, in 0.0001 steps, a multiple of 64; orders outside go to an "
-     "overflow store (default 65536)"},
+     "L3 book price window per side, in 0.0001 steps, a multiple of 64 (rounded up to a power of "
+     "two); orders outside go to an overflow store (default 65536)"},
     {"max_orders",
      KeyType::Int,
      false,

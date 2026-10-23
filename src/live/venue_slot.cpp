@@ -318,7 +318,7 @@ void log_feed(std::string_view venue, const venues::VenueFeedStatus& f, bool fin
   if (f.state == venues::FeedState::None) return;
   FASTMM_LOG_INFO(
       "[{}] {}feed={} packets={} a={} b={} gaps={} recovered={} lost={} snapshots={} "
-      "overflows={} book_errors={} kernel_to_t0 p50={}ns p99={}ns",
+      "overflows={} book_errors={} book_recentres={} kernel_to_t0 p50={}ns p99={}ns",
       venue,
       final ? std::string_view("final ") : std::string_view(),
       to_string(f.state),
@@ -331,6 +331,7 @@ void log_feed(std::string_view venue, const venues::VenueFeedStatus& f, bool fin
       f.snapshot_recoveries,
       f.recovery_overflows,
       f.book_errors,
+      f.book_recentres,
       f.kernel_to_t0.p50_ns,
       f.kernel_to_t0.p99_ns);
 }
@@ -362,6 +363,8 @@ void copy_feed_status(const venues::VenueFeedStatus& f, StatusFeed& out) noexcep
   out.requests = f.requests;
   out.malformed = f.malformed;
   out.book_errors = f.book_errors;
+  out.book_recentres = f.book_recentres;
+  out.book_recentre_failures = f.book_recentre_failures;
   out.kernel_to_t0 = wire_status_latency(f.kernel_to_t0);
   out.xdp_rx_dropped = f.xdp_rx_dropped;
   out.xdp_rx_invalid_descs = f.xdp_rx_invalid_descs;

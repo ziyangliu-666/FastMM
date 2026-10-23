@@ -57,3 +57,10 @@ if(TARGET bench_ws)
   target_compile_definitions(bench_ws
                              PRIVATE FASTMM_TLS_FIXTURES_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures/tls")
 endif()
+
+# ITCH file replay into one L3Book per locate (latency percentiles, recentres, --check against a
+# std::map book). Not a Google Benchmark: it needs an ITCH file, so it has no smoke test.
+add_executable(fastmm-bench-l3-itch l3_itch_replay.cpp)
+fastmm_target_defaults(fastmm-bench-l3-itch)
+target_link_libraries(fastmm-bench-l3-itch PRIVATE fastmm::core)
+set_target_properties(fastmm-bench-l3-itch PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin/bench)

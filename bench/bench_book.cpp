@@ -207,3 +207,66 @@ static void BM_L3_OverflowAddCancel(benchmark::State& state) {
   }
 }
 BENCHMARK(BM_L3_OverflowAddCancel);
+
+// Worst case for the window, per operation: a one-sided book (8 levels) whose touch jumps three
+// windows away and back, with 8 orders added and cancelled at each place, so the window follows
+// every few operations. Arg: log2 of the window. The time must not grow with the window; before
+// the window was a ring it did, linearly (a recentre moved the whole window).
+static void BM_L3_RecentreStorm(benchmark::State& state) {
+  const std::int64_t window = std::int64_t{1} << state.range(0);
+  auto b = std::make_unique<L3Book>(
+      kTick,
+      L3BookConfig{.price_window_ticks = static_cast<std::size_t>(window), .max_orders = 1U << 12});
+  std::uint64_t ref = 1;
+  for (std::int64_t i = 0; i < 8; ++i) b->add(ref++, Side::Buy, px(100000 - i), Qty::from_int(1));
+  std::int64_t j = 0;
+  for (auto _ : state) {
+    const std::int64_t at = 100001 + ((j++ & 1) == 0 ? 3 * window : 0);
+    const std::uint64_t first = ref;
+    for (int k = 0; k < 8; ++k) b->add(ref++, Side::Buy, px(at), Qty::from_int(1));
+    for (std::uint64_t r = first; r < ref; ++r) b->cancel(r);
+    benchmark::DoNotOptimize(b->best_bid());
+  }
+  state.SetItemsProcessed(state.iterations() * 16);
+  state.counters["recentres_per_iter"] =
+      static_cast<double>(b->recentre_count()) / static_cast<double>(state.iterations());
+}
+BENCHMARK(BM_L3_RecentreStorm)->Arg(12)->Arg(16)->Arg(18);
+
+// 2,000 levels in a 2^12 window and an order placed beyond the touch (out of the window, on
+// either side) then cancelled: the touch steps out and straight back, which moves nothing.
+static void BM_L3_TouchExcursion(benchmark::State& state) {
+  auto b = std::make_unique<L3Book>(
+      kTick, L3BookConfig{.price_window_ticks = 1U << 12, .max_orders = 1U << 14});
+  std::uint64_t ref = 1;
+  for (std::int64_t i = 0; i < 1000; ++i) {
+    b->add(ref++, Side::Buy, px(10000 - i), Qty::from_int(1));
+    b->add(ref++, Side::Sell, px(10001 + i), Qty::from_int(1));
+  }
+  bool buy = true;
+  for (auto _ : state) {
+    b->add(ref, buy ? Side::Buy : Side::Sell, px(buy ? 20000 : 1000), Qty::from_int(1));
+    b->cancel(ref++);
+    buy = !buy;
+    benchmark::DoNotOptimize(b->best_bid());
+  }
+  if (b->recentre_count() != 0) state.SkipWithError("the window moved");
+}
+BENCHMARK(BM_L3_TouchExcursion);
+
+// Resync: clear() of the default book (2^16-tick window, 2^20 orders) holding 200 orders.
+static void BM_L3_ClearDefaultBook(benchmark::State& state) {
+  auto b = std::make_unique<L3Book>(kTick, L3BookConfig{});
+  for (auto _ : state) {
+    state.PauseTiming();
+    for (std::uint64_t r = 1; r <= 200; ++r)
+      b->add(r,
+             r % 2 == 0 ? Side::Buy : Side::Sell,
+             px(r % 2 == 0 ? 10000 - static_cast<std::int64_t>(r % 50)
+                           : 10001 + static_cast<std::int64_t>(r % 50)),
+             Qty::from_int(1));
+    state.ResumeTiming();
+    b->clear();
+  }
+}
+BENCHMARK(BM_L3_ClearDefaultBook);

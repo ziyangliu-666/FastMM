@@ -330,6 +330,7 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   f.gaps = 3;
   f.recovered = 17;
   f.kernel_to_t0 = {100, 2'500, 9'000, 20'000, 40'000};
+  f.book_recentres = 48;
   std::string frame = format_status(s, s.updated_ns, false);
   CHECK(frame.find("k2t0_p50") != std::string::npos);
   CHECK(frame.find("kernel") != std::string::npos);
@@ -344,13 +345,14 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   CHECK(frame.find("fallback=5") != std::string::npos);
 
   const std::string json = format_status_json(s);
-  CHECK(json.find(R"({"kind": "engine", "version": 23,)") == 0);
+  CHECK(json.find(R"({"kind": "engine", "version": 24,)") == 0);
   CHECK(json.find(R"("engine": "binance-demo")") != std::string::npos);
   CHECK(json.find(R"("tick_to_trade": {"count": 10, "p50_ns": 106495, "p99_ns": 216053, )"
                   R"("p999_ns": 250000, "max_ns": 300000})") != std::string::npos);
   CHECK(json.find(R"("state": "live", "backend": "af_xdp", "xdp_mode": "generic")") !=
         std::string::npos);
   CHECK(json.find(R"("line_packets": [700, 534])") != std::string::npos);
+  CHECK(json.find(R"("book_recentres": 48, "book_recentre_failures": 0)") != std::string::npos);
   CHECK(json.find(R"("kernel_to_t0": {"count": 100, "p50_ns": 2500)") != std::string::npos);
   // The venue's recent wire tick-to-trade: the last minute's and hour's p99 in the table.
   s.venues[0].wire_tick_to_trade_1m = {5, 1'000, 7'000, 7'000, 7'000};
@@ -503,7 +505,7 @@ TEST_CASE("core.status_segment: a gateway's snapshot round trips and shows its a
 
   const std::string json = format_status_json(got);
   INFO(json);
-  CHECK(json.find(R"({"kind": "gateway", "version": 23,)") == 0);
+  CHECK(json.find(R"({"kind": "gateway", "version": 24,)") == 0);
   CHECK(json.find(R"("gateway": "gw")") != std::string::npos);
   CHECK(json.find(R"("net_pnl": -0.25, "realized": 1.5)") != std::string::npos);
   CHECK(json.find(R"("engine": "mm-a", "pid": 1001)") != std::string::npos);

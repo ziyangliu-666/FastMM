@@ -165,6 +165,7 @@ TEST_CASE("core.status_prometheus: every sample belongs to a declared family") {
   s.venues[1].feed.state = 3;
   s.venues[1].feed.packets = 1234;
   s.venues[1].feed.line_duplicates[1] = 7;
+  s.venues[1].feed.book_recentres = 48;
   const std::string text = format_status_prometheus(s, s.updated_ns);
   std::set<std::string> declared;
   for (const std::string& line : lines(text)) {
@@ -185,6 +186,7 @@ TEST_CASE("core.status_prometheus: every sample belongs to a declared family") {
   CHECK(has(text, "fastmm_feed_state{venue=\"itch\"} 3\n"));
   CHECK(has(text, "fastmm_feed_packets_total{venue=\"itch\"} 1234\n"));
   CHECK(has(text, "fastmm_feed_line_duplicates_total{venue=\"itch\",line=\"b\"} 7\n"));
+  CHECK(has(text, "fastmm_feed_book_recentres_total{venue=\"itch\"} 48\n"));
 }
 
 TEST_CASE("core.status_prometheus: a label value is escaped") {

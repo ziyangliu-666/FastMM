@@ -158,9 +158,17 @@ TEST_CASE("core.l3_book: orders outside the window live in the overflow store") 
   CHECK(b.best_ask() == Level{px(12000), qt(4)});
   CHECK(b.is_valid());
 
-  // A bid above the window is the new touch: the window moves to the two touches and the
-  // 10000 bid moves to the overflow store.
+  // A bid above the window is the new touch. The overflow store serves it at first; once it
+  // has taken a few operations the window moves to the two touches and the 10000 bid moves to
+  // the overflow store.
   CHECK(b.add(6, Side::Buy, px(11990), qt(2)) == L3Error::None);
+  CHECK(b.recentre_count() == 0);
+  CHECK(b.best_bid() == Level{px(11990), qt(2)});
+  CHECK(b.best_ask() == Level{px(12000), qt(4)});
+  for (std::uint64_t r = 100; r < 104; ++r) {
+    CHECK(b.add(r, Side::Buy, px(11990), qt(1)) == L3Error::None);
+    CHECK(b.cancel(r) == L3Error::None);
+  }
   CHECK(b.recentre_count() == 1);
   CHECK(b.best_bid() == Level{px(11990), qt(2)});
   CHECK(b.best_ask() == Level{px(12000), qt(4)});
@@ -178,13 +186,19 @@ TEST_CASE("core.l3_book: orders outside the window live in the overflow store") 
   CHECK(b.best_bid() == Level{px(10000), qt(1)});
   CHECK(b.spread() == px(2000));
 
-  // Only overflow levels left on both sides: the window moves to the bid touch.
+  // Only overflow levels left on both sides: the window moves to the bid touch once it trades.
   CHECK(b.cancel(3) == L3Error::None);
   CHECK(b.cancel(5) == L3Error::None);
   CHECK(b.cancel(1) == L3Error::None);
   CHECK(b.best_bid() == Level{px(5), qt(7)});
   CHECK(b.depth(Side::Buy) == 1);
+  for (std::uint64_t r = 110; r < 114; ++r) {
+    CHECK(b.add(r, Side::Buy, px(5), qt(1)) == L3Error::None);
+    CHECK(b.cancel(r) == L3Error::None);
+  }
+  CHECK(b.recentre_count() == 2);
   CHECK(b.overflow_levels(Side::Buy) == 0);
+  CHECK(b.best_bid() == Level{px(5), qt(7)});
   CHECK(b.cancel(4) == L3Error::None);
   CHECK(b.order_count() == 0);
   // Empty book: any price re-anchors the window.
@@ -209,7 +223,12 @@ TEST_CASE("core.l3_book: a full overflow store refuses orders and skips recentre
     CHECK(b.add(static_cast<std::uint64_t>(100 + i), Side::Sell, px(1000 + i), qt(1)) ==
           L3Error::None);
   CHECK(b.add(200, Side::Sell, px(960), qt(3)) == L3Error::None);
-  CHECK(b.recentre_failures() == 1);
+  for (std::uint64_t r = 300; r < 320; ++r) {
+    CHECK(b.add(r, Side::Sell, px(960), qt(1)) == L3Error::None);
+    CHECK(b.cancel(r) == L3Error::None);
+  }
+  CHECK(b.recentre_failures() >= 1);
+  CHECK(b.recentre_count() == 0);
   CHECK(b.best_ask() == Level{px(960), qt(3)});
   CHECK(b.level(Side::Sell, 1) == Level{px(1001), qt(2)});
   CHECK(b.depth(Side::Sell) == 32);
@@ -227,12 +246,101 @@ TEST_CASE("core.l3_book: pool exhaustion") {
   CHECK(small.add(9, Side::Buy, px(10), qt(1)) == L3Error::None);
 }
 
+TEST_CASE("core.l3_book: clear() returns every order to the pool") {
+  L3Book b(kTick, {.price_window_ticks = 64, .max_orders = 64, .max_overflow_levels = 16});
+  for (int round = 0; round < 3; ++round) {
+    std::uint64_t ref = 1;
+    // Window levels and stub levels in the overflow store on both sides, eight orders a level.
+    for (std::int64_t i = 0; i < 64; ++i) {
+      CAPTURE(round);
+      CAPTURE(i);
+      const bool buy = i % 2 == 0;
+      const std::int64_t k = (i / 2) % 8;
+      const std::int64_t p = i % 8 < 6 ? (buy ? 1000 - k : 1001 + k) : (buy ? 10 + k : 90000 + k);
+      REQUIRE(b.add(ref++, buy ? Side::Buy : Side::Sell, px(p), qt(1)) == L3Error::None);
+    }
+    CHECK(b.overflow_levels(Side::Sell) > 0);
+    CHECK(b.add(ref, Side::Buy, px(1000), qt(1)) == L3Error::PoolExhausted);
+    b.clear();
+    CHECK(b.order_count() == 0);
+    CHECK(b.depth(Side::Buy) == 0);
+    CHECK(b.depth(Side::Sell) == 0);
+    CHECK(b.overflow_levels(Side::Buy) == 0);
+    CHECK(b.order(1) == nullptr);
+    CHECK(b.best_bid().qty.is_zero());
+  }
+  // The pool holds max_orders again and the window re-anchors anywhere.
+  for (std::uint64_t r = 1; r <= 64; ++r)
+    CHECK(b.add(r, Side::Sell, px(-500 + static_cast<std::int64_t>(r % 8)), qt(1)) ==
+          L3Error::None);
+  CHECK(b.best_ask() == Level{px(-500), qt(8)});
+}
+
+// The window must not follow a touch that steps out and straight back: on the ITCH sample day
+// each such step cost a recentre, and each recentre moved the whole window (1.5 MiB a side).
+TEST_CASE("core.l3_book: an order beyond the touch and its cancel move nothing") {
+  L3Book b(kTick, {.price_window_ticks = 1U << 12, .max_orders = 1U << 14});
+  std::uint64_t ref = 1;
+  for (std::int64_t i = 0; i < 1000; ++i) {
+    REQUIRE(b.add(ref++, Side::Buy, px(10000 - i), qt(1)) == L3Error::None);
+    REQUIRE(b.add(ref++, Side::Sell, px(10001 + i), qt(1)) == L3Error::None);
+  }
+  for (int k = 0; k < 2000; ++k) {
+    // A bid and an ask across the whole window, and a one-sided touch far below.
+    const Side s = k % 2 == 0 ? Side::Buy : Side::Sell;
+    REQUIRE(b.add(ref, s, px(s == Side::Buy ? 20000 : 1000), qt(1)) == L3Error::None);
+    CHECK((s == Side::Buy ? b.best_bid() : b.best_ask()).price ==
+          px(s == Side::Buy ? 20000 : 1000));
+    REQUIRE(b.cancel(ref++) == L3Error::None);
+  }
+  CHECK(b.recentre_count() == 0);
+  CHECK(b.best_bid() == Level{px(10000), qt(1)});
+  CHECK(b.best_ask() == Level{px(10001), qt(1)});
+}
+
+// Worst case for the window: a dense one-sided book whose touch alternates between two places a
+// window apart, trading at each. Every move pays for itself with the operations before it, so
+// the levels moved stay a constant per operation, however large the window and however often
+// the touch jumps.
+TEST_CASE("core.l3_book: levels moved by recentres stay O(1) per operation") {
+  for (const std::size_t window : {std::size_t{1} << 10, std::size_t{1} << 16}) {
+    CAPTURE(window);
+    L3Book b(kTick, {.price_window_ticks = window, .max_orders = 1U << 14});
+    const auto w = static_cast<std::int64_t>(window);
+    std::uint64_t ref = 1;
+    for (std::int64_t i = 0; i < 400; ++i)
+      REQUIRE(b.add(ref++, Side::Buy, px(100000 - i), qt(1)) == L3Error::None);
+    std::uint64_t ops = 0;
+    for (int jump = 0; jump < 200; ++jump) {
+      const std::int64_t at = 100000 + (jump % 2 == 0 ? 3 * w : 0) + 1;
+      const std::uint64_t first = ref;
+      for (int k = 0; k <= jump % 50; ++k) {
+        REQUIRE(b.add(ref++, Side::Buy, px(at), qt(1)) == L3Error::None);
+        ++ops;
+      }
+      for (std::uint64_t r = first; r < ref; ++r) {
+        REQUIRE(b.cancel(r) == L3Error::None);
+        ++ops;
+      }
+      CHECK(b.best_bid() == Level{px(100000), qt(1)});
+    }
+    CHECK(b.recentre_count() > 0);
+    CHECK(b.recentre_failures() == 0);
+    // A move waits for a quarter of the levels it may move in operations: at most 4 levels moved
+    // per operation, whatever the window.
+    CHECK(b.recentre_levels_moved() <= 4 * ops);
+  }
+}
+
 namespace {
 // wide: prices 950..1050 in a 1024-tick window. Otherwise a 64-tick window, a reference price
-// drifting by up to 3 ticks every 20 operations, and 5 % stub quotes far from it.
-void run_oracle(std::uint32_t seed, bool wide) {
+// drifting by up to 3 ticks every 20 operations, and 5 % stub quotes far from it. jumpy: the
+// reference price jumps by up to three windows every 50 operations, through zero and below, and
+// the book is cleared now and then.
+void run_oracle(std::uint32_t seed, bool wide, bool jumpy = false) {
   CAPTURE(seed);
   CAPTURE(wide);
+  CAPTURE(jumpy);
   std::mt19937 rng(seed);
   Book b(kTick,
          wide ? kCfg
@@ -249,10 +357,16 @@ void run_oracle(std::uint32_t seed, bool wide) {
     const std::int64_t p = px_dist(rng);
     if (wide) return p;
     if (rng() % 20 == 0) return (rng() & 1) ? 1 + static_cast<std::int64_t>(rng() % 20) : 5000;
-    return p + centre;
+    return p - (jumpy ? 1000 : 0) + centre;
   };
   for (int op = 0; op < 4000; ++op) {
-    if (!wide && op % 20 == 0) centre += static_cast<std::int64_t>(rng() % 7) - 3;
+    if (!wide && !jumpy && op % 20 == 0) centre += static_cast<std::int64_t>(rng() % 7) - 3;
+    if (jumpy && op % 50 == 0) centre += static_cast<std::int64_t>(rng() % 385) - 192;
+    if (jumpy && op % 1500 == 1499) {
+      b.clear();
+      o = Oracle{};
+      live.clear();
+    }
     const int o_ = op_dist(rng);
     if (o_ < 4 || live.empty()) {
       const Side s = (rng() & 1) ? Side::Buy : Side::Sell;
@@ -294,7 +408,7 @@ void run_oracle(std::uint32_t seed, bool wide) {
     if (op % 100 == 0) check_equal(b, o);
   }
   check_equal(b, o);
-  if (!wide) CHECK(b.recentre_failures() == 0);
+  if (!wide && !jumpy) CHECK(b.recentre_failures() == 0);
 }
 }  // namespace
 
@@ -304,4 +418,8 @@ TEST_CASE("core.l3_book: property test vs map<price, deque> oracle") {
 
 TEST_CASE("core.l3_book: property test with stub quotes and a drifting market in a small window") {
   for (std::uint32_t seed = 1; seed <= 60; ++seed) run_oracle(seed, false);
+}
+
+TEST_CASE("core.l3_book: property test with a jumping market through negative prices") {
+  for (std::uint32_t seed = 1; seed <= 60; ++seed) run_oracle(seed, false, true);
 }

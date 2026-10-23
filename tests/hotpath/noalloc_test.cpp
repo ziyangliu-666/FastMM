@@ -90,7 +90,19 @@ TEST_CASE("hotpath.noalloc: L3 add/execute/cancel/replace") {
     for (std::uint64_t i = 501; i <= 800; ++i) book->cancel(i);
     for (std::uint64_t i = 801; i <= 1000; ++i) book->replace(i, i + 10000, px("102"), qt("2"));
     benchmark_sink(book->best_bid());
+    // Overflow levels, a touch that jumps out of the window and trades there (recentres), and
+    // clear().
+    for (std::uint64_t i = 1; i <= 200; ++i) {
+      book->add(20000 + i, Side::Buy, px(i % 2 == 0 ? "1" : "500"), qt("1"));
+      book->cancel(20000 + i);
+    }
+    book->add(30000, Side::Sell, px("90"), qt("1"));
+    book->clear();
+    book->add(30001, Side::Buy, px("7"), qt("1"));
+    for (std::uint64_t i = 1; i <= 10; ++i) book->add(30001 + i, Side::Buy, px("500"), qt("1"));
+    benchmark_sink(book->best_bid());
   }
+  CHECK(book->recentre_count() > 0);
 }
 
 TEST_CASE("hotpath.noalloc: risk check, OMS lifecycle, quote manager, journal, log") {

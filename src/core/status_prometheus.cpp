@@ -675,6 +675,14 @@ void venue_metrics(Exposition& e, const StatusSnapshot& s) {
            "counter",
            "L3 book inconsistencies",
            [](const StatusFeed& f) { return f.book_errors; });
+  per_feed("fastmm_feed_book_recentres_total",
+           "counter",
+           "L3 book price-window moves, summed over the books",
+           [](const StatusFeed& f) { return f.book_recentres; });
+  per_feed("fastmm_feed_book_recentre_failures_total",
+           "counter",
+           "L3 book price-window moves skipped because the overflow store was full",
+           [](const StatusFeed& f) { return f.book_recentre_failures; });
   e.family("fastmm_feed_line_duplicates_total",
            "counter",
            "copies that arrived after the first copy, per line");

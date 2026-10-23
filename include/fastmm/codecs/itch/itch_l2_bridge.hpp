@@ -75,6 +75,14 @@ struct ItchL2BridgeStats {
   std::uint64_t overflow = 0;  // the sink had no room
 };
 
+// L3Book window moves summed over the instruments' books (L3Book::recentre_count() and the
+// rest), counted since each book was created.
+struct ItchL2BridgeBookCounters {
+  std::uint64_t recentres = 0;
+  std::uint64_t recentre_failures = 0;
+  std::uint64_t recentre_levels_moved = 0;
+};
+
 class ItchL2Bridge {
  public:
   static constexpr std::uint32_t kMaxDepth = 256;
@@ -114,6 +122,8 @@ class ItchL2Bridge {
   [[nodiscard]] bool complete(InstrumentId id) const noexcept;
   [[nodiscard]] const L3Book* book(InstrumentId id) const noexcept;
   [[nodiscard]] const ItchL2BridgeStats& stats() const noexcept { return stats_; }
+  // Walks the books; for status reporting, not the hot path.
+  [[nodiscard]] ItchL2BridgeBookCounters book_counters() const noexcept;
   [[nodiscard]] const ItchDecoder& decoder() const noexcept { return decoder_; }
   [[nodiscard]] std::uint32_t depth() const noexcept { return depth_; }
   // Last value of S (System Event) Event Code, 0 before the first.

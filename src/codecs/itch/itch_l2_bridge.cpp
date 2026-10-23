@@ -117,6 +117,16 @@ bool ItchL2Bridge::complete(InstrumentId id) const noexcept {
   return s != nullptr && s->complete;
 }
 
+ItchL2BridgeBookCounters ItchL2Bridge::book_counters() const noexcept {
+  ItchL2BridgeBookCounters c;
+  for (const auto& s : slots_) {
+    c.recentres += s->book.recentre_count();
+    c.recentre_failures += s->book.recentre_failures();
+    c.recentre_levels_moved += s->book.recentre_levels_moved();
+  }
+  return c;
+}
+
 const L3Book* ItchL2Bridge::book(InstrumentId id) const noexcept {
   const Slot* s = slot_of(id);
   return s == nullptr ? nullptr : &s->book;

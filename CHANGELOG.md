@@ -7,6 +7,7 @@ All notable changes are recorded here (Keep a Changelog format).
 ### Breaking changes
 - core: `[strategy] state_snapshot_interval_s` is now `[engine] checkpoint_s`; rename the key.
 - core: journal format 4; a journal written by this version does not open in 0.8.
+- core: status file version 24 (`feed.book_recentres`); `fastmm-top` reads one build's files only.
 
 ### Added
 - core: `[engine] checkpoint_s` journals the positions and open orders of any strategy.
@@ -19,6 +20,8 @@ All notable changes are recorded here (Keep a Changelog format).
 - backtest: `latency_fill_us`, `_jitter_us` and `_sigma` give fills a path apart from the acks.
 - backtest: `[backtest.positions]` sets the engine's positions at the start.
 - backtest: `fastmm-data events` writes a session's own traffic as CSV.
+- venues: `nasdaq_itch` reports its L3 books' window moves as `fastmm_feed_book_recentres_total`.
+- bench: `fastmm-bench-l3-itch` replays an ITCH file into L3 books with latency percentiles.
 
 ### Changed
 - backtest: `balances_from_journal` replays the session's flows of money and account refreshes.
@@ -26,6 +29,12 @@ All notable changes are recorded here (Keep a Changelog format).
 - replay: `fastmm-replay` restores the state of a warm standby's take-over.
 
 ### Fixed
+- core: an L3 book recentre no longer moves its whole price window (about 850x faster at 2^16 ticks).
+- core: an L3 book's `clear()` on a resync costs the resting orders, not its capacity.
+- core: an L2 book loads a deep snapshot in linear time.
+- core: the OMS looks up an unknown order id in one probe, not a scan of 4096 terminal orders.
+- core: a full balance-move buffer drops its oldest move in O(1).
+- venues: OKX's checksum book moves only the levels next to a change near the touch.
 - backtest: `strip_own` takes out orders that rested before the journal's first record.
 - sim: `l2_queue` checks post-only orders against a book ticker newer than the depth.
 

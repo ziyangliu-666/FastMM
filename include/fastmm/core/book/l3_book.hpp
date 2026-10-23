@@ -4,25 +4,34 @@
 // Capacities are constructor arguments (L3BookConfig); every buffer is allocated by the
 // constructor and nothing allocates afterwards.
 //
-// Levels near the market live in a tick-indexed window of price_window_ticks per side, so
-// price -> level is one subtraction. A bitmap per side marks the non-empty window levels:
-// finding the next level (best-level repair, depth walks) skips 64 empty ticks per word.
+// Levels near the market live in a tick-indexed window of price_window_ticks per side (rounded
+// up to a power of two), so price -> level is one subtraction and a mask. The window is a ring:
+// tick t sits in slot t mod window wherever the window starts, so moving the window moves no
+// slot. A bitmap per side marks the non-empty slots and a summary bitmap marks its non-zero
+// words: finding the next level skips 64 empty ticks per word and 4096 per summary word.
 // Levels outside the window (stub quotes, deep levels) live in a per-side overflow store: an
-// array of at most max_overflow_levels levels sorted best-first. Adding or removing an order
-// outside the window touches only that store. The window is moved (recentred) when a side's
-// best level lies outside it: onto the midpoint of the two touches when they are less than a
-// window apart, onto the touch of a one-sided book. Touches further apart than the window keep
-// the window on the one it holds (it moves to the bid when it holds neither), so a stub-only
-// side does not pull the window back and forth. Levels leaving the window move to the overflow
-// store and overflow levels inside the new window move in, with
+// array of at most max_overflow_levels levels sorted worst-first, so the levels near the
+// window, the ones that change, are at its end.
+//
+// The window follows the touches (recentres). When a side's best level is outside it, the
+// overflow store serves that touch until it has taken about as many operations as the move
+// costs (see note_touch_out()); then the window moves onto the midpoint of the two touches when
+// they are less than a window apart, onto the touch of a one-sided book. Touches further apart
+// than the window keep the window on the one it holds (it moves to the bid when it holds
+// neither), so a stub-only side does not pull the window back and forth. Levels leaving the
+// window move to the overflow store and overflow levels inside the new window move in, with
 // their FIFO queues unchanged. A recentre that would overflow the store is skipped (counted in
-// recentre_failures()); the book stays correct, the out-of-window touch is only slower.
+// recentre_failures()) and tried again later; the book stays correct, the out-of-window touch
+// is only slower. recentre_count() and recentre_levels_moved() count the moves.
 //
 // Orders live in a fixed pool with an intrusive doubly-linked FIFO per level; order_ref ->
 // order goes through an open-addressing index sized 2 x max_orders (power of two).
 //
-// Every operation is O(1) except: recentre (moves the window arrays, rare), overflow levels
-// (binary search plus a memmove of the store) and best-level repair (bitmap scan).
+// Costs: add, execute, cancel and replace in the window are O(1); an emptied best level finds
+// the next one in O(1 + window / 4096) words; an operation in the overflow store is a binary
+// search plus a memmove of the levels behind its level; a recentre costs the levels it moves
+// and the store, O(1) amortised over the operations that wait for it; clear() costs the orders
+// and levels the book holds. Nothing costs O(window) or O(max_orders) after construction.
 #include "fastmm/core/book/book_view.hpp"
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/hot_array.hpp"
@@ -71,7 +80,8 @@ enum class L3Error : std::uint8_t {
 };
 
 struct L3BookConfig {
-  std::size_t price_window_ticks = std::size_t{1} << 16;  // per side; multiple of 64
+  std::size_t price_window_ticks = std::size_t{1}
+                                   << 16;  // per side; multiple of 64, rounded up to a power of two
   std::size_t max_orders = std::size_t{1} << 20;
   std::size_t max_overflow_levels = 1024;  // per side
 };
@@ -165,8 +175,10 @@ class L3Book {
   // Construction happens at startup; failing to allocate is fatal by design.
   explicit L3Book(Price tick, const L3BookConfig& cfg = {})
       : tick_(tick),
-        window_(static_cast<std::int64_t>(cfg.price_window_ticks)),
-        words_(cfg.price_window_ticks / 64),
+        window_(static_cast<std::int64_t>(std::bit_ceil(cfg.price_window_ticks))),
+        mask_(std::bit_ceil(cfg.price_window_ticks) - 1),
+        words_(std::bit_ceil(cfg.price_window_ticks) / 64),
+        sum_words_((words_ + 63) / 64),
         max_orders_(cfg.max_orders),
         ov_cap_(cfg.max_overflow_levels),
         orders_(make_hot_array<L3Order>(cfg.max_orders)),
@@ -176,29 +188,38 @@ class L3Book {
     FASTMM_CHECK(cfg.price_window_ticks >= 64 && cfg.price_window_ticks % 64 == 0);
     FASTMM_CHECK(cfg.max_orders > 0 && cfg.max_orders < kNullHandle);
     for (std::size_t s = 0; s < 2; ++s) {
-      levels_[s] = make_hot_array<L3Level>(cfg.price_window_ticks);
+      levels_[s] = make_hot_array<L3Level>(static_cast<std::size_t>(window_));
       bits_[s] = std::make_unique<std::uint64_t[]>(words_);
+      sum_[s] = std::make_unique<std::uint64_t[]>(sum_words_);
       ov_[s] = std::make_unique<OvLevel[]>(ov_cap_ > 0 ? ov_cap_ : 1);
       ov_tmp_[s] = std::make_unique<OvLevel[]>(ov_cap_ > 0 ? ov_cap_ : 1);
     }
-    clear();
+    for (std::size_t i = 0; i < max_orders_; ++i) orders_[i].next = OrderHandle{next_index(i)};
+    free_head_ = 0;
   }
   L3Book(const L3Book&) = delete;
   L3Book& operator=(const L3Book&) = delete;
 
+  // Empties the book. Costs what the book holds (its orders, levels and bitmap summary), not its
+  // capacity: only the resting orders' index slots and the occupied levels are written.
   void clear() noexcept {
-    for (std::size_t i = 0; i < max_orders_; ++i) orders_[i].next = OrderHandle{next_index(i)};
-    free_head_ = 0;
-    by_ref_.clear();
     for (std::size_t s = 0; s < 2; ++s) {
-      std::fill_n(levels_[s].get(), static_cast<std::size_t>(window_), L3Level{});
-      std::fill_n(bits_[s].get(), words_, std::uint64_t{0});
+      const auto side = static_cast<Side>(s);
+      for (std::int64_t i = next_set_up(s, 0); i != kNone; i = next_set_up(s, i + 1)) {
+        L3Level& lvl = level_at(side, i);
+        release_all(lvl);
+        lvl = L3Level{};
+        clear_bit(side, i);
+      }
+      for (std::size_t i = 0; i < ov_n_[s]; ++i) release_all(ov_[s][i].lvl);
       ov_n_[s] = 0;
       best_[s] = kNone;
     }
     seq_ = 0;
     order_count_ = 0;
     centred_ = false;
+    pending_ = false;
+    rent_ = 0;
   }
 
   // ---- mutation ----------------------------------------------------------------------------
@@ -218,16 +239,16 @@ class L3Book {
     o.side = side;
     o.next = OrderHandle{};
     if (FASTMM_UNLIKELY(order_count_ == 0 || !centred_)) {
+      // Empty book: every slot is empty, so the window moves for free.
       base_tick_ = t - window_ / 2;
       centred_ = true;
+      pending_ = false;
     }
     const std::int64_t rel = t - base_tick_;
     if (FASTMM_LIKELY(static_cast<std::uint64_t>(rel) < static_cast<std::uint64_t>(window_))) {
-      L3Level& lvl = level_at(side, rel);
-      link_back(lvl, OrderHandle{h}, o);
-      if (lvl.count == 1) set_bit(side, rel);
-      update_best_on_add(side, rel);
-    } else if (FASTMM_UNLIKELY(!add_overflow(OrderHandle{h}, o, t))) {
+      add_in_window(side, rel, OrderHandle{h}, o);
+    } else if (FASTMM_UNLIKELY(!add_overflow(OrderHandle{h}, o, t) &&
+                               !add_after_recentre(OrderHandle{h}, o, t))) {
       by_ref_.erase(ref);
       release(h);
       return L3Error::OutOfWindow;
@@ -307,12 +328,15 @@ class L3Book {
   }
   [[nodiscard]] std::size_t order_count() const noexcept { return order_count_; }
   [[nodiscard]] std::size_t max_orders() const noexcept { return max_orders_; }
+  // The configured window rounded up to a power of two.
   [[nodiscard]] std::size_t window_ticks() const noexcept {
     return static_cast<std::size_t>(window_);
   }
   [[nodiscard]] Price tick() const noexcept { return tick_; }
-  [[nodiscard]] std::uint32_t recentre_count() const noexcept { return recentres_; }
-  [[nodiscard]] std::uint32_t recentre_failures() const noexcept { return recentre_failures_; }
+  [[nodiscard]] std::uint64_t recentre_count() const noexcept { return recentres_; }
+  [[nodiscard]] std::uint64_t recentre_failures() const noexcept { return recentre_failures_; }
+  // Levels moved between the window and the overflow store by recentres, both ways.
+  [[nodiscard]] std::uint64_t recentre_levels_moved() const noexcept { return recentre_moved_; }
   // Levels currently held in the overflow store.
   [[nodiscard]] std::size_t overflow_levels(Side side) const noexcept {
     return ov_n_[static_cast<std::size_t>(side)];
@@ -380,18 +404,17 @@ class L3Book {
   void for_each_level(Side side, F&& f) const noexcept {
     const auto s = static_cast<std::size_t>(side);
     const OvLevel* ov = ov_[s].get();
-    const std::size_t n = ov_n_[s];
-    std::size_t i = 0;
-    for (; i < n && better_than_window(side, ov[i].tick); ++i) {
-      if (!visit(f, Level{price_of(ov[i].tick), ov[i].lvl.qty})) return;
+    std::size_t i = ov_n_[s];  // the store is worst-first: walk it from the back
+    for (; i > 0 && better_than_window(side, ov[i - 1].tick); --i) {
+      if (!visit(f, Level{price_of(ov[i - 1].tick), ov[i - 1].lvl.qty})) return;
     }
     std::int64_t idx = best_[s];
     while (idx != kNone) {
       if (!visit(f, Level{price_of(base_tick_ + idx), level_at(side, idx).qty})) return;
       idx = side == Side::Buy ? next_set_down(s, idx - 1) : next_set_up(s, idx + 1);
     }
-    for (; i < n; ++i) {
-      if (!visit(f, Level{price_of(ov[i].tick), ov[i].lvl.qty})) return;
+    for (; i > 0; --i) {
+      if (!visit(f, Level{price_of(ov[i - 1].tick), ov[i - 1].lvl.qty})) return;
     }
   }
   template <std::size_t N>
@@ -441,6 +464,8 @@ class L3Book {
 
  private:
   static constexpr std::int64_t kNone = -1;
+  // A recentre waits for this many overflow-store operations at least (see note_touch_out()).
+  static constexpr std::uint32_t kMinRent = 4;
 
   struct OvLevel {
     std::int64_t tick;
@@ -464,6 +489,16 @@ class L3Book {
   FASTMM_FORCE_INLINE void release(std::uint32_t h) noexcept {
     orders_[h].next = OrderHandle{free_head_};
     free_head_ = h;
+  }
+  // Returns every order of the level to the pool (clear()).
+  void release_all(const L3Level& lvl) noexcept {
+    OrderHandle h = lvl.head;
+    while (h.valid()) {
+      const OrderHandle next = orders_[h.idx].next;
+      by_ref_.erase(orders_[h.idx].ref);
+      release(h.idx);
+      h = next;
+    }
   }
   FASTMM_FORCE_INLINE void link_back(L3Level& lvl, OrderHandle h, L3Order& o) noexcept {
     o.prev = lvl.tail;
@@ -489,13 +524,35 @@ class L3Book {
     }
     --lvl.count;
   }
+  FASTMM_FORCE_INLINE void add_in_window(Side side,
+                                         std::int64_t rel,
+                                         OrderHandle h,
+                                         L3Order& o) noexcept {
+    L3Level& lvl = level_at(side, rel);
+    link_back(lvl, h, o);
+    if (lvl.count == 1) set_bit(side, rel);
+    update_best_on_add(side, rel);
+  }
 
+  // ---- window ------------------------------------------------------------------------------
+  //
+  // The window is a ring: tick t lives in slot t mod window, whatever the window's base, so
+  // moving the window moves no slot. A window index (rel, idx) is t - base_tick_; slot_of() maps
+  // it to the slot. An empty slot is all zero (a level that empties unlinks to zero), so a slot
+  // entering the window needs no clearing.
+
+  [[nodiscard]] FASTMM_FORCE_INLINE std::size_t slot_of(std::int64_t idx) const noexcept {
+    return static_cast<std::uint64_t>(base_tick_ + idx) & mask_;
+  }
+  [[nodiscard]] FASTMM_FORCE_INLINE std::size_t slot_of_tick(std::int64_t t) const noexcept {
+    return static_cast<std::uint64_t>(t) & mask_;
+  }
   [[nodiscard]] FASTMM_FORCE_INLINE L3Level& level_at(Side s, std::int64_t idx) noexcept {
-    return levels_[static_cast<std::size_t>(s)][static_cast<std::size_t>(idx)];
+    return levels_[static_cast<std::size_t>(s)][slot_of(idx)];
   }
   [[nodiscard]] FASTMM_FORCE_INLINE const L3Level& level_at(Side s,
                                                             std::int64_t idx) const noexcept {
-    return levels_[static_cast<std::size_t>(s)][static_cast<std::size_t>(idx)];
+    return levels_[static_cast<std::size_t>(s)][slot_of(idx)];
   }
   [[nodiscard]] Price price_of(std::int64_t t) const noexcept {
     return Price::from_raw(t * tick_.raw);
@@ -508,56 +565,139 @@ class L3Book {
                                                             std::int64_t t) const noexcept {
     return side == Side::Buy ? t >= base_tick_ + window_ : t < base_tick_;
   }
-  // `a` ranks before `b` in the side's best-first order.
-  [[nodiscard]] static FASTMM_FORCE_INLINE bool ranks_before(Side side,
-                                                             std::int64_t a,
-                                                             std::int64_t b) noexcept {
-    return side == Side::Buy ? a > b : a < b;
+  // `a` ranks after (is worse than) `b` in the side's best-first order.
+  [[nodiscard]] static FASTMM_FORCE_INLINE bool worse(Side side,
+                                                      std::int64_t a,
+                                                      std::int64_t b) noexcept {
+    return side == Side::Buy ? a < b : a > b;
   }
 
   // ---- bitmap ------------------------------------------------------------------------------
+  //
+  // One bit per slot, and a summary with one bit per non-zero bitmap word, so a search crosses
+  // 4096 empty slots per summary word: finding the next level costs O(window / 4096) words at
+  // worst (16 for the default window), not O(window / 64).
 
-  FASTMM_FORCE_INLINE void set_bit(Side s, std::int64_t idx) noexcept {
-    const auto i = static_cast<std::size_t>(idx);
-    bits_[static_cast<std::size_t>(s)][i >> 6U] |= std::uint64_t{1} << (i & 63U);
+  FASTMM_FORCE_INLINE void set_bit(Side side, std::int64_t idx) noexcept {
+    const auto s = static_cast<std::size_t>(side);
+    const std::size_t p = slot_of(idx);
+    std::uint64_t& w = bits_[s][p >> 6U];
+    if (w == 0) sum_[s][p >> 12U] |= std::uint64_t{1} << ((p >> 6U) & 63U);
+    w |= std::uint64_t{1} << (p & 63U);
+    ++nlev_[s];
   }
-  FASTMM_FORCE_INLINE void clear_bit(Side s, std::int64_t idx) noexcept {
-    const auto i = static_cast<std::size_t>(idx);
-    bits_[static_cast<std::size_t>(s)][i >> 6U] &= ~(std::uint64_t{1} << (i & 63U));
+  FASTMM_FORCE_INLINE void clear_bit(Side side, std::int64_t idx) noexcept {
+    const auto s = static_cast<std::size_t>(side);
+    const std::size_t p = slot_of(idx);
+    std::uint64_t& w = bits_[s][p >> 6U];
+    w &= ~(std::uint64_t{1} << (p & 63U));
+    if (w == 0) sum_[s][p >> 12U] &= ~(std::uint64_t{1} << ((p >> 6U) & 63U));
+    --nlev_[s];
+  }
+  static FASTMM_FORCE_INLINE std::uint64_t bits_from(unsigned k) noexcept {
+    return ~std::uint64_t{0} << k;
+  }
+  static FASTMM_FORCE_INLINE std::uint64_t bits_upto(unsigned k) noexcept {
+    return k == 63 ? ~std::uint64_t{0} : (std::uint64_t{1} << (k + 1)) - 1;
+  }
+  // First non-zero bitmap word in [lo, hi] (word indices), or -1.
+  [[nodiscard]] std::int64_t word_first(std::size_t s,
+                                        std::size_t lo,
+                                        std::size_t hi) const noexcept {
+    if (lo > hi) return -1;
+    const std::uint64_t* sm = sum_[s].get();
+    std::size_t j = lo >> 6U;
+    const std::size_t jh = hi >> 6U;
+    std::uint64_t w = sm[j] & bits_from(static_cast<unsigned>(lo & 63U));
+    for (;;) {
+      if (j == jh) w &= bits_upto(static_cast<unsigned>(hi & 63U));
+      if (w != 0) return static_cast<std::int64_t>(j * 64) + std::countr_zero(w);
+      if (++j > jh) return -1;
+      w = sm[j];
+    }
+  }
+  // Last non-zero bitmap word in [lo, hi], or -1.
+  [[nodiscard]] std::int64_t word_last(std::size_t s,
+                                       std::size_t lo,
+                                       std::size_t hi) const noexcept {
+    if (lo > hi) return -1;
+    const std::uint64_t* sm = sum_[s].get();
+    std::size_t j = hi >> 6U;
+    const std::size_t jl = lo >> 6U;
+    std::uint64_t w = sm[j] & bits_upto(static_cast<unsigned>(hi & 63U));
+    for (;;) {
+      if (j == jl) w &= bits_from(static_cast<unsigned>(lo & 63U));
+      if (w != 0) return static_cast<std::int64_t>(j * 64) + 63 - std::countl_zero(w);
+      if (j-- == jl) return -1;
+      w = sm[j];
+    }
+  }
+  // Lowest set slot in [lo, hi], or -1.
+  [[nodiscard]] std::int64_t slot_first(std::size_t s,
+                                        std::size_t lo,
+                                        std::size_t hi) const noexcept {
+    const std::uint64_t* b = bits_[s].get();
+    const std::size_t wl = lo >> 6U;
+    const std::size_t wh = hi >> 6U;
+    std::uint64_t w = b[wl] & bits_from(static_cast<unsigned>(lo & 63U));
+    if (wl == wh) w &= bits_upto(static_cast<unsigned>(hi & 63U));
+    if (w != 0) return static_cast<std::int64_t>(wl * 64) + std::countr_zero(w);
+    if (wl == wh) return -1;
+    if (wl + 1 < wh) {
+      const std::int64_t j = word_first(s, wl + 1, wh - 1);
+      if (j >= 0) return j * 64 + std::countr_zero(b[j]);
+    }
+    w = b[wh] & bits_upto(static_cast<unsigned>(hi & 63U));
+    return w != 0 ? static_cast<std::int64_t>(wh * 64) + std::countr_zero(w) : -1;
+  }
+  // Highest set slot in [lo, hi], or -1.
+  [[nodiscard]] std::int64_t slot_last(std::size_t s,
+                                       std::size_t lo,
+                                       std::size_t hi) const noexcept {
+    const std::uint64_t* b = bits_[s].get();
+    const std::size_t wl = lo >> 6U;
+    const std::size_t wh = hi >> 6U;
+    std::uint64_t w = b[wh] & bits_upto(static_cast<unsigned>(hi & 63U));
+    if (wl == wh) w &= bits_from(static_cast<unsigned>(lo & 63U));
+    if (w != 0) return static_cast<std::int64_t>(wh * 64) + 63 - std::countl_zero(w);
+    if (wl == wh) return -1;
+    if (wl + 1 < wh) {
+      const std::int64_t j = word_last(s, wl + 1, wh - 1);
+      if (j >= 0) return j * 64 + 63 - std::countl_zero(b[j]);
+    }
+    w = b[wl] & bits_from(static_cast<unsigned>(lo & 63U));
+    return w != 0 ? static_cast<std::int64_t>(wl * 64) + 63 - std::countl_zero(w) : -1;
+  }
+  [[nodiscard]] FASTMM_FORCE_INLINE std::int64_t idx_of_slot(std::int64_t p) const noexcept {
+    return static_cast<std::int64_t>(static_cast<std::uint64_t>(p - base_tick_) & mask_);
   }
   // Highest non-empty window index <= from, or kNone.
   [[nodiscard]] std::int64_t next_set_down(std::size_t s, std::int64_t from) const noexcept {
     if (from < 0) return kNone;
-    const std::uint64_t* b = bits_[s].get();
-    auto w = static_cast<std::int64_t>(static_cast<std::uint64_t>(from) >> 6U);
-    const auto bit = static_cast<unsigned>(from & 63);
-    std::uint64_t word =
-        b[w] & (bit == 63 ? ~std::uint64_t{0} : (std::uint64_t{1} << (bit + 1)) - 1);
-    for (;;) {
-      if (word != 0) return w * 64 + 63 - std::countl_zero(word);
-      if (--w < 0) return kNone;
-      word = b[w];
+    const std::size_t p0 = slot_of(0);
+    const std::size_t p = slot_of(from);
+    std::int64_t r = 0;
+    if (p0 <= p) {
+      r = slot_last(s, p0, p);
+    } else {  // the indices wrap around the end of the ring
+      r = slot_last(s, 0, p);
+      if (r < 0) r = slot_last(s, p0, mask_);
     }
+    return r < 0 ? kNone : idx_of_slot(r);
   }
   // Lowest non-empty window index >= from, or kNone.
   [[nodiscard]] std::int64_t next_set_up(std::size_t s, std::int64_t from) const noexcept {
     if (from >= window_) return kNone;
-    const std::uint64_t* b = bits_[s].get();
-    std::size_t w = static_cast<std::uint64_t>(from) >> 6U;
-    std::uint64_t word = b[w] & (~std::uint64_t{0} << static_cast<unsigned>(from & 63));
-    for (;;) {
-      if (word != 0) return static_cast<std::int64_t>(w * 64) + std::countr_zero(word);
-      if (++w >= words_) return kNone;
-      word = b[w];
+    const std::size_t p = slot_of(from);
+    const std::size_t pe = slot_of(window_ - 1);
+    std::int64_t r = 0;
+    if (p <= pe) {
+      r = slot_first(s, p, pe);
+    } else {
+      r = slot_first(s, p, mask_);
+      if (r < 0) r = slot_first(s, 0, pe);
     }
-  }
-  // Set bits in window indices [lo, hi).
-  [[nodiscard]] std::size_t count_bits(std::size_t s,
-                                       std::int64_t lo,
-                                       std::int64_t hi) const noexcept {
-    std::size_t n = 0;
-    for (std::int64_t i = next_set_up(s, lo); i != kNone && i < hi; i = next_set_up(s, i + 1)) ++n;
-    return n;
+    return r < 0 ? kNone : idx_of_slot(r);
   }
 
   // ---- best levels -------------------------------------------------------------------------
@@ -565,10 +705,10 @@ class L3Book {
   [[nodiscard]] Level best_level(Side side) const noexcept {
     const auto s = static_cast<std::size_t>(side);
     const std::int64_t idx = best_[s];
-    if (FASTMM_UNLIKELY(ov_n_[s] != 0) &&
-        (idx == kNone || better_than_window(side, ov_[s][0].tick))) {
-      const OvLevel& o = ov_[s][0];
-      return Level{price_of(o.tick), o.lvl.qty};
+    if (FASTMM_UNLIKELY(ov_n_[s] != 0)) {
+      const OvLevel& o = ov_[s][ov_n_[s] - 1];
+      if (idx == kNone || better_than_window(side, o.tick))
+        return Level{price_of(o.tick), o.lvl.qty};
     }
     if (idx == kNone) return Level{};
     return Level{price_of(base_tick_ + idx), level_at(side, idx).qty};
@@ -576,9 +716,12 @@ class L3Book {
   // Best tick of `side` over the window and the overflow store; false if the side is empty.
   bool best_tick(Side side, std::int64_t& out) const noexcept {
     const auto s = static_cast<std::size_t>(side);
-    if (ov_n_[s] != 0 && (best_[s] == kNone || better_than_window(side, ov_[s][0].tick))) {
-      out = ov_[s][0].tick;
-      return true;
+    if (ov_n_[s] != 0) {
+      const std::int64_t t = ov_[s][ov_n_[s] - 1].tick;
+      if (best_[s] == kNone || better_than_window(side, t)) {
+        out = t;
+        return true;
+      }
     }
     if (best_[s] == kNone) return false;
     out = base_tick_ + best_[s];
@@ -615,7 +758,7 @@ class L3Book {
         repair_best(side, rel);
         if (best_[static_cast<std::size_t>(side)] == kNone &&
             ov_n_[static_cast<std::size_t>(side)] != 0)
-          try_recentre();
+          note_touch_out();
       }
       return;
     }
@@ -628,8 +771,12 @@ class L3Book {
   }
 
   // ---- overflow store ------------------------------------------------------------------------
+  //
+  // Sorted worst-first, so the levels next to the window and beyond the touch, the ones that
+  // change, sit at the back: creating or removing one moves the few levels behind it, not the
+  // store.
 
-  // First index in the side's store whose tick does not rank before `t`.
+  // First index in the side's store whose tick is not worse than `t`.
   [[nodiscard]] std::size_t ov_lower_bound(Side side, std::int64_t t) const noexcept {
     const auto s = static_cast<std::size_t>(side);
     const OvLevel* ov = ov_[s].get();
@@ -637,7 +784,7 @@ class L3Book {
     std::size_t hi = ov_n_[s];
     while (lo < hi) {
       const std::size_t mid = lo + (hi - lo) / 2;
-      if (ranks_before(side, ov[mid].tick, t)) {
+      if (worse(side, ov[mid].tick, t)) {
         lo = mid + 1;
       } else {
         hi = mid;
@@ -646,8 +793,8 @@ class L3Book {
     return lo;
   }
   [[nodiscard]] const L3Level* find_level(Side side, std::int64_t t) const noexcept {
-    if (in_window(t)) return &level_at(side, t - base_tick_);
     const auto s = static_cast<std::size_t>(side);
+    if (in_window(t)) return &levels_[s][slot_of_tick(t)];
     const std::size_t i = ov_lower_bound(side, t);
     if (i < ov_n_[s] && ov_[s][i].tick == t) return &ov_[s][i].lvl;
     return nullptr;
@@ -665,9 +812,21 @@ class L3Book {
       ++ov_n_[s];
     }
     link_back(ov[i].lvl, h, o);
-    // The touch of this side left the window: move the window to it.
-    if (i == 0 && (best_[s] == kNone || better_than_window(side, t))) try_recentre();
+    // The touch of this side is outside the window.
+    if (i + 1 == ov_n_[s] && (best_[s] == kNone || better_than_window(side, t))) note_touch_out();
+    pay_rent();
     return true;
+  }
+  // The store refused a level: a pending recentre may make room (or bring `t` into the window).
+  FASTMM_NOINLINE bool add_after_recentre(OrderHandle h, L3Order& o, std::int64_t t) noexcept {
+    if (!pending_) return false;
+    try_recentre();
+    const std::int64_t rel = t - base_tick_;
+    if (static_cast<std::uint64_t>(rel) < static_cast<std::uint64_t>(window_)) {
+      add_in_window(o.side, rel, h, o);
+      return true;
+    }
+    return add_overflow(h, o, t);
   }
 
   FASTMM_NOINLINE void reduce_overflow(OrderHandle h, L3Order& o, std::int64_t t, Qty by) noexcept {
@@ -679,19 +838,45 @@ class L3Book {
     L3Level& lvl = ov[i].lvl;
     o.qty -= by;
     lvl.qty -= by;
-    if (o.qty.is_positive()) return;
+    if (o.qty.is_positive()) {
+      pay_rent();
+      return;
+    }
     unlink(lvl, o);
     free_order(h, o);
-    if (lvl.count != 0) return;
-    std::memmove(ov + i, ov + i + 1, sizeof(OvLevel) * (ov_n_[s] - i - 1));
-    --ov_n_[s];
-    if (i == 0 && ov_n_[s] != 0 && best_[s] == kNone) try_recentre();
+    if (lvl.count == 0) {
+      std::memmove(ov + i, ov + i + 1, sizeof(OvLevel) * (ov_n_[s] - i - 1));
+      --ov_n_[s];
+      if (i == ov_n_[s] && ov_n_[s] != 0 && best_[s] == kNone) note_touch_out();
+    }
+    pay_rent();
   }
 
   // ---- recentre ----------------------------------------------------------------------------
+  //
+  // A touch outside the window does not move it at once: the touch is served by the overflow
+  // store meanwhile (still exact, a binary search slower), and the window follows once the store
+  // has taken as many operations as the move would cost, a quarter per level moved plus
+  // kMinRent. A touch that steps out and back (an order added beyond the touch and cancelled)
+  // moves nothing, and a book that keeps trading out there pays for each move with the
+  // operations before it, so moving costs O(1) amortised per operation.
+
+  FASTMM_FORCE_INLINE void note_touch_out() noexcept {
+    if (!pending_) {
+      pending_ = true;
+      rent_ = 0;
+    }
+  }
+  FASTMM_FORCE_INLINE void pay_rent() noexcept {
+    if (FASTMM_UNLIKELY(pending_) && ++rent_ >= rent_due()) try_recentre();
+  }
+  [[nodiscard]] std::size_t rent_due() const noexcept {
+    return kMinRent + (nlev_[0] + nlev_[1] + ov_n_[0] + ov_n_[1]) / 4;
+  }
 
   // Moves the window so that every touch is inside it when possible (see the header comment).
   FASTMM_NOINLINE void try_recentre() noexcept {
+    pending_ = false;
     std::int64_t bb = 0;
     std::int64_t ba = 0;
     const bool has_b = best_tick(Side::Buy, bb);
@@ -709,118 +894,107 @@ class L3Book {
     } else {
       centre = has_b ? bb : ba;
     }
-    if (!recentre(centre - window_ / 2)) ++recentre_failures_;
+    if (!recentre(centre - window_ / 2)) {
+      ++recentre_failures_;
+      pending_ = true;  // try again once the store has taken as many operations again
+      rent_ = 0;
+    }
   }
 
+  // Cost: the levels that leave or enter the window and the overflow store, plus O(window /
+  // 4096) bitmap summary words. No slot moves.
   bool recentre(std::int64_t new_base) noexcept {
     const std::int64_t shift = new_base - base_tick_;  // positive: the window moves up
     if (shift == 0) return true;
-    // Window indices whose levels leave: [ev_lo, ev_hi).
+    // Window indices (old base) whose levels leave: [ev_lo, ev_hi).
     std::int64_t ev_lo = 0;
     std::int64_t ev_hi = window_;
     if (shift > 0 && shift < window_) ev_hi = shift;
     if (shift < 0 && -shift < window_) ev_lo = window_ + shift;
+    auto in_new = [&](std::int64_t t) {
+      return static_cast<std::uint64_t>(t - new_base) < static_cast<std::uint64_t>(window_);
+    };
     for (std::size_t s = 0; s < 2; ++s) {
-      std::size_t keep = count_bits(s, ev_lo, ev_hi);
-      for (std::size_t i = 0; i < ov_n_[s]; ++i) {
-        const std::int64_t rel = ov_[s][i].tick - new_base;
-        if (rel < 0 || rel >= window_) ++keep;
-      }
+      if (nlev_[s] + ov_n_[s] <= ov_cap_) continue;  // fits whatever moves
+      std::size_t keep = 0;
+      for (std::int64_t i = next_set_up(s, ev_lo); i != kNone && i < ev_hi;
+           i = next_set_up(s, i + 1))
+        ++keep;
+      for (std::size_t i = 0; i < ov_n_[s]; ++i) keep += in_new(ov_[s][i].tick) ? 0U : 1U;
       if (keep > ov_cap_) return false;
     }
     for (std::size_t s = 0; s < 2; ++s) {
       const auto side = static_cast<Side>(s);
       L3Level* lv = levels_[s].get();
-      // 1. Levels leaving the window, best-first.
+      // 1. Levels leaving the window, worst-first, their slots emptied.
       std::size_t ne = 0;
+      auto evict = [&](std::int64_t i) {
+        L3Level& l = level_at(side, i);
+        scratch_[ne++] = OvLevel{base_tick_ + i, l};
+        l = L3Level{};
+        clear_bit(side, i);
+      };
       if (side == Side::Buy) {
-        for (std::int64_t i = next_set_down(s, ev_hi - 1); i != kNone && i >= ev_lo;
-             i = next_set_down(s, i - 1))
-          scratch_[ne++] = OvLevel{base_tick_ + i, lv[i]};
-      } else {
         for (std::int64_t i = next_set_up(s, ev_lo); i != kNone && i < ev_hi;
              i = next_set_up(s, i + 1))
-          scratch_[ne++] = OvLevel{base_tick_ + i, lv[i]};
+          evict(i);
+      } else {
+        for (std::int64_t i = next_set_down(s, ev_hi - 1); i != kNone && i >= ev_lo;
+             i = next_set_down(s, i - 1))
+          evict(i);
       }
-      // 2. Shift the window arrays.
-      shift_window(s, shift);
-      // 3. Overflow levels inside the new window move in; the rest merge with the evicted.
+      // 2. Overflow levels inside the new window move in; the rest merge with the evicted.
       const OvLevel* ov = ov_[s].get();
       OvLevel* out = ov_tmp_[s].get();
       std::size_t n = 0;
       std::size_t e = 0;
+      std::size_t moved_in = 0;
       for (std::size_t i = 0; i < ov_n_[s]; ++i) {
-        const std::int64_t rel = ov[i].tick - new_base;
-        if (rel >= 0 && rel < window_) {
-          lv[rel] = ov[i].lvl;
-          set_bit(side, rel);
+        if (in_new(ov[i].tick)) {
+          const std::size_t p = slot_of_tick(ov[i].tick);
+          lv[p] = ov[i].lvl;
+          set_bit(side, ov[i].tick - base_tick_);  // same slot as the new window's index
+          ++moved_in;
           continue;
         }
-        while (e < ne && ranks_before(side, scratch_[e].tick, ov[i].tick)) out[n++] = scratch_[e++];
+        while (e < ne && worse(side, scratch_[e].tick, ov[i].tick)) out[n++] = scratch_[e++];
         out[n++] = ov[i];
       }
       while (e < ne) out[n++] = scratch_[e++];
       ov_[s].swap(ov_tmp_[s]);
       ov_n_[s] = n;
-      best_[s] = side == Side::Buy ? next_set_down(s, window_ - 1) : next_set_up(s, 0);
+      recentre_moved_ += ne + moved_in;
     }
     base_tick_ = new_base;
+    best_[0] = next_set_down(0, window_ - 1);
+    best_[1] = next_set_up(1, 0);
     ++recentres_;
     return true;
   }
 
-  // Moves window contents by `shift` ticks (new[i] = old[i + shift]) and zeroes the rest.
-  void shift_window(std::size_t s, std::int64_t shift) noexcept {
-    L3Level* lv = levels_[s].get();
-    std::uint64_t* b = bits_[s].get();
-    const std::int64_t w = window_;
-    if (shift >= w || -shift >= w) {
-      std::fill_n(lv, static_cast<std::size_t>(w), L3Level{});
-      std::fill_n(b, words_, std::uint64_t{0});
-      return;
-    }
-    const auto k = static_cast<std::size_t>(shift > 0 ? shift : -shift);
-    const auto rest = static_cast<std::size_t>(w) - k;
-    const std::size_t q = k / 64;
-    const std::size_t r = k % 64;
-    const auto nw = static_cast<std::ptrdiff_t>(words_);
-    if (shift > 0) {
-      std::memmove(lv, lv + k, sizeof(L3Level) * rest);
-      std::fill_n(lv + rest, k, L3Level{});
-      for (std::ptrdiff_t j = 0; j < nw; ++j) {
-        const auto src = j + static_cast<std::ptrdiff_t>(q);
-        const std::uint64_t lo = src < nw ? b[src] : 0;
-        const std::uint64_t hi = src + 1 < nw ? b[src + 1] : 0;
-        b[j] = r == 0 ? lo : (lo >> r) | (hi << (64 - r));
-      }
-    } else {
-      std::memmove(lv + k, lv, sizeof(L3Level) * rest);
-      std::fill_n(lv, k, L3Level{});
-      for (std::ptrdiff_t j = nw - 1; j >= 0; --j) {
-        const auto src = j - static_cast<std::ptrdiff_t>(q);
-        const std::uint64_t hi = src >= 0 ? b[src] : 0;
-        const std::uint64_t lo = src - 1 >= 0 ? b[src - 1] : 0;
-        b[j] = r == 0 ? hi : (hi << r) | (lo >> (64 - r));
-      }
-    }
-  }
-
   Price tick_;
   std::int64_t window_;
+  std::uint64_t mask_;
   std::size_t words_;
+  std::size_t sum_words_;
   std::size_t max_orders_;
   std::size_t ov_cap_;
   std::int64_t base_tick_ = 0;
   bool centred_ = false;
+  bool pending_ = false;  // a touch is outside the window; recentre once rent_ reaches rent_due()
+  std::uint32_t rent_ = 0;
   std::int64_t best_[2] = {kNone, kNone};  // window index of the best window level
+  std::size_t nlev_[2] = {0, 0};           // non-empty window levels
   std::uint64_t seq_ = 0;
   std::size_t order_count_ = 0;
-  std::uint32_t recentres_ = 0;
-  std::uint32_t recentre_failures_ = 0;
+  std::uint64_t recentres_ = 0;
+  std::uint64_t recentre_failures_ = 0;
+  std::uint64_t recentre_moved_ = 0;
   std::uint32_t free_head_ = kNullHandle;
   Timestamp last_update_{};
-  HotArray<L3Level> levels_[2];
+  HotArray<L3Level> levels_[2];  // by slot
   std::unique_ptr<std::uint64_t[]> bits_[2];
+  std::unique_ptr<std::uint64_t[]> sum_[2];
   std::unique_ptr<OvLevel[]> ov_[2];
   std::unique_ptr<OvLevel[]> ov_tmp_[2];
   std::size_t ov_n_[2] = {0, 0};

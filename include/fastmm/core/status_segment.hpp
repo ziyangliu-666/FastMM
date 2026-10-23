@@ -50,7 +50,8 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 //     metrics.
 // 22: estimated fills: booked, pending (no execution has named them yet), forgotten.
 // 23: the store: whether one runs, its rows, its errors and the records the engine dropped.
-inline constexpr std::uint32_t kStatusVersion = 23;
+// 24: the feed's L3 book window moves (book_recentres, book_recentre_failures).
+inline constexpr std::uint32_t kStatusVersion = 24;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 inline constexpr std::size_t kStatusMaxUnderlyings = 8;    // kMaxUnderlyings
@@ -95,6 +96,8 @@ struct StatusFeed {
   std::uint64_t requests = 0;
   std::uint64_t malformed = 0;
   std::uint64_t book_errors = 0;
+  std::uint64_t book_recentres = 0;
+  std::uint64_t book_recentre_failures = 0;
   StatusLatency kernel_to_t0;
   std::uint64_t xdp_rx_dropped = 0;
   std::uint64_t xdp_rx_invalid_descs = 0;

@@ -351,7 +351,7 @@ TEST_CASE("codecs.itch_l2_bridge: random ITCH through the bridge matches a refer
   std::uint64_t trades = 0;
   std::uint64_t entered = 0;
   std::uint64_t skipped = 0;
-  std::uint32_t recentres = 0;
+  std::uint64_t recentres = 0;
   for (std::uint64_t seed = 1; seed <= 12; ++seed) {
     CAPTURE(seed);
     std::mt19937_64 rng(seed * 7919);
@@ -395,6 +395,9 @@ TEST_CASE("codecs.itch_l2_bridge: random ITCH through the bridge matches a refer
     CHECK(st.overflow == 0);
     CHECK(st.snapshots == 2);
     CHECK(h->bridge().book(kSimInst)->order_count() == h->ref().order_count());
+    const ItchL2BridgeBookCounters bc = h->bridge().book_counters();
+    CHECK(bc.recentre_failures == 0);
+    if (seed % 2 == 0) CHECK(bc.recentres > 0);  // the drifting market leaves a 1024-tick window
     trades += h->trades();
     entered += h->entered();
     skipped += st.skipped;

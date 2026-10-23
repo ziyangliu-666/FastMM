@@ -12,7 +12,7 @@
 
 The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The writer makes the counter odd, writes the snapshot, then makes it even again. A reader copies the snapshot when the counter is even and unchanged across the copy, and retries otherwise; it never blocks the writer.
 
-- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 23) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
+- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 24) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
 - The layout is internal ([Public API](public-api.md)); read it with `fastmm-top` from the same build.
 
 ## Snapshot fields
@@ -145,6 +145,7 @@ The `feed` entry of a `nasdaq_itch` venue ([Venue connectors](venues.md#nasdaq-t
 | `snapshot_recoveries`, `recovery_overflows` | u64 | GLIMPSE snapshots after the first, recovery buffer overflows |
 | `reorder_high_water`, `requests` | u64 | most packets held ahead of a gap, re-request packets sent |
 | `malformed`, `book_errors` | u64 | datagrams that are not MoldUDP64 packets (and bad frames on `af_xdp` and `dpdk`), L3 book inconsistencies |
+| `book_recentres`, `book_recentre_failures` | u64 | moves of the L3 books' price windows, summed over the books, and moves skipped because an overflow store was full ([L3 book](codecs/nasdaq.md#l3-book)) |
 | `kernel_to_t0` | {count, p50_ns, p99_ns, p999_ns, max_ns} | kernel receive timestamp to T0 while live (`kernel` backend) |
 | `xdp_rx_dropped`, `xdp_rx_invalid_descs`, `xdp_rx_ring_full`, `xdp_fill_ring_empty` | u64 | `XDP_STATISTICS` summed over the sockets; on `dpdk`, `xdp_rx_dropped` is the port's `imissed` plus `rx_nombuf` |
 | `xdp_fallback` | u64 | subscribed datagrams passed to the kernel because their RX queue has no socket |

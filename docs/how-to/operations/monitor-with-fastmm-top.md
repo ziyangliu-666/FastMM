@@ -75,7 +75,7 @@ scrape_configs:
 | `fastmm_position{symbol}` | gauge | position per instrument, base units |
 | `fastmm_strategy_metric{name}` | gauge | each `ctx.metric` the strategy publishes |
 | `fastmm_thread_cpu_seconds_total`, `fastmm_thread_involuntary_switches_total`, `fastmm_thread_voluntary_switches_total`, `fastmm_thread_major_faults_total`, `fastmm_thread_cpu` `{thread,tid}` | counter, gauge | per thread of the session's process, from `/proc`: CPU time, times another task took its core, times it gave the core up, page faults it waited on a disk for, and the CPU it last ran on; with `fastmm_process_resident_bytes` and `fastmm_host_load1`. Absent once the session has stopped |
-| `fastmm_feed_*{venue}` | gauge, counter | multicast venues only: feed state, packets, gaps, recovered and given-up sequences, per-line duplicates |
+| `fastmm_feed_*{venue}` | gauge, counter | multicast venues only: feed state, packets, gaps, recovered and given-up sequences, per-line duplicates, L3 book errors and window moves |
 
 The quantiles are the engine's (p50, p99, p99.9), not a histogram: they cannot be aggregated across instances.
 

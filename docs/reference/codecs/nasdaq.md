@@ -69,7 +69,13 @@ Books start incomplete: they are updated, nothing is emitted. `mark_complete(id)
 
 Every emitted message carries the stamp's `t0_cycles` and `recv_ts`; `t1_delta` is taken after the decode and the L3 update.
 
-`L3Book` (`core/book/l3_book.hpp`) takes `L3BookConfig{price_window_ticks, max_orders, max_overflow_levels}` and allocates everything in the constructor. The bridge uses ITCH's tick, 0.0001. Levels outside the window, such as stub quotes, go to a bounded overflow store per side. The window moves only when a touch leaves it, to the midpoint of the touches when they are less than a window apart. When they are further apart, the window stays on the touch it holds (moves to the bid when it holds neither).
+### L3 book
+
+`L3Book` (`core/book/l3_book.hpp`) takes `L3BookConfig{price_window_ticks, max_orders, max_overflow_levels}` and allocates everything in the constructor. The bridge uses ITCH's tick, 0.0001, so sub-penny prices are kept exactly. Levels within a window of `price_window_ticks` per side (rounded up to a power of two) are indexed by tick; levels outside it, such as stub quotes, go to a bounded overflow store per side.
+
+The window is a ring, so moving it (a recentre) moves only the levels that leave or enter it, never the window itself. It moves when a touch has left it and the overflow store has since taken about as many operations at that touch as the move costs: to the midpoint of the touches when they are less than a window apart; when they are further apart, the window stays on the touch it holds (moves to the bid when it holds neither). A touch that steps out of the window and straight back, such as an order beyond the touch cancelled at once, moves nothing. Each operation costs O(1) amortised, whatever the window; `clear()`, which a resync runs on every book, costs the orders the book holds, not its capacity. `recentre_count()`, `recentre_failures()` (moves skipped because the overflow store was full) and `recentre_levels_moved()` count the moves, and the venue reports them summed over the books in the [status file](../status-file.md#multicast-feed) and as `fastmm_feed_book_recentres_total`.
+
+`fastmm-bench-l3-itch FILE` (in `bin/bench/`) replays an ITCH 5.0 file in NASDAQ's sample format into one book per stock locate and prints the latency percentiles per message, the recentres per book with their cost, and with `--check` compares every touch with a `std::map` book.
 
 ## MoldUDP64
 

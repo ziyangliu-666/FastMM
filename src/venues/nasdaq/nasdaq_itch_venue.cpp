@@ -1080,6 +1080,9 @@ void NasdaqItchVenue::publish_status() noexcept {
   if (bridge_) {
     const codecs::itch::ItchL2BridgeStats& b = bridge_->stats();
     f.book_errors = b.book_errors;
+    const codecs::itch::ItchL2BridgeBookCounters bc = bridge_->book_counters();
+    f.book_recentres = bc.recentres;
+    f.book_recentre_failures = bc.recentre_failures;
     stats_.md_messages = b.messages;
     stats_.md_dropped = b.overflow;
     std::uint32_t synced = 0;

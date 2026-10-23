@@ -103,6 +103,9 @@ struct VenueFeedStatus {
   std::uint64_t requests = 0;     // MoldUDP64 request packets sent
   std::uint64_t malformed = 0;    // datagrams that are not MoldUDP64 packets, bad frames (af_xdp)
   std::uint64_t book_errors = 0;  // L3 inconsistencies (each starts a resync)
+  // L3 price-window moves summed over the books, and the moves skipped for a full overflow store.
+  std::uint64_t book_recentres = 0;
+  std::uint64_t book_recentre_failures = 0;
   WireLatencyStats kernel_to_t0;  // t0_wall_ns - sw_ts_ns (kernel backend only)
   // af_xdp: XDP_STATISTICS summed over the sockets, and packets passed to the kernel because
   // their RX queue had no socket.
