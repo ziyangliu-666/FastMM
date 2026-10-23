@@ -365,6 +365,24 @@ struct FundingMsg {
 };
 static_assert(sizeof(FundingMsg) == 128 && offsetof(FundingMsg, funding_id) == 72 &&
               offsetof(FundingMsg, flags) == 122);
+
+// Money that entered or left one account other than by its trades and funding
+// (EventType::AccountFlow): a deposit, a withdrawal or a transfer between accounts, as the venue
+// reported it. `amount` is signed, in `asset`: positive in, negative out. hdr.venue is the account
+// (a pool member's own id), hdr.exch_ts the venue's time of it; hdr.instrument is invalid.
+// `flow_id` is the venue's id of it, empty when the venue gives none. The engine changes nothing
+// for it: its balances follow the venue's absolute reports (BalanceMsg), which come with it or
+// after it. The journal records it like any input, and a backtest with [backtest]
+// balances_from_journal moves the simulated account by it at its time.
+struct AccountFlowMsg {
+  EventHeader hdr;
+  Notional amount;          // 64
+  FixedString<8> asset;     // 72 -> 81
+  FixedString<40> flow_id;  // 81 -> 122
+  std::uint8_t pad_[6];     // -> 128
+};
+static_assert(sizeof(AccountFlowMsg) == 128 && offsetof(AccountFlowMsg, asset) == 72 &&
+              offsetof(AccountFlowMsg, flow_id) == 81);
 // The account's holding of one asset on one venue (EventType::Balance), as the venue reports it at
 // its time hdr.exch_ts. Every amount is absolute, in `asset`: a venue update replaces the last one
 // (a delta would turn one lost message into a lasting error). hdr.instrument is invalid.
@@ -797,14 +815,14 @@ static_assert(FixedSizeMessage<TradeMsg> && FixedSizeMessage<BookTickerMsg> &&
               FixedSizeMessage<OrderRejectMsg> && FixedSizeMessage<OrderCancelAckMsg> &&
               FixedSizeMessage<OrderCancelRejectMsg> && FixedSizeMessage<OrderExpiredMsg> &&
               FixedSizeMessage<PositionUpdateMsg> && FixedSizeMessage<FundingMsg> &&
-              FixedSizeMessage<BalanceMsg> && FixedSizeMessage<PerpStateMsg> &&
-              FixedSizeMessage<TimerMsg> && FixedSizeMessage<ControlMsg> &&
-              FixedSizeMessage<ConnectionStateMsg> && FixedSizeMessage<ReconcileMsg> &&
-              FixedSizeMessage<LatencySampleMsg> && FixedSizeMessage<EngineTimeMsg> &&
-              FixedSizeMessage<StrategyStateMsg> && FixedSizeMessage<OutNewOrderMsg> &&
-              FixedSizeMessage<OutCancelMsg> && FixedSizeMessage<OrderAddL3Msg> &&
-              FixedSizeMessage<OrderExecL3Msg> && FixedSizeMessage<OrderCancelL3Msg> &&
-              FixedSizeMessage<OrderReplaceL3Msg>);
+              FixedSizeMessage<AccountFlowMsg> && FixedSizeMessage<BalanceMsg> &&
+              FixedSizeMessage<PerpStateMsg> && FixedSizeMessage<TimerMsg> &&
+              FixedSizeMessage<ControlMsg> && FixedSizeMessage<ConnectionStateMsg> &&
+              FixedSizeMessage<ReconcileMsg> && FixedSizeMessage<LatencySampleMsg> &&
+              FixedSizeMessage<EngineTimeMsg> && FixedSizeMessage<StrategyStateMsg> &&
+              FixedSizeMessage<OutNewOrderMsg> && FixedSizeMessage<OutCancelMsg> &&
+              FixedSizeMessage<OrderAddL3Msg> && FixedSizeMessage<OrderExecL3Msg> &&
+              FixedSizeMessage<OrderCancelL3Msg> && FixedSizeMessage<OrderReplaceL3Msg>);
 
 template <MessageLike M>
 [[nodiscard]] FASTMM_FORCE_INLINE const M& msg_cast(const EventHeader* h) noexcept {

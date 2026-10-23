@@ -87,3 +87,21 @@ TEST_CASE("backtest.order_events: own orders, answers and balances, and market d
                       "0.20000000,77,",
                       0) == 0);
 }
+
+TEST_CASE("backtest.order_events: money in and out of an account is a flow row") {
+  const std::string path = tmp_path("order_events_flows.fmj");
+  {
+    JournalBuilder j(path, true);
+    j.venue = kV0;
+    j.flow("USDT", "25", 1);
+    j.now += kMs;
+    j.venue = kV0 + kMs;
+    j.flow("BTC", "-0.5", 2);
+  }
+  const std::vector<std::string> rows = lines(dump(path, {}));
+  REQUIRE(rows.size() == 3);
+  CHECK(rows[1].rfind("flow,", 0) == 0);
+  CHECK(rows[1].find(",1,,,,,,USDT,25.00000000,") != std::string::npos);
+  CHECK(rows[2].find(",2,,,,,,BTC,-0.50000000,") != std::string::npos);
+  for (const std::string& r : rows) CHECK(std::count(r.begin(), r.end(), ',') == 16);
+}

@@ -266,55 +266,76 @@ UserDecodeResult BinanceUsdmUserParser::decode(std::string_view json,
       r.funding = true;
     }
     // B[]: the assets whose wallet balance changed. The connector asks for the account (their
-    // available balance and margin are not in the event).
+    // available balance and margin are not in the event). Outside an order and a funding payment,
+    // a row's bc (the change other than PnL and commission) is money that entered or left the
+    // account: a deposit, a withdrawal, a transfer (AccountFlowMsg).
+    const bool flow_reason = !funding && !reason.empty() && reason != "ORDER";
     bool balances = false;
+    std::uint32_t written = 0;
+    std::uint32_t flows = 0;
     {
       od::array b;
-      bool empty = true;
-      if (a["B"].get_array().get(b) == sj::SUCCESS && b.is_empty().get(empty) == sj::SUCCESS)
-        balances = !empty;
+      if (a["B"].get_array().get(b) == sj::SUCCESS) {
+        for (auto row_res : b) {
+          balances = true;
+          if (!flow_reason) continue;
+          od::object row;
+          if (row_res.get_object().get(row) != sj::SUCCESS) return malformed();
+          std::string_view asset;
+          std::string_view change;
+          if (row["a"].get_string().get(asset) != sj::SUCCESS) return malformed();
+          if (row["bc"].get_string().get(change) != sj::SUCCESS) continue;
+          const auto amount = parse_notional(change);
+          if (!amount || amount->is_zero() || asset.empty()) continue;
+          if (written + sizeof(AccountFlowMsg) > out.size()) break;
+          auto* m = reinterpret_cast<AccountFlowMsg*>(out.data() + written);
+          *m = AccountFlowMsg{};
+          init_header(*m, EventType::AccountFlow, InstrumentId{}, venue_);
+          m->amount = *amount;
+          m->asset.assign(asset);
+          stamp(*m, recv_ts, t0, tx_time);
+          written += sizeof(AccountFlowMsg);
+          ++flows;
+        }
+      }
     }
     if (balances) ++stats_.balance_events;
+    stats_.flows += flows;
     r.balances = balances;
-    od::array positions;
-    if (a["P"].get_array().get(positions) != sj::SUCCESS) {  // balance only
-      UserDecodeResult out_r = ignored();
-      out_r.funding = funding;
-      out_r.balances = balances;
-      return out_r;
-    }
-    std::uint32_t written = 0;
     std::uint32_t count = 0;
-    for (auto pos_res : positions) {
-      od::object p;
-      if (pos_res.get_object().get(p) != sj::SUCCESS) return malformed();
-      std::string_view sym;
-      std::string_view amount;
-      std::string_view entry;
-      std::string_view side;
-      if (p["s"].get_string().get(sym) != sj::SUCCESS) return malformed();
-      if (p["pa"].get_string().get(amount) != sj::SUCCESS) return malformed();
-      if (p["ep"].get_string().get(entry) != sj::SUCCESS) return malformed();
-      if (p["ps"].get_string().get(side) != sj::SUCCESS) return malformed();
-      const auto qty = parse_qty(amount);
-      const auto avg = parse_avg_price(entry);  // an average: often more than 8 decimals
-      if (!qty || !avg) return malformed();
-      if (side != "BOTH") {
-        ++stats_.hedge_positions;
-        continue;
+    od::array positions;
+    if (a["P"].get_array().get(positions) == sj::SUCCESS) {
+      for (auto pos_res : positions) {
+        od::object p;
+        if (pos_res.get_object().get(p) != sj::SUCCESS) return malformed();
+        std::string_view sym;
+        std::string_view amount;
+        std::string_view entry;
+        std::string_view side;
+        if (p["s"].get_string().get(sym) != sj::SUCCESS) return malformed();
+        if (p["pa"].get_string().get(amount) != sj::SUCCESS) return malformed();
+        if (p["ep"].get_string().get(entry) != sj::SUCCESS) return malformed();
+        if (p["ps"].get_string().get(side) != sj::SUCCESS) return malformed();
+        const auto qty = parse_qty(amount);
+        const auto avg = parse_avg_price(entry);  // an average: often more than 8 decimals
+        if (!qty || !avg) return malformed();
+        if (side != "BOTH") {
+          ++stats_.hedge_positions;
+          continue;
+        }
+        const InstrumentId inst = symbols_.find(symbol_venue_, sym);
+        if (!inst.valid()) continue;  // a position on another symbol of the account
+        if (written + sizeof(PositionUpdateMsg) > out.size()) break;
+        auto* m = reinterpret_cast<PositionUpdateMsg*>(out.data() + written);
+        init_header(*m, EventType::PositionUpdate, inst, venue_);
+        m->qty = *qty;
+        m->avg_px = *avg;
+        stamp(*m, recv_ts, t0, tx_time);
+        written += sizeof(PositionUpdateMsg);
+        ++count;
       }
-      const InstrumentId inst = symbols_.find(symbol_venue_, sym);
-      if (!inst.valid()) continue;  // a position on another symbol of the account
-      if (written + sizeof(PositionUpdateMsg) > out.size()) break;
-      auto* m = reinterpret_cast<PositionUpdateMsg*>(out.data() + written);
-      init_header(*m, EventType::PositionUpdate, inst, venue_);
-      m->qty = *qty;
-      m->avg_px = *avg;
-      stamp(*m, recv_ts, t0, tx_time);
-      written += sizeof(PositionUpdateMsg);
-      ++count;
     }
-    if (count == 0) {
+    if (count + flows == 0) {
       UserDecodeResult out_r = ignored();
       out_r.funding = funding;
       out_r.balances = balances;
@@ -324,7 +345,7 @@ UserDecodeResult BinanceUsdmUserParser::decode(std::string_view json,
     r.status = ParseStatus::Ok;
     r.order_kind = OrderEventKind::Position;
     r.len = written;
-    r.count = count;
+    r.count = count + flows;
     return r;
   }
 

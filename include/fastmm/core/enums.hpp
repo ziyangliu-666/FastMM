@@ -326,8 +326,9 @@ enum class EventType : std::uint8_t {
   Funding = 27,        // a perpetual funding payment booked by the venue (FundingMsg)
   Balance = 28,        // the account's holding of one asset on one venue (BalanceMsg)
   PerpState = 29,      // mark, index and funding of one derivative (PerpStateMsg)
-  StrategyState = 30,  // journal only: the strategy's state and the positions (StrategyStateMsg)
-  Count = 31,
+  StrategyState = 30,  // journal only: a checkpoint or a restored state (StrategyStateMsg)
+  AccountFlow = 31,    // money in or out of an account other than by trades (AccountFlowMsg)
+  Count = 32,
 };
 [[nodiscard]] constexpr std::string_view to_string(EventType t) noexcept {
   switch (t) {
@@ -393,6 +394,8 @@ enum class EventType : std::uint8_t {
       return "PerpState";
     case EventType::StrategyState:
       return "StrategyState";
+    case EventType::AccountFlow:
+      return "AccountFlow";
     case EventType::Count:
       return "Count";
   }

@@ -20,6 +20,10 @@
 // name, and optional strategy metadata after it (`key=value` lines; a Python strategy's class,
 // hot-hook source hash and package versions).
 //
+// Format v4 (readers accept v1 to v4) adds AccountFlow records (money in or out of an account other
+// than by trades, as the venue reported it) and the open orders of a checkpoint (StrategyStateMsg
+// kOrdersPart).
+//
 // Blocks are 1 MiB max; a message never straddles blocks. A trailer is an empty block with
 // kBlockFlagTrailer; if it is missing the file was not closed cleanly and the reader
 // discards any partial tail block (crc mismatch / short read).
@@ -49,7 +53,7 @@
 
 namespace fastmm {
 
-inline constexpr std::uint32_t kJournalVersion = 3;
+inline constexpr std::uint32_t kJournalVersion = 4;
 inline constexpr std::uint32_t kJournalMinVersion = 1;  // oldest version JournalReader opens
 inline constexpr std::size_t kJournalBlockBytes = 1U << 20;
 inline constexpr std::size_t kJournalExtentBytes = 64U << 20;

@@ -224,3 +224,27 @@ TEST_CASE("binance_usdm.user: an ACCOUNT_UPDATE for funding says so, crossed or 
   }
   CHECK(p.stats().funding_events == 2);
 }
+
+TEST_CASE("binance_usdm.user: ACCOUNT_UPDATE of a transfer -> AccountFlowMsg per changed asset") {
+  TestUniverse u;
+  BinanceUsdmUserParser p(u.symbols, u.instruments, VenueId{0});
+  Scratch s;
+  const PaddedJson in(
+      R"({"e":"ACCOUNT_UPDATE","E":1789500000001,"T":1789500000000,"a":{"m":"ASSET_TRANSFER","B":[{"a":"USDT","wb":"5100","cw":"5100","bc":"100"},{"a":"BNB","wb":"1","cw":"1","bc":"0"}],"P":[]}})");
+  const UserDecodeResult r = p.decode(in.view(), kRecv, kT0, s.span());
+  REQUIRE(r.status == ParseStatus::Ok);
+  CHECK(r.balances);
+  REQUIRE(r.count == 1);  // BNB did not change
+  const auto& m = s.as<AccountFlowMsg>();
+  CHECK(m.hdr.type == EventType::AccountFlow);
+  CHECK(m.asset.view() == "USDT");
+  CHECK(m.amount == Notional::from_decimal("100").value());
+  CHECK(m.hdr.exch_ts.ns == 1789500000000LL * 1'000'000);
+  // An order's and a funding payment's balance changes are not flows.
+  const PaddedJson funding(
+      R"({"e":"ACCOUNT_UPDATE","E":1,"T":1,"a":{"m":"FUNDING_FEE","S":"BTCUSDT","B":[{"a":"USDT","wb":"10","cw":"10","bc":"-0.5"}]}})");
+  const UserDecodeResult f = p.decode(funding.view(), kRecv, kT0, s.span());
+  CHECK(f.status == ParseStatus::Ignored);
+  CHECK(f.funding);
+  CHECK(p.stats().flows == 1);
+}

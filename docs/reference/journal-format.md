@@ -1,6 +1,6 @@
 # Journal format
 
-The `.fmj` journal records every event a session's engine consumed, in consumption order, with the engine clock, plus a copy of every order message it sent. Format version 3; readers also open versions 1 and 2. The decision and its history are in [ADR-0010](../adr/0010-fmj-journal-format.md); the code is `include/fastmm/core/journal.hpp`.
+The `.fmj` journal records every event a session's engine consumed, in consumption order, with the engine clock, plus a copy of every order message it sent. Format version 4; readers also open versions 1 to 3. The decision and its history are in [ADR-0010](../adr/0010-fmj-journal-format.md); the code is `include/fastmm/core/journal.hpp`.
 
 All integers are little-endian. Prices, quantities and notionals are raw fixed-point `int64` (1e-8), timestamps are `int64` nanoseconds since the Unix epoch.
 
@@ -52,7 +52,7 @@ Each part is a complete journal: it repeats the header, the instrument table, th
 | Offset | Size | Field | Meaning |
 |---:|---:|---|---|
 | 0 | 4 | `magic` | `FMJ1` |
-| 4 | 4 | `version` | 3 (1 or 2 for old files) |
+| 4 | 4 | `version` | 4 (1 to 3 for old files) |
 | 8 | 4 | `header_bytes` | offset of the first block |
 | 12 | 4 | `instrument_count` | instruments that follow the header |
 | 16 | 8 | `session_id` | session identifier |
@@ -128,7 +128,7 @@ Every message starts with the 64-byte `EventHeader`; its total length (`len`) is
 | 5 | `kDropped` | an outbound copy the transport did not accept |
 | 6, 7 | `kTruncatedBids`, `kTruncatedAsks` | a book delta whose side kept only the levels nearest the touch of a longer venue update; a book drops its levels behind the last one carried |
 
-Message layouts are the structs in `include/fastmm/core/messages.hpp` (`EventType` in `core/enums.hpp`): book snapshots and deltas, trades, book tickers, option tickers, L3 order adds, executions, cancels and replaces, order acks, rejects, cancel acks and rejects, fills, expiries, positions, timers, control commands, connection states, reconciliation records, latency samples, outbound orders, parameter updates, funding payments (`FundingMsg`, 128 bytes: the signed amount in the settlement asset at offset 64, the venue's funding id, the asset, and flag bit 0 when it came from the venue's history) balances (`BalanceMsg`, 128 bytes: free, locked, total, equity and maintenance at offsets 64 to 96, the asset at 104, flags at 113: bit 0 snapshot, bit 1 snapshot end, bit 2 account-wide margin) and a venue's mark, index and funding (`PerpStateMsg`, 128 bytes: mark and index price at 64 and 72, the funding rate (f64, per interval) at 80, the interval (ns) at 88, the next funding time at 96, open interest at 104, and at 112 the fields it carries: bit 0 mark, bit 1 index, bit 2 funding, bit 3 open interest).
+Message layouts are the structs in `include/fastmm/core/messages.hpp` (`EventType` in `core/enums.hpp`): book snapshots and deltas, trades, book tickers, option tickers, L3 order adds, executions, cancels and replaces, order acks, rejects, cancel acks and rejects, fills, expiries, positions, timers, control commands, connection states, reconciliation records, latency samples, outbound orders, parameter updates, funding payments (`FundingMsg`, 128 bytes: the signed amount in the settlement asset at offset 64, the venue's funding id, the asset, and flag bit 0 when it came from the venue's history) balances (`BalanceMsg`, 128 bytes: free, locked, total, equity and maintenance at offsets 64 to 96, the asset at 104, flags at 113: bit 0 snapshot, bit 1 snapshot end, bit 2 account-wide margin), money that entered or left an account other than by its trades and funding (`AccountFlowMsg`, type 31, 128 bytes, format v4: the signed amount at 64, positive in, the asset at 72, the venue's id of it at 81; `venue` is the account, `exch_ts` the venue's time; Binance Spot reports it as `balanceUpdate`, Binance USDⓈ-M as the `bc` of an `ACCOUNT_UPDATE` that is not for an order or a funding payment) and a venue's mark, index and funding (`PerpStateMsg`, 128 bytes: mark and index price at 64 and 72, the funding rate (f64, per interval) at 80, the interval (ns) at 88, the next funding time at 96, open interest at 104, and at 112 the fields it carries: bit 0 mark, bit 1 index, bit 2 funding, bit 3 open interest).
 
 ## Trades
 

@@ -341,7 +341,32 @@ UserDecodeResult BinanceUserParser::decode(std::string_view json,
     r.count = count;
     return r;
   }
-  return ignored();  // balanceUpdate, listStatus, eventStreamTerminated, externalLockUpdate
+  if (type == "balanceUpdate") {
+    // Money in or out of the account other than by a trade (a deposit, a withdrawal, a transfer
+    // between accounts): `d` is the signed change of asset `a`, cleared at `T`.
+    std::string_view asset;
+    std::string_view delta;
+    if (ev["a"].get_string().get(asset) != sj::SUCCESS) return malformed();
+    if (ev["d"].get_string().get(delta) != sj::SUCCESS) return malformed();
+    std::int64_t clear_time = 0;
+    if (ev["T"].get_int64().get(clear_time) != sj::SUCCESS &&
+        ev["E"].get_int64().get(clear_time) != sj::SUCCESS)
+      return malformed();
+    const auto amount = parse_notional(delta);
+    if (!amount || asset.empty()) return malformed();
+    auto* m = reinterpret_cast<AccountFlowMsg*>(out.data());
+    *m = AccountFlowMsg{};
+    init_header(*m, EventType::AccountFlow, InstrumentId{}, venue_);
+    m->amount = *amount;
+    m->asset.assign(asset);
+    stamp(*m, recv_ts, t0, clear_time);
+    ++stats_.flows;
+    r.status = ParseStatus::Ok;
+    r.len = sizeof(AccountFlowMsg);
+    r.count = 1;
+    return r;
+  }
+  return ignored();  // listStatus, eventStreamTerminated, externalLockUpdate
 }
 
 }  // namespace fastmm::venues::binance

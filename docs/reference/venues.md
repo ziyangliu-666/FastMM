@@ -148,6 +148,8 @@ Every connector reports the account's balances as `BalanceMsg` events on the ord
 | Coinbase Advanced Trade | `GET /api/v3/brokerage/accounts`, paged by `cursor` (vault, futures and international accounts left out) | none for spot; every fill asks for the leg again | `available_balance` / `hold` / sum / sum / 0 | venue clock |
 | Coinbase Exchange | `GET /accounts` | authenticated `balance` channel, subscribed with the account ids of the kept assets after each fetch; a fill also asks for the leg (the channel "does not track every update") | `available` / `hold` / sum / sum / 0, truncated to 8 decimals | venue clock; push `updated` |
 | Deribit | `private/get_account_summaries` | `user.portfolio.{currency}` | `available_funds` / `initial_margin` / `balance` / `equity` / `maintenance_margin`; with `cross_collateral_enabled`, an account row in USD from the `total_*_usd` fields | reply `usOut`; push: venue clock |
+
+Money that enters or leaves an account other than by its trades (a deposit, a withdrawal, a transfer between accounts) is an `AccountFlow` event, for every asset: Binance Spot's `balanceUpdate` (`d` at `T`), and each `B[]` row of a Binance USDⓈ-M `ACCOUNT_UPDATE` whose reason is not `ORDER` or `FUNDING_FEE` and whose `bc` is not zero. The engine changes nothing for it (the balances follow the rows above); the journal keeps it for a backtest ([Journal format](journal-format.md#messages)). The other connectors send none.
 | Nasdaq ITCH | none | none | | |
 
 Sources, read 2026-09-30: Binance [user-data-stream.md "Account Update"](https://developers.binance.com/docs/binance-spot-api-docs/user-data-stream), rest-api.md and web-socket-api.md "Account information"; Binance USDⓈ-M [Account Information V3](https://developers.binance.com/docs/derivatives/usds-margined-futures/account/rest-api/Account-Information-V3) and "Event: Balance and Position Update"; Bybit [Get Wallet Balance](https://bybit-exchange.github.io/docs/v5/account/wallet-balance) and WebSocket "Wallet"; OKX [Get balance, Account channel](https://www.okx.com/docs-v5/en/); Gemini `websocket/streams.md` "Balance Updates" and `specs/openapi/rest.yaml` at [developer.gemini.com](https://developer.gemini.com/); Coinbase [Advanced Trade List Accounts](https://docs.cdp.coinbase.com/advanced-trade/), [Exchange accounts and the Balance channel](https://docs.cdp.coinbase.com/exchange/); Deribit [`user.portfolio`, `get_account_summaries`](https://docs.deribit.com/).
@@ -266,6 +268,7 @@ User data events arrive on the subscribed WS API connection as `{"subscriptionId
 
 * `executionReport`: `E,s,c,S,q,p,C,x,X,r,i,l,z,L,n,N,T,t,m`, with `x` in `NEW`, `CANCELED` (the cancelled id is in `C`), `REPLACED`, `REJECTED`, `TRADE`, `EXPIRED`, `TRADE_PREVENTION`
 * `outboundAccountPosition`: `E,B[]{a,f,l}` (forwarded only with `position_from_balance = true`)
+* `balanceUpdate`: `a,d,T`, an `AccountFlow`
 
 ### Replaces: amend where the venue allows it, cancel-replace otherwise
 

@@ -125,7 +125,7 @@ const EventHeader* front(MsgRing& ring) {
 
 TEST_CASE("core.params: ParamUpdate message, event type and kill reason") {
   CHECK(static_cast<int>(EventType::ParamUpdate) == 26);
-  CHECK(static_cast<int>(EventType::Count) == 31);
+  CHECK(static_cast<int>(EventType::Count) == 32);
   CHECK(to_string(EventType::ParamUpdate) == "ParamUpdate");
   CHECK(static_cast<int>(KillReason::StrategyError) == 9);
   CHECK(to_string(KillReason::StrategyError) == "StrategyError");
@@ -432,7 +432,7 @@ TEST_CASE("core.journal v3: the parameter table round-trips and older files stil
     table_bytes += 2 + std::string_view(d.name).size();
   JournalReader r;
   REQUIRE(r.open(path));
-  CHECK(r.version() == 3);
+  CHECK(r.version() == kJournalVersion);
   CHECK(r.config_text() == toml);
   REQUIRE(r.params().size() == TestParams::schema().size());
   CHECK(r.params()[0].name == "levels");

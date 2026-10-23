@@ -17,6 +17,8 @@
 //                              with u, the time of the account update), then one
 //                              PositionUpdateMsg per instrument whose base asset appears in B[]
 //                              (qty = free + locked, avg_px unknown = 0)
+//   balanceUpdate           -> AccountFlowMsg (a = asset, d = signed change, stamped with T): a
+//                              deposit, a withdrawal or a transfer between accounts
 // Client ids that do not decode as FastMM ids (manual orders) are reported with an invalid
 // ClientOrderId so the OMS classifies them as unknown.
 #include "fastmm/core/instrument.hpp"
@@ -38,6 +40,7 @@ struct UserParserStats {
   std::uint64_t exec_reports = 0;
   std::uint64_t positions = 0;
   std::uint64_t balances = 0;  // BalanceMsg written
+  std::uint64_t flows = 0;     // AccountFlowMsg written (balanceUpdate)
   std::uint64_t ignored = 0;
   std::uint64_t malformed = 0;
   std::uint64_t unknown_symbol = 0;

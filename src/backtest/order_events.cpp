@@ -213,6 +213,9 @@ std::uint64_t write_order_events(const std::vector<std::string>& journals,
         case EventType::Balance:
           type = "balance";
           break;
+        case EventType::AccountFlow:
+          type = "flow";
+          break;
         case EventType::Reconcile:
           type = "reconcile";
           break;
@@ -347,6 +350,25 @@ std::uint64_t write_order_events(const std::vector<std::string>& journals,
           put_fixed(line, m.cum_qty.raw);
           line += ",,,,,";
           break;
+        }
+        case EventType::AccountFlow: {
+          const auto& m = msg_cast<AccountFlowMsg>(h);
+          line += ",,,,";
+          put_text(line, m.asset.view());  // a: asset
+          line += ',';
+          put_fixed(line, m.amount.raw);  // b: signed, positive in
+          line += ',';
+          put_text(line, m.flow_id.view());  // c: the venue's id
+          line += ",,,";
+          put_int(line, h->flags);
+          line += ',';
+          put_int(line, trigger_ns(h));
+          line += ',';
+          put_int(line, consumed);
+          line += '\n';
+          std::fputs(line.c_str(), out);
+          ++rows;
+          return;
         }
         case EventType::Balance: {
           const auto& m = msg_cast<BalanceMsg>(h);

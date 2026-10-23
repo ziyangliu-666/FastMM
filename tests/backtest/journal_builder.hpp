@@ -252,6 +252,15 @@ class JournalBuilder {
     put(m.hdr);
   }
 
+  // Money in (positive) or out of venue `venue_id`'s account, as the venue reported it.
+  void flow(const char* asset, const char* amount, std::uint8_t venue_id = 0) {
+    AccountFlowMsg m{};
+    init_header(m, EventType::AccountFlow, InstrumentId{}, VenueId{venue_id});
+    m.asset = FixedString<8>(asset);
+    m.amount = Notional::from_decimal(amount).value();
+    put(m.hdr);
+  }
+
  private:
   void put(EventHeader& h, bool outbound = false) {
     h.recv_ts = Timestamp{now};

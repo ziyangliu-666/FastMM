@@ -157,9 +157,8 @@ TEST_CASE("binance.user: foreign client ids, unknown symbol, malformed, ignored 
             .status == ParseStatus::Malformed);
   CHECK(p.decode(padded_fixture("binance/ws_api_order_place_ok.json").view(), kRecv, kT0, s.span())
             .status == ParseStatus::Ignored);
-  const PaddedJson bal(
-      R"({"subscriptionId":0,"event":{"e":"balanceUpdate","E":1,"a":"BTC","d":"1","T":1}})");
-  CHECK(p.decode(bal.view(), kRecv, kT0, s.span()).status == ParseStatus::Ignored);
+  const PaddedJson list(R"({"subscriptionId":0,"event":{"e":"listStatus","E":1}})");
+  CHECK(p.decode(list.view(), kRecv, kT0, s.span()).status == ParseStatus::Ignored);
   const PaddedJson garbage("{");
   CHECK(p.decode(garbage.view(), kRecv, kT0, s.span()).status == ParseStatus::Malformed);
 }
@@ -227,4 +226,31 @@ TEST_CASE("binance.user: executionReport REPLACED is an ack that says the order 
       p.decode(padded_fixture("binance/exec_report_new.json").view(), kRecv, kT0, s.span());
   REQUIRE(n.status == ParseStatus::Ok);
   CHECK((s.as<OrderAckMsg>().flags & OrderAckMsg::kAmendedInPlace) == 0);
+}
+
+TEST_CASE("binance.user: balanceUpdate -> AccountFlowMsg, the signed change at its clear time") {
+  TestUniverse u;
+  BinanceUserParser p(u.symbols, u.instruments, VenueId{3});
+  Scratch s;
+  const PaddedJson in(
+      R"({"subscriptionId":0,"event":{"e":"balanceUpdate","E":1789295201005,"a":"USDT","d":"250.5","T":1789295201001}})");
+  auto r = p.decode(in.view(), kRecv, kT0, s.span());
+  REQUIRE(r.status == ParseStatus::Ok);
+  REQUIRE(r.count == 1);
+  CHECK(r.len == sizeof(AccountFlowMsg));
+  const auto& m = s.as<AccountFlowMsg>();
+  CHECK(m.hdr.type == EventType::AccountFlow);
+  CHECK(m.hdr.venue == VenueId{3});
+  CHECK_FALSE(m.hdr.instrument.valid());
+  CHECK(m.asset.view() == "USDT");
+  CHECK(m.amount == Notional::from_decimal("250.5").value());
+  CHECK(m.hdr.exch_ts.ns == 1789295201001LL * 1'000'000);
+  CHECK(m.hdr.recv_ts == kRecv);
+  const PaddedJson out(R"({"e":"balanceUpdate","E":2,"a":"BTC","d":"-0.0100","T":2})");
+  r = p.decode(out.view(), kRecv, kT0, s.span());
+  REQUIRE(r.status == ParseStatus::Ok);
+  CHECK(s.as<AccountFlowMsg>().amount == Notional::from_decimal("-0.01").value());
+  CHECK(p.stats().flows == 2);
+  const PaddedJson bad(R"({"e":"balanceUpdate","E":2,"a":"BTC","d":"x","T":2})");
+  CHECK(p.decode(bad.view(), kRecv, kT0, s.span()).status == ParseStatus::Malformed);
 }

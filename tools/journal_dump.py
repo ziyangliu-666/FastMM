@@ -35,7 +35,7 @@ EVENT_TYPES = [
     "OrderCancelAck", "OrderCancelReject", "OrderFill", "OrderExpired", "PositionUpdate", "Timer",
     "Control", "ConnectionState", "Reconcile", "LatencySample", "OutNewOrder", "OutCancel",
     "OutReplace", "OrderAddL3", "OrderExecL3", "OrderCancelL3", "OrderReplaceL3", "OptionTicker",
-    "EngineTime", "ParamUpdate", "Funding", "Balance", "PerpState",
+    "EngineTime", "ParamUpdate", "Funding", "Balance", "PerpState", "StrategyState", "AccountFlow",
 ]
 PARAM_TYPES = {0: "int", 1: "double", 2: "bool", 3: "decimal", 4: "bps", 5: "ms"}
 ENGINE_TIME_KINDS = {0: "sync", 1: "start", 2: "finish"}
@@ -256,6 +256,9 @@ def decode_body(type_name: str, body: bytes, params=()) -> str:
         return (f"asset={fixed_string(body[40:49], 8)} free={dec(q(0))} locked={dec(q(8))} "
                 f"total={dec(q(16))} equity={dec(q(24))} maintenance={dec(q(32))}"
                 + (f" {'|'.join(kinds)}" if kinds else ""))
+    if type_name == "AccountFlow":
+        return (f"asset={fixed_string(body[8:17], 8)} amount={dec(q(0))} "
+                f"flow_id={fixed_string(body[17:58], 40)}")
     if type_name == "PerpState":
         fields = body[48]
         out = []

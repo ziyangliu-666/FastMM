@@ -20,6 +20,8 @@
 //                                                    (wb, cw, bc) but not the available balance or
 //                                                    the margin, so the connector asks for the
 //                                                    account (GET /fapi/v3/account)
+//                  a.B[].bc m not ORDER or        -> AccountFlowMsg per row with a non-zero bc
+//                           FUNDING_FEE              (a deposit, a withdrawal, a transfer), at T
 //   ACCOUNT_CONFIG_UPDATE ai.j                    -> `multi_assets` (Multi-Assets Mode on or off)
 //   listenKeyExpired                              -> Ignored with listen_key_expired set
 //
@@ -56,6 +58,7 @@ struct UserParserStats {
   std::uint64_t listen_key_expired = 0;
   std::uint64_t funding_events = 0;  // ACCOUNT_UPDATE with reason FUNDING_FEE
   std::uint64_t balance_events = 0;  // ACCOUNT_UPDATE with a non-empty B[]
+  std::uint64_t flows = 0;           // AccountFlowMsg written (B[].bc outside ORDER, FUNDING_FEE)
 };
 
 struct UserDecodeResult : DecodeResult {

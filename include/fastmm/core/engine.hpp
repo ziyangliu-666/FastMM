@@ -1059,6 +1059,7 @@ class Engine {
       case EventType::Padding:
       case EventType::EngineTime:
       case EventType::StrategyState:
+      case EventType::AccountFlow:  // journaled for a backtest; the balances follow BalanceMsg
       case EventType::Count:
         break;  // not consumed by the L2 engine
     }
