@@ -59,6 +59,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - backtest: sweep points, folds and branch arms start from one strategy state and write none.
 - backtest: an A/B arm's per-hour figures weigh each pair by its time.
 - backtest: `calibrate --backtest` counts live fees in another asset apart, and drift needs a mid.
+- backtest: fills after a replace count for the quote that began it.
 
 ### Documentation
 - docs: a how-to replays a live session from a checkpoint and compares configurations from it.

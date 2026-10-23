@@ -277,6 +277,24 @@ Metrics compute_metrics(const EquityRows& equity,
   }
 
   // ---- orders -----------------------------------------------------------------------------
+  // A replace gives the order a new cl_ord_id: the fills of every order in a replace chain count
+  // for the new order that began it, at the earliest of them.
+  if (orders.orig_cl_ord_id.size() == orders.size()) {
+    std::unordered_map<std::uint64_t, std::uint64_t> origin;  // replacing id -> the new order's
+    for (std::size_t i = 0; i < orders.size(); ++i) {
+      if (orders.kind[i] != kOrderKindReplace) continue;
+      const std::uint64_t orig = orders.orig_cl_ord_id[i];
+      const auto it = origin.find(orig);
+      origin[orders.cl_ord_id[i]] = it != origin.end() ? it->second : orig;
+    }
+    for (const auto& [id, root] : origin) {
+      const auto f = first_fill_ts.find(id);
+      if (f == first_fill_ts.end()) continue;
+      const std::int64_t ts = f->second;
+      const auto [r, added] = first_fill_ts.try_emplace(root, ts);
+      if (!added) r->second = std::min(r->second, ts);
+    }
+  }
   LogLinearHistogram virt;
   std::vector<std::int64_t> ttf_sorted;
   for (std::size_t i = 0; i < orders.size(); ++i) {

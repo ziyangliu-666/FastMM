@@ -74,6 +74,9 @@ struct OrderRows {
   std::vector<std::int64_t> venue_ts;    // arrival at the venue; 0 when dropped
   std::vector<std::int64_t> trigger_ts;  // T0 of the event that caused the order (0 unknown)
   std::vector<std::uint64_t> cl_ord_id;
+  // A replace: the order it replaces (cl_ord_id is the new order's); 0 otherwise. May be empty, as
+  // in rows built by hand: then no replace chain is followed.
+  std::vector<std::uint64_t> orig_cl_ord_id;
   std::vector<std::uint32_t> instrument;
   std::vector<std::int8_t> side;  // 0 buy / 1 sell / -1 n/a (cancel, replace)
   std::vector<std::int64_t> price;

@@ -133,6 +133,7 @@ void orders(A& a, OrderRowsT& o) {
   a.vec(o.venue_ts);
   a.vec(o.trigger_ts);
   a.vec(o.cl_ord_id);
+  a.vec(o.orig_cl_ord_id);
   a.vec(o.instrument);
   a.vec(o.side);
   a.vec(o.price);

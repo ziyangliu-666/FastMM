@@ -54,8 +54,8 @@ Markouts are reported per instrument, per side, per liquidity flag and in total,
 |---|---|
 | realised spread | `signed qty * (mid at fill − price)` over the traded notional, in bps: the same quantity the markout starts from |
 | fills at / inside / behind / through | Where the fill price sat relative to the venue's best quote on that side at the fill: equal, better (the order improved it), worse, or at or beyond the opposite quote |
-| quotes filled / placed | Share of new orders that got at least one fill, which is not the same as `fill ratio` (fills per order) |
-| time to fill | Venue arrival of a new order to its first fill, p50 / p90 / p99 |
+| quotes filled / placed | Share of new orders that got at least one fill, their replacements' fills included, which is not the same as `fill ratio` (fills per order) |
+| time to fill | Venue arrival of a new order to its first fill or its replacements', p50 / p90 / p99 |
 | queue ahead at fill | Displayed quantity still ahead of the order when it filled. `fill_model = "l2_queue"` only; the matching engine fills from the front of the queue, so it has no such number |
 
 ## Fees and rebates

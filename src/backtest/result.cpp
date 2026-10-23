@@ -79,6 +79,7 @@ void OrderRows::reserve(std::size_t n) {
   venue_ts.reserve(n);
   trigger_ts.reserve(n);
   cl_ord_id.reserve(n);
+  orig_cl_ord_id.reserve(n);
   instrument.reserve(n);
   side.reserve(n);
   price.reserve(n);

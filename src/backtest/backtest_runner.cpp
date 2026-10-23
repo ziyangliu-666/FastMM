@@ -153,6 +153,7 @@ struct BacktestSession::Impl final : sim::SimObserver {
     orders.trigger_ts.push_back(static_cast<std::int64_t>(h.t0_cycles.v));
     orders.instrument.push_back(h.instrument.value);
     std::uint64_t id = 0;
+    std::uint64_t orig = 0;
     std::int8_t side = -1;
     std::int64_t px = 0;
     std::int64_t qty = 0;
@@ -175,6 +176,7 @@ struct BacktestSession::Impl final : sim::SimObserver {
       case EventType::OutReplace: {
         const auto& m = msg_cast<OutReplaceMsg>(&h);
         id = m.cl_ord_id.value;
+        orig = m.orig_cl_ord_id.value;
         px = m.price.raw;
         qty = m.qty.raw;
         kind = kOrderKindReplace;
@@ -184,6 +186,7 @@ struct BacktestSession::Impl final : sim::SimObserver {
         break;
     }
     orders.cl_ord_id.push_back(id);
+    orders.orig_cl_ord_id.push_back(orig);
     orders.side.push_back(side);
     orders.price.push_back(px);
     orders.qty.push_back(qty);

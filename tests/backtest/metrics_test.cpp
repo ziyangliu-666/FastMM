@@ -140,6 +140,50 @@ TEST_CASE("backtest.metrics: hand-computed Sharpe, drawdown, inventory, uptime, 
   CHECK(empty.sharpe_bar == 0.0);
 }
 
+TEST_CASE("backtest.metrics: the fills of a replaced order count for the quote it began as") {
+  // Order 1 reaches the venue at 100, is replaced by 2 and 2 by 3; 2 fills at 500, 3 at 1000.
+  // Order 4 never fills.
+  const std::int64_t unit = kFixedScale;
+  FillRows fills;
+  const std::pair<std::uint64_t, std::int64_t> filled[] = {{2, 500}, {3, 1000}};
+  for (const auto& [id, ts] : filled) {
+    fills.ts.push_back(ts);
+    fills.instrument.push_back(0);
+    fills.side.push_back(0);
+    fills.price.push_back(100 * unit);
+    fills.qty.push_back(unit);
+    fills.fee.push_back(0);
+    fills.cl_ord_id.push_back(id);
+    fills.liquidity.push_back(static_cast<std::uint8_t>(Liquidity::Maker));
+    fills.mid.push_back(100 * unit);
+  }
+  OrderRows orders;
+  auto add_order = [&](std::uint8_t kind, std::uint64_t id, std::uint64_t orig, std::int64_t at) {
+    orders.ts.push_back(at);
+    orders.venue_ts.push_back(at);
+    orders.trigger_ts.push_back(0);
+    orders.cl_ord_id.push_back(id);
+    orders.orig_cl_ord_id.push_back(orig);
+    orders.instrument.push_back(0);
+    orders.side.push_back(kind == kOrderKindNew ? 0 : -1);
+    orders.price.push_back(100 * unit);
+    orders.qty.push_back(unit);
+    orders.kind.push_back(kind);
+    orders.type.push_back(0);
+  };
+  add_order(kOrderKindNew, 1, 0, 100);
+  add_order(kOrderKindReplace, 2, 1, 200);
+  add_order(kOrderKindReplace, 3, 2, 300);
+  add_order(kOrderKindNew, 4, 0, 400);
+  const Metrics m = compute_metrics(EquityRows{}, fills, orders, MetricsInputs{});
+  CHECK(m.orders == 2);
+  CHECK(m.replaces == 2);
+  CHECK(m.fill_quality.quotes_placed == 2);
+  CHECK(m.fill_quality.quotes_filled == 1);
+  CHECK(m.fill_quality.fill_rate_per_quote == doctest::Approx(0.5));
+  CHECK(m.fill_quality.time_to_fill_p50_ns == 400);  // from order 1 at 100 to the fill at 500
+}
+
 // A hand-made L2 tape where the fills are known in advance:
 //   t=1s snapshot 99.99 x 1 / 100.01 x 1; BasicMM (1 bps half spread) joins both touches
 //        behind 1 unit of displayed size with 0.5
