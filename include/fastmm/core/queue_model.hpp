@@ -25,6 +25,12 @@
 //                quantity from its levels before the next update shows it (TradeTape): at
 //                placement, for the old quantity of a level change, and under a touch's cap
 //   own orders   a level of a live feed shows ours too; others_shown() takes them out
+//   crossing     the opposite side of a view reaching a resting order's price is liquidity that
+//                came in after the order (one placed into it would have taken it): with us on
+//                the book it would have traded with the order, at the order's price, before
+//                resting. Recorded data has no print for it (without us it rested), so on_cross()
+//                fills the order with the opposite quantity at or through its price that is new
+//                since the last view, shared in price priority like a print
 //   arrival      a trade fills only orders that were at the venue at its time (placed at or
 //                before it). Recorded streams are not monotone in venue time, so a trade can be
 //                processed after an order that reached the venue later: it does not fill that
@@ -40,6 +46,7 @@
 // queue_apply_book() is how SimTransport (fill_model = "l2_queue") applies a book message to its
 // mirror of the historical levels and to the model; the fill check (backtest/fill_check.hpp) calls
 // the same function, so both see a journal's book the same way.
+#include "fastmm/core/book/book_view.hpp"
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/containers/bucket_bits.hpp"
@@ -232,12 +239,13 @@ struct QueuedOrder {
   Qty ahead;         // displayed quantity still ahead of us in the queue
   Timestamp placed;  // venue time the order entered the queue (its arrival, or an amend's)
   Timestamp view;    // venue time of the book view `ahead` was first taken from
+  Qty crossed;       // opposite quantity at or through the price in the last view (on_cross)
   InstrumentId instrument;
   Side side;
   std::uint8_t pad_[3];
   [[nodiscard]] constexpr Qty leaves() const noexcept { return qty - cum_qty; }
 };
-static_assert(sizeof(QueuedOrder) == 72 && std::is_trivially_copyable_v<QueuedOrder>);
+static_assert(sizeof(QueuedOrder) == 80 && std::is_trivially_copyable_v<QueuedOrder>);
 
 class QueuePositionModel {
  public:
@@ -370,6 +378,57 @@ class QueuePositionModel {
     }
   }
 
+  // A view of the book at venue time `ts` (a depth update, a book ticker): `crossing(side, px)` is
+  // the opposite quantity at or through `px` in it, for a resting order of `side` at `px` (zero
+  // when the opposite side does not reach it). What is new since the order's last view came in
+  // after the order and traded with it (see crossing above): F as on_trade's, in price priority
+  // per side, each order taking what the better ones left. An order placed after `ts` is not
+  // reached: what the view shows was there before it.
+  template <class Cross, class F>
+  void on_cross(InstrumentId inst, Timestamp ts, Cross&& crossing, F&& f) noexcept {
+    Handle32* const hs = print_order_.get();
+    std::size_t n = 0;
+    for_each_mut(inst, [&](Handle32 h, QueuedOrder& o) {
+      const Qty c = crossing(o.side, o.price);
+      if (ts < o.placed) {
+        // The view is older than the order: what it shows was there before the order came.
+        if (c > o.crossed) o.crossed = c;
+        return;
+      }
+      if (c > o.crossed) {
+        hs[n++] = h;
+      } else {
+        o.crossed = c;
+      }
+    });
+    if (n == 0) return;
+    if (n > 1) {
+      std::sort(hs, hs + n, [&](Handle32 a, Handle32 b) {
+        const QueuedOrder& x = pool_.get(a);
+        const QueuedOrder& y = pool_.get(b);
+        if (x.side != y.side) return x.side < y.side;
+        if (x.price != y.price) return better(x.side, x.price, y.price);
+        return a.idx < b.idx;
+      });
+    }
+    Qty used[2] = {};  // per side, what the better orders took of this view's new liquidity
+    for (std::size_t i = 0; i < n; ++i) {
+      QueuedOrder& o = pool_.get(hs[i]);
+      const Qty c = crossing(o.side, o.price);
+      const Qty fresh = c - o.crossed;
+      o.crossed = c;
+      Qty& u = used[static_cast<std::size_t>(o.side)];
+      if (fresh <= u) continue;
+      const Qty fill = min(fresh - u, o.leaves());
+      if (!fill.is_positive()) continue;
+      u += fill;
+      const Qty ahead_before = o.ahead;
+      o.ahead = Qty{};
+      o.cum_qty += fill;
+      f(hs[i], o, fill, ahead_before);
+    }
+  }
+
   // Ascending handle order. F(Handle32, const QueuedOrder&).
   template <class F>
   void for_each(F&& f) const noexcept {
@@ -479,6 +538,70 @@ inline void queue_apply_book(L2Book<256>& book,
                                              const QueueTouch& t) noexcept {
   if (t.valid() && t.newer_than(book.seq(), book.last_update()) && t.px(side) == px) return t.ts;
   return book.last_update();
+}
+
+// The levels of `side` as the venue has them at `now`, best first, while `f(level)` returns true.
+// The touch `t` (a book ticker) gives the best level when it is newer than the depth book, or when
+// the depth has a level on the near side of it: the ticker follows every change of the top as it
+// happens and the depth stream is throttled (and may miss the removal of a level), so such a level
+// is stale. The ticker's level comes first, then the depth's behind it, never stale ones.
+template <class F>
+void for_each_venue_level(
+    const L2Book<256>& book, const QueueTouch& t, Side side, Timestamp now, F&& f) noexcept {
+  const Level depth_best = side == Side::Buy ? book.best_bid() : book.best_ask();
+  const bool use_touch = t.valid() && t.px(side).is_positive() &&
+                         (t.newer_than(book.seq(), book.last_update()) ||
+                          (depth_best.qty.is_positive() &&
+                           better(side, depth_best.price, t.px(side)) && now - t.ts <= seconds(1)));
+  if (!use_touch) {
+    book.for_each_level(side, f);
+    return;
+  }
+  const Price tp = t.px(side);
+  if (t.qty(side).is_positive() && !f(Level{tp, t.qty(side)})) return;
+  book.for_each_level(side, [&](const Level& l) {
+    if (at_or_better(side, l.price, tp)) return true;  // stale, or the touch itself
+    return f(l);
+  });
+}
+
+// The venue's book at `now` (the depth book and the touch, as for_each_venue_level() reads them)
+// after a view of instrument `id`: the opposite liquidity that reached the resting orders of each
+// of `models` traded with them (QueuePositionModel::on_cross). F(std::size_t model, Handle32,
+// QueuedOrder&, Qty fill, Qty ahead_before) as on_trade's.
+template <class F>
+void queue_apply_cross(const L2Book<256>& book,
+                       const QueueTouch& t,
+                       InstrumentId id,
+                       Timestamp now,
+                       std::span<QueuePositionModel* const> models,
+                       F&& f) noexcept {
+  // Each side's best price once, to leave out at once the orders it does not reach.
+  Price best[2];
+  for (const Side s : {Side::Buy, Side::Sell}) {
+    for_each_venue_level(book, t, s, now, [&](const Level& l) {
+      best[static_cast<std::size_t>(s)] = l.price;
+      return false;
+    });
+  }
+  const auto crossing = [&](Side side, Price px) {
+    const Side opp = opposite(side);
+    const Price b = best[static_cast<std::size_t>(opp)];
+    Qty q{};
+    if (!b.is_positive() || !at_or_better(opp, b, px)) return q;
+    for_each_venue_level(book, t, opp, now, [&](const Level& l) {
+      if (!at_or_better(opp, l.price, px)) return false;
+      q += l.qty;
+      return true;
+    });
+    return q;
+  };
+  for (std::size_t k = 0; k < models.size(); ++k) {
+    if (models[k]->size() == 0) continue;
+    models[k]->on_cross(id, now, crossing, [&](auto h, QueuedOrder& o, Qty fill, Qty ahead) {
+      f(k, h, o, fill, ahead);
+    });
+  }
 }
 
 // A touch newer than `book` moves the queue of every order of `models` on instrument `id`, its

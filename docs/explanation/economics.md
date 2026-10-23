@@ -13,15 +13,15 @@
 
 <!-- output: fastmm-backtest --config configs/backtest-example.toml --data synthetic --out - -->
 ```text
-backtest basic_mm  seed=1  md_events=15723  steps=16524  wall=0.05s
+backtest basic_mm  seed=1  md_events=15723  steps=16521  wall=0.01s
   net pnl                        -12.5750
   realized / unrealized / fees   0.0089 / 0.0001 / 12.5841
-  fills (maker / taker)          153 (153 / 0)
+  fills (maker / taker)          152 (152 / 0)
   spread captured (bps)          0.008
   volume base / quote            0.20974 / 12584.09
 ```
 
-Net PnL is `realized + unrealized - fees`. Trading contributed 0.0091 USDT (the net PnL at a zero fee) on 12,584.09 USDT of volume: 0.0072 bps. The strategy does not read the fee table, so changing only `maker_bps` gives the same 153 fills and this PnL:
+Net PnL is `realized + unrealized - fees`. Trading contributed 0.0091 USDT (the net PnL at a zero fee) on 12,584.09 USDT of volume: 0.0072 bps. The strategy does not read the fee table, so changing only `maker_bps` gives the same 152 fills and this PnL:
 
 | `maker_bps` | Fees (USDT) | Net PnL (USDT) |
 |---:|---:|---:|

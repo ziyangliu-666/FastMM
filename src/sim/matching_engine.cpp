@@ -148,18 +148,20 @@ SubmitResult MatchingEngine::submit(const NewOrder& o, Timestamp now) noexcept {
   ord.side = o.side;
   ord.type = o.type;
   ord.tif = market ? TimeInForce::Ioc : o.tif;
+  ord.reduce_only = o.reduce_only;
   by_key_.insert(key(o.account, o.cl_ord_id), h);
   r.order_id = ord.order_id;
   sink_->on_ack(ord, now);
 
-  if (ord.tif == TimeInForce::Fok && book.qty_at_or_better(opp, ord.price, market) < ord.qty) {
+  if (ord.tif == TimeInForce::Fok &&
+      (fillable(ord) < ord.qty || (ord.reduce_only && sink_->reducible(ord) < ord.qty))) {
     ++stats_.expired;
     sink_->on_cancel(ord, CancelReason::Fok, now);
     free_order(h, ord);
     return r;
   }
   if (o.type != OrderType::PostOnly && !match(h, ord, now, r.filled)) {
-    return r;  // cancelled by STP during the sweep (r.filled set by match)
+    return r;  // ended by STP or the reduce-only rule during the sweep (r.filled set by match)
   }
   r.filled = ord.cum_qty;
   if (ord.leaves().is_zero()) {
@@ -192,11 +194,20 @@ bool MatchingEngine::match(Handle32 th, SimOrder& taker, Timestamp now, Qty& fil
     if (!market && !crosses(taker.side, taker.price, level->price)) break;
     const Price px = level->price;
     bool taker_done = false;
+    bool taker_reduced = false;  // a reduce-only taker whose position is closed
     std::uint32_t idx = level->head;
     while (idx != kNullHandle && taker.leaves().is_positive()) {
       const Handle32 mh{idx};
       SimOrder& maker = pool_.get(mh);
       const std::uint32_t next = maker.next;
+      Qty q = taker.leaves();
+      if (taker.reduce_only) {
+        q = min(q, sink_->reducible(taker));
+        if (q.is_zero()) {
+          taker_reduced = true;
+          break;
+        }
+      }
       if (stp_mode != StpMode::None && maker.account == taker.account) {
         ++stats_.stp_cancels;
         if (stp_mode == StpMode::CancelMaker || stp_mode == StpMode::CancelBoth) {
@@ -212,7 +223,19 @@ bool MatchingEngine::match(Handle32 th, SimOrder& taker, Timestamp now, Qty& fil
         idx = next;
         continue;
       }
-      const Qty q = min(taker.leaves(), maker.leaves());
+      Qty m = maker.leaves();
+      if (maker.reduce_only) m = min(m, sink_->reducible(maker));
+      if (m.is_zero()) {
+        // A reduce-only maker whose position is closed expires instead of trading.
+        ++stats_.expired;
+        level->qty -= maker.leaves();
+        unlink(maker, *level);
+        sink_->on_cancel(maker, CancelReason::ReduceOnly, now);
+        free_order(mh, maker);
+        idx = next;
+        continue;
+      }
+      q = min(q, m);
       maker.cum_qty += q;
       taker.cum_qty += q;
       level->qty -= q;
@@ -221,6 +244,12 @@ bool MatchingEngine::match(Handle32 th, SimOrder& taker, Timestamp now, Qty& fil
       sink_->on_trade(taker.instrument, px, q, taker.side, next_trade_id_++, now);
       if (maker.leaves().is_zero()) {
         unlink(maker, *level);
+        free_order(mh, maker);
+      } else if (maker.reduce_only && sink_->reducible(maker).is_zero()) {
+        ++stats_.expired;
+        level->qty -= maker.leaves();
+        unlink(maker, *level);
+        sink_->on_cancel(maker, CancelReason::ReduceOnly, now);
         free_order(mh, maker);
       }
       idx = next;
@@ -238,9 +267,42 @@ bool MatchingEngine::match(Handle32 th, SimOrder& taker, Timestamp now, Qty& fil
       free_order(th, taker);
       return false;
     }
+    if (taker_reduced ||
+        (taker.reduce_only && taker.leaves().is_positive() && sink_->reducible(taker).is_zero())) {
+      filled = taker.cum_qty;
+      ++stats_.expired;
+      sink_->on_cancel(taker, CancelReason::ReduceOnly, now);
+      free_order(th, taker);
+      return false;
+    }
   }
   filled = taker.cum_qty;
   return true;
+}
+
+Qty MatchingEngine::fillable(const SimOrder& taker) const noexcept {
+  const SimBook& book = books_[taker.instrument.value];
+  const Side opp = opposite(taker.side);
+  const bool market = taker.type == OrderType::Market;
+  const StpMode mode = stp(taker.account, taker.instrument);
+  if (mode == StpMode::None) return book.qty_at_or_better(opp, taker.price, market);
+  const SimBook::Levels& levels = book.levels(opp);
+  Qty sum{};
+  for (std::size_t i = levels.size(); i > 0; --i) {
+    const PriceLevel& l = levels[i - 1];
+    if (!market && !crosses(taker.side, taker.price, l.price)) break;
+    for (std::uint32_t idx = l.head; idx != kNullHandle;) {
+      const SimOrder& o = pool_.get(Handle32{idx});
+      idx = o.next;
+      if (o.account != taker.account) {
+        sum += o.leaves();
+      } else if (mode != StpMode::CancelMaker) {
+        return sum;  // the taker ends here
+      }
+      if (sum >= taker.leaves()) return sum;
+    }
+  }
+  return sum;
 }
 
 void MatchingEngine::rest(Handle32 h, SimOrder& o) noexcept {
@@ -248,7 +310,8 @@ void MatchingEngine::rest(Handle32 h, SimOrder& o) noexcept {
   PriceLevel* level = book.find_or_insert(o.side, o.price);
   if (FASTMM_UNLIKELY(level == nullptr)) {
     ++stats_.level_full;
-    NewOrder n{o.account, o.cl_ord_id, o.instrument, o.side, o.type, o.tif, o.price, o.qty};
+    NewOrder n{
+        o.account, o.cl_ord_id, o.instrument, o.side, o.type, o.tif, o.price, o.qty, o.reduce_only};
     sink_->on_reject(n, RejectReason::VenueReject, o.created);
     free_order(h, o);
     return;
@@ -401,7 +464,7 @@ SubmitResult MatchingEngine::replace(AccountId account,
     r.resting = qty;
     return r;
   }
-  NewOrder n{account, new_id, o.instrument, o.side, o.type, o.tif, price, qty};
+  NewOrder n{account, new_id, o.instrument, o.side, o.type, o.tif, price, qty, o.reduce_only};
   remove_resting(h, o, CancelReason::Replaced, now);
   return submit(n, now);
 }

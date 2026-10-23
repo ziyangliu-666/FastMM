@@ -183,6 +183,31 @@ TEST_CASE(
   CHECK(x.filled == qt("0.3"));
 }
 
+TEST_CASE(
+    "sim.matching: a recorded trade takes the book in price-time order, ours behind the queue") {
+  Venue x(sim::FillModel::Matching);
+  x.depth(0, {{px("99.00"), qt("1")}}, {{px("101.00"), qt("1")}}, true);
+  x.bid(1, "99.00", "0.3");  // at the venue at 100 us, behind the recorded 1
+  x.run(1000);
+  REQUIRE(x.acks.size() == 1);
+  // A seller takes 0.8 of the 1 ahead of us: nothing reaches us. The depth update that shows the
+  // level after it finds the queue there already.
+  x.trade(1100, "99.00", "0.8", Side::Sell);
+  x.depth(1150, {{px("99.00"), qt("0.2")}}, {});
+  x.run(2000);
+  CHECK(x.fills.empty());
+  // The next takes the 0.2 left ahead and 0.1 of ours.
+  x.trade(2100, "99.00", "0.3", Side::Sell);
+  x.run(3000);
+  REQUIRE(x.fills.size() == 1);
+  CHECK(x.fills[0] == at(2100));
+  CHECK(x.filled == qt("0.1"));
+  // A buyer's print does not reach a bid.
+  x.trade(3100, "101.00", "1", Side::Buy);
+  x.run(4000);
+  CHECK(x.filled == qt("0.1"));
+}
+
 namespace {
 // A recording in receive order: each event's venue time and receive time.
 class Recording final : public sim::MdSource {

@@ -13,7 +13,7 @@ The C++ entry points are `fastmm::research::extract_features()` and `fastmm::res
 
 A row is emitted after a `BookDelta` or `BookSnapshot` has been applied, when the book has two sides. Prices, quantities and spreads are raw 1e-8 fixed-point integers, the convention of `backtest/result.hpp`; imbalance is in the same scale, so 100000000 is 1.0. Columns are structure of arrays: one contiguous vector each, which is what lets Python borrow them without a copy.
 
-`subsample` keeps at most one row per interval of event time. `sample_trades` adds a row at every trade, with the book as it stood when the trade printed; with `sample_book_updates=False` the table then holds exactly one row per trade, which is the timestamp every fill of a backtest over the same data lands on.
+`subsample` keeps at most one row per interval of event time. `sample_trades` adds a row at every trade, with the book as it stood when the trade printed; with `sample_book_updates=False` the table then holds exactly one row per trade, which is the timestamp a fill from a trade lands on. A resting order the book comes to fills at that book update instead ([Backtesting](backtesting.md#model-assumptions)).
 
 The book is the one the simulated venue keeps under the `l2_queue` fill model (`queue_on_delta` in `src/sim/sim_transport.cpp`): book messages are applied, trades are not. So a row's mid is the number `SimTransport::venue_mid()` reports at that time, and the two paths can be compared fill by fill.
 
@@ -74,17 +74,15 @@ Monotone at 100 ms, 1 s and 10 s, monotone apart from decile 6 to 7 at 1 minute,
 
 ### The cross-check against the backtest
 
-`basic_mm` with [`configs/backtest-binance.toml`](../reference/configuration.md) over the same day: 12 529 fills, all maker. Against a table of trade rows over the same source:
+`basic_mm` with [`configs/backtest-binance.toml`](../reference/configuration.md) over the same day: 12 925 fills, all maker. Against a table of book and trade rows over the same source:
 
 | compared | fills | mismatches |
 |---|---|---|
-| mid at the fill | 12 529 | 0 |
-| best bid, best ask at the fill | 12 529 | 0 |
-| mid at fill + 1 s | 12 529 | 0 |
-| mid at fill + 10 s | 12 529 | 0 |
-| mid at fill + 1 min | 12 529 | 0 |
+| mid at fill + 1 s | 12 925 | 0 |
+| mid at fill + 10 s | 12 925 | 0 |
+| mid at fill + 1 min | 12 925 | 0 |
 
-Every number matches to the raw integer.
+Every number matches to the raw integer. The mid and touch at the fill itself are compared in `research.cross_check`, on a tape where no two events share a timestamp: on this day a trade and a book update often fall in the same millisecond, and the timestamp alone does not say which of them filled the order.
 
 ### Was a quote at the touch adversely selected
 
@@ -99,7 +97,7 @@ Not on average. Over every book update of the day, a quote resting at the touch 
 
 Restricted to the 2 253 431 timestamps where a trade printed, which is where a fill can happen, it is the same picture: at 1 s the resting bid is worth +0.0248 bps and the resting ask +0.0674 bps, against a mean half spread of 0.0461 bps.
 
-The fills `basic_mm` got are worth -0.663 bps at 1 s, -0.854 bps at 10 s and -0.849 bps at 1 minute. The adverse selection is therefore not a property of the touch; it is a property of which fills a quote gets.
+The fills `basic_mm` got are worth -0.653 bps at 1 s, -0.820 bps at 10 s and -0.823 bps at 1 minute. The adverse selection is therefore not a property of the touch; it is a property of which fills a quote gets.
 
 Conditioning on imbalance shows it. Imbalance deciles over trade rows, 225 343 rows each, 1 s horizon:
 
@@ -116,7 +114,7 @@ Conditioning on imbalance shows it. Imbalance deciles over trade rows, 225 343 r
 | 9 | +0.956 | +0.900 bps | -0.802 bps |
 | 10 | +0.995 | +0.815 bps | -0.755 bps |
 
-In the most ask-heavy decile the trade comes to the bid, and that bid is worth -0.915 bps. In the most bid-heavy decile the trade lifts the ask, and that ask is worth -0.755 bps. A symmetric quoter takes the negative number in every bucket, which is why the realised -0.663 bps sits inside this range and not near the +0.03 bps average.
+In the most ask-heavy decile the trade comes to the bid, and that bid is worth -0.915 bps. In the most bid-heavy decile the trade lifts the ask, and that ask is worth -0.755 bps. A symmetric quoter takes the negative number in every bucket, which is why the realised -0.653 bps sits inside this range and not near the +0.03 bps average.
 
 Conditioning identifies the bad side. Whether it produces a usable one is beyond this measurement: the touch markout is what a fill is worth given the state, not the chance of getting that fill. The best bucket of either signal, on the side the flow is moving away from, is:
 
@@ -134,13 +132,13 @@ The Binance USD-M VIP-0 maker rate is 2 bps per fill. At 1 s and 10 s, the horiz
 
 ## Where basic_mm's PnL goes on this day
 
-`basic_mm` on this day nets -499 USDT: 5.62 USDT of gross spread capture, -153.54 of mid drift after the fills, and 351.13 of fees on 1 755 651 USDT of traded notional.
+`basic_mm` on this day nets -501 USDT: 4.69 USDT of gross spread capture, -151.26 of mid drift after the fills, and 353.97 of fees on 1 769 825 USDT of traded notional.
 
-The capture is 0.032 bps because that is what the touch is worth. The mean half spread at a trade is 0.046 bps, and the strategy's `half_spread_bps = 0.007` puts its quote at the touch (70.9% of fills are at the venue's best price on its side). There is no configuration of a touch quote that captures more than a few hundredths of a basis point on this instrument.
+The capture is 0.026 bps because that is what the touch is worth. The mean half spread at a trade is 0.046 bps, and the strategy's `half_spread_bps = 0.007` puts its quote at the touch: 58.3% of fills are at the venue's best price on its side, and 30.0% came when the other side of the book reached the quote. There is no configuration of a touch quote that captures more than a few hundredths of a basis point on this instrument.
 
-The markout is -0.66 bps at 1 s because the fills are drawn from the buckets where the quote is on the wrong side of the imbalance, not from the day's average state. Both are visible in the extractor without running the strategy.
+The markout is -0.65 bps at 1 s because the fills are drawn from the buckets where the quote is on the wrong side of the imbalance, not from the day's average state. Both are visible in the extractor without running the strategy.
 
-The gap is not a tuning problem, and the third route out in [Economics of the shipped strategies](economics.md#the-arithmetic-you-have-to-beat) does not close it at this holding period: three hundredths of a basis point of gross capture cannot pay two basis points of fee, and at 1 s and 10 s the best conditional fill in the day is worth less than the fee even before the question of whether it is obtainable.
+The gap is not a tuning problem, and the third route out in [Economics of the shipped strategies](economics.md#the-arithmetic-you-have-to-beat) does not close it at this holding period: under three hundredths of a basis point of gross capture cannot pay two basis points of fee, and at 1 s and 10 s the best conditional fill in the day is worth less than the fee even before the question of whether it is obtainable.
 
 Whether a fair-value offset helps at a longer horizon is not something this measurement settles. The conditional markout prices a fill given the state; a strategy that skews its quote changes which fills it gets, and that is a fill-model question. On a top-of-book feed the `l2_queue` model's fill counts are a guess ([Backtesting](backtesting.md)), so a backtest of a skewed variant on this day would produce a number that could not be defended. The measurement that would settle it needs a feed with depth.
 
@@ -155,7 +153,7 @@ t = fastmm.features(data="binance:BTCUSDT,2024-03-27", horizons=[0.1, 1, 10, 60]
 print(fastmm.evaluate_signal(t, "imbalance", blocks=24)["table"])
 ```
 
-The cross-check and the trade-row tables need one row per trade, because that is where a fill can land:
+The trade-row tables need one row per trade, where a trade's fill lands; the cross-check takes the book rows as well (`sample_book_updates=True`):
 
 ```python
 f = fastmm.features(data="binance:BTCUSDT,2024-03-27", horizons=[1, 10, 60],

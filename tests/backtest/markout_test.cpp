@@ -256,10 +256,16 @@ TEST_CASE("backtest.markout: the runner reads the mid at the horizon, not on the
 
   const MarkoutHorizon* h1 = r.metrics.markout(seconds(1).ns);
   REQUIRE(h1 != nullptr);
-  CHECK(h1->buy.fills >= 1);
-  // +0.5 * (101 - 99.99) = 0.505 against a spread capture of +0.5 * (100 - 99.99) = 0.005
-  CHECK(h1->buy.markout_quote() == doctest::Approx(0.505));
-  CHECK(h1->buy.capture_quote() == doctest::Approx(0.005));
+  // The jumps go through our quotes: the bids at 2.5 s take our ask at 100.01, the asks at 3 s our
+  // bid at 109.98 (marked at the mid of 101 the update leaves, and at 4 s).
+  REQUIRE(r.fills.size() == 3);
+  CHECK(r.fills.price[1] == px("100.01").raw);
+  CHECK(r.fills.price[2] == px("109.98").raw);
+  CHECK(h1->buy.fills == 2);
+  // +0.5 * (101 - 99.99) + 0.5 * (101 - 109.98) = -3.985 against a spread capture of
+  // +0.5 * (100 - 99.99) + 0.5 * (101 - 109.98) = -4.485
+  CHECK(h1->buy.markout_quote() == doctest::Approx(-3.985));
+  CHECK(h1->buy.capture_quote() == doctest::Approx(-4.485));
   const MarkoutHorizon* h10 = r.metrics.markout(seconds(10).ns);
   REQUIRE(h10 != nullptr);
   CHECK(h10->total.fills == 0);

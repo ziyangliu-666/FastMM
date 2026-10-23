@@ -248,8 +248,14 @@ void SimTransport::process_order_arrival() noexcept {
 void SimTransport::venue_new(const OutNewOrderMsg& m, Timestamp now) noexcept {
   note_order(m.cl_ord_id, link_for(m.hdr));
   if (accounts_ != nullptr) {
+    if (m.reduce_only != 0 &&
+        accounts_->reducible(m.hdr.instrument, m.side, m.hdr.venue).is_zero()) {
+      accounts_->count_refused();
+      emit_reject(m.cl_ord_id, m.hdr.instrument, RejectReason::VenueReject, now, kReduceOnlyCode);
+      return;
+    }
     const Price px =
-        m.type == OrderType::Market ? venue_best(m.hdr.instrument, opposite(m.side)) : m.price;
+        m.type == OrderType::Market ? sweep_price(m.hdr.instrument, m.side, m.qty, now) : m.price;
     if (!accounts_->admit(m.cl_ord_id,
                           m.hdr.instrument,
                           m.side,
@@ -272,6 +278,7 @@ void SimTransport::venue_new(const OutNewOrderMsg& m, Timestamp now) noexcept {
   n.tif = m.tif;
   n.price = m.price;
   n.qty = m.qty;
+  n.reduce_only = m.reduce_only != 0;
   if (cfg_.fill_model == FillModel::L2Queue) {
     queue_new(n, now);
   } else {
@@ -292,16 +299,22 @@ void SimTransport::venue_cancel(const OutCancelMsg& m, Timestamp now) noexcept {
 
 void SimTransport::venue_replace(const OutReplaceMsg& m, Timestamp now) noexcept {
   note_order(m.cl_ord_id, order_link(m.orig_cl_ord_id, m.hdr.instrument));
+  // A reduce-only order whose position is closed, or a new leg the account cannot cover: the
+  // venue cancels the order and refuses its replacement (Binance cancelReplace).
+  const bool closed = accounts_ != nullptr && accounts_->reducible(m.orig_cl_ord_id).is_zero();
   if (accounts_ != nullptr &&
-      !accounts_->admit_replace(m.orig_cl_ord_id, m.cl_ord_id, m.price, m.qty)) {
-    // The venue cancels the order and refuses its replacement (Binance cancelReplace).
+      (closed || !accounts_->admit_replace(m.orig_cl_ord_id, m.cl_ord_id, m.price, m.qty))) {
     accounts_->count_refused();
     if (cfg_.fill_model == FillModel::L2Queue) {
       queue_cancel(m.orig_cl_ord_id, m.hdr.instrument, now);
     } else {
       static_cast<void>(me_.cancel(kStrategyAccount, m.orig_cl_ord_id, now));
     }
-    emit_reject(m.cl_ord_id, m.hdr.instrument, RejectReason::InsufficientBalance, now);
+    if (closed) {
+      emit_reject(m.cl_ord_id, m.hdr.instrument, RejectReason::VenueReject, now, kReduceOnlyCode);
+    } else {
+      emit_reject(m.cl_ord_id, m.hdr.instrument, RejectReason::InsufficientBalance, now);
+    }
     return;
   }
   if (cfg_.fill_model == FillModel::L2Queue) {
@@ -310,6 +323,29 @@ void SimTransport::venue_replace(const OutReplaceMsg& m, Timestamp now) noexcept
     static_cast<void>(
         me_.replace(kStrategyAccount, m.orig_cl_ord_id, m.cl_ord_id, m.price, m.qty, now));
   }
+}
+
+Price SimTransport::sweep_price(InstrumentId id, Side side, Qty qty, Timestamp now) const noexcept {
+  if (id.value >= instruments_.size()) return Price{};
+  Int128 paid = 0;  // raw price x raw qty
+  Qty left = qty;
+  const auto take = [&](const Level& l) {
+    const Qty q = min(left, l.qty);
+    paid += static_cast<Int128>(l.price.raw) * q.raw;
+    left -= q;
+    return left.is_positive();
+  };
+  const Side opp = opposite(side);
+  if (cfg_.fill_model == FillModel::L2Queue) {
+    for_each_venue_level(mirror_[id.value], touch_[id.value], opp, now, take);
+  } else {
+    const SimBook::Levels& levels = me_.book(id).levels(opp);
+    for (std::size_t i = levels.size(); i > 0; --i) {
+      if (!take(Level{levels[i - 1].price, levels[i - 1].qty})) break;
+    }
+  }
+  if (paid <= 0 || !qty.is_positive()) return Price{};
+  return Price::from_raw(static_cast<std::int64_t>((paid + qty.raw - 1) / qty.raw));
 }
 
 void SimTransport::flush_md(Timestamp now) noexcept {
@@ -393,10 +429,15 @@ void SimTransport::on_source_event(const EventHeader& md) noexcept {
         break;
       }
       case EventType::Trade:
-        if (cfg_.fill_model == FillModel::L2Queue) queue_on_trade(msg_cast<TradeMsg>(&md), now);
+        if (cfg_.fill_model == FillModel::L2Queue) {
+          queue_on_trade(msg_cast<TradeMsg>(&md), now);
+        } else {
+          mirror_on_trade(msg_cast<TradeMsg>(&md), now);
+        }
         break;
       case EventType::BookTicker:
-        if (cfg_.fill_model == FillModel::L2Queue) queue_on_ticker(msg_cast<BookTickerMsg>(&md));
+        if (cfg_.fill_model == FillModel::L2Queue)
+          queue_on_ticker(msg_cast<BookTickerMsg>(&md), now);
         break;
       default:
         break;
@@ -419,12 +460,24 @@ void SimTransport::on_source_event(const EventHeader& md) noexcept {
   }
   const EventHeader& out =
       own_feed_ != nullptr && id.value < instruments_.size() ? with_own(md) : md;
+  if (md.type == EventType::BookTicker && hides_level(msg_cast<BookTickerMsg>(&out))) {
+    // A recorded ticker one side of which was only the session's own orders (strip_own): the venue
+    // took its other side; the engine, with none of ours there, would see a level nobody holds.
+    if (md.seq != 0) forward_in_order(nullptr, md.seq, md.recv_ts, now);
+    if (own_feed_ != nullptr) flush_own(now);
+    return;
+  }
   if (md.seq != 0) {
     forward_in_order(&out, md.seq, md.recv_ts, now);
   } else {
     forward(out, md.recv_ts, now);
   }
   if (own_feed_ != nullptr) flush_own(now);
+}
+
+bool SimTransport::hides_level(const BookTickerMsg& m) noexcept {
+  return (m.bid_px.is_positive() && m.bid_qty.is_zero()) ||
+         (m.ask_px.is_positive() && m.ask_qty.is_zero());
 }
 
 void SimTransport::grow_ahead(std::uint64_t seq) {
@@ -564,6 +617,20 @@ void SimTransport::mirror_on_delta(const BookDeltaMsg& d, Timestamp now) noexcep
   }
 }
 
+void SimTransport::mirror_on_trade(const TradeMsg& t, Timestamp now) noexcept {
+  if (!t.price.is_positive() || !t.qty.is_positive()) return;
+  NewOrder n;
+  n.account = kGeneratorAccount;
+  n.cl_ord_id = ClientOrderId{next_queue_order_id_++};
+  n.instrument = t.hdr.instrument;
+  n.side = t.aggressor;
+  n.type = OrderType::Limit;
+  n.tif = TimeInForce::Ioc;
+  n.price = t.price;
+  n.qty = t.qty;
+  static_cast<void>(me_.submit(n, now));  // effects arrive through the sink
+}
+
 void SimTransport::sync_level(
     InstrumentId id, Side side, Price px, Qty target, Timestamp now, bool increases) noexcept {
   if (!px.is_positive()) return;
@@ -587,6 +654,60 @@ void SimTransport::sync_level(
 
 // ---- L2 queue fill model ---------------------------------------------------------------------
 
+// The venue's book after a recorded view at `now`: opposite liquidity that reached our resting
+// orders traded with them (QueuePositionModel::on_cross).
+void SimTransport::queue_cross(InstrumentId id, Timestamp now) noexcept {
+  if (queue_.size() == 0) return;
+  QueuePositionModel* const models[] = {&queue_};
+  queue_apply_cross(
+      mirror_[id.value],
+      touch_[id.value],
+      id,
+      now,
+      models,
+      [&](std::size_t, QueuePositionModel::Handle32 h, QueuedOrder& o, Qty fill, Qty ahead) {
+        ++stats_.cross_fills;
+        queue_fill(h, o, fill, ahead, now);
+      });
+}
+
+void SimTransport::queue_fill(
+    QueuePositionModel::Handle32 h, QueuedOrder& o, Qty fill, Qty ahead, Timestamp now) noexcept {
+  // A reduce-only order fills only while it takes the position towards zero; the rest of it
+  // expires (as under the matching model).
+  Qty f = fill;
+  if (accounts_ != nullptr) {
+    const Qty room = accounts_->reducible(o.cl_ord_id);
+    if (f > room) {
+      o.cum_qty -= f - room;
+      f = room;
+    }
+  }
+  if (f.is_positive()) {
+    emit_fill(o.cl_ord_id,
+              o.order_id,
+              o.instrument,
+              o.side,
+              o.price,
+              f,
+              o.cum_qty,
+              o.leaves(),
+              Liquidity::Maker,
+              next_exec_id_++,
+              now,
+              ahead,
+              true);
+  }
+  note_own(o.instrument, o.side, o.price);
+  if (f < fill) {
+    ++stats_.expired;
+    emit_expired(o.cl_ord_id, o.order_id, o.instrument, o.cum_qty, now);
+    queue_.remove(h);
+  } else if (o.leaves().is_zero()) {
+    queue_.remove(h);
+  }
+}
+
 void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
   const InstrumentId id = n.instrument;
   L2Book<256>& book = mirror_[id.value];
@@ -601,29 +722,10 @@ void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
     return;
   }
   const Side opp = opposite(n.side);
-  // The opposite side as the venue has it now. The book ticker gives the touch when it is newer
-  // than the depth, or when the depth has a level on the near side of it: the ticker follows
-  // every change of the top as it happens and the depth stream is throttled (and may miss the
-  // removal of a level), so such a level is stale. An order is checked and filled against the
-  // ticker's level and the depth's levels behind it, never against stale ones.
-  const QueueTouch& fresh = touch_[id.value];
-  const Level depth_best = opp == Side::Buy ? book.best_bid() : book.best_ask();
-  const bool use_touch =
-      fresh.valid() && fresh.px(opp).is_positive() &&
-      (fresh.newer_than(book.seq(), book.last_update()) ||
-       (depth_best.qty.is_positive() && better(opp, depth_best.price, fresh.px(opp)) &&
-        now - fresh.ts <= seconds(1)));
+  // The opposite side as the venue has it now: an order is checked and filled against the ticker's
+  // level and the depth's levels behind it, never against stale ones (for_each_venue_level).
   const auto for_each_opposite = [&](auto&& f) {
-    if (use_touch) {
-      const Price tp = fresh.px(opp);
-      if (fresh.qty(opp).is_positive() && !f(Level{tp, fresh.qty(opp)})) return;
-      book.for_each_level(opp, [&](const Level& l) {
-        if (at_or_better(opp, l.price, tp)) return true;  // stale, or the touch itself
-        return f(l);
-      });
-      return;
-    }
-    book.for_each_level(opp, f);
+    for_each_venue_level(book, touch_[id.value], opp, now, f);
   };
   Level best{};
   for_each_opposite([&](const Level& l) {
@@ -641,6 +743,13 @@ void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
   emit_ack(n.cl_ord_id, order_id, id, now);
   Qty leaves = n.qty;
   Qty cum{};
+  // What a reduce-only order may fill: down to a flat position (queue_fill for its resting part).
+  const Qty room = accounts_ != nullptr ? accounts_->reducible(n.cl_ord_id) : Qty::max();
+  if (n.tif == TimeInForce::Fok && room < n.qty) {
+    ++stats_.expired;
+    emit_expired(n.cl_ord_id, order_id, id, Qty{}, now);
+    return;
+  }
   if (n.tif == TimeInForce::Fok) {
     Qty avail{};
     for_each_opposite([&](const Level& l) {
@@ -657,9 +766,9 @@ void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
   if (crosses) {
     // Taker against displayed liquidity, best first, at each level's price.
     for_each_opposite([&](const Level& l) {
-      if (leaves.is_zero()) return false;
+      if (leaves.is_zero() || cum >= room) return false;
       if (!market && !at_or_better(opp, l.price, n.price)) return false;
-      const Qty q = min(leaves, l.qty);
+      const Qty q = min(min(leaves, l.qty), room - cum);
       cum += q;
       leaves -= q;
       emit_fill(n.cl_ord_id,
@@ -677,7 +786,7 @@ void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
     });
   }
   if (leaves.is_zero()) return;
-  if (market || n.tif == TimeInForce::Ioc || n.tif == TimeInForce::Fok) {
+  if (market || n.tif == TimeInForce::Ioc || n.tif == TimeInForce::Fok || cum >= room) {
     ++stats_.expired;
     emit_expired(n.cl_ord_id, order_id, id, cum, now);
     return;
@@ -698,7 +807,10 @@ void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
     emit_expired(n.cl_ord_id, order_id, id, cum, now);  // queue table full
     return;
   }
+  // The opposite liquidity it took as a taker is still in the recorded book: it crosses the rest
+  // of the order, which has taken it already (on_cross).
   queue_.get(h).cum_qty = cum;
+  queue_.get(h).crossed = cum;
   note_own(id, n.side, n.price);
 }
 
@@ -750,14 +862,16 @@ void SimTransport::queue_on_delta(const BookDeltaMsg& d, Timestamp now) noexcept
   QueuePositionModel* const models[] = {&queue_};
   const std::size_t i = d.hdr.instrument.value;
   queue_apply_book(mirror_[i], d, now, &tape_[i], models);
+  queue_cross(d.hdr.instrument, now);
 }
 
-void SimTransport::queue_on_ticker(const BookTickerMsg& m) noexcept {
+void SimTransport::queue_on_ticker(const BookTickerMsg& m, Timestamp now) noexcept {
   const InstrumentId id = m.hdr.instrument;
   QueueTouch& t = touch_[id.value];
   t = queue_touch(m, [](Side, Price) { return Qty{}; });  // the replayed feed has none of ours
   QueuePositionModel* const models[] = {&queue_};
   static_cast<void>(queue_apply_touch(mirror_[id.value], id, t, &tape_[id.value], models));
+  queue_cross(id, now);
 }
 
 void SimTransport::queue_on_trade(const TradeMsg& t, Timestamp now) noexcept {
@@ -768,21 +882,7 @@ void SimTransport::queue_on_trade(const TradeMsg& t, Timestamp now) noexcept {
                   t.aggressor,
                   now,
                   [&](QueuePositionModel::Handle32 h, QueuedOrder& o, Qty fill, Qty ahead) {
-                    emit_fill(o.cl_ord_id,
-                              o.order_id,
-                              id,
-                              o.side,
-                              o.price,
-                              fill,
-                              o.cum_qty,
-                              o.leaves(),
-                              Liquidity::Maker,
-                              next_exec_id_++,
-                              now,
-                              ahead,
-                              true);
-                    note_own(id, o.side, o.price);
-                    if (o.leaves().is_zero()) queue_.remove(h);
+                    queue_fill(h, o, fill, ahead, now);
                   });
   tape_[id.value].add(t, now);
 }
@@ -864,6 +964,10 @@ void SimTransport::on_trade(
   t.hdr.venue_seq = tid;
   push_md_wire(t.hdr, ts);
 }
+Qty SimTransport::reducible(const SimOrder& o) {
+  if (o.account != kStrategyAccount || accounts_ == nullptr) return o.leaves();
+  return min(o.leaves(), accounts_->reducible(o.cl_ord_id));
+}
 
 // ---- venue -> engine messages ----------------------------------------------------------------
 
@@ -883,14 +987,15 @@ void SimTransport::emit_ack(ClientOrderId id,
 void SimTransport::emit_reject(ClientOrderId id,
                                InstrumentId inst,
                                RejectReason r,
-                               Timestamp ts) noexcept {
+                               Timestamp ts,
+                               std::int32_t venue_code) noexcept {
   ++stats_.rejects;
   switch (r) {
     case RejectReason::PostOnlyWouldCross:
       ++stats_.rejects_post_only;
       break;
     case RejectReason::VenueReject:
-      ++stats_.rejects_level_full;
+      ++(venue_code == kReduceOnlyCode ? stats_.rejects_other : stats_.rejects_level_full);
       break;
     case RejectReason::InvalidTick:
     case RejectReason::InvalidLot:
@@ -918,6 +1023,9 @@ void SimTransport::emit_reject(ClientOrderId id,
   if (r == RejectReason::InsufficientBalance) {
     m.venue_code = -2010;  // Binance: NEW_ORDER_REJECTED, "Account has insufficient balance ..."
     m.text = "Account has insufficient balance";
+  } else if (venue_code == kReduceOnlyCode) {
+    m.venue_code = kReduceOnlyCode;
+    m.text = "ReduceOnly Order is rejected.";
   } else {
     m.venue_code = -static_cast<std::int32_t>(r);
     m.text = to_string(r);

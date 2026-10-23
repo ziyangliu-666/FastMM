@@ -6,6 +6,7 @@
 #include "fastmm/sim/sim_transport.hpp"
 
 #include <cstring>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -325,6 +326,37 @@ void trade(sim::SimTransport& v,
   v.on_source_event(m.hdr);
 }
 
+// A book snapshot with up to four levels a side, best first.
+void depth(sim::SimTransport& v,
+           Timestamp ts,
+           InstrumentId inst,
+           std::initializer_list<Level> bids,
+           std::initializer_list<Level> asks) {
+  alignas(64) std::byte buf[BookDeltaMsg::size_for(4, 4)] = {};
+  auto* d = reinterpret_cast<BookDeltaMsg*>(buf);
+  const auto nb = static_cast<std::uint32_t>(bids.size());
+  const auto na = static_cast<std::uint32_t>(asks.size());
+  init_header(*d, EventType::BookSnapshot, inst, VenueId{0}, BookDeltaMsg::size_for(nb, na));
+  d->hdr.flags |= EventHeader::kSnapshot;
+  d->hdr.exch_ts = ts;
+  d->hdr.recv_ts = ts;
+  d->bid_count = nb;
+  d->ask_count = na;
+  std::size_t k = 0;
+  for (const Level& l : bids) d->levels()[k++] = l;
+  for (const Level& l : asks) d->levels()[k++] = l;
+  v.on_source_event(d->hdr);
+}
+
+OutNewOrderMsg market_order(
+    std::uint64_t id, Side side, const char* q, InstrumentId inst, bool reduce_only = false) {
+  OutNewOrderMsg m = new_order(id, side, "0", q, inst);
+  m.type = OrderType::Market;
+  m.tif = TimeInForce::Ioc;
+  m.reduce_only = reduce_only ? 1 : 0;
+  return m;
+}
+
 }  // namespace
 
 TEST_CASE("sim.account: the venue refuses what the account cannot cover and reports its balances") {
@@ -435,4 +467,182 @@ TEST_CASE("sim.account: the venue marks a derivative at its mark price, else the
   book(v, at(4000), "79.00", "81.00", kPerp);
   CHECK(v.accounts()->unrealized(VenueId{0}, "USDT") == nt("10"));
   CHECK(v.accounts()->free(VenueId{0}, "USDT") == nt("911"));  // 1000 + 10 - 99 of margin
+}
+
+TEST_CASE("sim.account: an order under the id of an open order leaves that order's hold alone") {
+  const InstrumentTable t = table();
+  const auto cfg = one_account("1", "1000");
+  sim::SimAccounts a(t, cfg, {});
+  REQUIRE(a.admit(ClientOrderId{1}, kSpot, Side::Buy, px("100"), qt("1"), false));
+  REQUIRE(a.admit(ClientOrderId{2}, kSpot, Side::Buy, px("100"), qt("1"), false));
+  CHECK(a.locked(VenueId{0}, "USDT") == nt("200"));
+  // The venue refuses both as duplicates (DuplicateId closes nothing): no hold is added, and a
+  // replace onto id 1 keeps id 2's hold until the venue ends id 2.
+  CHECK(a.admit(ClientOrderId{1}, kSpot, Side::Buy, px("100"), qt("2"), false));
+  CHECK(a.admit_replace(ClientOrderId{2}, ClientOrderId{1}, px("100"), qt("3")));
+  CHECK(a.locked(VenueId{0}, "USDT") == nt("200"));
+  a.close(ClientOrderId{2});
+  a.close(ClientOrderId{1});
+  CHECK(a.locked(VenueId{0}, "USDT").is_zero());
+  CHECK(a.open_orders() == 0);
+}
+
+TEST_CASE("sim.account: an inverse contract's entry is the harmonic mean of its fill prices") {
+  InstrumentTable t;
+  Instrument i{};
+  i.symbol = "BTCUSD-PERP";
+  i.venue = VenueId{0};
+  i.asset_class = AssetClass::Perpetual;
+  i.flags = Instrument::kEnabled | Instrument::kInverse;
+  i.tick = px("0.1");
+  i.lot = qt("1");
+  i.min_qty = qt("1");
+  i.base = "BTC";
+  i.quote = "USD";
+  REQUIRE(t.add(i));
+  const std::vector<sim::SimAccountConfig> cfg = {
+      sim::SimAccountConfig{VenueId{0}, {sim::SimBalance{FixedString<8>("BTC"), nt("1")}}}};
+  sim::SimAccounts a(t, cfg, {});
+  const InstrumentId inv{0};
+  // Long 100 USD at 100 (1 BTC) and 100 USD at 200 (0.5 BTC): 200 USD for 1.5 BTC, entry 133.33.
+  REQUIRE(a.admit(ClientOrderId{1}, inv, Side::Buy, px("100"), qt("100"), false));
+  a.fill(ClientOrderId{1}, px("100"), qt("100"), Qty{}, Notional{});
+  REQUIRE(a.admit(ClientOrderId{2}, inv, Side::Buy, px("200"), qt("100"), false));
+  a.fill(ClientOrderId{2}, px("200"), qt("100"), Qty{}, Notional{});
+  a.mark(inv, px("200"), true);
+  CHECK(a.unrealized(VenueId{0}, "BTC") == nt("0.5"));  // 1.5 BTC paid, 1 BTC worth at 200
+  // Closing all 200 USD at 200 realises the 0.5 BTC; the arithmetic mean (150) would give 0.33.
+  REQUIRE(a.admit(ClientOrderId{3}, inv, Side::Sell, px("200"), qt("200"), false));
+  a.fill(ClientOrderId{3}, px("200"), qt("200"), Qty{}, Notional{});
+  CHECK(a.position(inv).is_zero());
+  CHECK(a.total(VenueId{0}, "BTC") == nt("1.5"));
+}
+
+TEST_CASE("sim.account: a spot market buy is held at the levels it would take") {
+  const InstrumentTable t = table();
+  SimClock clock{at(0)};
+  sim::SimTransportConfig tc;
+  tc.order_out = sim::LatencyParams{microseconds(100), Duration{}};
+  tc.ack_in = sim::LatencyParams{microseconds(100), Duration{}};
+  tc.accounts = one_account("0", "210");
+  sim::SimTransport v(clock, t, tc);
+  InlineFeed feed(1 << 20);
+  depth(v,
+        at(0),
+        kSpot,
+        {Level{px("99"), qt("1")}},
+        {Level{px("101"), qt("1")}, Level{px("150"), qt("1")}});
+  // 2 BTC take both ask levels for 251 USDT, more than the 210 there is (at the touch: 202).
+  REQUIRE(v.send(market_order(1, Side::Buy, "2", kSpot).hdr));
+  Wire w = drain(v, clock, feed, at(1000));
+  REQUIRE_FALSE(w.msgs.empty());
+  REQUIRE(w.type(0) == EventType::OrderReject);
+  CHECK(w.as<OrderRejectMsg>(0).reason == RejectReason::InsufficientBalance);
+  // 1.5 BTC for 101 + 75 = 176 USDT.
+  REQUIRE(v.send(market_order(2, Side::Buy, "1.5", kSpot).hdr));
+  static_cast<void>(drain(v, clock, feed, at(2000)));
+  CHECK(v.accounts()->total(VenueId{0}, "BTC") == nt("1.5"));
+  CHECK(v.accounts()->total(VenueId{0}, "USDT") == nt("34"));
+  CHECK(v.accounts()->locked(VenueId{0}, "USDT").is_zero());
+}
+
+TEST_CASE("sim.account: a reduce-only order is refused on a flat position and never reverses one") {
+  const InstrumentTable t = table();
+  SimClock clock{at(0)};
+  sim::SimTransportConfig tc;
+  tc.order_out = sim::LatencyParams{microseconds(100), Duration{}};
+  tc.ack_in = sim::LatencyParams{microseconds(100), Duration{}};
+  tc.accounts = one_account("0", "1000");
+  sim::SimTransport v(clock, t, tc);
+  InlineFeed feed(1 << 20);
+  book(v, at(0), "99.00", "101.00", kPerp);
+  // Flat: Binance refuses it (-2022 ReduceOnly Order is rejected).
+  REQUIRE(v.send(market_order(1, Side::Sell, "1", kPerp, true).hdr));
+  Wire w = drain(v, clock, feed, at(1000));
+  REQUIRE_FALSE(w.msgs.empty());
+  REQUIRE(w.type(0) == EventType::OrderReject);
+  CHECK(w.as<OrderRejectMsg>(0).reason == RejectReason::VenueReject);
+  CHECK(w.as<OrderRejectMsg>(0).venue_code == -2022);
+  CHECK(v.accounts()->position(kPerp).is_zero());
+  // Long 0.5; a reduce-only sell of 2 against the bid of 1 closes it and the rest expires.
+  REQUIRE(v.send(market_order(2, Side::Buy, "0.5", kPerp).hdr));
+  static_cast<void>(drain(v, clock, feed, at(2000)));
+  REQUIRE(v.accounts()->position(kPerp) == qt("0.5"));
+  REQUIRE(v.send(market_order(3, Side::Sell, "2", kPerp, true).hdr));
+  w = drain(v, clock, feed, at(3000));
+  Qty filled{};
+  bool expired = false;
+  for (std::size_t k = 0; k < w.msgs.size(); ++k) {
+    if (w.type(k) == EventType::OrderFill) filled += w.as<OrderFillMsg>(k).qty;
+    if (w.type(k) == EventType::OrderExpired) {
+      expired = true;
+      CHECK(w.as<OrderExpiredMsg>(k).cum_qty == qt("0.5"));
+    }
+  }
+  CHECK(filled == qt("0.5"));
+  CHECK(expired);
+  CHECK(v.accounts()->position(kPerp).is_zero());
+}
+
+TEST_CASE("sim.account: a replace holds margin again once its order no longer reduces") {
+  const InstrumentTable t = table();
+  const auto cfg = one_account("0", "1000");
+  std::vector<Ratio> im(t.size());
+  im[kPerp.value] = Ratio::from_decimal("0.1").value();
+  sim::SimAccounts a(t, cfg, im);
+  REQUIRE(a.admit(ClientOrderId{1}, kPerp, Side::Buy, px("100"), qt("20"), false));
+  a.fill(ClientOrderId{1}, px("100"), qt("20"), Qty{}, Notional{});
+  // A sell of 10 against the long 20 holds nothing; it is not a reduce-only order.
+  REQUIRE(a.admit(ClientOrderId{2}, kPerp, Side::Sell, px("110"), qt("10"), false));
+  CHECK(a.reducible(ClientOrderId{2}) == Qty::max());
+  REQUIRE(a.admit(ClientOrderId{3}, kPerp, Side::Sell, px("100"), qt("20"), false));
+  a.fill(ClientOrderId{3}, px("100"), qt("20"), Qty{}, Notional{});
+  CHECK(a.locked(VenueId{0}, "USDT").is_zero());
+  // Flat: its replacement opens a short and holds 110 of margin.
+  REQUIRE(a.admit_replace(ClientOrderId{2}, ClientOrderId{4}, px("110"), qt("10")));
+  CHECK(a.locked(VenueId{0}, "USDT") == nt("110"));
+  // A reduce-only order may fill what takes the position to zero: nothing on a flat one.
+  CHECK(a.reducible(kPerp, Side::Buy).is_zero());
+  REQUIRE(a.admit(ClientOrderId{5}, kPerp, Side::Buy, px("100"), qt("5"), true));
+  CHECK(a.reducible(ClientOrderId{5}).is_zero());
+  CHECK(a.reducible(kSpot, Side::Sell) == Qty::max());
+}
+
+TEST_CASE("sim.account: l2_queue, a resting reduce-only order fills down to a flat position") {
+  const InstrumentTable t = table();
+  SimClock clock{at(0)};
+  sim::SimTransportConfig tc;
+  tc.fill_model = sim::FillModel::L2Queue;
+  tc.queue_conservatism_bps = 0;
+  tc.order_out = sim::LatencyParams{microseconds(100), Duration{}};
+  tc.ack_in = sim::LatencyParams{microseconds(100), Duration{}};
+  tc.own_orders_in_feed = false;
+  tc.accounts = one_account("0", "1000");
+  sim::SimTransport v(clock, t, tc);
+  InlineFeed feed(1 << 20);
+  book(v, at(0), "99.00", "101.00", kPerp);
+  // Long 0.5, then a reduce-only sell of 2 resting at 102.
+  REQUIRE(v.send(market_order(1, Side::Buy, "0.5", kPerp).hdr));
+  static_cast<void>(drain(v, clock, feed, at(1000)));
+  REQUIRE(v.accounts()->position(kPerp) == qt("0.5"));
+  OutNewOrderMsg ro = new_order(2, Side::Sell, "102.00", "2", kPerp);
+  ro.reduce_only = 1;
+  REQUIRE(v.send(ro.hdr));
+  static_cast<void>(drain(v, clock, feed, at(2000)));
+  // A buyer takes 3 at 102: the order fills 0.5 and the rest of it expires.
+  trade(v, at(2500), "102.00", "3", Side::Buy, kPerp);
+  const Wire w = drain(v, clock, feed, at(3000));
+  Qty filled{};
+  bool expired = false;
+  for (std::size_t k = 0; k < w.msgs.size(); ++k) {
+    if (w.type(k) == EventType::OrderFill) filled += w.as<OrderFillMsg>(k).qty;
+    if (w.type(k) == EventType::OrderExpired) {
+      expired = true;
+      CHECK(w.as<OrderExpiredMsg>(k).cum_qty == qt("0.5"));
+    }
+  }
+  CHECK(filled == qt("0.5"));
+  CHECK(expired);
+  CHECK(v.accounts()->position(kPerp).is_zero());
+  CHECK(v.queue().size() == 0);
 }

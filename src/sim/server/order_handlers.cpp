@@ -312,6 +312,7 @@ void Impl::on_cancel(const SimOrder& o, CancelReason why, Timestamp) {
     case CancelReason::Ioc:
     case CancelReason::Fok:
     case CancelReason::NoLiquidity:
+    case CancelReason::ReduceOnly:
       r->status = BinanceOrderStatus::Expired;
       x = ExecType::Expired;
       break;

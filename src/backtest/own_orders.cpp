@@ -359,11 +359,9 @@ const EventHeader* OwnOrderStripper::strip(const EventHeader& h, sim::EventBuf& 
       const Qty own_bid = own_at(h.instrument, Side::Buy, m.bid_px, t);
       const Qty own_ask = own_at(h.instrument, Side::Sell, m.ask_px, t);
       if (!own_bid.is_positive() && !own_ask.is_positive()) return &h;
-      if ((own_bid.is_positive() && own_bid == m.bid_qty) ||
-          (own_ask.is_positive() && own_ask == m.ask_qty)) {
-        ++stats_.tickers_dropped;
-        return nullptr;
-      }
+      // A side that was only ours keeps its price with nothing of others' there: the simulated
+      // venue's touch on the other side, which decides what reaches our orders, stays as the
+      // venue published it.
       std::memcpy(buf.bytes, &h, sizeof(BookTickerMsg));
       auto& out = buf.as<BookTickerMsg>();
       out.bid_qty = others_shown(m.bid_qty, own_bid);

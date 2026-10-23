@@ -128,10 +128,11 @@ def test_forward_mid_matches_the_backtest_at_every_fill(example_config, syntheti
     fills = r.fills
     if len(fills["ts"]) == 0:
         pytest.skip("the synthetic tape produced no fills")
+    # A fill lands on a trade, or on a book update whose opposite side came to the order.
     t = fastmm.features(
         data=str(synthetic_csv),
         horizons=[1.0],
-        sample_book_updates=False,
+        sample_book_updates=True,
         sample_trades=True,
     )
     by_ts = {int(ts): i for i, ts in enumerate(t.columns["ts"])}

@@ -40,7 +40,8 @@ struct SimOrder {
   Side side;                // 1
   OrderType type;           // 1
   TimeInForce tif;          // 1
-  std::uint8_t pad_[3];     // -> 72
+  bool reduce_only;         // 1 (NewOrder::reduce_only)
+  std::uint8_t pad_[2];     // -> 72
 
   [[nodiscard]] constexpr Qty leaves() const noexcept { return qty - cum_qty; }
 };

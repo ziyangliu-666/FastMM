@@ -311,6 +311,7 @@ class Walker {
     tt = queue_touch(
         m, [&](Side s, Price p) { return stripper_ ? stripper_->own_at(id, s, p, t) : Qty{}; });
     if (queue_apply_touch(book(id), id, tt, tape(id), model_ptrs_)) ++res_.tickers_used;
+    cross(id, t);
   }
   FillCheckOrder* row(const OwnOrder& s) {
     const Placed& p = placed_[index_of(s)];
@@ -342,6 +343,7 @@ class Walker {
           queue_apply_book(
               b, msg_cast<BookDeltaMsg>(h), Timestamp{it.ts}, tape(h->instrument), model_ptrs_);
           crossed(h->instrument, b.best_bid().price, b.best_ask().price, Timestamp{it.ts});
+          cross(h->instrument, Timestamp{it.ts});
         }
         break;
       }
@@ -513,6 +515,35 @@ class Walker {
     }
   }
 
+  // A model fill of order `o` by model `k` at `ts`.
+  void model_fill(
+      std::size_t k, const QueuedOrder& o, Qty fill, Qty ahead, Timestamp ts, bool through) {
+    const OwnOrder* s = log_.find(o.cl_ord_id);
+    FillCheckOrder* r = s != nullptr ? row(*s) : nullptr;
+    if (r == nullptr) return;
+    r->model_filled[k] += fill;
+    if (!r->model_first_fill_ts[k].valid()) {
+      r->model_first_fill_ts[k] = ts;
+      r->model_ahead_at_fill[k] = ahead;
+      r->model_through[k] = through ? 1 : 0;
+    }
+  }
+
+  // The opposite side of the book, as the simulated venue reads it, reached resting orders: they
+  // fill as SimTransport fills them (queue_apply_cross).
+  void cross(InstrumentId id, Timestamp ts) {
+    queue_apply_cross(
+        book(id),
+        in_.touch ? touch(id) : QueueTouch{},
+        id,
+        ts,
+        model_ptrs_,
+        [&](std::size_t k, QueuePositionModel::Handle32 h, QueuedOrder& o, Qty fill, Qty ahead) {
+          model_fill(k, o, fill, ahead, ts, false);
+          if (o.leaves().is_zero()) models_[k]->remove(h);
+        });
+  }
+
   void on_trade(const TradeMsg& t, Timestamp ts) {
     diagnose_trade(t, ts);
     const bool ms = log_.ms_order_times;
@@ -535,14 +566,9 @@ class Walker {
                  t.aggressor,
                  ts,
                  [&](QueuePositionModel::Handle32 h, QueuedOrder& o, Qty fill, Qty ahead) {
+                   model_fill(k, o, fill, ahead, ts, better(t.aggressor, t.price, o.price));
                    if (const OwnOrder* s = log_.find(o.cl_ord_id)) {
-                     if (FillCheckOrder* r = row(*s)) {
-                       r->model_filled[k] += fill;
-                       if (!r->model_first_fill_ts[k].valid()) {
-                         r->model_first_fill_ts[k] = ts;
-                         r->model_ahead_at_fill[k] = ahead;
-                         r->model_through[k] = better(t.aggressor, t.price, o.price) ? 1 : 0;
-                       }
+                     if (row(*s) != nullptr) {
                        if (k == 0 && ms && !s->ack.from_recv && ts.ns < s->ack.ts.ns + kMs)
                          ++res_.ack_ties;
                        // After the end's millisecond start: a tie unless the trade id shows it is

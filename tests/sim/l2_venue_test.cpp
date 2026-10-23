@@ -59,6 +59,9 @@ struct Inbound {
   std::uint64_t id;
   Timestamp venue;
   Timestamp arrival;
+  Price price{};  // a fill's
+  Qty qty{};
+  Liquidity liquidity = Liquidity::Unknown;
 };
 
 struct Venue {
@@ -96,13 +99,30 @@ struct Venue {
     m.ask_qty = qt("1");
     v.on_source_event(m.hdr);
   }
-  void order(std::int64_t us, std::uint64_t id, Side side, const char* price) {
+  // One level of one side, as a depth update at `us` (venue time).
+  void level(std::int64_t us, Side side, const char* price, const char* qty) {
+    alignas(64) std::byte buf[BookDeltaMsg::size_for(1, 0)] = {};
+    auto* d = reinterpret_cast<BookDeltaMsg*>(buf);
+    init_header(*d, EventType::BookDelta, kId, VenueId{0}, BookDeltaMsg::size_for(1, 0));
+    d->hdr.exch_ts = at(us);
+    d->hdr.recv_ts = at(us);
+    d->last_update_id = ++update_id;
+    d->bid_count = side == Side::Buy ? 1 : 0;
+    d->ask_count = side == Side::Sell ? 1 : 0;
+    d->levels()[0] = Level{px(price), qt(qty)};
+    v.on_source_event(d->hdr);
+  }
+  void order(std::int64_t us,
+             std::uint64_t id,
+             Side side,
+             const char* price,
+             OrderType type = OrderType::PostOnly) {
     clock.set(at(us));
     OutNewOrderMsg m{};
     init_header(m, EventType::OutNewOrder, kId, VenueId{0});
     m.cl_ord_id = ClientOrderId{id};
     m.side = side;
-    m.type = OrderType::PostOnly;
+    m.type = type;
     m.tif = TimeInForce::Gtc;
     m.price = px(price);
     m.qty = qt("0.1");
@@ -142,14 +162,29 @@ struct Venue {
       REQUIRE(h != nullptr);
       std::uint64_t id = 0;
       if (h->type == EventType::OrderAck) id = msg_cast<OrderAckMsg>(h).cl_ord_id.value;
-      if (h->type == EventType::OrderFill) id = msg_cast<OrderFillMsg>(h).cl_ord_id.value;
+      Inbound in{h->type, 0, h->exch_ts, h->recv_ts};
+      if (h->type == EventType::OrderFill) {
+        const auto& f = msg_cast<OrderFillMsg>(h);
+        id = f.cl_ord_id.value;
+        in.price = f.price;
+        in.qty = f.qty;
+        in.liquidity = f.liquidity;
+      }
       if (h->type == EventType::OrderCancelAck) id = msg_cast<OrderCancelAckMsg>(h).cl_ord_id.value;
       if (h->type == EventType::OrderReject) id = msg_cast<OrderRejectMsg>(h).cl_ord_id.value;
       if (h->type != EventType::BookDelta && h->type != EventType::BookSnapshot &&
           h->type != EventType::BookTicker && h->type != EventType::Trade)
-        got.push_back(Inbound{h->type, id, h->exch_ts, h->recv_ts});
+        got.push_back(Inbound{h->type, id, in.venue, in.arrival, in.price, in.qty, in.liquidity});
       feed.release();
     }
+  }
+  // The fills of order `id`, in delivery order.
+  [[nodiscard]] std::vector<Inbound> fills(std::uint64_t id) const {
+    std::vector<Inbound> out;
+    for (const Inbound& i : got) {
+      if (i.type == EventType::OrderFill && i.id == id) out.push_back(i);
+    }
+    return out;
   }
   [[nodiscard]] const Inbound* find(EventType t, std::uint64_t id) const {
     for (const Inbound& i : got) {
@@ -190,6 +225,75 @@ TEST_CASE("sim.l2_queue: a depth level on the near side of the ticker is stale")
   x.run(1000);
   CHECK(x.find(EventType::OrderAck, 1) != nullptr);
   CHECK(x.find(EventType::OrderReject, 1) == nullptr);
+}
+
+TEST_CASE("sim.l2_queue: liquidity that reaches a resting order trades with it, without a print") {
+  Venue x(config(0));
+  x.order(0, 1, Side::Buy, "100.00");  // rests alone at 100.00 from 50 us
+  x.run(100);
+  // Asks come down to the bid: with the order on the book they would have taken it. The recording
+  // has no print for them, since without the order they rested.
+  x.level(200, Side::Sell, "100.00", "0.04");
+  x.run(300);
+  auto f = x.fills(1);
+  REQUIRE(f.size() == 1);
+  CHECK(f[0].price == px("100.00"));
+  CHECK(f[0].qty == qt("0.04"));
+  CHECK(f[0].liquidity == Liquidity::Maker);
+  CHECK(f[0].venue == at(200));
+  // The same quantity shown again is the liquidity it took already.
+  x.level(400, Side::Sell, "100.00", "0.04");
+  x.run(500);
+  CHECK(x.fills(1).size() == 1);
+  // What joins it later trades too; a shrinking level gives nothing back.
+  x.level(600, Side::Sell, "100.00", "0.02");
+  x.level(700, Side::Sell, "100.00", "0.05");
+  x.run(800);
+  f = x.fills(1);
+  REQUIRE(f.size() == 2);
+  CHECK(f[1].qty == qt("0.03"));
+  // A level through the price fills the rest, still at the order's price.
+  x.level(900, Side::Sell, "99.50", "1");
+  x.run(1000);
+  f = x.fills(1);
+  REQUIRE(f.size() == 3);
+  CHECK(f[2].price == px("100.00"));
+  CHECK(f[2].qty == qt("0.03"));
+  CHECK(x.v.stats().cross_fills == 3);
+  CHECK(x.v.queue().size() == 0);
+}
+
+TEST_CASE("sim.l2_queue: liquidity the order found on the book does not cross it later") {
+  Venue x(config(0));
+  x.order(0, 1, Side::Buy, "100.00");  // at the venue at 50 us
+  x.run(100);
+  // Recorded at 40 us, before the order arrived, and applied after it: the order did not see it
+  // come in. Shown again later, it is still not new.
+  x.level(40, Side::Sell, "100.00", "0.04");
+  x.level(200, Side::Sell, "100.00", "0.04");
+  x.run(300);
+  CHECK(x.fills(1).empty());
+
+  // A limit order through the ask takes it, and the rest rests: the ask it took is still in the
+  // recording and is not taken twice; what joins it later is new.
+  Venue y(config(0));
+  y.level(10, Side::Sell, "101.00", "0.04");
+  y.order(100, 2, Side::Buy, "101.00", OrderType::Limit);
+  y.run(200);
+  auto f = y.fills(2);
+  REQUIRE(f.size() == 1);
+  CHECK(f[0].qty == qt("0.04"));
+  CHECK(f[0].liquidity == Liquidity::Taker);
+  y.level(300, Side::Sell, "101.00", "0.04");
+  y.run(400);
+  CHECK(y.fills(2).size() == 1);
+  y.level(500, Side::Sell, "101.00", "0.05");
+  y.run(600);
+  f = y.fills(2);
+  REQUIRE(f.size() == 2);
+  CHECK(f[1].qty == qt("0.01"));
+  CHECK(f[1].liquidity == Liquidity::Maker);
+  CHECK(f[1].price == px("101.00"));
 }
 
 TEST_CASE("sim.fill_path: fills take the private stream's latency, and hold up no ack") {

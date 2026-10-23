@@ -5,21 +5,27 @@
 // order as before. What the account does is what a spot exchange or a derivatives venue does with
 // its own ledger, and it answers with the messages a live venue sends (sim_transport.hpp):
 //
-//   spot         a buy holds its notional at the order price in the quote asset (a market buy at
-//                the venue's opposite touch), a sell its quantity in the base asset. A fill
-//                releases that part of the hold and moves the assets: a buy adds the base and takes
-//                the notional at the fill price plus the fee from the quote; a sell the reverse.
+//   spot         a buy holds its notional at the order price in the quote asset (a market buy: what
+//                it would pay for the venue's opposite levels it takes), a sell its quantity in the
+//                base asset. A fill releases that part of the hold and moves the assets: a buy adds
+//                the base and takes the notional at the fill price plus the fee from the quote; a
+//                sell the reverse.
 //   derivatives  one row per settlement asset: total is the wallet, locked the initial margin
 //                (notional x [[instruments]] initial_margin): the open position at its entry price,
 //                plus the larger side of the instrument's orders. A reduce-only order, or one that
-//                only takes the position towards zero, holds nothing. Closing realises PnL into the
-//                wallet; fees come out of it. The open positions' unrealised PnL at their mark
-//                (mark()) counts in the row's free amount and equity, as on Binance USD-M
-//                (available balance = wallet + unrealised PnL - initial margin).
+//                only takes the position towards zero, holds nothing; a reduce-only order fills
+//                only while it takes the position towards zero (reducible()). The entry price is
+//                the average that keeps the position's notional: arithmetic for a linear contract,
+//                harmonic for an inverse one. Closing realises PnL into the wallet; fees come out
+//                of it. The open positions' unrealised PnL at their mark (mark()) counts in the
+//                row's free amount and equity, as on Binance USD-M (available balance = wallet +
+//                unrealised PnL - initial margin).
 //
 // admit() is the venue's balance check: an order whose hold (less what the order it replaces held)
 // is above the row's free amount is refused (RejectReason::InsufficientBalance). A derivative
-// without an initial margin rate passes while the row's free amount is not negative.
+// without an initial margin rate passes while the row's free amount is not negative. An order
+// under the id of an open order is admitted without a hold of its own: the venue refuses it as a
+// duplicate, and the open order keeps its hold.
 //
 // Every change marks its rows; publish() hands each row whose amounts moved since it was last
 // published to a callback as a BalanceMsg (a Binance outboundAccountPosition), snapshot() every row
@@ -90,10 +96,10 @@ class SimAccounts {
   }
 
   // The venue checks a new order (or the new leg of a replace of `replaces`) at `px` for `qty`; a
-  // market order is held at the venue's opposite touch, which the caller passes as `px`. True: the
-  // order is accepted and holds its amount under `id` until fill() takes its last quantity or
-  // close() ends it. `venue`: the account it goes to (a pool member; invalid: the instrument's
-  // own venue). A venue without an account admits everything and records nothing.
+  // market order is held at the price of what its sweep would pay, which the caller passes as
+  // `px`. True: the order is accepted and holds its amount under `id` until fill() takes its last
+  // quantity or close() ends it. `venue`: the account it goes to (a pool member; invalid: the
+  // instrument's own venue). A venue without an account admits everything and records nothing.
   bool admit(ClientOrderId id,
              InstrumentId inst,
              Side side,
@@ -102,9 +108,17 @@ class SimAccounts {
              bool reduce_only,
              ClientOrderId replaces = {},
              VenueId venue = {}) noexcept;
-  // The new leg `id` of a replace of `orig` at `px` for `qty`: admit() with `orig`'s instrument and
-  // side. True when the account does not know `orig` (the venue answers that itself).
+  // The new leg `id` of a replace of `orig` at `px` for `qty`: admit() with `orig`'s instrument,
+  // side and reduce-only flag. True when the account does not know `orig` (the venue answers that
+  // itself).
   bool admit_replace(ClientOrderId orig, ClientOrderId id, Price px, Qty qty) noexcept;
+  // What a reduce-only order on `side` of derivative `inst` may fill in the account of `venue`
+  // (invalid: the instrument's own): the position's size when `side` takes it towards zero, else
+  // zero (Binance refuses such an order, -2022). Qty::max() for a spot instrument or a venue
+  // without an account.
+  [[nodiscard]] Qty reducible(InstrumentId inst, Side side, VenueId venue = {}) const noexcept;
+  // The same for open order `id`: Qty::max() unless it is a reduce-only order the account holds.
+  [[nodiscard]] Qty reducible(ClientOrderId id) const noexcept;
   // `qty` of order `id` filled at `px` with `leaves` left, paying `fee` (quote asset for spot, the
   // settlement asset for a derivative).
   void fill(ClientOrderId id, Price px, Qty qty, Qty leaves, Notional fee) noexcept;
@@ -213,8 +227,9 @@ class SimAccounts {
     Side side = Side::Buy;
     Price price{};
     Qty leaves{};
-    std::int64_t amount = 0;  // raw, in the row's asset
-    bool reduce_only = false;
+    std::int64_t amount = 0;   // raw, in the row's asset
+    bool reduces = false;      // holds no margin (hold_of)
+    bool reduce_only = false;  // the order's flag
   };
 
   [[nodiscard]] std::int64_t hold_of(const Inst& in,

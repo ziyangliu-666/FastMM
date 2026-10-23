@@ -215,7 +215,7 @@ TEST_CASE("backtest.walk_forward: the in-sample winner of a flat market loses on
   const SourceFactory factory = [&csv] {
     return std::unique_ptr<MdSource>(std::make_unique<CsvSource>(CsvSource::from_text(csv)));
   };
-  const ParamGrid grid = {{"half_spread_bps", {"0.003", "0.5"}}};
+  const ParamGrid grid = {{"half_spread_bps", {"0.003", "5"}}};
   const WalkForwardReport rep = walk_forward_by_name(base, "basic_mm", grid, factory, 2);
   REQUIRE(rep.folds.size() == 2);
   const WalkForwardFold& f0 = rep.folds[0];

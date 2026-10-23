@@ -16,16 +16,16 @@
 <!-- output: tutorial-backtest --config configs/backtest-example.toml --data synthetic --strategy first_mm --param edge_bps=0.002 --seed 7 --duration 60 --out runs/tutorial/backtest --journal-out runs/tutorial/backtest.fmj -->
 ```text
 tutorial-backtest: note: ignoring [strategy.params] of 'basic_mm' for --strategy first_mm
-backtest first_mm  seed=7  md_events=15733  steps=17408  wall=0.10s
-  net pnl                        -25.3044
-  fills (maker / taker)          482 (482 / 0)
+backtest first_mm  seed=7  md_events=15735  steps=17424  wall=0.03s
+  net pnl                        -25.8169
+  fills (maker / taker)          491 (491 / 0)
   ...
-  outbound messages / sha256     1193 / f618ba2258ee17d67bd7d71ff58e4349507ef8934fe0e7b58e9d13ff8ddda0bb
+  outbound messages / sha256     1198 / 72b6e437ae296cb2bb1472f3a77e244dd6ce8da08690c8704ebe023cf857d75a
 
-where the PnL came from (quote currency, 25311.14 traded notional)
-  gross spread capture                 0.0066  +0.003 bps of 25311.14, mid at the fill
-  fees paid                          -25.3111
-  = net                              -25.3044
+where the PnL came from (quote currency, 25823.54 traded notional)
+  gross spread capture                 0.0066  +0.003 bps of 25823.54, mid at the fill
+  fees paid                          -25.8235
+  = net                              -25.8169
   ...
 results written to runs/tutorial/backtest/{equity,fills,orders}.csv and summary.json
 session journal: runs/tutorial/backtest.fmj
@@ -62,12 +62,12 @@ One self-contained page from those four files: the equity curve and the inventor
 
 <!-- output: tutorial-replay --journal runs/tutorial/backtest.fmj --verify -->
 ```text
-journal  runs/tutorial/backtest.fmj: format v4, 18671 messages (15733 market data, 1193 outbound), rng_seed 1, strategy 'first_mm'
+journal  runs/tutorial/backtest.fmj: format v4, 18692 messages (15735 market data, 1198 outbound), rng_seed 1, strategy 'first_mm'
 session  epoch 1, quoting enabled, cancel-replace venues 0, engine clock recorded
 config   embedded in the journal (hash 6ada6230f2657be1)
-replay   strategy=first_mm events=17414
-recorded outbound 1193 msgs sha256 f618ba2258ee17d67bd7d71ff58e4349507ef8934fe0e7b58e9d13ff8ddda0bb
-replayed outbound 1193 msgs sha256 f618ba2258ee17d67bd7d71ff58e4349507ef8934fe0e7b58e9d13ff8ddda0bb
+replay   strategy=first_mm events=17430
+recorded outbound 1198 msgs sha256 72b6e437ae296cb2bb1472f3a77e244dd6ce8da08690c8704ebe023cf857d75a
+replayed outbound 1198 msgs sha256 72b6e437ae296cb2bb1472f3a77e244dd6ce8da08690c8704ebe023cf857d75a
 replay MATCH
 ```
 

@@ -102,7 +102,11 @@ TEST_CASE("backtest.journal_source: strip_own takes our orders out of depth and 
   REQUIRE(h->type == EventType::BookDelta);
   CHECK(bids(h) == std::vector<Level>{{px("100.01"), Qty{}}, {px("100.00"), qt("1")}});
   CHECK(bids(next(plain)) == std::vector<Level>{{px("100.01"), qt("1")}, {px("100.00"), qt("2")}});
-  // The ticker whose best bid was only ours is dropped; the next delta comes instead.
+  // The ticker whose best bid was only ours keeps that price with nothing of others' there.
+  h = next(js);
+  REQUIRE(h->type == EventType::BookTicker);
+  CHECK(msg_cast<BookTickerMsg>(h).bid_px == px("100.01"));
+  CHECK(msg_cast<BookTickerMsg>(h).bid_qty.is_zero());
   h = next(js);
   REQUIRE(h->type == EventType::BookDelta);
   CHECK(bids(h) == std::vector<Level>{{px("100.00"), qt("1.5")}});
@@ -123,9 +127,9 @@ TEST_CASE("backtest.journal_source: strip_own takes our orders out of depth and 
   const OwnOrderStripper::Stats& st = js.stripper()->stats();
   CHECK(st.levels_adjusted == 3);
   CHECK(st.levels_removed == 2);
-  CHECK(st.tickers_adjusted == 1);
-  CHECK(st.tickers_dropped == 1);
-  CHECK(js.note().find("1 dropped") != std::string::npos);
+  CHECK(st.tickers_adjusted == 2);
+  CHECK(st.tickers_dropped == 0);
+  CHECK(js.note().find("0 dropped") != std::string::npos);
   CHECK(plain.note().empty());
   js.reset();
   CHECK(js.next()->type == EventType::BookSnapshot);

@@ -125,6 +125,8 @@ bool SimAccounts::admit(ClientOrderId id,
   const Instrument& i = instruments_.get(inst);
   const std::uint8_t k = slot_for(venue.valid() ? venue : i.venue);
   if (k == kNoSlot || !at(k, inst).on) return true;
+  // The venue refuses a duplicate id itself; the open order under it keeps its own hold.
+  if (holds_.contains(id.value)) return true;
   Inst& in = at(k, inst);
   const Hold* old = replaces.valid() ? holds_.find(replaces.value) : nullptr;
   const std::int64_t old_amount = old != nullptr ? old->amount : 0;
@@ -164,7 +166,8 @@ bool SimAccounts::admit(ClientOrderId id,
   h.price = px;
   h.leaves = qty;
   h.amount = amount;
-  h.reduce_only = reduces;
+  h.reduces = reduces;
+  h.reduce_only = reduce_only;
   if (holds_.insert(id.value, h).first == nullptr) return true;  // table full: nothing held
   if (!in.derivative) {
     const std::uint16_t r = side == Side::Buy ? in.quote : in.base;
@@ -186,6 +189,22 @@ bool SimAccounts::admit_replace(ClientOrderId orig, ClientOrderId id, Price px, 
   return admit(id, h.inst, h.side, px, qty, h.reduce_only, orig, h.venue);
 }
 
+Qty SimAccounts::reducible(InstrumentId inst, Side side, VenueId venue) const noexcept {
+  if (inst.value >= n_inst_) return Qty::max();
+  const std::uint8_t k = slot_for(venue.valid() ? venue : instruments_.get(inst).venue);
+  if (k == kNoSlot) return Qty::max();
+  const Inst& in = at(k, inst);
+  if (!in.on || !in.derivative) return Qty::max();
+  const bool reduces = in.position != 0 && (side == Side::Buy) == (in.position < 0);
+  return reduces ? Qty::from_raw(abs64(in.position)) : Qty{};
+}
+
+Qty SimAccounts::reducible(ClientOrderId id) const noexcept {
+  const Hold* h = holds_.find(id.value);
+  if (h == nullptr || !h->reduce_only) return Qty::max();
+  return reducible(h->inst, h->side, h->venue);
+}
+
 void SimAccounts::fill(ClientOrderId id, Price px, Qty qty, Qty leaves, Notional fee) noexcept {
   Hold* hp = holds_.find(id.value);
   if (hp == nullptr) return;
@@ -193,7 +212,7 @@ void SimAccounts::fill(ClientOrderId id, Price px, Qty qty, Qty leaves, Notional
   Inst& in = at(o.slot, o.inst);
   const Instrument& i = instruments_.get(o.inst);
   const std::int64_t after =
-      leaves.is_positive() ? hold_of(in, i, o.side, o.price, leaves, o.reduce_only) : 0;
+      leaves.is_positive() ? hold_of(in, i, o.side, o.price, leaves, o.reduces) : 0;
   const std::int64_t release = o.amount - after;
   const std::int64_t n = i.notional(px, qty).raw;
   if (!in.derivative) {
@@ -230,14 +249,23 @@ void SimAccounts::fill(ClientOrderId id, Price px, Qty qty, Qty leaves, Notional
         in.entry = Price{};
       }
     } else {
+      // The entry keeps the position's notional: N(entry, was + qty) = N(entry, was) + N(px, qty),
+      // the quantity-weighted mean of the prices for a linear contract and their harmonic mean
+      // for an inverse one (notional qty x multiplier / price).
       const std::int64_t was = abs64(pos);
       const std::int64_t now = was + qty.raw;
-      in.entry =
-          was == 0
-              ? px
-              : Price::from_raw(static_cast<std::int64_t>((static_cast<Int128>(in.entry.raw) * was +
-                                                           static_cast<Int128>(px.raw) * qty.raw) /
-                                                          now));
+      if (was == 0) {
+        in.entry = px;
+      } else if (i.inverse()) {
+        const Int128 sum = static_cast<Int128>(i.notional(in.entry, Qty::from_raw(was)).raw) + n;
+        if (sum > 0)
+          in.entry = Price::from_raw(static_cast<std::int64_t>(static_cast<Int128>(now) *
+                                                               i.contract_multiplier.raw / sum));
+      } else {
+        in.entry = Price::from_raw(static_cast<std::int64_t>(
+            (static_cast<Int128>(in.entry.raw) * was + static_cast<Int128>(px.raw) * qty.raw) /
+            now));
+      }
       in.position = pos + signed_qty;
     }
     in.position_margin =

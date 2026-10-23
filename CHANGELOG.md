@@ -26,6 +26,9 @@ All notable changes are recorded here (Keep a Changelog format).
 - bench: `fastmm-bench-l3-itch` replays an ITCH file into L3 books with latency percentiles.
 
 ### Changed
+- sim: under `l2_queue` an opposite level that comes in at or through a resting order fills it.
+- sim: under `matching` over recorded data a recorded trade takes the book in price-time order.
+- backtest: `strip_own` keeps a book ticker one side of which was only ours, that side empty.
 - backtest: `balances_from_journal` replays the session's flows of money and account refreshes.
 - backtest: `params_from_journal` works with `[ab]`; the arms keep their parameters.
 - replay: `fastmm-replay` restores the state of a warm standby's take-over.
@@ -41,6 +44,11 @@ All notable changes are recorded here (Keep a Changelog format).
 - venues: OKX's checksum book moves only the levels next to a change near the touch.
 - backtest: `strip_own` takes out orders that rested before the journal's first record.
 - sim: `l2_queue` checks post-only orders against a book ticker newer than the depth.
+- sim: a reduce-only order is refused on a flat or growing position and fills only down to flat.
+- sim: an order under a duplicate id no longer leaves a balance held for good.
+- sim: a spot market buy is held at the levels it would take, not at the touch.
+- sim: a FOK order under self-trade prevention fills whole or not at all.
+- sim: an inverse contract's entry price is the harmonic mean of its fills.
 
 ### Documentation
 - docs: a how-to replays a live session from a checkpoint and compares configurations from it.

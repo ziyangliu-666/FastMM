@@ -380,3 +380,105 @@ TEST_CASE("sim.matching: fills conserve quantity across accounts") {
   f.me.for_each_open_order([&](const SimOrder& o) { resting += o.leaves(); });
   CHECK(resting == qt("100") - f.rec.filled_total());
 }
+
+TEST_CASE("sim.matching: FOK with self-trade prevention fills whole or not at all") {
+  for (StpMode mode : {StpMode::CancelTaker, StpMode::CancelMaker, StpMode::CancelBoth}) {
+    Fixture f;
+    f.me.set_stp(1, mode);
+    f.submit(0, Side::Sell, "100", "1");  // id 1
+    f.submit(1, Side::Sell, "100", "1");  // id 2, own
+    f.submit(0, Side::Sell, "100", "1");  // id 3
+    // The level holds 3, but STP stops the taker at id 2 (CancelTaker, CancelBoth) or takes id 2
+    // out of it (CancelMaker): the FOK cannot fill whole and expires without a fill.
+    const char* qty = mode == StpMode::CancelMaker ? "3" : "2";
+    auto r = f.submit(1, Side::Buy, "100", qty, OrderType::Limit, TimeInForce::Fok);
+    CAPTURE(static_cast<int>(mode));
+    CHECK(r.filled.is_zero());
+    CHECK(f.rec.count(Event::Fill) == 0);
+    REQUIRE(f.rec.count(Event::Cancel) == 1);
+    CHECK(f.rec.find(Event::Cancel)->code == static_cast<std::uint8_t>(CancelReason::Fok));
+    CHECK(f.me.find(1, ClientOrderId{2}) != nullptr);
+    CHECK(f.me.top_of_book(InstrumentId{0}).ask.qty == qt("3"));
+  }
+  // What it can fill without its own order fills whole.
+  Fixture f;
+  f.me.set_stp(1, StpMode::CancelMaker);
+  f.submit(0, Side::Sell, "100", "1");
+  f.submit(1, Side::Sell, "100", "1");
+  f.submit(0, Side::Sell, "100", "1");
+  auto r = f.submit(1, Side::Buy, "100", "2", OrderType::Limit, TimeInForce::Fok);
+  CHECK(r.filled == qt("2"));
+}
+
+namespace {
+// Keeps account 1's position from its fills and answers MatchingSink::reducible from it.
+struct PositionSink final : MatchingSink {
+  Qty position{};
+  std::vector<CancelReason> cancels;
+  void on_cancel(const SimOrder&, CancelReason r, Timestamp) override { cancels.push_back(r); }
+  void on_fill(const SimOrder& m, const SimOrder& t, Price, Qty q, Timestamp) override {
+    for (const SimOrder* o : {&m, &t}) {
+      if (o->account == 1) position += o->side == Side::Buy ? q : -q;
+    }
+  }
+  Qty reducible(const SimOrder& o) override {
+    const bool reduces = o.side == Side::Buy ? position.raw < 0 : position.raw > 0;
+    const Qty size = Qty::from_raw(position.raw < 0 ? -position.raw : position.raw);
+    return reduces ? min(o.leaves(), size) : Qty{};
+  }
+};
+
+NewOrder order(AccountId a,
+               std::uint64_t id,
+               Side s,
+               const char* p,
+               const char* q,
+               OrderType t = OrderType::Limit,
+               bool reduce_only = false) {
+  NewOrder o;
+  o.account = a;
+  o.cl_ord_id = ClientOrderId{id};
+  o.instrument = InstrumentId{0};
+  o.side = s;
+  o.type = t;
+  o.price = px(p);
+  o.qty = qt(q);
+  o.reduce_only = reduce_only;
+  return o;
+}
+}  // namespace
+
+TEST_CASE("sim.matching: a reduce-only order fills only down to a flat position") {
+  PositionSink sink;
+  MatchingEngine me{1, &sink};
+  const Timestamp now{1'000};
+  sink.position = qt("2");
+  me.submit(order(0, 1, Side::Buy, "100", "5"), now);
+  // A reduce-only market sell of 3 against a long 2: 2 fill, the rest expires.
+  SubmitResult r = me.submit(order(1, 2, Side::Sell, "0", "3", OrderType::Market, true), now);
+  CHECK(r.filled == qt("2"));
+  CHECK(sink.position.is_zero());
+  REQUIRE(sink.cancels.size() == 1);
+  CHECK(sink.cancels[0] == CancelReason::ReduceOnly);
+  CHECK(is_expiry(CancelReason::ReduceOnly));
+  CHECK(me.level_qty(InstrumentId{0}, Side::Buy, px("100")) == qt("3"));
+  // A resting reduce-only buy of 4 against a short 1: a sell of 5 takes the bid of 3 at 100, then
+  // 1 of the buy, whose rest expires; 1 of the sell rests.
+  sink.position = -qt("1");
+  me.submit(order(1, 3, Side::Buy, "99", "4", OrderType::Limit, true), now);
+  r = me.submit(order(0, 4, Side::Sell, "99", "5"), now);
+  CHECK(r.filled == qt("4"));
+  CHECK(sink.position.is_zero());
+  CHECK(me.find(1, ClientOrderId{3}) == nullptr);
+  CHECK(sink.cancels.back() == CancelReason::ReduceOnly);
+  CHECK(me.level_qty(InstrumentId{0}, Side::Sell, px("99")) == qt("1"));
+  // A reduce-only FOK larger than the position expires whole.
+  sink.position = qt("0.5");
+  me.submit(order(0, 5, Side::Buy, "98", "5"), now);
+  NewOrder fok = order(1, 6, Side::Sell, "98", "1", OrderType::Limit, true);
+  fok.tif = TimeInForce::Fok;
+  r = me.submit(fok, now);
+  CHECK(r.filled.is_zero());
+  CHECK(sink.position == qt("0.5"));
+  CHECK(sink.cancels.back() == CancelReason::Fok);
+}

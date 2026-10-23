@@ -4,7 +4,10 @@
 //   * price-time priority; every instrument has a SimBook of price levels, each an
 //     intrusive FIFO of SimOrders drawn from one Pool (no heap after construction);
 //   * Limit / Market / PostOnly (rejected when it would cross == Binance LIMIT_MAKER);
-//   * GTC / IOC / FOK (FOK is pre-checked against resting liquidity and expires whole);
+//   * GTC / IOC / FOK (FOK is pre-checked against the liquidity its sweep would take, which leaves
+//     out what self-trade prevention would stop on, and expires whole);
+//   * reduce-only orders fill only while they take their account's position towards zero
+//     (MatchingSink::reducible); what is left when the position reaches zero expires;
 //   * cancel / replace (replace == cancel + new; queue priority is kept only when the
 //     price is unchanged and the new quantity does not exceed the current leaves);
 //   * self-trade prevention per account: None | CancelTaker | CancelMaker | CancelBoth;
@@ -37,6 +40,7 @@ struct NewOrder {
   TimeInForce tif = TimeInForce::Gtc;
   Price price{};  // ignored for Market
   Qty qty{};
+  bool reduce_only = false;
 };
 
 enum class StpMode : std::uint8_t { None = 0, CancelTaker = 1, CancelMaker = 2, CancelBoth = 3 };
@@ -48,9 +52,11 @@ enum class CancelReason : std::uint8_t {
   Fok = 3,          // FOK could not be filled whole
   NoLiquidity = 4,  // market order remainder, book exhausted
   Stp = 5,          // self-trade prevention
+  ReduceOnly = 6,   // reduce-only remainder: the position it reduced is closed
 };
 [[nodiscard]] constexpr bool is_expiry(CancelReason r) noexcept {
-  return r == CancelReason::Ioc || r == CancelReason::Fok || r == CancelReason::NoLiquidity;
+  return r == CancelReason::Ioc || r == CancelReason::Fok || r == CancelReason::NoLiquidity ||
+         r == CancelReason::ReduceOnly;
 }
 
 // Every observable effect of the engine is reported here (venue -> world). Default no-ops
@@ -67,6 +73,9 @@ class MatchingSink {
   virtual void on_book_change(InstrumentId, Side, Price, Qty /*new level qty*/, std::uint64_t) {}
   virtual void on_trade(
       InstrumentId, Price, Qty, Side /*aggressor*/, std::uint64_t /*trade_id*/, Timestamp) {}
+  // How much of reduce-only order `o` may fill now: what takes its account's position towards
+  // zero. The engine asks before each fill of such an order. Default: all of it.
+  virtual Qty reducible(const SimOrder& o) { return o.leaves(); }
 };
 
 struct SubmitResult {
@@ -206,8 +215,13 @@ class MatchingEngine {
   }
 
   // Sweeps the opposite side until the order is done or nothing more crosses. Returns
-  // false when STP cancelled (and freed) the taker; `filled` is its executed quantity.
+  // false when STP cancelled the taker or its reduce-only remainder expired (and it is freed);
+  // `filled` is its executed quantity.
   bool match(Handle32 th, SimOrder& taker, Timestamp now, Qty& filled) noexcept;
+  // What `taker` would fill sweeping the opposite side: the levels it crosses, without the
+  // account's own orders when STP removes them and up to the first of them when STP ends the
+  // taker there (the FOK pre-check).
+  [[nodiscard]] Qty fillable(const SimOrder& taker) const noexcept;
   void rest(Handle32 h, SimOrder& o) noexcept;
   void unlink(SimOrder& o, PriceLevel& l) noexcept;
   void remove_resting(Handle32 h, SimOrder& o, CancelReason why, Timestamp now) noexcept;

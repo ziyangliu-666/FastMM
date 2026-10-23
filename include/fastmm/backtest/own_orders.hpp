@@ -131,7 +131,7 @@ class OwnOrderStripper {
     std::uint64_t levels_adjusted = 0;  // book levels reduced by our quantity
     std::uint64_t levels_removed = 0;   // book levels that were only ours
     std::uint64_t tickers_adjusted = 0;
-    std::uint64_t tickers_dropped = 0;  // a side of the ticker was only ours
+    std::uint64_t tickers_dropped = 0;  // sent by a backtest's simulated venue (kSynthetic)
   };
 
   // Reads the whole journal (every part, in recorded order) and resets it.
@@ -145,9 +145,10 @@ class OwnOrderStripper {
   }
 
   // `h` with our quantity taken out: `h` itself when nothing changes, a copy in `buf`, or nullptr
-  // for a BookTicker whose best bid or ask was only ours (the ticker alone cannot tell the next
-  // level; the depth book carries the top instead) or that a backtest's simulated venue sent for
-  // our orders (kSynthetic). Trades and other messages pass unchanged.
+  // for a BookTicker that a backtest's simulated venue sent for our orders (kSynthetic). A ticker
+  // side that was only ours keeps its price with quantity 0: the ticker alone cannot tell the level
+  // behind it, and its other side is still the venue's touch. Trades and other messages pass
+  // unchanged.
   const EventHeader* strip(const EventHeader& h, sim::EventBuf& buf) noexcept;
 
   [[nodiscard]] const Stats& stats() const noexcept { return stats_; }

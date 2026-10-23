@@ -192,6 +192,9 @@ struct SimTransportStats {
   std::uint64_t rejects_rate_limit = 0;  // VenueRateLimit: the venue's order-count window
   std::uint64_t rejects_other = 0;
   std::uint64_t fills = 0;
+  // l2_queue: fills of resting orders that the opposite side of the recorded book reached without
+  // a print (QueuePositionModel::on_cross)
+  std::uint64_t cross_fills = 0;
   std::uint64_t cancel_acks = 0;
   std::uint64_t cancel_rejects = 0;
   std::uint64_t expired = 0;
@@ -342,6 +345,7 @@ class SimTransport final : public MatchingSink {
   void on_book_change(InstrumentId id, Side s, Price px, Qty qty, std::uint64_t uid) override;
   void on_trade(
       InstrumentId id, Price px, Qty qty, Side aggr, std::uint64_t tid, Timestamp ts) override;
+  Qty reducible(const SimOrder& o) override;
 
  private:
   struct OutSlot {
@@ -418,15 +422,33 @@ class SimTransport final : public MatchingSink {
   void venue_new(const OutNewOrderMsg& m, Timestamp now) noexcept;
   void venue_cancel(const OutCancelMsg& m, Timestamp now) noexcept;
   void venue_replace(const OutReplaceMsg& m, Timestamp now) noexcept;
+  // The price at which `qty` costs what a market order for it on `side` pays sweeping the venue's
+  // opposite levels at `now`, rounded up: the part they do not cover expires unfilled and costs
+  // nothing. Zero when the opposite side is empty.
+  [[nodiscard]] Price sweep_price(InstrumentId id,
+                                  Side side,
+                                  Qty qty,
+                                  Timestamp now) const noexcept;
   // L2Queue fill model
   void queue_new(const NewOrder& n, Timestamp now) noexcept;
   void queue_cancel(ClientOrderId id, InstrumentId route, Timestamp now) noexcept;
   void queue_replace(const OutReplaceMsg& m, Timestamp now) noexcept;
   void queue_on_delta(const BookDeltaMsg& d, Timestamp now) noexcept;
   void queue_on_trade(const TradeMsg& t, Timestamp now) noexcept;
-  void queue_on_ticker(const BookTickerMsg& m) noexcept;
+  void queue_on_ticker(const BookTickerMsg& m, Timestamp now) noexcept;
+  // A side with a price and no quantity: a recorded level that was only the session's own orders.
+  [[nodiscard]] static bool hides_level(const BookTickerMsg& m) noexcept;
+  // Fills our resting orders that the opposite side of the venue's book now reaches.
+  void queue_cross(InstrumentId id, Timestamp now) noexcept;
+  // A fill of resting order `o` that the queue model gave it (its cum_qty already advanced).
+  void queue_fill(
+      QueuePositionModel::Handle32 h, QueuedOrder& o, Qty fill, Qty ahead, Timestamp now) noexcept;
   // Matching model fed with historical levels (account-0 liquidity mirror)
   void mirror_on_delta(const BookDeltaMsg& d, Timestamp now) noexcept;
+  // A recorded trade: its aggressor, as account 0's IOC at the print's price for its quantity,
+  // takes the book's liquidity in price-time order, ours where it stands ahead of the recorded
+  // orders the print took. The depth update that shows the level after the trade finds it there.
+  void mirror_on_trade(const TradeMsg& t, Timestamp now) noexcept;
   // Moves account-0 liquidity at (id, side, px) towards `target`: the decrease pass only
   // removes, the increase pass only adds.
   void sync_level(
@@ -434,7 +456,14 @@ class SimTransport final : public MatchingSink {
 
   // venue -> engine messages
   void emit_ack(ClientOrderId id, std::uint64_t order_id, InstrumentId inst, Timestamp ts) noexcept;
-  void emit_reject(ClientOrderId id, InstrumentId inst, RejectReason r, Timestamp ts) noexcept;
+  // Binance USD-M REDUCE_ONLY_REJECT: a reduce-only order that would not reduce the position.
+  static constexpr std::int32_t kReduceOnlyCode = -2022;
+  // `venue_code`: the venue's code when the reason alone does not give it (kReduceOnlyCode).
+  void emit_reject(ClientOrderId id,
+                   InstrumentId inst,
+                   RejectReason r,
+                   Timestamp ts,
+                   std::int32_t venue_code = 0) noexcept;
   void emit_cancel_ack(
       ClientOrderId id, std::uint64_t order_id, InstrumentId inst, Qty cum, Timestamp ts) noexcept;
   // `route`: the instrument whose venue answers (the cancel's), when `inst` is not known.
