@@ -333,7 +333,27 @@ void OwnQuantity::on_reconcile(const EventHeader& h, const ReconcileMsg& m) noex
       });
       break;
     case ReconcileMsg::Kind::OpenOrder:
-      if (Life* s = find(m.cl_ord_id)) s->seen = true;
+      if (Life* s = find(m.cl_ord_id)) {
+        s->seen = true;
+      } else if (m.cl_ord_id.valid() && h.instrument.valid() && m.price.is_positive() &&
+                 m.orig_qty > m.cum_qty) {
+        // An order the venue lists that went out before anything seen here (a journal part from
+        // the middle of a session, an order left from before a restart): it has rested since
+        // before then, with what the snapshot says is left, until it ends.
+        Life l{};
+        l.id = m.cl_ord_id;
+        l.inst = h.instrument;
+        l.venue = h.venue;
+        l.side = m.side;
+        l.resting = true;
+        l.acked = true;
+        l.seen = true;
+        l.px = m.price;
+        l.qty = m.orig_qty - m.cum_qty;
+        l.ack.ts = Timestamp{1};
+        l.ack.from_recv = false;
+        if (Life* added = add(l)) rebuild(*added);
+      }
       break;
     case ReconcileMsg::Kind::End: {
       // Collected first, then ended in pool order.

@@ -209,6 +209,34 @@ class JournalBuilder {
     m.cl_ord_id = ClientOrderId{};
     put(m.hdr);
   }
+  // A reconciliation snapshot listing these open orders with their side, price, quantity and
+  // filled quantity (orders this journal may not have seen go out).
+  struct Open {
+    std::uint64_t id;
+    Side side;
+    const char* price;
+    const char* qty;
+    const char* filled = "0";
+  };
+  void reconcile_orders(const std::vector<Open>& open) {
+    ReconcileMsg m{};
+    init_header(m, EventType::Reconcile, InstrumentId{0});
+    m.kind = ReconcileMsg::Kind::Begin;
+    put(m.hdr);
+    for (const Open& o : open) {
+      m.kind = ReconcileMsg::Kind::OpenOrder;
+      m.cl_ord_id = ClientOrderId{o.id};
+      m.side = o.side;
+      m.price = px(o.price);
+      m.orig_qty = qt(o.qty);
+      m.cum_qty = qt(o.filled);
+      put(m.hdr);
+    }
+    ReconcileMsg end{};
+    init_header(end, EventType::Reconcile, InstrumentId{0});
+    end.kind = ReconcileMsg::Kind::End;
+    put(end.hdr);
+  }
 
  private:
   void put(EventHeader& h, bool outbound = false) {

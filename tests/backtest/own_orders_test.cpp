@@ -141,3 +141,31 @@ TEST_CASE("backtest.journal_source: strip_own through the data spec, live journa
                        doctest::Contains("was not recorded by a live session"),
                        std::runtime_error);
 }
+
+TEST_CASE("backtest.own_orders: an order from before the journal, as a reconciliation lists it") {
+  // A part from the middle of a session: order 9 went out before it, a reconciliation lists it
+  // (a bid with 0.4 left of 1 at 100.00), and it is cancelled later in the part.
+  const std::string path = tmp_path("own_orders_before.fmj");
+  {
+    JournalBuilder j(path, true);
+    j.venue = kV0;
+    j.book(true, {{"100.00", "2"}}, {{"100.05", "1"}});
+    j.venue = kV0 + 2 * kMs;
+    j.reconcile_orders({{9, Side::Buy, "100.00", "1", "0.6"}});
+    j.venue = kV0 + 5 * kMs;
+    j.cancel_ack(9);
+    j.venue = kV0 + 6 * kMs;
+    j.book(false, {{"100.00", "1.6"}}, {});
+  }
+  JournalReader r;
+  REQUIRE(r.open(path));
+  const OwnOrderStripper s(r);
+  // From before the journal's first record to its cancel.
+  CHECK(s.own_at(InstrumentId{0}, Side::Buy, px("100.00"), Timestamp{kV0}) == qt("0.4"));
+  CHECK(s.own_at(InstrumentId{0}, Side::Buy, px("100.00"), Timestamp{kV0 + 4 * kMs}) == qt("0.4"));
+  CHECK(s.own_at(InstrumentId{0}, Side::Buy, px("100.00"), Timestamp{kV0 + 6 * kMs}).is_zero());
+  JournalSource js(path, true);
+  const EventHeader* h = js.next();
+  REQUIRE(h != nullptr);
+  CHECK(bids(h) == std::vector<Level>{{px("100.00"), qt("1.6")}});  // the snapshot, without ours
+}
