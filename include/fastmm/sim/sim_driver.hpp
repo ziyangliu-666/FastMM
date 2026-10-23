@@ -15,11 +15,11 @@
 // registry path alike.
 //
 // ReplayDriver replays a journal through Engine<S, SimClock, ReplayTransport, JournalFeed>:
-// one journal event per step at its original time; wheel timers are suppressed because the
-// journal already contains the synthetic TimerMsg records that fired. With a v2 journal the clock
-// follows the recorded engine clock exactly (including backward steps of a recalibrated TscClock),
-// also for start() and finish(); a v1 journal only has receive and fire times, which never move
-// the clock backwards.
+// one journal event per step at its original time; the engine does not poll its timer wheel,
+// because the journal already contains the synthetic TimerMsg records that fired, and it fires each
+// one there (Engine::kFeedReplaysTimers). With a v2 journal the clock follows the recorded engine
+// clock exactly (including backward steps of a recalibrated TscClock), also for start() and
+// finish(); a v1 journal only has receive and fire times, which never move the clock backwards.
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/latency.hpp"
 #include "fastmm/core/time.hpp"
@@ -42,7 +42,6 @@ struct EngineHooks {
   void (*warm_up)(void*) = nullptr;
   void (*start)(void*) = nullptr;
   void (*finish)(void*) = nullptr;
-  void (*cancel_timers)(void*) = nullptr;
   // Optional: true once the engine was asked to stop (ctx.request_stop(), a failed Python
   // strategy). SimDriver ends the run after the step that asked; ReplayDriver ignores it, because a
   // replay always drains the journal (stopping early would change the replay hash).
@@ -58,13 +57,6 @@ struct EngineHooks {
     h.start = [](void* c) { static_cast<Engine*>(c)->start(); };
     h.finish = [](void* c) { static_cast<Engine*>(c)->finish(); };
     h.stopped = [](void* c) { return static_cast<Engine*>(c)->stopped(); };
-    h.cancel_timers = [](void* c) {
-      auto& w = static_cast<Engine*>(c)->timers();
-      if (w.size() == 0) return;
-      for (std::uint32_t i = 0; i < 1024; ++i) {
-        if (w.active(TimerId{i})) w.cancel(TimerId{i});
-      }
-    };
     return h;
   }
   [[nodiscard]] bool valid() const noexcept { return ctx != nullptr && step != nullptr; }
@@ -293,7 +285,6 @@ class ReplayDriver {
     if (feed_.has_start_ts()) clock_.jump(feed_.start_ts());
     hooks_.warm_up(hooks_.ctx);
     hooks_.start(hooks_.ctx);
-    hooks_.cancel_timers(hooks_.ctx);
     started_ = true;
   }
   // Replays every remaining journal event; returns the number processed.
@@ -310,7 +301,6 @@ class ReplayDriver {
       if (before_ != nullptr) before_(before_ctx_, *feed_.peek());
       feed_.arm();
       hooks_.step(hooks_.ctx);
-      hooks_.cancel_timers(hooks_.ctx);
       ++n;
     }
     return n;

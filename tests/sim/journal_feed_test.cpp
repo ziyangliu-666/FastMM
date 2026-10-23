@@ -91,7 +91,6 @@ EngineHooks probe_hooks(Probe& p) {
   h.finish = [](void* c) {
     static_cast<Probe*>(c)->finished = static_cast<Probe*>(c)->clock->now();
   };
-  h.cancel_timers = [](void*) {};
   return h;
 }
 

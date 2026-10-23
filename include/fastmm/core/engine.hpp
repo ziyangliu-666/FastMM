@@ -289,7 +289,8 @@ class Engine {
     batch_end();
     refresh_clock();
     const Timestamp now = clock_.now();
-    n += timers_.poll(now, [this](TimerId id, std::uint64_t ud) { on_timer_fired(id, ud); });
+    if constexpr (!kFeedReplaysTimers)
+      n += timers_.poll(now, [this](TimerId id, std::uint64_t ud) { on_timer_fired(id, ud); });
     batch_end();
     if (now - last_publish_ >= cfg_.latency_publish_interval) publish_latency(now);
     in_engine_ = false;
@@ -1047,21 +1048,18 @@ class Engine {
         break;
       case EventType::Timer: {
         const auto& t = msg_cast<TimerMsg>(h);
-        if (t.engine == kAckSweepTimer) {
-          sweep_acks();  // replay of the engine's ack_timeout sweep
-        } else if (t.engine == kFlattenTimer) {
-          flatten_tick();  // replay of the engine's flatten sweep
-        } else if (t.engine == kStateTimer) {
-          if constexpr (KeepsState<Strategy>) capture_state();
-        } else if (t.engine == kBatchEndTimer) {
-          call_batch_end();  // replay of a batch end
-        } else if (t.engine == kCheckpointTimer) {
-          journal_checkpoint();  // replay of the journal's checkpoint
-        } else if (t.engine != 0) {
-          check_param_age();  // replay of the engine's max_param_age timer
-        } else {
-          fire_strategy_timer(t.timer_id, t.user_data);
+        if constexpr (kFeedReplaysTimers) {
+          // The wheel ends or repeats the timer around its hooks as it did in the session, so the
+          // timers they add get the session's ids.
+          if (t.timer_id.valid()) {
+            static_cast<void>(
+                timers_.fire_recorded(t.timer_id, t.user_data, now_, [&](TimerId, std::uint64_t) {
+                  on_recorded_timer(t);
+                }));
+            break;
+          }
         }
+        on_recorded_timer(t);
         break;
       }
       case EventType::ParamUpdate:
@@ -1090,6 +1088,25 @@ class Engine {
       case EventType::AccountFlow:  // journaled for a backtest; the balances follow BalanceMsg
       case EventType::Count:
         break;  // not consumed by the L2 engine
+    }
+  }
+
+  // A journaled TimerMsg: what the timer, or the batch end, did in the session.
+  void on_recorded_timer(const TimerMsg& t) noexcept {
+    if (t.engine == kAckSweepTimer) {
+      sweep_acks();  // replay of the engine's ack_timeout sweep
+    } else if (t.engine == kFlattenTimer) {
+      flatten_tick();  // replay of the engine's flatten sweep
+    } else if (t.engine == kStateTimer) {
+      if constexpr (KeepsState<Strategy>) capture_state();
+    } else if (t.engine == kBatchEndTimer) {
+      call_batch_end();  // replay of a batch end
+    } else if (t.engine == kCheckpointTimer) {
+      journal_checkpoint();  // replay of the journal's checkpoint
+    } else if (t.engine != 0) {
+      check_param_age();  // replay of the engine's max_param_age timer
+    } else {
+      fire_strategy_timer(t.timer_id, t.user_data);
     }
   }
 
@@ -2771,6 +2788,9 @@ class Engine {
   // A replay feed (JournalFeed) hands the engine one event per step: the batch ends a strategy
   // asked for are the journal's, not the ones its steps would make.
   static constexpr bool kFeedReplaysBatches = requires { requires Feed::kReplaysBatches; };
+  // It hands it the timers that fired, journaled (TimerMsg) in the order they did: the wheel is not
+  // polled, and each one fires as the journal says (dispatch).
+  static constexpr bool kFeedReplaysTimers = requires { requires Feed::kReplaysTimers; };
 
   // After a step's events and after its timers: the on_batch_end the strategy asked for, journaled
   // like a fired timer.

@@ -83,3 +83,87 @@ TEST_CASE("core.timer_wheel: re-entrant add/cancel inside callback and catch-up"
   for (int i = 0; i < 8; ++i) CHECK(w.add(now, seconds(1), false).valid());
   CHECK_FALSE(w.add(now, seconds(1), false).valid());
 }
+
+TEST_CASE("core.timer_wheel: the id of a timer that ended does not reach the timer in its slot") {
+  const Timestamp now{seconds(1).ns};
+  TimerWheel<8> w(now);
+  int fired = 0;
+  auto cb = [&](TimerId, std::uint64_t) { ++fired; };
+  const TimerId once = w.add(now, milliseconds(1), false);
+  CHECK(w.poll(now + milliseconds(1), cb) == 1);
+  CHECK_FALSE(w.active(once));
+  // The slot is free again and the next timer takes it: the old id is not the new timer's.
+  const TimerId next = w.add(now + milliseconds(1), milliseconds(5), false);
+  REQUIRE(next.valid());
+  CHECK(TimerWheel<8>::index_of(next) == TimerWheel<8>::index_of(once));
+  CHECK(next != once);
+  CHECK_FALSE(w.cancel(once));
+  CHECK(w.active(next));
+  // Cancelled, the same.
+  REQUIRE(w.cancel(next));
+  const TimerId third = w.add(now + milliseconds(1), milliseconds(5), false);
+  CHECK_FALSE(w.cancel(next));
+  CHECK(w.active(third));
+  CHECK(w.poll(now + milliseconds(6), cb) == 1);
+  CHECK(fired == 2);
+  CHECK_FALSE(w.active(TimerId{}));
+  CHECK_FALSE(w.cancel(TimerId{}));
+}
+
+TEST_CASE("core.timer_wheel: a callback that cancels the next timer of its slot") {
+  const Timestamp now{seconds(1).ns};
+  TimerWheel<8> w(now);
+  // Same expiry, so the same slot: a is walked first (the newest is the slot's head), b after it.
+  const TimerId b = w.add(now, milliseconds(2), false, 2);
+  const TimerId a = w.add(now, milliseconds(2), false, 1);
+  const TimerId c = w.add(now, milliseconds(2), false, 3);
+  std::vector<std::uint64_t> fired;
+  auto cb = [&](TimerId, std::uint64_t ud) {
+    fired.push_back(ud);
+    if (ud == 1) CHECK(w.cancel(b));
+  };
+  CHECK(w.poll(now + milliseconds(2), cb) == 2);
+  CHECK(fired == std::vector<std::uint64_t>{3, 1});
+  CHECK(w.size() == 0);
+  static_cast<void>(a);
+  static_cast<void>(c);
+  // Every slot is free once, not twice: eight timers fit and the ninth does not.
+  for (int i = 0; i < 8; ++i) CHECK(w.add(now, seconds(1), false).valid());
+  CHECK_FALSE(w.add(now, seconds(1), false).valid());
+}
+
+TEST_CASE("core.timer_wheel: a recorded fire takes the slots the session's did") {
+  const Timestamp now{seconds(1).ns};
+  // The session: a repeating timer and a one-shot; the one-shot's callback adds a timer while it
+  // is still firing.
+  TimerWheel<8> live(now);
+  TimerWheel<8> replay(now);
+  const TimerId rep = live.add(now, milliseconds(10), true, 1);
+  const TimerId one = live.add(now, milliseconds(3), false, 2);
+  REQUIRE(replay.add(now, milliseconds(10), true, 1) == rep);
+  REQUIRE(replay.add(now, milliseconds(3), false, 2) == one);
+  std::vector<std::pair<TimerId, std::uint64_t>> recorded;
+  std::vector<TimerId> live_added;
+  auto live_cb = [&](TimerId id, std::uint64_t ud) {
+    recorded.emplace_back(id, ud);
+    live_added.push_back(live.add(now, milliseconds(4) * (ud == 2 ? 1 : 100), false, 10 + ud));
+  };
+  CHECK(live.poll(now + milliseconds(3), live_cb) == 1);
+  CHECK(live.poll(now + milliseconds(10), live_cb) == 2);  // the one added at 3 ms, and rep
+  REQUIRE(recorded.size() == 3);
+  // The replay never polls: it fires what was recorded, and its callbacks add the same timers.
+  std::vector<TimerId> replay_added;
+  for (const auto& [id, ud] : recorded) {
+    CHECK(replay.fire_recorded(id, ud, now + milliseconds(10), [&](TimerId, std::uint64_t u) {
+      replay_added.push_back(replay.add(now, milliseconds(4) * (u == 2 ? 1 : 100), false, 10 + u));
+    }));
+  }
+  CHECK(replay_added == live_added);
+  CHECK(replay.size() == live.size());
+  CHECK(replay.active(rep));
+  CHECK_FALSE(replay.active(one));
+  // A timer the wheel does not hold still runs its callback.
+  int ran = 0;
+  CHECK_FALSE(replay.fire_recorded(one, 0, now, [&](TimerId, std::uint64_t) { ++ran; }));
+  CHECK(ran == 1);
+}

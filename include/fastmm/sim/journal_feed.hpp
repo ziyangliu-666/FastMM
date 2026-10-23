@@ -25,6 +25,9 @@ class JournalFeed {
   // The batch ends a strategy asked for are journaled (TimerMsg kBatchEndTimer); the engine does
   // not make its own after each replayed event.
   static constexpr bool kReplaysBatches = true;
+  // So are the timers that fired (TimerMsg): the engine does not poll its wheel, and fires each
+  // one where the journal has it.
+  static constexpr bool kReplaysTimers = true;
 
   explicit JournalFeed(JournalReader& reader) noexcept : reader_(reader) {
     reader_.reset();
