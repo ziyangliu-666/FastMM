@@ -58,8 +58,9 @@ SIGINT/SIGTERM trips the kill switch, cancels all open orders and exits. A secon
 SIGINT/SIGTERM 5 s or more after the first, or a shutdown still running 60 s after
 the stop, exits at once with code 5 without waiting for cancel_all.
 SIGHUP clears the kill switch and resumes quoting (on_kill = "stay").
+SIGUSR1 opens the log file again, for logrotate without copytruncate.
 fastmm-ctl talks to the control socket: pull, resume, param, limits, flatten,
-kill, unkill, stop, handoff and status.
+kill, unkill, stop, handoff, log-reopen and status.
 With [engine] instance_lock = true (implied by --standby and --takeover) one process
 of an engine name trades at a time; `handoff` stops the holder for the successor.
 A kill switch the engine trips itself ([risk] max_loss, a full ring, every venue
@@ -134,6 +135,7 @@ instrument of every strategy) and [gateway]. Strategies attach with fastmm-live
 --gateway <socket>, several at once, each trading instruments no other attached
 strategy trades. When one exits or dies, the gateway cancels its orders; the others
 and the venue connections stay up. SIGINT/SIGTERM cancels all open orders and exits.
+SIGUSR1 opens the log file again, for logrotate without copytruncate.
 
 [gateway] max_loss is a loss budget for the account, every strategy together,
 carried in <journal_dir>/<engine>.kill. When it trips, the gateway kills every
@@ -508,6 +510,7 @@ commands (one per datagram; the reply starts with ok or error)
   stop                                     shut the session down (SIGTERM)
   handoff                                  shut down for the process waiting on the
                                            instance lock (fastmm-live --standby)
+  log-reopen                               open the log file again (SIGUSR1)
   status                                   one line per topic
   help                                     this text
 
@@ -521,6 +524,7 @@ gateway commands (one per datagram; the reply starts with ok or error)
   clear-kill                               clear it and arm the loss budget again;
                                            refused while a strategy is attached
   attachments                              one line per attached strategy
+  log-reopen                               open the log file again (SIGUSR1)
   status                                   the fastmm-top frame
   help                                     this text
 

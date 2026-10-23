@@ -235,18 +235,17 @@ py::tuple run(const std::string& path,
       }
     }
 
-    std::FILE* log_file = nullptr;
     const std::string& log_to = log_path.empty() ? cfg.logging.file : log_path;  // [logging] file
-    if (rc == 0 && !log_to.empty()) {
-      log_file = std::fopen(log_to.c_str(), "a");
-      if (log_file == nullptr) {
+    if (rc == 0) {
+      Logger::instance().set_level(cfg.log_level());
+      if (log_to.empty()) {
+        Logger::instance().start(stderr, cfg.mirror_level());
+      } else if (!Logger::instance().start_file(log_to, cfg.mirror_level())) {
         std::fprintf(stderr, "fastmm: cannot open log file %s\n", log_to.c_str());
         rc = live::kExitUsage;
       }
     }
     if (rc == 0) {
-      Logger::instance().set_level(cfg.log_level());
-      Logger::instance().start(log_file != nullptr ? log_file : stderr, cfg.mirror_level());
       for (const std::string& w : cfg.warnings) FASTMM_LOG_WARN("config: {}", w);
 
       HotStrategy* strategy = nullptr;
@@ -285,7 +284,6 @@ py::tuple run(const std::string& path,
       }
       Logger::instance().stop();
     }
-    if (log_file != nullptr) std::fclose(log_file);
     ch->close();
   }
 

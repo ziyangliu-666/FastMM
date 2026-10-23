@@ -115,7 +115,17 @@ class Logger {
   // Sink control. `out` defaults to stderr. Records at >= mirror_level are also copied to
   // stderr when `out` is a different stream.
   void start(std::FILE* out = stderr, LogLevel mirror_level = LogLevel::Warn);
-  void stop();  // drains everything then joins the sink thread
+  // Opens `path` for appending and starts the sink on it. The logger owns this file: stop() closes
+  // it, and reopen() can swap it for a new one at the same path. False, and nothing started, when
+  // the file cannot be opened.
+  [[nodiscard]] bool start_file(const std::string& path, LogLevel mirror_level = LogLevel::Warn);
+  void stop();  // drains everything then joins the sink thread (and closes a start_file() file)
+  // Log rotation: the sink drains what was logged so far into the file it has open, then opens the
+  // path again, so a file renamed away (logrotate without copytruncate) is closed and the rest goes
+  // to a new one. request_reopen() only asks, and is async-signal-safe; reopen() waits for the
+  // sink. False: no start_file() file, or the path cannot be opened (the old file stays in use).
+  void request_reopen() noexcept;
+  [[nodiscard]] bool reopen();
   // Drains all rings and fflush()es. Works with or without a running sink thread.
   void flush();
   [[nodiscard]] bool running() const noexcept { return running_.load(std::memory_order_acquire); }
@@ -137,6 +147,7 @@ class Logger {
   Logger() = default;
   ~Logger();
   std::size_t drain_all();  // returns records processed
+  bool reopen_file();       // on the sink thread, or with no sink running
   void sink_loop();
 
   struct Impl;

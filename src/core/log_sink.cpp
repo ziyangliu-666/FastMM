@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -33,6 +34,10 @@ struct Logger::Impl {
   std::atomic<bool> stop_requested{false};
   std::atomic<std::uint64_t> flush_req{0};
   std::atomic<std::uint64_t> flush_done{0};
+  std::string path;  // the start_file() file, owned by the logger; empty: `out` is the caller's
+  std::atomic<std::uint64_t> reopen_req{0};
+  std::atomic<std::uint64_t> reopen_done{0};
+  std::atomic<bool> reopen_ok{false};  // the outcome of the latest reopen
   Waker wake;  // flush() and stop() wake the idle sink; logging threads never signal it
   std::string scratch;
 };
@@ -234,7 +239,14 @@ void Logger::sink_loop() {
     // Read the flush request *before* draining so every record published before the
     // request is guaranteed to be on disk when flush_done catches up.
     const std::uint64_t req = im.flush_req.load(std::memory_order_acquire);
+    const std::uint64_t reopen = im.reopen_req.load(std::memory_order_acquire);
     const std::size_t n = drain_all();
+    if (reopen != im.reopen_done.load(std::memory_order_relaxed)) {
+      // Read before the drain: every record published before the request is in the old file.
+      im.reopen_ok.store(reopen_file(), std::memory_order_relaxed);
+      im.reopen_done.store(reopen, std::memory_order_release);
+      unflushed = false;
+    }
     if (req != im.flush_done.load(std::memory_order_relaxed)) {
       std::fflush(im.out);
       im.flush_done.store(req, std::memory_order_release);
@@ -258,7 +270,9 @@ void Logger::sink_loop() {
       im.wake.prepare_wait();
       if (im.stop_requested.load(std::memory_order_acquire) ||
           im.flush_req.load(std::memory_order_acquire) !=
-              im.flush_done.load(std::memory_order_acquire)) {
+              im.flush_done.load(std::memory_order_acquire) ||
+          im.reopen_req.load(std::memory_order_acquire) !=
+              im.reopen_done.load(std::memory_order_acquire)) {
         im.wake.cancel_wait();
       } else {
         im.wake.wait(wait);
@@ -280,6 +294,15 @@ void Logger::start(std::FILE* out, LogLevel mirror_level) {
   im.sink = std::thread([this] { sink_loop(); });
 }
 
+bool Logger::start_file(const std::string& path, LogLevel mirror_level) {
+  if (running()) return false;
+  std::FILE* f = std::fopen(path.c_str(), "a");
+  if (f == nullptr) return false;
+  impl_->path = path;
+  start(f, mirror_level);
+  return true;
+}
+
 void Logger::stop() {
   if (!running()) return;
   Impl& im = *impl_;
@@ -287,6 +310,50 @@ void Logger::stop() {
   im.wake.notify();
   im.sink.join();
   running_.store(false, std::memory_order_release);
+  if (!im.path.empty()) {
+    std::fclose(im.out);
+    im.out = stderr;
+    im.path.clear();
+    to_file_.store(false, std::memory_order_release);
+  }
+}
+
+bool Logger::reopen_file() {
+  Impl& im = *impl_;
+  if (im.path.empty()) return false;
+  std::fflush(im.out);
+  std::FILE* f = std::fopen(im.path.c_str(), "a");
+  if (f == nullptr) {
+    std::fprintf(stderr,
+                 "log: cannot reopen %s (%s); still writing to the old file\n",
+                 im.path.c_str(),
+                 std::strerror(errno));
+    return false;
+  }
+  std::fclose(im.out);
+  im.out = f;
+  return true;
+}
+
+void Logger::request_reopen() noexcept {
+  Impl& im = *impl_;
+  im.reopen_req.fetch_add(1, std::memory_order_acq_rel);
+  im.wake.notify();
+}
+
+bool Logger::reopen() {
+  Impl& im = *impl_;
+  if (!running()) {
+    drain_all();
+    return reopen_file();
+  }
+  const std::uint64_t req = im.reopen_req.fetch_add(1, std::memory_order_acq_rel) + 1;
+  im.wake.notify();
+  while (im.reopen_done.load(std::memory_order_acquire) < req) {
+    timespec ts{0, 20'000};
+    nanosleep(&ts, nullptr);
+  }
+  return im.reopen_ok.load(std::memory_order_relaxed);
 }
 
 void Logger::flush() {

@@ -43,6 +43,7 @@ The control thread waits on the socket and answers a command as it arrives. A co
 | `unkill` | Clears it and resumes quoting, as `SIGHUP` does, including a latched `max_loss` trip ([Kill switch and shutdown](kill-switch-and-shutdown.md#the-latched-loss-budget)). |
 | `stop` | Shuts the session down as `SIGTERM` does: kill switch, cancel-all on every venue, exit. |
 | `handoff` | `stop` for the process waiting on the instance lock (`fastmm-live --standby` or `--takeover`): the same shutdown, then the lock is released last. Refused by a session that holds no lock ([Hand over a running session](hand-over-a-session.md)). |
+| `log-reopen` | Opens `[logging] file` again, as `SIGUSR1` does: what was logged before stays in the file that was open, the rest goes to the path ([below](#rotate-the-log)). |
 | `status` | The `fastmm-top` frame plus the limits the session runs with. |
 | `help` | The command list. |
 
@@ -157,6 +158,24 @@ After a kill the engine trips itself, `fastmm-live` exits unless `[engine] on_ki
 ### A restart during a flatten
 
 A flatten is not persisted and a restart does not resume it: the shutdown cancels the slice in flight, the new session starts quoting as `[engine] quoting_enabled` says, and the position is still there. Run `flatten` again if needed. The previous session's journal holds the whole story: `tools/journal_dump.py` prints the `Flatten` command, every sweep and every order it sent.
+
+## Rotate the log
+
+`fastmm-live` and `fastmm-gateway` hold `[logging] file` (or `--log`) open. After the file is renamed away, `SIGUSR1` or `fastmm-ctl log-reopen` makes the log sink write what it holds to the renamed file and open the path again, so logrotate can rotate without `copytruncate`, which loses the lines written between its copy and its truncate:
+
+```text
+/var/log/fastmm/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    postrotate
+        systemctl kill -s USR1 'fastmm-live@*' fastmm-gateway
+    endscript
+}
+```
+
+If the path cannot be opened, the sink keeps writing to the old file and says so on stderr; `log-reopen` answers with an error.
 
 ## Behind a gateway
 

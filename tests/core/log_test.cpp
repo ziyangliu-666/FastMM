@@ -2,10 +2,15 @@
 
 #include "test_support.hpp"
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <thread>
 #include <vector>
@@ -188,4 +193,56 @@ TEST_CASE("core.log: format_record handles malformed argument count gracefully")
   Logger::format_record(r, out);
   CHECK(out.find("format error") != std::string::npos);
   CHECK(out.find("2023-11-14T22:13:20.000000000Z") != std::string::npos);
+}
+
+TEST_CASE("core.log: reopen after a rename puts what follows in a new file at the path") {
+  namespace fs = std::filesystem;
+  const fs::path dir =
+      fs::temp_directory_path() / ("fastmm-log-reopen-" + std::to_string(::getpid()));
+  fs::remove_all(dir);
+  fs::create_directories(dir);
+  const fs::path path = dir / "session.log";
+  const fs::path rotated = dir / "session.log.1";
+  auto slurp = [](const fs::path& p) {
+    std::ifstream in(p);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  };
+  auto& lg = Logger::instance();
+  REQUIRE(lg.start_file(path.string(), LogLevel::Off));
+  CHECK(lg.to_file());
+  FASTMM_LOG_WARN("before rotation");
+  fs::rename(path, rotated);
+  CHECK(lg.reopen());
+  FASTMM_LOG_WARN("after rotation");
+  // The signal handler's path: only asks.
+  fs::rename(path, dir / "session.log.2");
+  lg.request_reopen();
+  lg.flush();  // the sink acts on a reopen before the flush it reads with it
+  FASTMM_LOG_WARN("after the second rotation");
+  lg.flush();
+  // A path that cannot be opened keeps the old file.
+  fs::rename(path, dir / "session.log.3");
+  fs::remove_all(dir / "session.log");
+  fs::create_directory(dir / "session.log");
+  CHECK_FALSE(lg.reopen());
+  FASTMM_LOG_WARN("still in the third file");
+  lg.stop();
+  CHECK_FALSE(lg.to_file());
+  CHECK(slurp(rotated).find("before rotation") != std::string::npos);
+  CHECK(slurp(rotated).find("after rotation") == std::string::npos);
+  CHECK(slurp(dir / "session.log.2").find("after rotation") != std::string::npos);
+  CHECK(slurp(dir / "session.log.3").find("after the second rotation") != std::string::npos);
+  CHECK(slurp(dir / "session.log.3").find("still in the third file") != std::string::npos);
+  fs::remove_all(dir);
+}
+
+TEST_CASE("core.log: reopen without a file of its own is refused") {
+  std::FILE* f = std::tmpfile();
+  auto& lg = Logger::instance();
+  lg.start(f, LogLevel::Off);
+  CHECK_FALSE(lg.reopen());
+  FASTMM_LOG_WARN("caller's stream");
+  lg.stop();
+  CHECK(read_all(f).find("caller's stream") != std::string::npos);
+  std::fclose(f);
 }

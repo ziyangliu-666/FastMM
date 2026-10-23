@@ -46,8 +46,9 @@ constexpr const char* kFooter =
     "SIGINT/SIGTERM 5 s or more after the first, or a shutdown still running 60 s after\n"
     "the stop, exits at once with code 5 without waiting for cancel_all.\n"
     "SIGHUP clears the kill switch and resumes quoting (on_kill = \"stay\").\n"
+    "SIGUSR1 opens the log file again, for logrotate without copytruncate.\n"
     "fastmm-ctl talks to the control socket: pull, resume, param, limits, flatten,\n"
-    "kill, unkill, stop, handoff and status.\n"
+    "kill, unkill, stop, handoff, log-reopen and status.\n"
     "With [engine] instance_lock = true (implied by --standby and --takeover) one process\n"
     "of an engine name trades at a time; `handoff` stops the holder for the successor.\n"
     "A kill switch the engine trips itself ([risk] max_loss, a full ring, every venue\n"
@@ -199,17 +200,14 @@ int live(int argc, char** argv, std::span<const StrategyModule> modules) {
   if (opts.gateway_path.empty() && !live::resolve_venue_env(cfg, opts.dry_run, prog))
     return kExitUsage;
 
-  std::FILE* log_file = nullptr;
   if (log_path.empty()) log_path = cfg.logging.file;  // --log, else [logging] file
-  if (!log_path.empty()) {
-    log_file = std::fopen(log_path.c_str(), "a");
-    if (log_file == nullptr) {
-      std::fprintf(stderr, "%s: cannot open log file %s\n", prog, log_path.c_str());
-      return kExitUsage;
-    }
-  }
   Logger::instance().set_level(cfg.log_level());
-  Logger::instance().start(log_file != nullptr ? log_file : stderr, cfg.mirror_level());
+  if (log_path.empty()) {
+    Logger::instance().start(stderr, cfg.mirror_level());
+  } else if (!Logger::instance().start_file(log_path, cfg.mirror_level())) {
+    std::fprintf(stderr, "%s: cannot open log file %s\n", prog, log_path.c_str());
+    return kExitUsage;
+  }
   for (const std::string& w : cfg.warnings) FASTMM_LOG_WARN("config: {}", w);
 
   int rc = kExitRuntime;
@@ -220,7 +218,6 @@ int live(int argc, char** argv, std::span<const StrategyModule> modules) {
     rc = kExitRuntime;
   }
   Logger::instance().stop();
-  if (log_file != nullptr) std::fclose(log_file);
   return rc;
 }
 

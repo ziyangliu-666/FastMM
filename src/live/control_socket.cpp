@@ -45,6 +45,7 @@ constexpr std::string_view kUsage =
     "  stop                                     shut the session down (SIGTERM)\n"
     "  handoff                                  shut down for the process waiting on the\n"
     "                                           instance lock (fastmm-live --standby)\n"
+    "  log-reopen                               open the log file again (SIGUSR1)\n"
     "  status                                   one line per topic\n"
     "  help                                     this text\n";
 
@@ -446,6 +447,11 @@ std::string control_command(std::string_view request, ControlPlane& plane) {
     if (!plane.clear_kill) return error("this session cannot clear its kill switch");
     if (!plane.clear_kill()) return error("the control ring is full; try again");
     return ok("kill switch cleared");
+  }
+  if (verb == "log-reopen") {
+    if (!args.empty()) return error("log-reopen takes no arguments");
+    if (!Logger::instance().reopen()) return error("no log file to reopen, or it cannot be opened");
+    return ok("log file reopened");
   }
   if (verb == "stop") {
     if (!args.empty()) return error("stop takes no arguments");

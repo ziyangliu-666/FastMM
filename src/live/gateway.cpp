@@ -59,6 +59,10 @@ namespace {
 
 volatile std::sig_atomic_t g_gw_signal = 0;
 extern "C" void on_gw_signal(int sig) {
+  if (sig == SIGUSR1) {  // log rotation: the sink reopens [logging] file
+    Logger::instance().request_reopen();
+    return;
+  }
   g_gw_signal = sig;
   signal_wake();
 }
@@ -66,6 +70,7 @@ extern "C" void on_gw_signal(int sig) {
 struct GatewaySignals {
   struct sigaction old_int {};
   struct sigaction old_term {};
+  struct sigaction old_usr1 {};
   GatewaySignals() {
     g_gw_signal = 0;
     static_cast<void>(signal_wake_fd());  // made before the handler can write it
@@ -75,6 +80,7 @@ struct GatewaySignals {
     sigemptyset(&sa.sa_mask);
     sigaction(SIGINT, &sa, &old_int);
     sigaction(SIGTERM, &sa, &old_term);
+    sigaction(SIGUSR1, &sa, &old_usr1);
   }
   GatewaySignals(const GatewaySignals&) = delete;
   GatewaySignals& operator=(const GatewaySignals&) = delete;
@@ -83,6 +89,7 @@ struct GatewaySignals {
   ~GatewaySignals() {
     sigaction(SIGINT, &old_int, nullptr);
     sigaction(SIGTERM, &old_term, nullptr);
+    sigaction(SIGUSR1, &old_usr1, nullptr);
   }
 };
 
@@ -2705,6 +2712,12 @@ class Gateway {
       if (words.size() > 1) return "error clear-kill takes no arguments\n";
       return clear_kill();
     }
+    if (verb == "log-reopen") {
+      if (words.size() > 1) return "error log-reopen takes no arguments\n";
+      if (!Logger::instance().reopen())
+        return "error no log file to reopen, or it cannot be opened\n";
+      return "ok log file reopened\n";
+    }
     return "error unknown command '" + std::string(verb) + "'; `help` lists them\n";
   }
 
@@ -3296,6 +3309,7 @@ std::string_view gateway_control_usage() noexcept {
          "  clear-kill                               clear it and arm the loss budget again;\n"
          "                                           refused while a strategy is attached\n"
          "  attachments                              one line per attached strategy\n"
+         "  log-reopen                               open the log file again (SIGUSR1)\n"
          "  status                                   the fastmm-top frame\n"
          "  help                                     this text\n";
 }

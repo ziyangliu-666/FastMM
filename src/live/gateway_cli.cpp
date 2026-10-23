@@ -26,6 +26,7 @@ constexpr const char* kFooter =
     "--gateway <socket>, several at once, each trading instruments no other attached\n"
     "strategy trades. When one exits or dies, the gateway cancels its orders; the others\n"
     "and the venue connections stay up. SIGINT/SIGTERM cancels all open orders and exits.\n"
+    "SIGUSR1 opens the log file again, for logrotate without copytruncate.\n"
     "\n"
     "[gateway] max_loss is a loss budget for the account, every strategy together,\n"
     "carried in <journal_dir>/<engine>.kill. When it trips, the gateway kills every\n"
@@ -101,17 +102,14 @@ int gateway(int argc, char** argv) {
   }
   if (!live::resolve_venue_env(cfg, opts.dry_run, prog)) return live::kExitUsage;
 
-  std::FILE* log_file = nullptr;
   if (log_path.empty()) log_path = cfg.logging.file;  // --log, else [logging] file
-  if (!log_path.empty()) {
-    log_file = std::fopen(log_path.c_str(), "a");
-    if (log_file == nullptr) {
-      std::fprintf(stderr, "%s: cannot open log file %s\n", prog, log_path.c_str());
-      return live::kExitUsage;
-    }
-  }
   Logger::instance().set_level(cfg.log_level());
-  Logger::instance().start(log_file != nullptr ? log_file : stderr, cfg.mirror_level());
+  if (log_path.empty()) {
+    Logger::instance().start(stderr, cfg.mirror_level());
+  } else if (!Logger::instance().start_file(log_path, cfg.mirror_level())) {
+    std::fprintf(stderr, "%s: cannot open log file %s\n", prog, log_path.c_str());
+    return live::kExitUsage;
+  }
   for (const std::string& w : cfg.warnings) FASTMM_LOG_WARN("config: {}", w);
 
   int rc = live::kExitRuntime;
@@ -122,7 +120,6 @@ int gateway(int argc, char** argv) {
     rc = live::kExitRuntime;
   }
   Logger::instance().stop();
-  if (log_file != nullptr) std::fclose(log_file);
   return rc;
 }
 

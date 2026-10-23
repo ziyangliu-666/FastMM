@@ -90,6 +90,10 @@ std::atomic<std::int64_t> g_first_signal_ns{0};
 std::atomic<ShutdownWatchdog*> g_watchdog{nullptr};
 static_assert(std::atomic<std::int64_t>::is_always_lock_free);
 extern "C" void on_signal(int sig) {
+  if (sig == SIGUSR1) {  // log rotation: the sink reopens [logging] file
+    Logger::instance().request_reopen();
+    return;
+  }
   if (sig == SIGHUP) {
     g_hup = 1;
     signal_wake();
@@ -108,6 +112,7 @@ extern "C" void on_signal(int sig) {
 struct sigaction g_old_int {};
 struct sigaction g_old_term {};
 struct sigaction g_old_hup {};
+struct sigaction g_old_usr1 {};
 std::atomic<bool> g_handlers_installed{false};
 
 void install_signal_handlers() {
@@ -123,6 +128,7 @@ void install_signal_handlers() {
   sigaction(SIGINT, &sa, &g_old_int);
   sigaction(SIGTERM, &sa, &g_old_term);
   sigaction(SIGHUP, &sa, &g_old_hup);
+  sigaction(SIGUSR1, &sa, &g_old_usr1);
   g_handlers_installed.store(true);
 }
 
@@ -668,6 +674,7 @@ void restore_signal_handlers() noexcept {
   sigaction(SIGINT, &g_old_int, nullptr);
   sigaction(SIGTERM, &g_old_term, nullptr);
   sigaction(SIGHUP, &g_old_hup, nullptr);
+  sigaction(SIGUSR1, &g_old_usr1, nullptr);
 }
 
 bool resolve_venue_env(Config& cfg, bool dry_run, const char* prog) {
