@@ -19,6 +19,7 @@
 //   balances_from_journal = false, own_orders_in_feed = true, transfer_latency_ms = 0
 //   initial_state = "state_file" | "journal" | "none", params_from_journal = false
 //   [backtest.balances] <ASSET> = "<amount>"  (and [backtest.venues.<name>.balances])
+//   [backtest.positions] <SYMBOL> = "<qty>" | "<qty>@<avg_px>"
 //   equity_bar_s = 1, initial_capital = 0
 //   markout_horizons_s = "1,10,60"
 //   output_dir = "runs/backtest", journal_out = ""
@@ -52,6 +53,13 @@ enum class InitialState : std::uint8_t {
 inline constexpr double kDefaultSpreadBps = 4.0;
 inline constexpr double kDefaultMidStepBps = 0.5;
 inline constexpr double kDefaultDepthBps = 1.0;
+
+// One [backtest.positions] row: the engine starts with this position in the instrument.
+struct StartPosition {
+  InstrumentId instrument;
+  Qty qty;
+  Price avg_px;
+};
 
 struct BacktestConfig {
   EngineConfig engine;
@@ -100,6 +108,11 @@ struct BacktestConfig {
   // The strategy's starting state; Journal also starts the engine's positions where the recorded
   // session had them (sim::SessionStart).
   InitialState initial_state = InitialState::StateFile;
+  // [backtest.positions]: the engine's positions at the start, by instrument. They replace the
+  // journal's (initial_state = "journal") for the instruments listed: a backtest that starts at a
+  // part from the middle of a session, whose records do not repeat the positions, starts where the
+  // session was.
+  std::vector<StartPosition> positions;
   // The data journal's parameter updates reach the strategy at the times the session received
   // them (sim::RecordedParams), mapped by name and type onto its schema.
   bool params_from_journal = false;

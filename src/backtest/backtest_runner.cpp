@@ -258,6 +258,20 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
     start_note_ = s->note;
     FASTMM_LOG_INFO("backtest: {}", start_note_);
   }
+  for (const StartPosition& p : cfg_.positions) {
+    std::erase_if(start_positions_,
+                  [&](const ReconcileMsg& m) { return m.hdr.instrument == p.instrument; });
+    if (p.qty.is_zero()) continue;
+    ReconcileMsg m{};
+    init_header(m, EventType::Reconcile, p.instrument, cfg_.instruments.get(p.instrument).venue);
+    m.kind = ReconcileMsg::Kind::Position;
+    m.position_qty = p.qty;
+    m.avg_px = p.avg_px;
+    start_positions_.push_back(m);
+  }
+  if (!cfg_.positions.empty()) {
+    FASTMM_LOG_INFO("backtest: {} positions from [backtest.positions]", cfg_.positions.size());
+  }
   if (cfg_.params_from_journal) {
     const sim::RecordedParams* rp = source != nullptr ? source->recorded_params() : nullptr;
     if (rp == nullptr) {

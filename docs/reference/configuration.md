@@ -882,6 +882,16 @@ USDT = "5000"
 
 The venue holds each order's amount and refuses an order its free balance cannot cover with `InsufficientBalance` (venue code `-2010`, as Binance), and reports its balances as a live venue does: a snapshot at the start and an update after every order event that moved one. The engine's balance table, `[risk] check_balance`, `ctx.balance` and the strategies read those reports as they read a live venue's ([Backtesting](../explanation/backtesting.md#balances)).
 
+### `[backtest.positions]`
+
+The engine's positions at the start: `<SYMBOL> = "<qty>"` or `"<qty>@<avg_px>"`, signed, for the instrument of that symbol (the first one listed when several venues trade it). They reach the engine as reconciled positions at the first step and replace, for the instruments listed, the positions `initial_state = "journal"` takes from the journal. A part from the middle of a live session holds no record of the positions the session had then; this table gives them ([Backtesting](../explanation/backtesting.md#starting-inside-a-live-session)).
+
+```toml
+[backtest.positions]
+BTCUSDT = "0.35@67210.5"
+ETHUSDT = "-2"
+```
+
 ## `[sim]`
 
 The synthetic market; free-form in the schema. Prices and sizes use the first instrument's `tick` and `lot`. `fastmm-sim-exchange` and `fastmm-sim-itch` read their own keys from `[sim]` too ([Simulated exchange](sim-exchange.md#configuration-configssimtoml), [fastmm-sim-itch](sim-itch.md#configuration-configssim-itchtoml)).

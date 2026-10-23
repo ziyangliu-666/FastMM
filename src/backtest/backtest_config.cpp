@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -112,6 +113,7 @@ constexpr std::array<std::string_view, 18> kVenueKeys = {"latency_fixed_us",
                                                          "orders_1d"};
 constexpr std::string_view kVenuesPrefix = "venues.";
 constexpr std::string_view kBalancesPrefix = "balances.";
+constexpr std::string_view kPositionsPrefix = "positions.";
 
 // One `<ASSET> = "<amount>"` of [backtest.balances] or [backtest.venues.<name>.balances].
 sim::SimBalance read_balance(const GenericSection& bt,
@@ -248,6 +250,42 @@ std::vector<sim::SimAccountConfig> read_accounts(const Config& cfg, const Generi
   return out;
 }
 
+// [backtest.positions]: `<SYMBOL> = "<qty>"` or `"<qty>@<avg_px>"`, signed, for the instrument of
+// that symbol (the first listed when several venues trade it).
+std::vector<StartPosition> read_positions(const GenericSection& bt, const InstrumentTable& table) {
+  std::vector<StartPosition> out;
+  for (const auto& [key, value] : bt.values) {
+    if (!key.starts_with(kPositionsPrefix)) continue;
+    const std::string_view symbol = std::string_view(key).substr(kPositionsPrefix.size());
+    const auto line = bt.lines.find(key);
+    const std::string where =
+        line == bt.lines.end() ? std::string() : fmt::format(" (line {})", line->second);
+    const Instrument* inst = nullptr;
+    for (const Instrument& i : table) {
+      if (i.symbol.view() == symbol) {
+        inst = &i;
+        break;
+      }
+    }
+    if (inst == nullptr)
+      throw ConfigError(fmt::format("backtest.{}: no instrument {}{}", key, symbol, where));
+    const std::string text = bt.get_string(key, "");
+    const std::size_t at = text.find('@');
+    const auto qty = Qty::from_decimal(std::string_view(text).substr(0, at));
+    std::optional<Price> px = Price{};
+    if (at != std::string::npos) px = Price::from_decimal(std::string_view(text).substr(at + 1));
+    if (!qty || !px || px->raw < 0) {
+      throw ConfigError(fmt::format(
+          "backtest.{}: '{}' is not \"<qty>\" or \"<qty>@<avg_px>\" (a string: \"-0.5@101.2\"){}",
+          key,
+          text,
+          where));
+    }
+    out.push_back(StartPosition{inst->id, *qty, *px});
+  }
+  return out;
+}
+
 std::int64_t positive(const GenericSection& s, std::string_view key, std::int64_t def) {
   const std::int64_t v = s.get_int(key, def);
   if (v <= 0) throw ConfigError(std::string(key) + " must be > 0");
@@ -325,8 +363,9 @@ constexpr std::array<std::string_view, 33> kBacktestKeys = {"latency_sigma",
 void check_backtest_keys(const GenericSection& bt) {
   for (const auto& [key, value] : bt.values) {
     if (std::find(kBacktestKeys.begin(), kBacktestKeys.end(), key) != kBacktestKeys.end()) continue;
-    if (key.starts_with(kVenuesPrefix)) continue;    // read_venues() checks those
-    if (key.starts_with(kBalancesPrefix)) continue;  // read_accounts() checks those
+    if (key.starts_with(kVenuesPrefix)) continue;     // read_venues() checks those
+    if (key.starts_with(kBalancesPrefix)) continue;   // read_accounts() checks those
+    if (key.starts_with(kPositionsPrefix)) continue;  // read_positions() checks those
     const auto line = bt.lines.find(key);
     throw ConfigError(
         "unknown key 'backtest." + key + "'", line == bt.lines.end() ? 0 : line->second, 0);
@@ -423,6 +462,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   b.transfer_latency = milliseconds(transfer_ms);
   t.own_orders_in_feed = bt.get_bool("own_orders_in_feed", true);
   b.balances_from_journal = bt.get_bool("balances_from_journal", false);
+  b.positions = read_positions(bt, b.instruments);
   b.params_from_journal = bt.get_bool("params_from_journal", false);
   b.ab = cfg.ab;
   if (const std::string s = bt.get_string("initial_state", "state_file"); s == "journal") {

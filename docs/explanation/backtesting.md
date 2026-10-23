@@ -159,6 +159,10 @@ The positions a session restores from its store and the venues report at the sta
 
 `[backtest] initial_state = "journal"` starts the strategy from the journal's restored state, else from its first snapshot, and the engine's positions from that snapshot, or from the reconciled positions before the first order. The positions reach the engine as reconciliation records at the first step, as they did live; the venues' balances come from `balances_from_journal`. The run's log names what it started from. A journal without any of these records starts the strategy fresh and flat, as before. A session whose parameters were changed while it ran (`ParamUpdate`) quoted with them from then on; `params_from_journal = true` hands the backtest's strategy the same updates at the same times. `fastmm-replay` hands the restored bytes to `restore()` too, so a session whose strategy restored state replays exactly.
 
+## Starting inside a live session
+
+A live session's journal rolls over into parts (`[engine] journal_max_bytes`), and a backtest of a window of the session starts at one of them. A strategy without state snapshots leaves such a part no record of the positions the session had when it began: the run would start flat while the session held inventory, and a strategy that unwinds or hedges what it holds trades differently. `[backtest.positions]` gives the engine those positions ([Configuration](../reference/configuration.md#backtestpositions)); a store's fills carry the position after each fill, so the last one before the start says what it was.
+
 ## Reference example
 
 `basic_mm` from `configs/backtest-example.toml` on the synthetic market, 60 s, seed 1, at Binance spot VIP 0 fees:
