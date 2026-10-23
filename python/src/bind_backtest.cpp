@@ -1013,6 +1013,11 @@ void bind_backtest(py::module_& m) {
       },
       py::arg("grid"),
       "Internal: the points of a sweep grid in fastmm.sweep's order, with the caller's values.");
+  m.def("_shared_start",
+        &bt::shared_start,
+        py::arg("config"),
+        "Internal: the config every point of a sweep starts from: state_file read once into the "
+        "strategy's initial state and dropped, so no point writes its end state back.");
 
   m.def(
       "_fold_edges",

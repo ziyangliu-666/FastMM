@@ -112,6 +112,13 @@ class BacktestRunner {
   BacktestConfig cfg_;
 };
 
+// `cfg` for runs that start from one place: the points of a sweep, the folds of a walk-forward,
+// the arms of an [ab] branch test. The [strategy] state_file is read once into the strategy's
+// initial state and dropped, so every run restores the same bytes and none writes its end state
+// back, where the runs would race on the file and each would start from another's end. Throws
+// std::invalid_argument when the file cannot be read.
+[[nodiscard]] BacktestConfig shared_start(BacktestConfig cfg);
+
 // The SyntheticSource a run with `source == nullptr` replays under the L2 queue fill model.
 [[nodiscard]] SyntheticSourceConfig synthetic_source_config(const BacktestConfig& cfg);
 

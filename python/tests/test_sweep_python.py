@@ -124,3 +124,31 @@ def test_sweep_of_a_hot_class_matches_the_cpp_strategy(example_config):
     cpp = fastmm.sweep(cfg, grid, data="synthetic", strategy="basic_mm")
     hot = fastmm.sweep(cfg, grid, data="synthetic", strategy=BasicMMHot, threads=2)
     assert _hashes(hot) == _hashes(cpp)
+
+
+class _KeepsState(BasicMMExact):
+    """Ends every run with the state it was restored with plus one "+"."""
+
+    restored = []
+
+    def restore(self, data):
+        _KeepsState.restored.append(bytes(data))
+        self.kept = bytes(data)
+        return True
+
+    def state(self):
+        return getattr(self, "kept", b"") + b"+"
+
+
+def test_sweep_points_start_from_the_state_file_and_none_writes_it(example_config, tmp_path):
+    cfg = _short(example_config, 3)
+    path = tmp_path / "keeps.state"
+    path.write_bytes(b"s0")
+    cfg.state_file = str(path)
+    _KeepsState.restored.clear()
+    fastmm.sweep(cfg, {"half_spread_bps": [0.01, 0.03]}, data="synthetic", strategy=_KeepsState,
+                 threads=1)
+    assert _KeepsState.restored == [b"s0", b"s0"]
+    assert path.read_bytes() == b"s0"
+    fastmm.run_backtest(cfg, data="synthetic", strategy=_KeepsState)
+    assert path.read_bytes() == b"s0+"

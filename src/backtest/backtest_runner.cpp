@@ -281,6 +281,15 @@ struct BacktestSession::Impl final : sim::SimObserver {
   std::unique_ptr<JournalFileWriter> journal_file;
 };
 
+BacktestConfig shared_start(BacktestConfig cfg) {
+  if (cfg.initial_state == InitialState::StateFile && !cfg.engine.state_file.empty()) {
+    auto loaded = load_strategy_state(cfg.engine.state_file, cfg.engine.initial_state);
+    if (!loaded) throw std::invalid_argument("backtest: " + loaded.error());
+  }
+  cfg.engine.state_file.clear();
+  return cfg;
+}
+
 SyntheticSourceConfig synthetic_source_config(const BacktestConfig& cfg) {
   SyntheticSourceConfig sc;
   sc.generator = cfg.generator;

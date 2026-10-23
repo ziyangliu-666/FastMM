@@ -1,13 +1,17 @@
 // Walk-forward sweeps: TimeSliceSource and walk_forward() over synthetic data.
 #include "backtest_test_util.hpp"
+#include "journal_builder.hpp"
 
 #include "fastmm/backtest/backtest_runner.hpp"
 #include "fastmm/backtest/sweep.hpp"
 #include "fastmm/core/book/l2_book.hpp"
+#include "fastmm/core/session_state.hpp"
 #include "fastmm/strategies/basic_mm.hpp"
 
 #include <cmath>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 using namespace fastmm;
 using namespace fastmm::bt;
@@ -227,4 +231,61 @@ TEST_CASE("backtest.walk_forward: the in-sample winner of a flat market loses on
   CHECK(f1.out_of_sample < 0.0);
   CHECK(f1.out_of_sample < f1.hindsight);
   CHECK(rep.mean_out_of_sample < rep.mean_in_sample);
+}
+
+namespace {
+
+// Ends every run with the state it was restored with plus one "+".
+class Counts : public StrategyBase<BasicMMParams> {
+ public:
+  static constexpr std::string_view name() noexcept { return "counts"; }
+  static inline std::vector<std::string> restored;
+  std::string_view state() noexcept { return state_; }
+  bool restore(std::string_view b) {
+    restored.emplace_back(b);
+    state_.assign(b).append("+");
+    return true;
+  }
+
+ private:
+  std::string state_ = "+";
+};
+
+std::string file_text(const std::string& path) {
+  std::string out;
+  REQUIRE(load_strategy_state(path, out));
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "backtest.walk_forward: every point and fold starts from the state file, none writes it") {
+  const std::string path = tmp_path("walk_forward_state.bin");
+  REQUIRE(write_file_atomic(path, "s0"));
+  BacktestConfig base = queue_config(4, seconds(4));
+  base.engine.state_file = path;
+  const ParamGrid grid = {{"half_spread_bps", {"0.05", "0.5", "1"}}};
+
+  Counts::restored.clear();
+  static_cast<void>(sweep<Counts>(base, grid, {}, 1));
+  CHECK(Counts::restored == std::vector<std::string>(3, "s0"));
+  CHECK(file_text(path) == "s0");
+
+  Counts::restored.clear();
+  static_cast<void>(walk_forward(
+      base,
+      grid,
+      {},
+      [](const BacktestConfig& c, MdSource* s) { return run_backtest<Counts>(c, s); },
+      2,
+      "net_pnl",
+      1));
+  CHECK(Counts::restored == std::vector<std::string>(6, "s0"));
+  CHECK(file_text(path) == "s0");
+
+  // A single backtest still carries its end state to the next one.
+  Counts::restored.clear();
+  static_cast<void>(run_backtest<Counts>(base));
+  CHECK(file_text(path) == "s0+");
 }

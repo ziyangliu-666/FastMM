@@ -42,7 +42,8 @@ def _strategy_class(config: Any, strategy: Any) -> Optional[type]:
 
 
 def _point_config(config: Any) -> Any:
-    cfg = config.copy()
+    # Every point restores the state_file as it is now and none writes its end state back.
+    cfg = _core._shared_start(config)
     cfg.output_dir = ""
     cfg.journal_out = ""
     return cfg

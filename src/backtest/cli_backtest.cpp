@@ -45,11 +45,20 @@ int run_branches(const char* prog, const bt::BacktestConfig& cfg, bt::MdSource* 
                  prog);
     return kExitConfig;
   }
+  // Every arm restores the same strategy state and none writes its end state back: the arms stay
+  // paired.
+  bt::BacktestConfig start;
+  try {
+    start = bt::shared_start(cfg);
+  } catch (const std::invalid_argument& e) {
+    std::fprintf(stderr, "%s: %s\n", prog, e.what());
+    return kExitConfig;
+  }
   std::vector<std::string> journals;
   Logger::instance().start(stderr, LogLevel::Warn);
   for (std::size_t k = 0; k < cfg.ab.arms.size(); ++k) {
     const std::string& arm = cfg.ab.arms[k].name;
-    bt::BacktestConfig c = cfg;
+    bt::BacktestConfig c = start;
     c.ab_arm = static_cast<int>(k);
     if (!cfg.output_dir.empty()) c.output_dir = std::string(cfg.output_dir).append("/").append(arm);
     if (!cfg.journal_out.empty()) {

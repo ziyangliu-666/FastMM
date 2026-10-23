@@ -1888,6 +1888,10 @@ def _run_strategy(config: BacktestConfig, data: typing.Any, instance: typing.Any
     """
     Internal: backtest of a fastmm.Strategy instance with the GIL held; use fastmm.run_backtest(config, data, strategy=MyStrategy). `balances`: BalanceMsg rows (ts_ns, venue, asset, free, locked, total, equity, maintenance, flags) merged into the data by time. `perp_states`: PerpStateMsg rows (ts_ns, inst, mark, index, funding_rate, funding_interval_s, next_funding_ns), a None field not carried.
     """
+def _shared_start(config: BacktestConfig) -> BacktestConfig:
+    """
+    Internal: the config every point of a sweep starts from: state_file read once into the strategy's initial state and dropped, so no point writes its end state back.
+    """
 def _slow_abi() -> dict:
     """
     Internal: layout of the slow channel structs (include/fastmm/strategies/slow_channel.hpp).

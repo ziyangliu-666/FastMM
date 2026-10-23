@@ -67,8 +67,9 @@ void run_pool(std::size_t n, int threads, const SourceFactory& factory, const Ta
   if (error) std::rethrow_exception(error);
 }
 
-BacktestConfig point_config(const BacktestConfig& base, const ParamMap& point) {
-  BacktestConfig cfg = base;
+// `start` is shared_start(base): every point restores the same strategy state.
+BacktestConfig point_config(const BacktestConfig& start, const ParamMap& point) {
+  BacktestConfig cfg = start;
   for (const auto& [k, v] : point) cfg.params[k] = v;
   cfg.output_dir.clear();
   cfg.journal_out.clear();
@@ -102,8 +103,9 @@ std::vector<SweepPoint> sweep(const BacktestConfig& base,
   const std::vector<ParamMap> points = expand_grid(grid);
   std::vector<SweepPoint> results(points.size());
   for (std::size_t i = 0; i < points.size(); ++i) results[i].params = points[i];
+  const BacktestConfig start = shared_start(base);
   run_pool(points.size(), threads, source_factory, [&](std::size_t i, MdSource* source) {
-    const BacktestConfig cfg = point_config(base, points[i]);
+    const BacktestConfig cfg = point_config(start, points[i]);
     if (source) source->reset();
     results[i].result = run(cfg, source);
   });
@@ -328,10 +330,11 @@ WalkForwardReport walk_forward(const BacktestConfig& base,
       rep.folds[i].points.resize(n);
       for (std::size_t p = 0; p < n; ++p) rep.folds[i].points[p].params = points[p];
     }
+    const BacktestConfig start = shared_start(base);
     run_pool(k * n, threads, factory, [&](std::size_t t, MdSource* source) {
       const std::size_t fi = t / n;
       const std::size_t p = t % n;
-      const BacktestConfig cfg = point_config(base, points[p]);
+      const BacktestConfig cfg = point_config(start, points[p]);
       if (source == nullptr) throw std::runtime_error("walk_forward: cannot open the data");
       source->reset();
       TimeSliceSource slice(*source, edges[fi], edges[fi + 1]);
