@@ -1,9 +1,12 @@
 // fastmm-data events (backtest/order_events.hpp): a session's own orders, the venue's answers, its
-// balances and the market data of the symbols asked for, as CSV rows.
+// balances and the market data of the symbols asked for, as CSV rows; and the latencies of the
+// session's own messages read from the same records (backtest/recorded_latency.hpp).
 #include "fastmm/backtest/order_events.hpp"
 
 #include "backtest_test_util.hpp"
 #include "journal_builder.hpp"
+
+#include "fastmm/backtest/recorded_latency.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -104,4 +107,18 @@ TEST_CASE("backtest.order_events: money in and out of an account is a flow row")
   CHECK(rows[1].find(",1,,,,,,USDT,25.00000000,") != std::string::npos);
   CHECK(rows[2].find(",2,,,,,,BTC,-0.50000000,") != std::string::npos);
   for (const std::string& r : rows) CHECK(std::count(r.begin(), r.end(), ',') == 16);
+}
+
+TEST_CASE("backtest.recorded_latency: a session's own messages, the way out and the way back") {
+  const std::string path = session("order_events_latency.fmj");
+  JournalReader r;
+  REQUIRE(r.open(path));
+  const sim::RecordedLatency lat = recorded_latency(std::span<JournalReader>{&r, 1});
+  using Path = sim::RecordedLatency::Path;
+  // Venue times in whole milliseconds are taken at the middle of theirs (the builder names no
+  // venue).
+  CHECK(lat.out(Path::New, VenueId{}, 0, Timestamp{kV0}) == microseconds(1500));
+  CHECK(lat.in(Path::Ack, VenueId{}, Timestamp{kV0 + kMs}) == microseconds(500));
+  CHECK(lat.out(Path::Cancel, VenueId{}, 0, Timestamp{kV0 + 10 * kMs}) == microseconds(30'500));
+  CHECK(lat.in(Path::Ack, VenueId{}, Timestamp{kV0 + 40 * kMs}) == microseconds(19'500));
 }

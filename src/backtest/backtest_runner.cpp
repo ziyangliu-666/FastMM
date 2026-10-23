@@ -475,6 +475,15 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
   Timestamp start = cfg_.start;
   if (source_ != nullptr && source_->start_ts().valid()) start = source_->start_ts();
   backend_ = std::make_unique<sim::SimBackend>(cfg_.instruments, cfg_.transport, start);
+  if (cfg_.latency_from_journal) {
+    if (recorded == nullptr) {
+      throw std::invalid_argument(
+          "backtest: latency_from_journal needs a journal as the data source");
+    }
+    backend_->transport.set_recorded_latency(&recorded->latency);
+    FASTMM_LOG_INFO("backtest: latencies of {} recorded messages followed",
+                    recorded->latency.size());
+  }
   const std::size_t bars = source_ == synthetic_.get() || generator_ != nullptr
                                ? static_cast<std::size_t>(cfg_.duration.ns / cfg_.equity_bar.ns) + 4
                                : kReserveBars;

@@ -1,6 +1,7 @@
 #include "fastmm/backtest/journal_source.hpp"
 
 #include "fastmm/backtest/journal_state.hpp"
+#include "fastmm/backtest/recorded_latency.hpp"
 #include "fastmm/core/log.hpp"
 
 #include <fmt/format.h>
@@ -100,8 +101,10 @@ JournalSource::JournalSource(const std::string& path,
     orders_ = log.orders.size();
     stripper_ = std::make_unique<OwnOrderStripper>(parts_);
   }
+  RecordedLatencyCollector latency;
   for (JournalReader& r : parts_) {
     r.for_each([&](const EventHeader* h) {
+      latency.on_event(*h);
       if ((h->flags & EventHeader::kOutbound) != 0) return;
       if (h->type == EventType::Balance && h->len >= sizeof(BalanceMsg)) {
         const auto& m = msg_cast<BalanceMsg>(h);
@@ -124,6 +127,7 @@ JournalSource::JournalSource(const std::string& path,
   }
   for (const JournalParam& p : parts_.front().params())
     session_.params.table.emplace_back(std::string(p.name), p.type);
+  session_.latency = latency.finish();
   read_states(parts_, session_);
   if (remap_) {
     const auto remapped = [&](std::vector<ReconcileMsg>& v) {

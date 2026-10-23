@@ -1,7 +1,8 @@
 // The simulated venue over recorded L2 data: an order is checked against a book ticker newer than
-// the throttled depth, whose levels on the near side of the ticker are stale; and its replies on two
+// the throttled depth, whose levels on the near side of the ticker are stale; its replies on two
 // connections (SimVenueConfig::fill_latency): fills and balances on the private stream's latency,
-// acks and cancel acks on the order connection's, each in order on its own.
+// acks and cancel acks on the order connection's, each in order on its own; and the latencies a
+// live session's messages had (sim::RecordedLatency), taken where they are longer.
 #include "test_support.hpp"
 
 #include "fastmm/sim/sim_transport.hpp"
@@ -195,10 +196,10 @@ TEST_CASE("sim.fill_path: fills take the private stream's latency, and hold up n
   for (const std::int64_t fill_us : {std::int64_t{0}, std::int64_t{5000}}) {
     CAPTURE(fill_us);
     Venue x(config(fill_us));
-    x.order(0, 1, Side::Buy, "100.00");    // at the venue at 50 us
+    x.order(0, 1, Side::Buy, "100.00");  // at the venue at 50 us
     x.run(100);
-    x.trade(200, "100.00", "0.1");         // fills it at 200 us
-    x.order(300, 2, Side::Buy, "99.50");   // acked at 350 us, back at 400 us
+    x.trade(200, "100.00", "0.1");        // fills it at 200 us
+    x.order(300, 2, Side::Buy, "99.50");  // acked at 350 us, back at 400 us
     x.run(10'000);
     const Inbound* fill = x.find(EventType::OrderFill, 1);
     const Inbound* ack2 = x.find(EventType::OrderAck, 2);
@@ -229,4 +230,45 @@ TEST_CASE("sim.fill_path: a cancel that reaches the venue after the fill is reje
   REQUIRE(fill != nullptr);
   CHECK(fill->arrival == at(3200));
   CHECK(x.got.back().type == EventType::OrderFill);
+}
+
+TEST_CASE("sim.recorded_latency: the live message nearest in time, the same decision first") {
+  using Path = sim::RecordedLatency::Path;
+  using S = sim::RecordedLatency::Sample;
+  const sim::RecordedLatency r({S{at(1000).ns, 600'000, 0, VenueId{0}, Path::Cancel},
+                                S{at(1010).ns, 40'000'000, 7, VenueId{0}, Path::Cancel},
+                                S{at(5000).ns, 2'000'000, 0, VenueId{1}, Path::Cancel},
+                                S{at(9000).ns, 90'000'000, 0, VenueId{0}, Path::Ack}});
+  CHECK(r.size() == 4);
+  // The same instrument within 2 ms wins over a nearer one of another.
+  CHECK(r.out(Path::Cancel, VenueId{0}, 7, at(1001)) == milliseconds(40));
+  CHECK(r.out(Path::Cancel, VenueId{0}, 3, at(1001)) == microseconds(600));
+  // Only another account's, or none within 20 ms: nothing.
+  CHECK(r.out(Path::Cancel, VenueId{2}, 0, at(5000)) == Duration{});
+  CHECK(r.out(Path::Cancel, VenueId{1}, 0, at(5000)) == milliseconds(2));
+  CHECK(r.out(Path::Cancel, VenueId{0}, 3, at(40'000)) == Duration{});
+  CHECK(r.out(Path::New, VenueId{0}, 0, at(1000)) == Duration{});
+  // A fill takes an ack's when no fill was recorded near it.
+  CHECK(r.in(Path::Fill, VenueId{0}, at(9500)) == milliseconds(90));
+  CHECK(r.in(Path::Ack, VenueId{0}, at(40'000)) == Duration{});
+}
+
+TEST_CASE("sim.recorded_latency: a cancel as slow as live's loses the race live lost") {
+  using Path = sim::RecordedLatency::Path;
+  using S = sim::RecordedLatency::Sample;
+  // Live, the cancel sent at 210 us took 30 ms to reach the book (a burst).
+  const sim::RecordedLatency slow({S{at(210).ns, 30'000'000, 0, VenueId{0}, Path::Cancel}});
+  for (const bool recorded : {false, true}) {
+    CAPTURE(recorded);
+    Venue x(config(0));
+    if (recorded) x.v.set_recorded_latency(&slow);
+    x.order(0, 1, Side::Buy, "100.00");
+    x.run(100);
+    x.cancel(210, 1);  // the model: at the venue at 260 us
+    x.run(4000);
+    x.trade(5000, "100.00", "0.1");  // hits the bid at 5 ms
+    x.run(50'000);
+    CHECK((x.find(EventType::OrderFill, 1) != nullptr) == recorded);
+    CHECK((x.find(EventType::OrderCancelAck, 1) != nullptr) == !recorded);
+  }
 }

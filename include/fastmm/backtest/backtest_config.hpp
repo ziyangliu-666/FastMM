@@ -20,7 +20,7 @@
 //   initial_state = "state_file" | "journal" | "none", params_from_journal = false
 //   [backtest.balances] <ASSET> = "<amount>"  (and [backtest.venues.<name>.balances])
 //   [backtest.positions] <SYMBOL> = "<qty>" | "<qty>@<avg_px>"
-//   start_at = <unix s> | "<UTC time>"
+//   start_at = <unix s> | "<UTC time>", latency_from_journal = false
 //   equity_bar_s = 1, initial_capital = 0
 //   markout_horizons_s = "1,10,60"
 //   output_dir = "runs/backtest", journal_out = ""
@@ -121,6 +121,10 @@ struct BacktestConfig {
   // has not reconciled, so the engine refuses orders (NotReconciled); at the start each one
   // reconciles with the start positions. Invalid: trading starts with the data.
   Timestamp start_at{};
+  // [backtest] latency_from_journal: the simulated venues take a message's latency from the data
+  // journal's own messages around the same time where that is longer than the model's draw
+  // (sim/recorded_latency.hpp); the data source must be a journal.
+  bool latency_from_journal = false;
   // The data journal's parameter updates reach the strategy at the times the session received
   // them (sim::RecordedParams), mapped by name and type onto its schema.
   bool params_from_journal = false;

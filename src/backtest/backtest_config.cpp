@@ -345,7 +345,8 @@ std::vector<Duration> parse_horizons(const std::string& text) {
 }
 
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 37> kBacktestKeys = {"start_at",
+constexpr std::array<std::string_view, 38> kBacktestKeys = {"start_at",
+                                                            "latency_from_journal",
                                                             "latency_fill_us",
                                                             "latency_fill_jitter_us",
                                                             "latency_fill_sigma",
@@ -502,6 +503,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
                         "' is neither unix seconds nor a UTC time (2026-10-20T08:00:00Z)");
     }
   }
+  b.latency_from_journal = bt.get_bool("latency_from_journal", false);
   b.params_from_journal = bt.get_bool("params_from_journal", false);
   b.ab = cfg.ab;
   if (const std::string s = bt.get_string("initial_state", "state_file"); s == "journal") {

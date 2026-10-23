@@ -166,7 +166,15 @@ bool SimTransport::send(const EventHeader& m) noexcept {
       l.orders_1d.add(now);
     }
   }
-  const LatencySample s = m.type == EventType::OutCancel ? l.lat.cancel_out() : l.lat.order_out();
+  LatencySample s = m.type == EventType::OutCancel ? l.lat.cancel_out() : l.lat.order_out();
+  if (recorded_ != nullptr) {
+    const Duration rec = recorded_->out(
+        m.type == EventType::OutCancel ? RecordedLatency::Path::Cancel : RecordedLatency::Path::New,
+        l.id,
+        m.instrument.value,
+        now);
+    if (rec > s.delay + recorded_->margin) s.delay = rec;
+  }
   if (s.dropped) {
     ++stats_.dropped;
     if (observer_ != nullptr) observer_->on_order_sent(m, now, Timestamp{});
@@ -1016,7 +1024,12 @@ void SimTransport::push_order_wire(Link& l, EventHeader& h, Timestamp venue_ts) 
   h.exch_ts = venue_ts;
   if (h.type == EventType::OrderFill && l.lat.own_fill()) {
     // The private stream: in order among fills and balances, apart from the acks.
-    Timestamp arrival = venue_ts + l.lat.fill_in();
+    Duration d = l.lat.fill_in();
+    if (recorded_ != nullptr) {
+      const Duration rec = recorded_->in(RecordedLatency::Path::Fill, l.id, venue_ts);
+      if (rec > d + recorded_->margin) d = rec;
+    }
+    Timestamp arrival = venue_ts + d;
     if (arrival < l.last_user_arrival) arrival = l.last_user_arrival;
     l.last_user_arrival = arrival;
     h.recv_ts = arrival;
@@ -1026,7 +1039,15 @@ void SimTransport::push_order_wire(Link& l, EventHeader& h, Timestamp venue_ts) 
     if (!l.user_wire.try_push(&h, h.len)) ++stats_.wire_full;
     return;
   }
-  Timestamp arrival = venue_ts + l.lat.ack_in();
+  Duration d = l.lat.ack_in();
+  if (recorded_ != nullptr) {
+    const Duration rec = recorded_->in(
+        h.type == EventType::OrderFill ? RecordedLatency::Path::Fill : RecordedLatency::Path::Ack,
+        l.id,
+        venue_ts);
+    if (rec > d + recorded_->margin) d = rec;
+  }
+  Timestamp arrival = venue_ts + d;
   if (arrival < l.last_order_arrival) arrival = l.last_order_arrival;
   l.last_order_arrival = arrival;
   h.recv_ts = arrival;

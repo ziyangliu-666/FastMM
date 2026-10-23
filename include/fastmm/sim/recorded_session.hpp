@@ -1,13 +1,15 @@
 #pragma once
 // RecordedSession: what a recorded session's journal says about the session itself, besides its
 // market data, for a backtest over it to read back ([backtest] initial_state = "journal",
-// start_at, params_from_journal, balances_from_journal). Everything here is in the journal as it
-// happened: the states the session restored and checkpointed, the positions it reconciled before
-// its first order, the parameter updates it received, and the account as its venues reported it
-// (every balance row and every flow of money in or out). A journal source fills it once when it
+// start_at, params_from_journal, balances_from_journal, latency_from_journal). Everything here is
+// in the journal as it happened: the states the session restored and checkpointed, the positions it
+// reconciled before its first order, the parameter updates it received, the account as its venues
+// reported it (every balance row and every flow of money in or out), and how long its own messages
+// took to and from the venues. A journal source fills it once when it
 // opens the journal (backtest/journal_source.hpp); the backtest reads it before the run.
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/time.hpp"
+#include "fastmm/sim/recorded_latency.hpp"
 #include "fastmm/sim/sim_account.hpp"
 
 #include <cstdint>
@@ -60,6 +62,8 @@ struct RecordedSession {
   // order.
   std::vector<BalanceMsg> balances;
   std::vector<AccountFlowMsg> flows;
+  // How long the session's own messages took on each path (latency_from_journal).
+  RecordedLatency latency;
 
   // What initial_state = "journal" starts from. Without `at`: the restored state, else the first
   // checkpoint, with that checkpoint's positions or the reconciled ones. With `at`: the last

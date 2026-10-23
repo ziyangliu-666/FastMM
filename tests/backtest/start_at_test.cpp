@@ -354,3 +354,14 @@ TEST_CASE("backtest.start_at: the accounts follow the session's flows of money a
   CHECK(snapshots[1] == kT0 + 4 * kS);
   CHECK(updates == 2);
 }
+
+TEST_CASE("backtest.start_at: [backtest] latency_from_journal") {
+  CHECK(parse("latency_from_journal = true\n").latency_from_journal);
+  CHECK_FALSE(parse("").latency_from_journal);
+  BacktestConfig cfg = synthetic_config(1, seconds(1));
+  cfg.transport.fill_model = sim::FillModel::L2Queue;
+  cfg.latency_from_journal = true;
+  CHECK_THROWS_WITH_AS(static_cast<void>(run_backtest<Idle>(cfg)),
+                       doctest::Contains("latency_from_journal needs a journal"),
+                       std::invalid_argument);
+}

@@ -49,6 +49,7 @@
 #include "fastmm/sim/md_source.hpp"
 #include "fastmm/sim/outbound_hash.hpp"
 #include "fastmm/sim/queue_model.hpp"
+#include "fastmm/sim/recorded_latency.hpp"
 #include "fastmm/sim/sim_account.hpp"
 
 #include <cstddef>
@@ -327,6 +328,9 @@ class SimTransport final : public MatchingSink {
     return v == nullptr ? VenueId{} : VenueId{*v};
   }
   void set_observer(SimObserver* o) noexcept { observer_ = o; }
+  // The latencies a live session's messages had (not owned; null: the latency model alone): a
+  // message whose recorded time is longer than its draw by more than the margin takes it.
+  void set_recorded_latency(const RecordedLatency* r) noexcept { recorded_ = r; }
 
   // ---- MatchingSink (venue events for account 1 become engine messages) -------------------
   void on_ack(const SimOrder& o, Timestamp ts) override;
@@ -598,6 +602,7 @@ class SimTransport final : public MatchingSink {
   std::vector<InstrumentId> own_pending_;
   std::unique_ptr<EventBuf> own_buf_;
   SimObserver* observer_ = nullptr;
+  const RecordedLatency* recorded_ = nullptr;
   OutboundHasher hasher_;
   SimTransportStats stats_{};
   std::uint64_t next_queue_order_id_ = 1;
