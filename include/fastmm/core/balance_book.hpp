@@ -44,6 +44,7 @@
 // does not refuse anything.
 #include "fastmm/core/account_pool.hpp"
 #include "fastmm/core/config_macros.hpp"
+#include "fastmm/core/containers/ring_buffer.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fees.hpp"
 #include "fastmm/core/fixed_point.hpp"
@@ -145,7 +146,6 @@ class BalanceBook {
     rows_.clear();
     rows_.reserve(2 * insts.size() + 16);
     moves_.clear();
-    moves_.reserve(kMaxMoves);
     inst_.fill(Inst{});
     members_.clear();
     for (VenueState& v : venues_) v = VenueState{};
@@ -571,8 +571,11 @@ class BalanceBook {
   void rebase(std::uint16_t r) noexcept {
     add_in_flight(r);
     Row& row = rows_[r];
-    std::size_t keep = 0;
-    for (const Move& m : moves_) {
+    // Compacts in order: each move leaves the front and the ones still pending go to the back.
+    const std::size_t n = moves_.size();
+    for (std::size_t k = 0; k < n; ++k) {
+      Move m;
+      moves_.pop(m);
       if (m.row == r) {
         if (!row.as_of.valid() || m.venue_ts <= row.as_of) continue;
         row.free += m.free;
@@ -580,9 +583,8 @@ class BalanceBook {
         row.total += m.total;
         row.equity += m.total;
       }
-      moves_[keep++] = m;
+      moves_.push(m);
     }
-    moves_.resize(keep);
   }
   // The estimate moved reported row `r` for an event stamped `venue_ts` after its report: a report
   // older than the event (rebase) does not have it. `total` moves the equity too.
@@ -592,11 +594,8 @@ class BalanceBook {
             std::int64_t locked,
             std::int64_t total) noexcept {
     if (!venue_ts.valid() || !rows_[r].reported) return;
-    if (moves_.size() >= kMaxMoves) {
-      moves_.erase(moves_.begin());
-      ++stats_.moves_dropped;
-    }
-    moves_.push_back(Move{venue_ts, free, locked, total, r});
+    if (moves_.full()) ++stats_.moves_dropped;  // push() drops the oldest, in O(1)
+    moves_.push(Move{venue_ts, free, locked, total, r});
   }
   // An event the report already counted: the venue stamped it at or before the report's time.
   [[nodiscard]] static bool counted(const Row& row, Timestamp venue_ts) noexcept {
@@ -671,7 +670,7 @@ class BalanceBook {
 
   std::vector<Row> rows_;
   std::array<Inst, kMaxInstruments> inst_{};
-  std::vector<Move> moves_;    // kMaxMoves, reserved by build(); oldest first
+  RingBuffer<Move, kMaxMoves> moves_;  // oldest first
   std::vector<Inst> members_;  // pool members' copies of the instrument state (Inst::first_member)
   std::array<VenueState, kMaxVenueSlots> venues_{};
   BalanceStats stats_{};
