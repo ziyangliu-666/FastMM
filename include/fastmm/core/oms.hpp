@@ -201,8 +201,6 @@ class Oms {
       pool_.free(h);
       return fail(RejectReason::PoolExhausted);
     }
-    live_pos_[h.idx] = static_cast<std::uint32_t>(live_.size());
-    static_cast<void>(live_.push_back(h.idx));  // cannot fail: one entry per pool slot
     by_inst_.set(InstBits::bucket(req.instrument.value), h.idx);
     Order& o = pool_.get(h);
     o = Order{};
@@ -886,25 +884,19 @@ class Oms {
     const InstrumentId inst = o.instrument;
     const Side side = o.side;
     const Price px = o.price;
-    // Swap-remove from the dense list of live orders.
-    const std::uint32_t pos = live_pos_[h.idx];
-    const std::uint32_t last = live_.back();
-    live_[pos] = last;
-    live_pos_[last] = pos;
-    live_.pop_back();
     by_inst_.clear(InstBits::bucket(inst.value), h.idx);
     pool_.free(h);
     if (px == best_own_[inst.value][s]) recompute_best_own(inst, side);
   }
 
-  // Scans the live orders (live_), not the kMaxOpenOrders-slot pool.
+  // Scans the instrument's live orders (by_inst_), not every live order.
   void recompute_best_own(InstrumentId inst, Side side) noexcept {
     Price best{};
-    for (const std::uint32_t idx : live_) {
+    by_inst_.for_each(InstBits::bucket(inst.value), [&](std::uint32_t idx) {
       const Order& o = pool_.get(Handle<Order>{idx});
-      if (o.instrument != inst || o.side != side) continue;
+      if (o.side != side || o.instrument != inst) return;
       if (best.is_zero() || better(side, o.price, best)) best = o.price;
-    }
+    });
     best_own_[inst.value][static_cast<std::size_t>(side)] = best;
   }
 
@@ -924,12 +916,8 @@ class Oms {
   std::uint64_t seq_ = 0;  // 64-bit so the comparison with max_seq_ cannot itself wrap
   OmsStats stats_{};
   Pool<Order, kMaxOpenOrders> pool_;
-  // Pool slots of the live orders in no particular order, and each live slot's position in it.
-  // Only order-independent scans use it (recompute_best_own); iteration that produces messages
-  // keeps the pool's slot order.
-  StaticVector<std::uint32_t, kMaxOpenOrders> live_;
-  std::uint32_t live_pos_[kMaxOpenOrders] = {};
-  // The pool slots of each instrument's live orders, for for_each_open_order(id) in slot order.
+  // The pool slots of each instrument's live orders, for for_each_open_order(id) in slot order and
+  // recompute_best_own.
   using InstBits = BucketBits<kMaxOpenOrders, kMaxInstruments>;
   InstBits by_inst_;
   OpenHashMap<ClientOrderId, Handle<Order>, kMaxOpenOrders * 4> by_id_;  // ids + pending ids
