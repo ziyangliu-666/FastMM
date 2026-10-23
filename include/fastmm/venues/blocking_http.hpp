@@ -1,14 +1,23 @@
 #pragma once
-// BlockingHttp: one synchronous HTTPS request on a private Reactor + HttpClient. Used only
-// on control paths that must not depend on the venue's reactor thread being alive:
-// reference data at startup, server-time probes, and the kill-switch cancel_all (6.7:
-// "independent REST connection"). Allocates freely; never touched by the hot path.
+// BlockingHttp: synchronous HTTP(S) requests on a private Reactor + HttpClient. Used only on
+// control paths that must not depend on the venue's reactor thread being alive: reference data at
+// startup, server-time probes, and the kill-switch cancel_all (6.7: "independent REST
+// connection"). Allocates freely; never touched by the hot path.
+//
+// One object keeps its connection between requests (HTTP/1.1 keep-alive) and the addresses it
+// looked up: the kill switch cancels symbol after symbol, and a connection per request paid a
+// lookup, a CA bundle load, the TCP and TLS handshakes and the request each time. The TLS context
+// is the process's (net::TlsContext::shared_client).
+// A connection idle for more than kReuseIdleMs is not reused, nor one the server has closed. A
+// request whose reused connection turns out to be gone before any answer is sent again on a new
+// one, unless it is a POST (it may have been carried out). Not thread-safe: one thread at a time.
 #include "fastmm/net/http_message.hpp"
 #include "fastmm/net/source_address.hpp"
-#include "fastmm/net/tls_stream.hpp"
+#include "fastmm/net/tcp_socket.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -44,7 +53,14 @@ struct BlockingHttpOptions {
 
 class BlockingHttp {
  public:
+  // A connection idle this long is closed rather than reused: well inside the keep-alive timeout
+  // of the venues' front ends, so the server does not close it as the request goes out.
+  static constexpr std::int64_t kReuseIdleMs = 10'000;
+
   explicit BlockingHttp(std::string base_url, BlockingHttpOptions opts = {});
+  ~BlockingHttp();
+  BlockingHttp(const BlockingHttp&) = delete;
+  BlockingHttp& operator=(const BlockingHttp&) = delete;
 
   // `target` is the path plus query ("/api/v3/depth?symbol=BTCUSDT"); `extra_headers` is a
   // pre-formatted "Name: value\r\n" block.
@@ -58,14 +74,31 @@ class BlockingHttp {
 
   [[nodiscard]] const std::string& base_url() const noexcept { return base_url_; }
   [[nodiscard]] std::string_view host() const noexcept { return host_; }
+  // Connections opened so far.
+  [[nodiscard]] std::uint64_t connects() const noexcept { return connects_; }
 
  private:
+  struct Session;  // the reactor, the TLS context and the open connection
+
+  // One attempt on the open connection, connecting first when there is none. `reused`: the
+  // connection was there before the attempt; `lost`: it closed or failed under the request.
+  HttpReply attempt(std::string_view method,
+                    std::string_view target,
+                    std::string_view extra_headers,
+                    std::string_view body,
+                    bool& reused,
+                    bool& lost);
+  std::string connect();  // opens the connection; the error, empty on success
+
   std::string base_url_;
   std::string host_;
   std::uint16_t port_ = 0;
   bool tls_ = false;
   std::string base_path_;  // path prefix from the base URL ("" or "/api")
   BlockingHttpOptions opts_;
+  std::vector<net::SockAddr> addrs_;  // looked up on first use, again after a failed connect
+  std::unique_ptr<Session> session_;
+  std::uint64_t connects_ = 0;
 };
 
 }  // namespace fastmm::venues
