@@ -1,7 +1,9 @@
 #pragma once
 // LatencyModel (8.2): per-direction delay = fixed + jitter * LogNormal(mean 1), plus an
 // independent drop probability for the order path. Cancels take the order path, or a path of their
-// own when one is given (a venue may take a cancel in faster than a new order). All draws come from
+// own when one is given (a venue may take a cancel in faster than a new order); fills and balances
+// likewise reach the engine on the order path's replies or on a path of their own (a venue's
+// private stream, whose tail is heavier than its order API's replies). All draws come from
 // one seeded Xoshiro256ss so a run is reproducible bit for bit; the double math is confined to the
 // simulator (delays are converted to integer nanoseconds immediately).
 #include "fastmm/core/rng.hpp"
@@ -62,6 +64,16 @@ class LatencyModel {
   }
   // Venue -> engine (acks, fills).
   [[nodiscard]] Duration ack_in() noexcept { return draw(ack_in_); }
+  // Venue -> engine, a fill or a balance on the private stream (set_fill_in), else ack_in().
+  [[nodiscard]] Duration fill_in() noexcept { return own_fill_ ? draw(fill_in_) : ack_in(); }
+  void set_fill_in(const LatencyParams& p) noexcept {
+    fill_in_ = p;
+    own_fill_ = true;
+  }
+  [[nodiscard]] bool own_fill() const noexcept { return own_fill_; }
+  [[nodiscard]] const LatencyParams& fill_in_params() const noexcept {
+    return own_fill_ ? fill_in_ : ack_in_;
+  }
   // Venue -> engine (market data).
   [[nodiscard]] Duration md_in() noexcept { return draw(md_in_); }
 
@@ -86,7 +98,9 @@ class LatencyModel {
   LatencyParams ack_in_{};
   LatencyParams md_in_{};
   LatencyParams cancel_out_{};
+  LatencyParams fill_in_{};
   bool own_cancel_ = false;
+  bool own_fill_ = false;
   Xoshiro256ss rng_{1};
 };
 

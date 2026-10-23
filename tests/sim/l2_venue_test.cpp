@@ -1,5 +1,7 @@
 // The simulated venue over recorded L2 data: an order is checked against a book ticker newer than
-// the throttled depth, whose levels on the near side of the ticker are stale.
+// the throttled depth, whose levels on the near side of the ticker are stale; and its replies on two
+// connections (SimVenueConfig::fill_latency): fills and balances on the private stream's latency,
+// acks and cancel acks on the order connection's, each in order on its own.
 #include "test_support.hpp"
 
 #include "fastmm/sim/sim_transport.hpp"
@@ -36,14 +38,18 @@ InstrumentTable table() {
   return t;
 }
 
-// Orders take 50 us to the venue, acks 50 us back.
-sim::SimTransportConfig config(std::int64_t = 0) {
+// Orders take 50 us to the venue, acks 50 us back; with `fill_us`, fills take that long back.
+sim::SimTransportConfig config(std::int64_t fill_us) {
   sim::SimTransportConfig tc;
   tc.fill_model = sim::FillModel::L2Queue;
   tc.queue_conservatism_bps = 0;
   tc.order_out = sim::LatencyParams{microseconds(50), Duration{}};
   tc.ack_in = sim::LatencyParams{microseconds(50), Duration{}};
   tc.own_orders_in_feed = false;
+  if (fill_us > 0) {
+    tc.fill_latency = true;
+    tc.fill_in = sim::LatencyParams{microseconds(fill_us), Duration{}};
+  }
   return tc;
 }
 
@@ -183,4 +189,44 @@ TEST_CASE("sim.l2_queue: a depth level on the near side of the ticker is stale")
   x.run(1000);
   CHECK(x.find(EventType::OrderAck, 1) != nullptr);
   CHECK(x.find(EventType::OrderReject, 1) == nullptr);
+}
+
+TEST_CASE("sim.fill_path: fills take the private stream's latency, and hold up no ack") {
+  for (const std::int64_t fill_us : {std::int64_t{0}, std::int64_t{5000}}) {
+    CAPTURE(fill_us);
+    Venue x(config(fill_us));
+    x.order(0, 1, Side::Buy, "100.00");    // at the venue at 50 us
+    x.run(100);
+    x.trade(200, "100.00", "0.1");         // fills it at 200 us
+    x.order(300, 2, Side::Buy, "99.50");   // acked at 350 us, back at 400 us
+    x.run(10'000);
+    const Inbound* fill = x.find(EventType::OrderFill, 1);
+    const Inbound* ack2 = x.find(EventType::OrderAck, 2);
+    REQUIRE(fill != nullptr);
+    REQUIRE(ack2 != nullptr);
+    CHECK(fill->venue == at(200));
+    CHECK(ack2->arrival == at(400));
+    if (fill_us == 0) {
+      CHECK(fill->arrival == at(250));  // on the ack path, in order with the acks
+    } else {
+      CHECK(fill->arrival == at(5200));
+      CHECK(ack2->arrival < fill->arrival);  // the ack does not wait behind the late fill
+    }
+  }
+}
+
+TEST_CASE("sim.fill_path: a cancel that reaches the venue after the fill is rejected first") {
+  // The fill is late on the private stream: the cancel's reject (the order is gone) arrives first,
+  // as a live venue's order API answers before its user stream reports the trade.
+  Venue x(config(3000));
+  x.order(0, 1, Side::Buy, "100.00");
+  x.run(100);
+  x.trade(200, "100.00", "0.1");
+  x.cancel(210, 1);  // at the venue at 260 us: the order filled at 200 us
+  x.run(10'000);
+  REQUIRE(x.got.size() >= 3);
+  const Inbound* fill = x.find(EventType::OrderFill, 1);
+  REQUIRE(fill != nullptr);
+  CHECK(fill->arrival == at(3200));
+  CHECK(x.got.back().type == EventType::OrderFill);
 }

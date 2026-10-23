@@ -574,6 +574,16 @@ TEST_CASE("backtest.multi_venue: cancel latency and order service time per venue
   CHECK(sb.cancel_latency);
   CHECK(sb.cancel_out.sigma == doctest::Approx(1.2));
   CHECK(sb.ack_in.sigma == doctest::Approx(0.3));
+  // Fills' own path (the private stream): the keys given, the others from the ack path.
+  CHECK_FALSE(sh.transport.venue_config(VenueId{1}).fill_latency);
+  const BacktestConfig fl = two_venue_config(
+      "", "latency_ack_us = 400\nlatency_ack_jitter_us = 60\nlatency_fill_sigma = 3");
+  CHECK_FALSE(fl.transport.venue_config(VenueId{0}).fill_latency);
+  const sim::SimVenueConfig fb = fl.transport.venue_config(VenueId{1});
+  CHECK(fb.fill_latency);
+  CHECK(fb.fill_in.fixed == microseconds(400));
+  CHECK(fb.fill_in.jitter == microseconds(60));
+  CHECK(fb.fill_in.sigma == doctest::Approx(3.0));
   CHECK_THROWS_WITH_AS(static_cast<void>(two_venue_config("", "latency_sigma = 0")),
                        doctest::Contains("latency_sigma must be in (0, 4]"),
                        ConfigError);

@@ -982,6 +982,18 @@ void SimTransport::emit_fill(ClientOrderId id,
 
 void SimTransport::push_order_wire(Link& l, EventHeader& h, Timestamp venue_ts) noexcept {
   h.exch_ts = venue_ts;
+  if (h.type == EventType::OrderFill && l.lat.own_fill()) {
+    // The private stream: in order among fills and balances, apart from the acks.
+    Timestamp arrival = venue_ts + l.lat.fill_in();
+    if (arrival < l.last_user_arrival) arrival = l.last_user_arrival;
+    l.last_user_arrival = arrival;
+    h.recv_ts = arrival;
+    h.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
+    h.t1_delta = h.t2_delta = 0;
+    h.seq = 0;
+    if (!l.user_wire.try_push(&h, h.len)) ++stats_.wire_full;
+    return;
+  }
   Timestamp arrival = venue_ts + l.lat.ack_in();
   if (arrival < l.last_order_arrival) arrival = l.last_order_arrival;
   l.last_order_arrival = arrival;
@@ -1010,6 +1022,16 @@ void SimTransport::publish_account(Link& l, Timestamp venue_ts) noexcept {
 }
 
 void SimTransport::push_balance(Link& l, BalanceMsg& m) noexcept {
+  if (l.lat.own_fill()) {
+    // The private stream: behind the fill that moved it, else the stream's fixed delay.
+    const Timestamp arrival =
+        std::max(l.last_user_arrival, m.hdr.exch_ts + l.lat.fill_in_params().fixed);
+    l.last_user_arrival = arrival;
+    m.hdr.recv_ts = arrival;
+    m.hdr.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
+    if (!l.user_wire.try_push(&m.hdr, m.hdr.len)) ++stats_.wire_full;
+    return;
+  }
   const Timestamp arrival = std::max(l.last_order_arrival, m.hdr.exch_ts);
   l.last_order_arrival = arrival;
   m.hdr.recv_ts = arrival;
@@ -1242,7 +1264,7 @@ Timestamp SimTransport::head_ts(MsgRing& ring) noexcept {
 Timestamp SimTransport::next_inbound_ts() noexcept {
   Timestamp t = Timestamp::max();
   for (std::size_t k = 0; k < n_links_; ++k)
-    t = std::min({t, head_ts(at(k).order_wire), head_ts(at(k).md_wire)});
+    t = std::min({t, head_ts(at(k).order_wire), head_ts(at(k).user_wire), head_ts(at(k).md_wire)});
   return t;
 }
 
@@ -1260,8 +1282,9 @@ bool SimTransport::move_head(MsgRing& ring, InlineFeed& feed, EventType& type) n
 }
 
 EventType SimTransport::deliver_next_inbound(InlineFeed& feed) noexcept {
-  // Earliest head among the order wires and among the md wires; a tie keeps the lower venue.
-  Link* ord = nullptr;
+  // Earliest head among the order wires (and private streams) and among the md wires; a tie keeps
+  // the lower venue, and an order connection's message before its private stream's.
+  MsgRing* ord = nullptr;
   Link* md = nullptr;
   Timestamp a = Timestamp::max();
   Timestamp b = Timestamp::max();
@@ -1269,7 +1292,11 @@ EventType SimTransport::deliver_next_inbound(InlineFeed& feed) noexcept {
     Link& l = at(k);
     if (const Timestamp ts = head_ts(l.order_wire); ts < a) {
       a = ts;
-      ord = &l;
+      ord = &l.order_wire;
+    }
+    if (const Timestamp ts = head_ts(l.user_wire); ts < a) {
+      a = ts;
+      ord = &l.user_wire;
     }
     if (const Timestamp ts = head_ts(l.md_wire); ts < b) {
       b = ts;
@@ -1278,7 +1305,7 @@ EventType SimTransport::deliver_next_inbound(InlineFeed& feed) noexcept {
   }
   EventType t = EventType::Padding;
   if (ord != nullptr && a <= b) {
-    if (move_head(ord->order_wire, feed, t)) ++stats_.order_events_delivered;
+    if (move_head(*ord, feed, t)) ++stats_.order_events_delivered;
   } else if (md != nullptr) {
     if (move_head(md->md_wire, feed, t)) ++stats_.md_delivered;
   }

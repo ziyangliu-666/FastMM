@@ -81,6 +81,20 @@ void read_latency(const GenericSection& bt, const std::string& prefix, sim::SimV
                            shape(bt, cancel_sigma, base.sigma)};
     v.cancel_latency = true;
   }
+  // Fills and balances on a path of their own (the venue's private stream): the keys given, the
+  // others from the fill path already set, else from the ack path.
+  const std::string fill_fixed = prefix + "latency_fill_us";
+  const std::string fill_jitter = prefix + "latency_fill_jitter_us";
+  const std::string fill_sigma = prefix + "latency_fill_sigma";
+  if (bt.has(fill_fixed) || bt.has(fill_jitter) || bt.has(fill_sigma)) {
+    const sim::LatencyParams base = v.fill_latency ? v.fill_in : v.ack_in;
+    v.fill_in =
+        sim::LatencyParams{microseconds(non_negative(bt, fill_fixed, base.fixed.ns / 1000)),
+                           microseconds(non_negative(bt, fill_jitter, base.jitter.ns / 1000)),
+                           0.0,
+                           shape(bt, fill_sigma, base.sigma)};
+    v.fill_latency = true;
+  }
   v.order_service =
       microseconds(non_negative(bt, prefix + "order_service_us", v.order_service.ns / 1000));
   const std::string arrival_key = prefix + "md_arrival";
@@ -93,7 +107,10 @@ void read_latency(const GenericSection& bt, const std::string& prefix, sim::SimV
 }
 
 // Keys of [backtest.venues.<name>] (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 18> kVenueKeys = {"latency_fixed_us",
+constexpr std::array<std::string_view, 21> kVenueKeys = {"latency_fixed_us",
+                                                         "latency_fill_us",
+                                                         "latency_fill_jitter_us",
+                                                         "latency_fill_sigma",
                                                          "latency_jitter_us",
                                                          "latency_sigma",
                                                          "latency_ack_sigma",
@@ -191,6 +208,7 @@ std::vector<sim::SimVenueConfig> read_venues(const Config& cfg,
                       "latency_sigma, latency_ack_sigma, latency_cancel_sigma, latency_ack_us, "
                       "latency_ack_jitter_us, latency_md_us, "
                       "latency_md_jitter_us, latency_cancel_us, latency_cancel_jitter_us, "
+                      "latency_fill_us, latency_fill_jitter_us, latency_fill_sigma, "
                       "order_service_us, md_arrival, p_drop, supports_replace, stp, "
                       "orders_10s, orders_1d, balances.<ASSET>){}",
                       key,
@@ -326,7 +344,10 @@ std::vector<Duration> parse_horizons(const std::string& text) {
 }
 
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 33> kBacktestKeys = {"latency_sigma",
+constexpr std::array<std::string_view, 36> kBacktestKeys = {"latency_fill_us",
+                                                            "latency_fill_jitter_us",
+                                                            "latency_fill_sigma",
+                                                            "latency_sigma",
                                                             "latency_ack_sigma",
                                                             "latency_cancel_sigma",
                                                             "markout_horizons_s",
@@ -439,6 +460,8 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   t.cancel_latency = defaults.cancel_latency;
   t.cancel_out = defaults.cancel_out;
   t.order_service = defaults.order_service;
+  t.fill_latency = defaults.fill_latency;
+  t.fill_in = defaults.fill_in;
   t.supports_replace = cfg.engine.supports_replace;
   t.stp = cfg.risk.stp ? sim::StpMode::CancelTaker : sim::StpMode::None;
   defaults.supports_replace = t.supports_replace;

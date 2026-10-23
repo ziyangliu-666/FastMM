@@ -87,6 +87,11 @@ struct SimVenueConfig {
   // The venue takes the order messages of one connection one at a time: a message is processed
   // no sooner than this after the one sent before it (zero: each on its own latency draw).
   Duration order_service{};
+  // Fills and balances reach the engine on a path of their own (fill_latency set: the venue's
+  // private stream, fill_in), apart from the acks and rejects of the order connection, so a late
+  // fill holds up no ack and an ack no fill; else behind the acks, on ack_in.
+  bool fill_latency = false;
+  LatencyParams fill_in{};
 };
 
 struct SimTransportConfig {
@@ -109,6 +114,8 @@ struct SimTransportConfig {
   bool cancel_latency = false;  // SimVenueConfig::cancel_latency, cancel_out, order_service
   LatencyParams cancel_out{};
   Duration order_service{};
+  bool fill_latency = false;  // SimVenueConfig::fill_latency, fill_in
+  LatencyParams fill_in{};
   MdAggregatorConfig md{};  // coupled-generator mode
   // SHA-256 over every outbound message (outbound_hash()), used by the determinism and replay
   // checks. It costs about 70 ns per order, more than the engine work that produced it, so a
@@ -150,7 +157,9 @@ struct SimTransportConfig {
                           orders_1d,
                           cancel_latency,
                           cancel_out,
-                          order_service};
+                          order_service,
+                          fill_latency,
+                          fill_in};
   }
   // Bit v set: venue v uses cancel-replace (the journal header's replace_venues).
   [[nodiscard]] std::uint64_t replace_mask() const noexcept {
@@ -358,16 +367,21 @@ class SimTransport final : public MatchingSink {
                                : LatencyModel(c.order_out, c.ack_in, c.md_in, seed)),
           md_wire(t.md_wire_bytes),
           order_wire(t.order_wire_bytes),
+          user_wire(c.fill_latency ? t.order_wire_bytes : 64),
           orders_10s{seconds(10).ns, c.orders_10s},
           orders_1d{seconds(86'400).ns, c.orders_1d},
           md_recorded_arrival(c.md_recorded_arrival),
-          order_service(c.order_service) {}
+          order_service(c.order_service) {
+      if (c.fill_latency) lat.set_fill_in(c.fill_in);
+    }
     VenueId id;
     LatencyModel lat;
     MsgRing md_wire;
     MsgRing order_wire;
+    MsgRing user_wire;  // fills and balances with SimVenueConfig::fill_latency
     Timestamp last_md_arrival{};
     Timestamp last_order_arrival{};
+    Timestamp last_user_arrival{};
     OrderWindow orders_10s;  // SimVenueConfig::orders_10s / orders_1d
     OrderWindow orders_1d;
     std::uint64_t taken = 0;  // new orders and replaces sent (OrderBudget::orders_taken)
