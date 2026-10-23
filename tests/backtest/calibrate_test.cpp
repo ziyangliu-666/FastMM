@@ -361,6 +361,42 @@ TEST_CASE("backtest.calibrate: a cancel path and the intake's service time from 
   };
   CHECK(has("latency_cancel_us", "150"));
   CHECK(has("order_service_us", "200"));
+  // The shape the fit assumed, for every path it fitted.
+  CHECK(has("latency_sigma", "0.5"));
+  CHECK(has("latency_ack_sigma", "0.5"));
+  CHECK(has("latency_cancel_sigma", "0.5"));
   CHECK(calibration_snippet(c).find("order_service_us = 200\n") != std::string::npos);
   CHECK(format_calibration(c).find("intake: 200 us per message") != std::string::npos);
+}
+
+TEST_CASE("backtest.calibrate: the live column leaves out what the journal cannot value") {
+  // Two fills and no book ticker: one paid in quote, one in another asset (BNB). Without a mid at
+  // the end there is no drift to book; the other asset's commission is counted apart.
+  const std::string path = tmp_path("calibrate_live_fees.fmj");
+  {
+    JournalBuilder j(path);
+    j.book(true, {{"99.98", "4"}}, {{"100.02", "4"}});
+    j.out_new(1, Side::Buy, "100.00", "1");
+    j.ack(1);
+    j.fill(1, "100.00", "0.5", "0.5", "1", "0.02", FeeAsset::Quote);
+    j.fill(1, "100.00", "0.5", "0", "2", "0.0001", FeeAsset::Other);
+  }
+  JournalReader reader;
+  REQUIRE(reader.open(path));
+  const std::vector<std::int64_t> horizons{1'000'000'000};
+  const TradeSummary t = live_trades(reader, horizons);
+  CHECK(t.fills == 2);
+  CHECK(t.position == doctest::Approx(1.0));
+  CHECK(t.fees == doctest::Approx(0.02));
+  CHECK(t.unvalued_fee_fills == 1);
+  CHECK(t.unvalued_fees == doctest::Approx(0.0001));
+  CHECK(t.drift == 0.0);
+  CHECK(t.net == doctest::Approx(-0.02));
+  BacktestGap g;
+  g.session = "calibrate_live_fees.fmj";
+  g.horizons_ns = horizons;
+  g.live = g.before = g.after = t;
+  CHECK(format_backtest_gaps(std::span<const BacktestGap>(&g, 1))
+            .find("leave out the commission of 1 fill(s) paid in an asset other than base or "
+                  "quote (0.00010000 in that asset)") != std::string::npos);
 }

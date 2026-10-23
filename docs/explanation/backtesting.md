@@ -122,7 +122,7 @@ For each session it replays the orders that rested, from ack to end in venue tim
 
 The conservatism is cross-validated: fitted on each session alone and scored on the others (`best c` is the best value on those sessions themselves); the snippet's value is fitted on all of them. When every value scores the same on every session, the data does not identify it and 1 is kept: the queues of orders at or inside the touch are set by the book ticker, where the conservatism does not act.
 
-Latency comes from each order's send time, the venue's time on its ack and the ack's arrival. The simulated venue draws each leg as a fixed part plus a lognormal excess (mean `jitter`); the fit solves fixed and jitter for the measured 5th and 50th percentiles of the round trip. Binance stamps orders in whole milliseconds, so each one-way latency is only known to lie in a millisecond; the sends fall anywhere in theirs, so the intervals of many orders still identify the leg, and fixed and jitter are fitted to them by maximum likelihood (at most the round trip's fixed part). The ack leg gets the rest. The tail of the round trip (a p99 of 40 ms on Binance Spot from AWS Tokyo) is beyond this model.
+Latency comes from each order's send time, the venue's time on its ack and the ack's arrival. The simulated venue draws each leg as a fixed part plus a lognormal excess (mean `jitter`); the fit solves fixed and jitter for the measured 5th and 50th percentiles of the round trip, with the excess's shape held at 0.5, which the snippet writes as the `latency_*_sigma` keys so that a configuration with another shape still runs the latencies as fitted. Binance stamps orders in whole milliseconds, so each one-way latency is only known to lie in a millisecond; the sends fall anywhere in theirs, so the intervals of many orders still identify the leg, and fixed and jitter are fitted to them by maximum likelihood (at most the round trip's fixed part). The ack leg gets the rest. The tail of the round trip (a p99 of 40 ms on Binance Spot from AWS Tokyo) is beyond this model.
 
 The one-way legs come from isolated messages, those sent at least 1 ms after the one before on the same connection. Cancels get a path of their own (`latency_cancel_us`, `latency_cancel_jitter_us`) from at least 20 isolated cancels, timed by their cancel acks. A message sent within 1 ms of the one before waits for the venue to take that one in: the fit predicts each such message's venue time as the later of its own path's median and the previous message's predicted time plus `order_service_us`, and picks the service time (0 to 2000 us, in 10 us steps) with the smallest mean error; the report gives that error with and without it. On Binance Spot a burst of cancels on one connection is taken in about a quarter of a millisecond apart, so the tenth cancel of a burst reaches the book some 2 ms after the first.
 
@@ -135,10 +135,13 @@ queue_conservatism = 0.75
 md_arrival = "recorded"
 latency_fixed_us = 360
 latency_jitter_us = 300
+latency_sigma = 0.5
 latency_ack_us = 375
 latency_ack_jitter_us = 160
+latency_ack_sigma = 0.5
 latency_cancel_us = 200
 latency_cancel_jitter_us = 250
+latency_cancel_sigma = 0.5
 order_service_us = 220
 ```
 
@@ -146,7 +149,7 @@ With several venues (a pool's accounts are venues of their own) the latency keys
 
 `md_arrival = "recorded"` is for backtests over journals like these: market data reaches the strategy when the session received it.
 
-`--backtest` then re-runs each session with its own recorded strategy configuration (or `--config`, one for all or one per journal) over its journal with our orders stripped (`journal:<file>,strip_own=1`), once with the configuration's `[backtest]` and once with the fitted keys (`l2_queue` and recorded arrival in both), and prints both beside the live session: orders, the venue's rejects, fills, time to fill, the PnL decomposition and markouts, all three marked against the journal's book ticker mids. The fill check isolates the fill model; this comparison adds everything else a backtest re-decides, such as how often the strategy requotes and what the account's balances allowed. `--from-live-state` starts both runs from the state the session recorded and replays its parameter updates ([below](#starting-from-the-live-sessions-state)). `--csv` writes the fill-check grid.
+`--backtest` then re-runs each session with its own recorded strategy configuration (or `--config`, one for all or one per journal) over its journal with our orders stripped (`journal:<file>,strip_own=1`), once with the configuration's `[backtest]` and once with the fitted keys (`l2_queue` and recorded arrival in both), and prints both beside the live session: orders, the venue's rejects, fills, time to fill, the PnL decomposition and markouts, all three marked against the journal's book ticker mids. A live commission paid in an asset other than base or quote (BNB) has neither its asset nor its price in the journal, so the live fees and net leave it out, as the engine does, and a line under the table gives the number of such fills and their commission in that asset. The fill check isolates the fill model; this comparison adds everything else a backtest re-decides, such as how often the strategy requotes and what the account's balances allowed. `--from-live-state` starts both runs from the state the session recorded and replays its parameter updates ([below](#starting-from-the-live-sessions-state)). `--csv` writes the fill-check grid.
 
 ## Starting from the live session's state
 

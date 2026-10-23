@@ -141,7 +141,9 @@ class JournalBuilder {
             const char* p,
             const char* q,
             const char* leaves,
-            const char* exec_id = "") {
+            const char* exec_id = "",
+            const char* fee = "0",
+            FeeAsset fee_asset = FeeAsset::Quote) {
     OrderFillMsg m{};
     init_header(m, EventType::OrderFill, InstrumentId{0});
     m.cl_ord_id = ClientOrderId{id};
@@ -150,6 +152,8 @@ class JournalBuilder {
     m.qty = qt(q);
     m.leaves_qty = qt(leaves);
     m.liquidity = Liquidity::Maker;
+    m.fee = Notional::from_decimal(fee).value();
+    m.fee_asset = fee_asset;
     put(m.hdr);
   }
 

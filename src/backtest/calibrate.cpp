@@ -34,7 +34,9 @@ namespace {
 constexpr std::int64_t kMs = 1'000'000;
 constexpr double kNsPerUs = 1e3;
 // Lognormal excess with sigma 0.5 and mean 1 (sim/latency_model.hpp): its 5th and 50th
-// percentiles, exp(-1.645 * 0.5 - 0.125) and exp(-0.125).
+// percentiles, exp(-1.645 * 0.5 - 0.125) and exp(-0.125). The snippet sets the latency_*_sigma
+// keys to kSigma, so a configuration with another shape runs the fitted model as fitted.
+constexpr double kSigma = 0.5;
 constexpr double kExcessP5 = 0.3877;
 constexpr double kExcessP50 = 0.8825;
 
@@ -82,7 +84,6 @@ std::pair<std::int64_t, std::int64_t> fit_leg_ms(std::vector<double> us) {
   std::vector<double> x;
   const std::size_t step = us.size() / 4000 + 1;
   for (std::size_t i = 0; i < us.size(); i += step) x.push_back(us[i]);
-  constexpr double kSigma = 0.5;
   const auto cdf = [](double v, double fixed, double jitter) {
     const double e = v - fixed;
     if (e <= 0) return 0.0;
@@ -544,13 +545,17 @@ std::vector<std::pair<std::string, std::string>> Calibration::backtest_keys() co
   for (const VenueLatency& l : latency) {
     if (l.round_trip_us.empty()) continue;
     const std::string p = per_venue ? fmt::format("venues.{}.", l.name) : std::string();
+    const std::string sigma = fmt::format("{}", kSigma);
     k.emplace_back(p + "latency_fixed_us", std::to_string(l.fixed_us));
     k.emplace_back(p + "latency_jitter_us", std::to_string(l.jitter_us));
+    k.emplace_back(p + "latency_sigma", sigma);
     k.emplace_back(p + "latency_ack_us", std::to_string(l.ack_us));
     k.emplace_back(p + "latency_ack_jitter_us", std::to_string(l.ack_jitter_us));
+    k.emplace_back(p + "latency_ack_sigma", sigma);
     if (l.cancel_fitted) {
       k.emplace_back(p + "latency_cancel_us", std::to_string(l.cancel_fixed_us));
       k.emplace_back(p + "latency_cancel_jitter_us", std::to_string(l.cancel_jitter_us));
+      k.emplace_back(p + "latency_cancel_sigma", sigma);
     }
     if (l.service_us > 0) k.emplace_back(p + "order_service_us", std::to_string(l.service_us));
   }
@@ -872,12 +877,13 @@ TradeSummary summarize(const std::vector<Fill>& fills,
     t.notional += f.qty * f.px;
     t.fees += f.fee;
     t.position += s;
+    // Without a mid at the end the move to it is unknown: no drift, as in metrics.cpp.
     const double end = mids.last(f.inst);
     const double m = mids.at(f.inst, f.ts);
     if (m != 0) {
       t.capture += s * (m - f.px);
-      t.drift += s * (end - m);
-    } else {
+      if (end != 0) t.drift += s * (end - m);
+    } else if (end != 0) {
       t.drift += s * (end - f.px);
     }
     for (std::size_t h = 0; h < horizons.size(); ++h) {
@@ -899,6 +905,8 @@ TradeSummary live_summary(const OwnOrderLog& log,
                           std::span<const std::int64_t> horizons) {
   std::vector<Fill> fills;
   std::vector<double> ttf;
+  std::uint64_t unvalued_fills = 0;
+  double unvalued = 0;
   for (const OwnOrder& o : log.orders) {
     Timestamp first{};
     for (const OwnFill& f : o.fills) {
@@ -908,10 +916,16 @@ TradeSummary live_summary(const OwnOrderLog& log,
       x.buy = o.side == Side::Buy;
       x.px = f.price.to_double();
       x.qty = f.qty.to_double();
-      if (f.fee_asset == FeeAsset::Quote) {
-        x.fee = f.fee.to_double();
-      } else if (f.fee_asset == FeeAsset::Base) {
+      // A commission in another asset (BNB) cannot be valued from the journal, which names
+      // neither the asset nor its price: the engine leaves it out of fees and counts it, and so
+      // does this.
+      if (f.fee_asset == FeeAsset::Base) {
         x.fee = f.fee.to_double() * x.px;
+      } else if (f.fee_asset == FeeAsset::Other) {
+        ++unvalued_fills;
+        unvalued += f.fee.to_double();
+      } else {
+        x.fee = f.fee.to_double();
       }
       fills.push_back(x);
       if (!first.valid() || f.at.ts < first) first = f.at.ts;
@@ -920,6 +934,8 @@ TradeSummary live_summary(const OwnOrderLog& log,
   }
   std::sort(fills.begin(), fills.end(), [](const Fill& a, const Fill& b) { return a.ts < b.ts; });
   TradeSummary t = summarize(fills, mids, horizons);
+  t.unvalued_fee_fills = unvalued_fills;
+  t.unvalued_fees = unvalued;
   t.orders = log.orders_sent;
   t.rejects = log.rejected;
   t.time_to_fill_p50_ms = Quantiles::of(std::move(ttf)).p50 / 1e6;
@@ -947,6 +963,16 @@ TradeSummary backtest_summary(const BacktestResult& r,
   t.time_to_fill_p50_ms = static_cast<double>(r.metrics.fill_quality.time_to_fill_p50_ns) / 1e6;
   return t;
 }
+
+}  // namespace
+
+TradeSummary live_trades(JournalReader& reader, std::span<const std::int64_t> horizons) {
+  const OwnOrderLog log = collect_own_orders(reader);
+  const Mids mids(reader);
+  return live_summary(log, mids, horizons);
+}
+
+namespace {
 
 using Keys = std::vector<std::pair<std::string, std::string>>;
 
@@ -1084,6 +1110,13 @@ std::string format_backtest_gaps(std::span<const BacktestGap> gaps) {
           b.markout_bps[h],
           a.markout_bps[h],
           3);
+    }
+    if (l.unvalued_fee_fills > 0) {
+      fmt::format_to(it,
+                     "  live fees and net leave out the commission of {} fill(s) paid in an asset "
+                     "other than base or quote ({} in that asset): the journal cannot value it\n",
+                     l.unvalued_fee_fills,
+                     num(l.unvalued_fees, 8));
     }
     out += '\n';
   }

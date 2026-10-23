@@ -18,9 +18,10 @@
 // ack received (the round trip, one clock). The simulated venue draws each leg as fixed + a
 // lognormal excess with mean `jitter` (sigma 0.5, sim/latency_model.hpp), whose 5th and 50th
 // percentiles are fixed + 0.388 jitter and fixed + 0.8825 jitter: the fit solves those two for the
-// measured ones. With millisecond venue times each one-way latency is only known to a millisecond
-// interval; the sends fall anywhere in their millisecond, so fixed and jitter are fitted to the
-// intervals by maximum likelihood, and the ack leg gets the rest of the fitted round trip.
+// measured ones, and the snippet sets the latency_*_sigma keys to 0.5 beside them. With millisecond
+// venue times each one-way latency is only known to a millisecond interval; the sends fall anywhere
+// in their millisecond, so fixed and jitter are fitted to the intervals by maximum likelihood, and
+// the ack leg gets the rest of the fitted round trip.
 //
 // The one-way legs are fitted on isolated messages (sent at least 1 ms after the one before on
 // their connection); cancels, timed by their cancel acks, get a path of their own from 20 or more.
@@ -181,7 +182,8 @@ struct TradeSummary {
   double qty = 0;       // base units
   double notional = 0;  // quote currency
   double time_to_fill_p50_ms = 0;
-  // net == capture + drift - fees (backtest/metrics.hpp PnlDecomposition), quote currency.
+  // net == capture + drift - fees (backtest/metrics.hpp PnlDecomposition), quote currency. An
+  // instrument with no mid at the end books no drift.
   double capture = 0;
   double drift = 0;
   double fees = 0;
@@ -189,7 +191,17 @@ struct TradeSummary {
   double position = 0;              // base units at the end
   std::vector<double> markout_bps;  // per horizon, notional-weighted
   std::vector<std::uint64_t> markout_fills;
+  // Fills whose commission was paid in an asset other than base or quote (FeeAsset::Other, BNB):
+  // the journal names neither the asset nor its price, so `fees` and `net` leave them out, as the
+  // engine does. Their commission in that asset.
+  std::uint64_t unvalued_fee_fills = 0;
+  double unvalued_fees = 0;
 };
+
+// What the session recorded in `reader` traded itself, marked against its mids (the live column
+// of compare_backtests).
+[[nodiscard]] TradeSummary live_trades(JournalReader& reader,
+                                       std::span<const std::int64_t> horizons);
 
 struct BacktestGap {
   std::string session;

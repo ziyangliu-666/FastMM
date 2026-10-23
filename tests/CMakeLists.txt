@@ -385,7 +385,7 @@ if(TARGET fastmm-data)
     CMD $<TARGET_FILE:fastmm-data> calibrate
         ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/journals/calibrate_a.fmj
         ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/journals/calibrate_b.fmj
-    EXPECT_REGEX "cross-validation.*queue_conservatism 0.50, fitted on 2 sessions.*fill_model = .l2_queue..queue_conservatism = 0.50.md_arrival = .recorded..latency_fixed_us = 400.latency_jitter_us = 0.latency_ack_us = 1100")
+    EXPECT_REGEX "cross-validation.*queue_conservatism 0.50, fitted on 2 sessions.*fill_model = .l2_queue..queue_conservatism = 0.50.md_arrival = .recorded..latency_fixed_us = 400.latency_jitter_us = 0.latency_sigma = 0.5.latency_ack_us = 1100")
   fastmm_cli_test(apps.fastmm-data.calibrate_missing EXPECT_RC 4
     CMD $<TARGET_FILE:fastmm-data> calibrate /nonexistent/session.fmj
     EXPECT_REGEX "fastmm-data: cannot open /nonexistent/session.fmj")

@@ -34,6 +34,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - replay: `fastmm-replay` restores the state of a warm standby's take-over.
 - live: the control loops wait on their sockets and signals; a `fastmm-ctl` command is answered in about 0.1 ms, not up to 50.
 - live: a shutdown waits for the venues to confirm its cancels instead of a fixed 300 ms; a warm handoff takes about 35 ms, not 300.
+- backtest: `calibrate` prints the latency shape it fitted with (`latency_*_sigma`).
 
 ### Fixed
 - core: an L3 book recentre no longer moves its whole price window (about 850x faster at 2^16 ticks).
@@ -57,6 +58,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: a journal part after the first carries the engine clock its records continue from.
 - backtest: sweep points, folds and branch arms start from one strategy state and write none.
 - backtest: an A/B arm's per-hour figures weigh each pair by its time.
+- backtest: `calibrate --backtest` counts live fees in another asset apart, and drift needs a mid.
 
 ### Documentation
 - docs: a how-to replays a live session from a checkpoint and compares configurations from it.
