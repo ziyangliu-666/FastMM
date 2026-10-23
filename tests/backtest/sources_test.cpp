@@ -250,6 +250,42 @@ TEST_CASE("backtest.journal_source: market data round-trips through an .fmj file
   CHECK(JournalSource(path).md_events() == 2);
 }
 
+TEST_CASE("backtest.journal_source: a run of deep snapshots converts, however many fill the ring") {
+  // 300 snapshots of 1000 levels a side (a Binance USD-M resync), 32 KB each: more than the 4 MB
+  // the converter's ring holds between two drains.
+  struct DeepSource final : sim::MdSource {
+    std::vector<std::uint64_t> buf;
+    BookDeltaMsg* d = nullptr;
+    int left = 300;
+    DeepSource() {
+      const std::uint32_t n = 1000;
+      buf.assign((BookDeltaMsg::size_for(n, n) + 7) / 8, 0);
+      d = reinterpret_cast<BookDeltaMsg*>(buf.data());
+      init_header(
+          *d, EventType::BookSnapshot, InstrumentId{0}, VenueId{0}, BookDeltaMsg::size_for(n, n));
+      d->hdr.flags |= EventHeader::kSnapshot;
+      d->bid_count = n;
+      d->ask_count = n;
+      for (std::uint32_t i = 0; i < n; ++i) {
+        d->levels()[i] = Level{Price::from_int(10'000 - static_cast<std::int64_t>(i)), qt("1")};
+        d->levels()[n + i] = Level{Price::from_int(10'001 + static_cast<std::int64_t>(i)), qt("1")};
+      }
+    }
+    const EventHeader* next() override {
+      if (left <= 0) return nullptr;
+      d->hdr.recv_ts = d->hdr.exch_ts = Timestamp{1'000 + 300 - left};
+      --left;
+      return &d->hdr;
+    }
+    void reset() override { left = 300; }
+    [[nodiscard]] Timestamp start_ts() const override { return Timestamp{1'000}; }
+  } src;
+  const BacktestConfig cfg = BacktestConfig::single_instrument("X", px("0.01"), qt("0.001"));
+  const std::string path = (fastmm::test::tmp_dir() / "deep_snapshots.fmj").string();
+  CHECK(write_md_journal(src, path, cfg.instruments, 7) == 300);
+  CHECK(JournalSource(path).md_events() == 300);
+}
+
 TEST_CASE("backtest.merge: k-way merge is time ordered and stable on ties") {
   CsvSource a = CsvSource::from_text("1,T,0,B,1,1,1\n3,T,0,B,1,1,3\n5,T,0,B,1,1,5\n");
   CsvSource b = CsvSource::from_text("2,T,1,B,1,1,2\n3,T,1,B,1,1,33\n4,T,1,B,1,1,4\n");

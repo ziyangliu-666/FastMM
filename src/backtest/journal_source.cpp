@@ -262,7 +262,10 @@ std::uint64_t write_md_journal(MdSource& source,
   while (max_events == 0 || n < max_events) {
     const EventHeader* h = source.next();
     if (h == nullptr) break;
-    if (!w.record(*h)) throw std::runtime_error("write_md_journal: ring full");
+    // A run of deep snapshots fills the ring between two drains: drain it until the event fits.
+    while (!w.record(*h)) {
+      if (fw.drain_once() == 0) throw std::runtime_error("write_md_journal: ring full");
+    }
     ++n;
     if ((n & 255U) == 0) fw.drain_once();
   }

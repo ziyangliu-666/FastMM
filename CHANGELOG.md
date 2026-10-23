@@ -60,6 +60,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - backtest: an A/B arm's per-hour figures weigh each pair by its time.
 - backtest: `calibrate --backtest` counts live fees in another asset apart, and drift needs a mid.
 - backtest: fills after a replace count for the quote that began it.
+- backtest: converting to an .fmj journal no longer stops with "ring full" at a run of deep snapshots.
 
 ### Documentation
 - docs: a how-to replays a live session from a checkpoint and compares configurations from it.
