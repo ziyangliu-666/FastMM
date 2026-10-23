@@ -65,6 +65,9 @@ inline constexpr std::uint8_t kHeaderReplacePerVenue = 1U << 1;
 // The session's venue feeds showed its own resting orders: a backtest with
 // [backtest] own_orders_in_feed (a live session's always do; it has a TSC calibration).
 inline constexpr std::uint8_t kHeaderOwnInFeed = 1U << 2;
+// engine_clock_ns is valid: a part after the first, which begins in the middle of the engine
+// clock's chain of kEngineTime deltas.
+inline constexpr std::uint8_t kHeaderEngineClock = 1U << 3;
 // Parameter table entries (kMaxParams): 32, then 64, 128 since 2026-10. The format is unchanged
 // (the table is variable length); a reader built with 32 refuses a file with more entries, one
 // built with 64 keeps the first 64 and drops updates of the rest (params_dropped).
@@ -102,7 +105,11 @@ struct JournalFileHeader {
   std::uint32_t meta_crc32c;         // of the metadata text
   // ---- zero in older files ----
   std::uint32_t await_reconcile;  // EngineConfig::await_reconcile (kHeaderSession)
-  std::uint8_t reserved[96];
+  std::uint32_t reserved_pad;
+  // The engine clock at the end of the previous part, which the first kEngineTime delta of this
+  // one continues from (kHeaderEngineClock).
+  std::int64_t engine_clock_ns;
+  std::uint8_t reserved[84];
   std::uint32_t crc32c;  // over the preceding 252 bytes
 };
 static_assert(sizeof(JournalFileHeader) == 256 && std::is_trivially_copyable_v<JournalFileHeader>);
@@ -111,6 +118,7 @@ static_assert(offsetof(JournalFileHeader, session_epoch) == 112 &&
               offsetof(JournalFileHeader, param_count) == 132 &&
               offsetof(JournalFileHeader, meta_bytes) == 144 &&
               offsetof(JournalFileHeader, await_reconcile) == 152 &&
+              offsetof(JournalFileHeader, engine_clock_ns) == 160 &&
               offsetof(JournalFileHeader, crc32c) == 252);
 
 // One entry of the v3 parameter table: the name and ParamType of a schema index.
@@ -118,6 +126,13 @@ struct JournalParam {
   std::string_view name;
   std::uint8_t type = 0;  // ParamType
 };
+
+// The engine clock a reader of this file starts from before its first EngineTimeMsg: the previous
+// part's last value for a later part, else zero (the first part, or a part written before
+// kHeaderEngineClock, whose deltas before the first EngineTimeMsg have no base).
+[[nodiscard]] inline Timestamp journal_engine_clock(const JournalFileHeader& h) noexcept {
+  return Timestamp{(h.header_flags & kHeaderEngineClock) != 0 ? h.engine_clock_ns : 0};
+}
 
 struct JournalBlockHeader {
   char magic[4];           // "FMJB"
@@ -394,6 +409,8 @@ class JournalFileWriter {
   void set_failed(JournalError e) noexcept;
   bool open_part() noexcept;  // opens path_ and writes the prologue
   void rotate() noexcept;     // closes the current part and opens the next
+  // Follows the engine clock (engine_ns_) through a drained record.
+  void follow_clock(const EventHeader& h) noexcept;
 
   MsgRing& ring_;
   std::string base_path_;
@@ -421,6 +438,8 @@ class JournalFileWriter {
   std::uint64_t messages_ = 0;
   Timestamp last_sync_{};
   Timestamp last_flush_{};
+  std::int64_t engine_ns_ = 0;  // the engine clock as of the last record drained
+  bool engine_clock_ = false;   // an EngineTimeMsg has been drained: engine_ns_ is valid
 
   std::thread thread_;
   std::atomic<bool> stop_{false};

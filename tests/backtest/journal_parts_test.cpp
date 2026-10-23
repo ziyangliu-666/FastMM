@@ -6,6 +6,7 @@
 #include "fastmm/backtest/journal_source.hpp"
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/msg_ring.hpp"
+#include "fastmm/sim/journal_feed.hpp"
 
 #include <filesystem>
 #include <stdexcept>
@@ -31,12 +32,14 @@ InstrumentTable one_instrument() {
 
 // `n` trades a microsecond apart from t0, as JournalFileWriter rolls them over every MiB (a
 // part ends between blocks, so each holds whole 1 MiB blocks of 128-byte trades). Returns the
-// parts written.
+// parts written. With engine_time each trade is consumed at its receive time, as an engine
+// records it (a kEngineTime delta from the one before).
 std::vector<std::string> write_session(const std::string& path,
                                        const InstrumentTable& table,
                                        std::uint64_t session_id,
                                        int n,
-                                       std::int64_t t0 = 1'000'000'000) {
+                                       std::int64_t t0 = 1'000'000'000,
+                                       bool engine_time = false) {
   MsgRing ring(1 << 22);
   JournalSessionInfo info;
   info.session_id = session_id;
@@ -53,7 +56,7 @@ std::vector<std::string> write_session(const std::string& path,
     init_header(t, EventType::Trade, InstrumentId{0}, VenueId{0});
     t.hdr.exch_ts = t.hdr.recv_ts = Timestamp{t0 + 1000 * i};
     t.trade_id = static_cast<std::uint64_t>(i);
-    REQUIRE(w.record(t.hdr));
+    REQUIRE((engine_time ? w.record_at(t.hdr, t.hdr.recv_ts) : w.record(t.hdr)));
     if (i % 4096 == 4095) fw.drain_once();
   }
   fw.drain_once();
@@ -147,4 +150,28 @@ TEST_CASE(
   CHECK_THROWS_WITH_AS(
       JournalSource{path}, doctest::Contains("session 8, not 7"), std::runtime_error);
   CHECK(JournalSource(path, false, false).paths().size() == 1);
+}
+
+TEST_CASE("backtest.journal_parts: a later part read on its own has the engine clock") {
+  const auto dir = fresh_dir("journal_parts_clock");
+  const std::string path = (dir / "s.fmj").string();
+  const InstrumentTable table = one_instrument();
+  const std::vector<std::string> parts = write_session(path, table, 7, 30'000, 1'000'000'000, true);
+  REQUIRE(parts.size() >= 3);
+  for (std::size_t k = 0; k < parts.size(); ++k) {
+    JournalReader r;
+    REQUIRE(r.open(parts[k]));
+    // The first part starts the chain itself; the others carry its value in the header.
+    CHECK(((r.header().header_flags & kHeaderEngineClock) != 0) == (k > 0));
+    sim::JournalFeed feed(r);
+    std::size_t n = 0;
+    std::size_t wrong = 0;
+    while (feed.has_next()) {
+      if (!feed.has_engine_ts() || feed.peek_ts() != feed.peek()->recv_ts) ++wrong;
+      feed.release();
+      ++n;
+    }
+    CHECK(n > 0);
+    CHECK(wrong == 0);
+  }
 }

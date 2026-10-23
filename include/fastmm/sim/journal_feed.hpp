@@ -29,7 +29,8 @@ class JournalFeed {
   // one where the journal has it.
   static constexpr bool kReplaysTimers = true;
 
-  explicit JournalFeed(JournalReader& reader) noexcept : reader_(reader) {
+  explicit JournalFeed(JournalReader& reader) noexcept
+      : reader_(reader), engine_ts_(journal_engine_clock(reader.header())) {
     reader_.reset();
     advance();
   }

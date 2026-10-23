@@ -45,7 +45,7 @@ runs/mm1-1709510400123456789.fmj      part 0
 runs/mm1-1709510400123456789.1.fmj    part 1
 ```
 
-Each part is a complete journal: it repeats the header, the instrument table, the configuration and the parameter table, and carries the same `session_id`. Sequence numbers continue across parts. The backtest's `journal:` source reads the parts of a session as one stream, given the first ([data sources](data-sources.md#journal)); `fastmm-replay` verifies a session journal one part at a time; the [store](storage.md) records every part of a session in `session_journals`.
+Each part is a complete journal: it repeats the header, the instrument table, the configuration and the parameter table, and carries the same `session_id`. Sequence numbers and the engine clock continue across parts: a later part's header holds the engine clock its first `kEngineTime` delta continues from, so the part reads on its own (a part written before 2026-10-23 has none, and its engine times before its first `EngineTime` record are wrong). The backtest's `journal:` source reads the parts of a session as one stream, given the first ([data sources](data-sources.md#journal)); `fastmm-replay` verifies a session journal one part at a time; the [store](storage.md) records every part of a session in `session_journals`.
 
 `[engine] journal_retention_days` deletes `*.fmj` files in `[engine] journal_dir` that were last written more than that many days ago, once, when a session starts; 0 (the default) keeps everything. Only the `.fmj` extension is removed, and a file it cannot remove is skipped with a warning.
 
@@ -69,7 +69,7 @@ Each part is a complete journal: it repeats the header, the instrument table, th
 | 80 | 32 | `strategy` | strategy name, NUL-padded |
 | 112 | 2 | `session_epoch` | client order id epoch (v2) |
 | 114 | 1 | `quoting_enabled` | 0 for a dry run behind a gateway; a dry run of its own quotes on paper (v2) |
-| 115 | 1 | `header_flags` | bit 0: the three session fields above are valid (v2); bit 1: the engine replaced quotes per venue (without it, a replay replaces only if every traded venue could, as the engine did then); bit 2: the session's venue feeds showed its own orders (a backtest with `[backtest] own_orders_in_feed`; a live session's always do) |
+| 115 | 1 | `header_flags` | bit 0: the three session fields above are valid (v2); bit 1: the engine replaced quotes per venue (without it, a replay replaces only if every traded venue could, as the engine did then); bit 2: the session's venue feeds showed its own orders (a backtest with `[backtest] own_orders_in_feed`; a live session's always do); bit 3: `engine_clock_ns` is valid (a part after the first) |
 | 116 | 4 | `config_bytes` | length of the configuration text; 0 = none (v2) |
 | 120 | 8 | `replace_venues` | bit v set when venue v traded with cancel-replace (v2) |
 | 128 | 4 | `config_crc32c` | CRC32C of the configuration text (v2) |
@@ -78,7 +78,10 @@ Each part is a complete journal: it repeats the header, the instrument table, th
 | 140 | 4 | `param_table_crc32c` | CRC32C of the parameter table (v3) |
 | 144 | 4 | `meta_bytes` | length of the strategy metadata; 0 = none (v3) |
 | 148 | 4 | `meta_crc32c` | CRC32C of the strategy metadata (v3) |
-| 152 | 100 | `reserved` | zero |
+| 152 | 4 | `await_reconcile` | `[engine] await_reconcile` (with bit 0 of `header_flags`) |
+| 156 | 4 | `reserved_pad` | zero |
+| 160 | 8 | `engine_clock_ns` | with bit 3 of `header_flags`: the engine clock at the end of the previous part, which this part's first `kEngineTime` delta continues from |
+| 168 | 84 | `reserved` | zero |
 | 252 | 4 | `crc32c` | CRC32C of bytes 0 to 251 |
 
 The configuration is `Config::effective_toml()`: the configuration after command-line overrides (`--strategy`, `--param`) as deterministic TOML, without `api_key`, `api_secret` and `api_passphrase`, zero-padded to a multiple of 64 bytes. The instrument records are `fastmm::Instrument` (128 bytes).

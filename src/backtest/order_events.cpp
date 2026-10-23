@@ -89,8 +89,9 @@ std::uint64_t write_order_events(const std::vector<std::string>& journals,
                                                    : std::string_view{};
     };
     // The engine clock, followed through the records (EngineTime values, kEngineTime deltas): the
-    // time the engine consumed an inbound event, 0 for a record it did not consume.
-    std::int64_t engine_ns = 0;
+    // time the engine consumed an inbound event, 0 for a record it did not consume. A later part of
+    // a session starts from the clock its header carries.
+    std::int64_t engine_ns = journal_engine_clock(hdr).ns;
     reader.for_each([&](const EventHeader* h) {
       if (h->type == EventType::EngineTime) {
         engine_ns = msg_cast<EngineTimeMsg>(h).engine_ts.ns;

@@ -159,8 +159,27 @@ bool JournalFileWriter::open_part() noexcept {
     const std::lock_guard<std::mutex> lock(parts_mutex_);
     part_paths_.push_back(path_);
   }
+  if (part_ > 0 && engine_clock_) {
+    // A later part starts in the middle of the engine clock's delta chain: its header carries the
+    // value the chain had, so the part reads on its own.
+    JournalFileHeader h{};
+    std::memcpy(&h, prologue_.data(), sizeof h);
+    h.header_flags |= kHeaderEngineClock;
+    h.engine_clock_ns = engine_ns_;
+    h.crc32c = crc32c(&h, offsetof(JournalFileHeader, crc32c));
+    std::memcpy(prologue_.data(), &h, sizeof h);
+  }
   append(prologue_.data(), prologue_.size());
   return fd_ >= 0;
+}
+
+void JournalFileWriter::follow_clock(const EventHeader& h) noexcept {
+  if (h.type == EventType::EngineTime) {
+    engine_ns_ = msg_cast<EngineTimeMsg>(&h).engine_ts.ns;
+    engine_clock_ = true;
+  } else if ((h.flags & EventHeader::kEngineTime) != 0) {
+    engine_ns_ += static_cast<std::int32_t>(h.reserved0);
+  }
 }
 
 // A part is rolled over only between blocks, so no message straddles two files.
@@ -249,6 +268,7 @@ std::size_t JournalFileWriter::drain_once() {
     block_seq_last_ = h->seq;
     std::memcpy(block_.get() + sizeof(JournalBlockHeader) + block_used_, p, len);
     block_used_ += len;
+    follow_clock(*h);
     ++block_count_;
     ++messages_;
     ++n;

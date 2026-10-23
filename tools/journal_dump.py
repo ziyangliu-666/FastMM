@@ -287,7 +287,7 @@ def parse_header(data: bytes, verify_crc: bool = True) -> dict:
     (magic, version, header_bytes, inst_count, session_id, start_ts, tsc0, tsc_ns0, ns_per_cycle,
      config_hash, rng_seed, msg_version, block_bytes, strategy, session_epoch, quoting_enabled,
      header_flags, config_bytes, replace_venues, _config_crc, param_count, param_bytes, _param_crc,
-     meta_bytes, _meta_crc, _reserved,
+     meta_bytes, _meta_crc, reserved,
      hdr_crc) = HEADER.unpack_from(data, 0)
     if magic != b"FMJ1":
         raise JournalError(f"bad magic {magic!r}")
@@ -308,6 +308,8 @@ def parse_header(data: bytes, verify_crc: bool = True) -> dict:
         "params": params,
         "strategy_meta": data[meta_off:meta_off + meta_bytes].decode("utf-8", "replace"),
         "session": bool(header_flags & 1), "session_epoch": session_epoch,
+        # A later part's engine clock where its kEngineTime deltas start (header flag 8, offset 160).
+        "engine_clock_ns": struct.unpack_from("<q", reserved, 8)[0] if header_flags & 8 else None,
         "quoting_enabled": bool(quoting_enabled), "replace_venues": replace_venues,
         "config": data[config_off:config_off + config_bytes].decode("utf-8", "replace"),
         "version": version, "header_bytes": header_bytes, "instrument_count": inst_count,
@@ -425,7 +427,7 @@ def main() -> int:
     counts = Counter()
     printed = 0
     stats = BlockStats()
-    engine_ts = None
+    engine_ts = hdr["engine_clock_ns"]
     for ev, body in iter_events(data, hdr, verify_crc=not args.no_crc, stats=stats):
         name = ev["type"]
         direction = "out" if ev["flags"] & 8 else "in"

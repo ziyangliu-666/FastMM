@@ -54,6 +54,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - backtest: `remap=true` renumbers a journal's recorded latencies, balances and flows too.
 - backtest: a CSV book-ticker row fills its own side; a delta past 256 rows a side is split.
 - backtest: a CSV file streams instead of being read into memory.
+- core: a journal part after the first carries the engine clock its records continue from.
 
 ### Documentation
 - docs: a how-to replays a live session from a checkpoint and compares configurations from it.
