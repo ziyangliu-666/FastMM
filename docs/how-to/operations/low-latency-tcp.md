@@ -1,10 +1,20 @@
 # Low-latency TCP
 
-Order entry runs on the kernel TCP stack: the OUCH connection of `nasdaq_itch` and the WebSocket and REST connections of the crypto venues. Every one of them sets `TCP_NODELAY`, and `nasdaq_itch` writes all the orders of one drain of the order ring with a single `write`. Two steps make that path faster without changing FastMM: busy polling in the kernel, and a kernel-bypass stack loaded with `LD_PRELOAD`.
+Order entry runs on the kernel TCP stack: the OUCH connection of `nasdaq_itch` and the WebSocket and REST connections of the crypto venues. Every one of them sets `TCP_NODELAY`, and `nasdaq_itch` writes all the orders of one drain of the order ring with a single `write`. Three steps make that path faster without changing FastMM: no interrupt coalescing on the NIC, busy polling in the kernel, and a kernel-bypass stack loaded with `LD_PRELOAD`.
 
-## 1. Busy polling
+## 1. Receive interrupts
 
-With `[engine] spin_mode = "busy"` the network thread never sleeps in `epoll_wait`. Busy polling makes the reading thread also poll the NIC queue instead of waiting for its interrupt:
+The TCP connections read what the NIC's receive interrupt delivered to their sockets. A NIC that coalesces interrupts (`ethtool -c eth1`: `Adaptive RX: on`, or a non-zero `rx-usecs`) holds each packet back for up to that long first. Turn it off on the trading interface:
+
+```bash
+sudo ethtool -C eth1 adaptive-rx off rx-usecs 0
+```
+
+The [NIC interrupts](running-in-production.md#nic-interrupts) section has what it changes and the warning `log_irq_affinity` prints while it is on. Pin the network thread and steer the NIC's interrupts as described there.
+
+## 2. Busy polling
+
+Busy polling makes a thread that waits for a socket poll the NIC queue itself instead of waiting for its interrupt:
 
 ```bash
 sudo sysctl -w net.core.busy_read=50     # µs; the SO_BUSY_POLL default of every socket
@@ -13,9 +23,9 @@ echo 2      | sudo tee /sys/class/net/eth1/napi_defer_hard_irqs
 echo 200000 | sudo tee /sys/class/net/eth1/gro_flush_timeout     # ns
 ```
 
-The TCP connections do not set `SO_BUSY_POLL` themselves, so `net.core.busy_read` is what applies to them. Pin the network thread and steer the NIC's interrupts as in [Multicast feeds](multicast-feeds.md#5-isolate-the-cores).
+It runs where a thread would wait: an adaptive network thread blocked in `epoll_wait` while idle. A network thread that polls (`spin_mode = "busy"`, or `net_spin_dedicated`) calls `epoll_wait` with a zero timeout, which returns without polling the queue, and reads a socket only once it is readable, so for it the interrupt setting above is what counts. The TCP connections do not set `SO_BUSY_POLL` themselves, so `net.core.busy_read` is what applies to them.
 
-## 2. Kernel bypass: OpenOnload or XLIO
+## 3. Kernel bypass: OpenOnload or XLIO
 
 Both stacks intercept the socket calls through `LD_PRELOAD` and run TCP and UDP in user space on their own NICs. FastMM needs no rebuild.
 

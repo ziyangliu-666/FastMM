@@ -102,6 +102,24 @@ struct IrqReportLine {
                                                              int engine_cpu,
                                                              std::span<const int> net_cpus);
 
+// How an interface holds its receive interrupts back (ethtool -c): a packet that reaches an idle
+// queue waits for rx_usecs (with adaptive_rx, the driver's current choice) or rx_frames packets
+// before its interrupt runs the kernel's network processing. known: the driver answered
+// ETHTOOL_GCOALESCE.
+struct NicCoalesce {
+  bool known = false;
+  bool adaptive_rx = false;
+  std::uint32_t rx_usecs = 0;
+  std::uint32_t rx_frames = 0;
+};
+
+// The interface's receive coalescing (SIOCETHTOOL, ETHTOOL_GCOALESCE; needs no privilege).
+[[nodiscard]] NicCoalesce nic_coalesce(const std::string& iface) noexcept;
+
+// What the irq affinity report says about it: empty when the interface does not hold its receive
+// interrupts back (or did not say), else the warning with the ethtool command that stops it.
+[[nodiscard]] std::string coalesce_warning(std::string_view iface, const NicCoalesce& c);
+
 // Online logical CPU -> its physical core (package and core id), from
 // <sys_root>/devices/system/cpu/online and each CPU's topology/physical_package_id and core_id.
 // Two CPUs with one value are hyperthreads of one core. Empty when the tree cannot be read.

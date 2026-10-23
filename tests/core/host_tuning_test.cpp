@@ -152,6 +152,31 @@ TEST_CASE("core.host_tuning: nic_irqs finds queue interrupts by name, else by MS
   fs::remove_all(root);
 }
 
+TEST_CASE("core.host_tuning: an interface that holds receive interrupts back is a warning") {
+  // An interface that does not exist, or a name too long for one, does not answer.
+  CHECK_FALSE(nic_coalesce("fmnosuch0").known);
+  CHECK_FALSE(nic_coalesce(std::string(40, 'x')).known);
+  CHECK_FALSE(nic_coalesce("").known);
+
+  NicCoalesce c;
+  CHECK(coalesce_warning("eth1", c).empty());  // unknown
+  c.known = true;
+  CHECK(coalesce_warning("eth1", c).empty());  // every packet interrupts at once
+  c.rx_frames = 1;
+  CHECK(coalesce_warning("eth1", c).empty());
+  c.adaptive_rx = true;
+  c.rx_usecs = 20;
+  CHECK(coalesce_warning("eth1", c) ==
+        "eth1 holds receive interrupts back (adaptive-rx on, rx-usecs 20, rx-frames 1): a packet "
+        "can wait that long before the kernel reads it; ethtool -C eth1 adaptive-rx off "
+        "rx-usecs 0");
+  c.adaptive_rx = false;
+  CHECK_FALSE(coalesce_warning("eth1", c).empty());  // a fixed delay
+  c.rx_usecs = 0;
+  c.rx_frames = 8;
+  CHECK_FALSE(coalesce_warning("eth1", c).empty());  // waits for a batch
+}
+
 namespace {
 
 // A sysfs tree with `cores[i]` the core id of CPU i, one package.

@@ -210,6 +210,18 @@ irq affinity: eth1 irq 46 eth1-TxRx-1 -> CPUs 0-7 (engine net 0): it interrupts 
 
 It only reads `/proc` and `/sys`; what it cannot read is left out of the log.
 
+Most NICs, virtual ones especially, also hold a receive interrupt back to batch packets: `ethtool -c eth1` shows `Adaptive RX: on` or a non-zero `rx-usecs`. A market-data packet then waits up to that long before the kernel hands it to the socket, and a network thread that spins does not shorten the wait. Turn it off on the trading interface (until reboot; a udev rule or the network configuration keeps it):
+
+```bash
+sudo ethtool -C eth1 adaptive-rx off rx-usecs 0
+```
+
+On a virtual NIC with adaptive moderation, a packet's delay from the sender's interface to the receiver's socket went from 17 µs to 15 µs at the median, from 48 µs to 22 µs at the 90th percentile and from 60 µs to 46 µs at the 99th. With `log_irq_affinity` an interface that holds receive interrupts back is a warning (`ioctl(SIOCETHTOOL)`, no privilege needed):
+
+```text
+irq affinity: eth1 holds receive interrupts back (adaptive-rx on, rx-usecs 20, rx-frames 0): a packet can wait that long before the kernel reads it; ethtool -C eth1 adaptive-rx off rx-usecs 0
+```
+
 ### Real-time scheduling
 
 `[engine] rt_priority = <1..99>` runs the engine thread under `SCHED_FIFO` at that priority, and `net_rt_priority` the network threads (with `threading = "single"` the engine thread runs the network loop and `rt_priority` covers it). A FIFO thread is not preempted by ordinary threads on its core: a stray process or kernel worker scheduled there waits instead of taking the core for a time slice. The log says `rt_priority: fm-engine runs SCHED_FIFO at priority <n>`.

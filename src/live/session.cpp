@@ -314,6 +314,14 @@ void log_irq_affinity(const Config& cfg, bool single) {
           l.pinned.empty() ? std::string_view("no pinned thread") : std::string_view(l.pinned));
     }
   }
+  for (const NicIrqs& nic : nics) {
+    const std::string w = coalesce_warning(nic.iface, nic_coalesce(nic.iface));
+    // A log argument holds kLogMaxStrBytes: the line goes out in pieces of that size.
+    std::array<std::string_view, 4> part{};
+    for (std::size_t i = 0; i < part.size() && i * kLogMaxStrBytes < w.size(); ++i)
+      part[i] = std::string_view(w).substr(i * kLogMaxStrBytes, kLogMaxStrBytes);
+    if (!w.empty()) FASTMM_LOG_WARN("irq affinity: {}{}{}{}", part[0], part[1], part[2], part[3]);
+  }
 }
 
 bool push_control(MsgRing& ring,

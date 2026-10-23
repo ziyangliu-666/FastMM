@@ -1,12 +1,18 @@
 #include "fastmm/core/host_tuning.hpp"
 
 #include <fcntl.h>
+#include <linux/ethtool.h>
+#include <linux/sockios.h>
+#include <net/if.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
 #include <charconv>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -258,6 +264,36 @@ std::vector<SlowIdleState> slow_idle_states(int max_exit_us, const std::string& 
   }
   for (std::size_t i = 0; i < found.size(); ++i) found[i].cpus = cpu_ranges(cpus[i]);
   return found;
+}
+
+NicCoalesce nic_coalesce(const std::string& iface) noexcept {
+  NicCoalesce c;
+  if (iface.empty() || iface.size() >= IFNAMSIZ) return c;
+  const int fd = ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+  if (fd < 0) return c;
+  ethtool_coalesce ec{};
+  ec.cmd = ETHTOOL_GCOALESCE;
+  ifreq ifr{};
+  std::memcpy(ifr.ifr_name, iface.data(), iface.size());
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access): the ioctl's request is a union
+  ifr.ifr_data = reinterpret_cast<char*>(&ec);
+  if (::ioctl(fd, SIOCETHTOOL, &ifr) == 0) {
+    c.known = true;
+    c.adaptive_rx = ec.use_adaptive_rx_coalesce != 0;
+    c.rx_usecs = ec.rx_coalesce_usecs;
+    c.rx_frames = ec.rx_max_coalesced_frames;
+  }
+  ::close(fd);
+  return c;
+}
+
+std::string coalesce_warning(std::string_view iface, const NicCoalesce& c) {
+  if (!c.known || (!c.adaptive_rx && c.rx_usecs == 0 && c.rx_frames <= 1)) return {};
+  const std::string name(iface);
+  return name + " holds receive interrupts back (adaptive-rx " + (c.adaptive_rx ? "on" : "off") +
+         ", rx-usecs " + std::to_string(c.rx_usecs) + ", rx-frames " + std::to_string(c.rx_frames) +
+         "): a packet can wait that long before the kernel reads it; ethtool -C " + name +
+         " adaptive-rx off rx-usecs 0";
 }
 
 std::map<int, std::uint64_t> cpu_cores(const std::string& sys_root) {
