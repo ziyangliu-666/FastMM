@@ -117,7 +117,7 @@ wide             fills/hour           13292.6901     33367.0031    -20074.3130  
 
 - Pass every journal the test ran in, all parts of all sessions; they are read in time order and must carry the same `[ab]`. The configuration, the arm updates, the arm of each order and the BookTicker mids all come from the journals.
 - A fill belongs to the arm its order was sent under. Markouts are the mid at the horizon against the fill price, in quote currency and in bps of the notional marked; fees are the rates `[venues.<x>.fees]` and `[[instruments]]` configure (negative: a rebate), and `--maker-rebate-bps` adds a rebate the venue pays apart from the fills. Net is markout less fees.
-- The comparison pairs what the design makes comparable: one instrument over one run of blocks (time, crossover), or the instruments of one weight group (instrument). A pair counts when it has time in every arm; the test's first and last runs may not. `net/hour` and `notional/hour` are per instrument-hour.
+- The comparison pairs what the design makes comparable: one instrument over one run of blocks (time, crossover), or the instruments of one weight group (instrument). A pair counts when it has time in every arm; the test's first and last runs may not. `net/hour`, `notional/hour` and `fills/hour` are an arm's total over its instrument-hours in the pairs, so a run cut short at the test's start or stop counts for the time it has.
 - The interval resamples whole runs of blocks (or weight groups), so a market move that hit every instrument at once counts once. With `--aa`, the `A/A +-` column is the half-width of the A/A test's interval for the same metric: a difference inside it is noise.
 - `--csv` writes one row per instrument, arm and block; `--json` prints the whole report.
 

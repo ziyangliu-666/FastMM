@@ -91,8 +91,8 @@ name = "a"
 name = "b"
 )";
 
-// Every 100 ms per instrument: a one-level snapshot 0.05 either side of a random-walk mid, its
-// book ticker, and a trade 0.03 to 0.12 through the mid, alternately sold and bought.
+// From `start`, every 100 ms per instrument: a one-level snapshot 0.05 either side of a random-walk
+// mid, its book ticker, and a trade 0.03 to 0.12 through the mid, alternately sold and bought.
 struct Tape {
   std::vector<std::int64_t> ts;
   std::vector<std::uint8_t> type;
@@ -101,11 +101,11 @@ struct Tape {
   std::vector<double> price;
   std::vector<double> qty;
 
-  Tape() {
+  explicit Tape(std::int64_t start = kStart) {
     Xoshiro256ss rng(9);
     std::vector<double> mid(kInstruments, 100.0);
     std::int64_t n = 0;
-    for (std::int64_t t = kStart; t < kStart + kRun; t += kSec / 10, ++n) {
+    for (std::int64_t t = start; t < start + kRun; t += kSec / 10, ++n) {
       for (std::uint32_t i = 0; i < kInstruments; ++i) {
         mid[i] = std::round((mid[i] + (rng.uniform01() < 0.5 ? -0.01 : 0.01)) * 100) / 100;
         const double bid = mid[i] - 0.05;
@@ -255,6 +255,43 @@ TEST_CASE("backtest.ab: a crossover test runs, replays, and reads out paired by 
                        std::runtime_error);
   std::filesystem::remove(path);
   std::filesystem::remove(aa_path);
+}
+
+TEST_CASE("backtest.ab: a run of blocks cut short counts per hour for the time it has") {
+  // The data starts 55 s into a block: the first run of blocks has 5 s in one arm.
+  const Tape tape(kStart + 55 * kSec);
+  const std::string path = tmp_journal("ab_cut_short.fmj");
+  ArraySource source(tape.columns());
+  static_cast<void>(run_backtest(backtest_config(kArms, path), "basic_mm", &source));
+  const std::vector<std::string> journals{path};
+  const AbReport r = ab_report(journals, {});
+  REQUIRE(r.pairs > 0);
+  // Each arm's fills and time over the pairs (instrument x run of two blocks) with time in both.
+  std::map<std::pair<std::size_t, std::int64_t>, std::vector<const AbCell*>> pairs;
+  for (const AbCell& c : r.cells) pairs[{c.instrument, c.block / 2}].push_back(&c);
+  double fills[2] = {0, 0};
+  double hours[2] = {0, 0};
+  std::int64_t shortest = kRun;
+  for (const auto& [key, cells] : pairs) {
+    std::int64_t ns[2] = {0, 0};
+    for (const AbCell* c : cells) ns[c->arm] += c->ns;
+    if (ns[0] == 0 || ns[1] == 0) continue;
+    shortest = std::min({shortest, ns[0], ns[1]});
+    for (const AbCell* c : cells) {
+      fills[c->arm] += static_cast<double>(c->fills);
+      hours[c->arm] += static_cast<double>(c->ns) / 3600e9;
+    }
+  }
+  CHECK(shortest < 10 * kSec);
+  // fills/hour is each arm's fills over its hours in those pairs, not a mean of the pairs' rates
+  // that the 5 s cell would swing.
+  const auto e = std::find_if(r.effects.begin(), r.effects.end(), [](const AbEffect& x) {
+    return x.metric == "fills/hour";
+  });
+  REQUIRE(e != r.effects.end());
+  CHECK(e->control == doctest::Approx(fills[0] / hours[0]));
+  CHECK(e->treated == doctest::Approx(fills[1] / hours[1]));
+  std::filesystem::remove(path);
 }
 
 TEST_CASE("backtest.ab: arms the strategy cannot run are refused before the run") {

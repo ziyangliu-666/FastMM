@@ -435,20 +435,22 @@ class Reading {
         }
         return notional > 0 ? net / notional * 1e4 : std::numeric_limits<double>::quiet_NaN();
       }
+      // The arm's total over its time in the draw's pairs, as net bps is its total over its
+      // notional: a pair cut short at the test's start or stop weighs by the time it has, where a
+      // mean of each pair's rate would give a few minutes' noise the weight of a whole run.
       double sum = 0;
-      std::size_t n = 0;
+      std::int64_t ns = 0;
       for (const std::size_t g : draw) {
         for (const std::size_t p : groups[g]) {
           const PairArm& s = pairs[p][arm];
-          const double hours = static_cast<double>(s.ns) / kNsPerHour;
-          const double x = m.what == 0   ? quote(s.net_raw[m.horizon])
-                           : m.what == 1 ? quote(s.notional_raw)
-                                         : static_cast<double>(s.fills);
-          sum += x / hours;
-          ++n;
+          sum += m.what == 0   ? quote(s.net_raw[m.horizon])
+                 : m.what == 1 ? quote(s.notional_raw)
+                               : static_cast<double>(s.fills);
+          ns += s.ns;
         }
       }
-      return n == 0 ? 0.0 : sum / static_cast<double>(n);
+      return ns > 0 ? sum / (static_cast<double>(ns) / kNsPerHour)
+                    : std::numeric_limits<double>::quiet_NaN();
     };
     std::vector<std::size_t> all(groups.size());
     for (std::size_t g = 0; g < groups.size(); ++g) all[g] = g;

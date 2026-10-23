@@ -15,9 +15,10 @@
 // The comparison pairs the arms where the design makes them comparable: the instruments of one
 // stratum (instrument), or one instrument over one run of blocks that gives each arm one block
 // (time, crossover). A pair counts when it has time in every arm. Each arm is compared with arm
-// 0 on the mean difference per pair of the net and notional per instrument-hour, and on the
-// difference of net bps over the pairs; the 95% interval comes from resampling clusters of pairs
-// (the strata, or the runs of blocks), which keeps what one market moment does to every
+// 0 on the net, notional and fills per instrument-hour (each arm's total over its time in the
+// pairs, so a pair cut short at the test's start or stop weighs by the time it has) and on net
+// bps (its net over its notional in the pairs); the 95% interval comes from resampling clusters of
+// pairs (the strata, or the runs of blocks), which keeps what one market moment does to every
 // instrument inside one draw. An A/A test's intervals, run the same way, are its noise floor.
 #include "fastmm/backtest/markout.hpp"
 
