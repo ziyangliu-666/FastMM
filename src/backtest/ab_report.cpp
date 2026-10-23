@@ -144,6 +144,9 @@ class Reading {
       seen_.clear();
     }
     if (!plan_) plan_.emplace(plan);
+    // The branches of one test run side by side over the same data: each arm's journal is read
+    // from the start of its branch.
+    if (plan.assignment() == AbAssignment::Branch) last_ns_ = 0;
     const MidSeries mids(reader);
     r_.mids = r_.mids || !mids.empty();
     const std::size_t horizons = r_.horizons_ns.size();
@@ -237,6 +240,10 @@ class Reading {
     for (std::size_t g = 0; g < periods_.size(); ++g) {
       for (const Period& p : periods_[g]) {
         if (p.arm == AbPlan::kNoArm || p.end <= p.start) continue;
+        if (plan.assignment() == AbAssignment::Branch) {
+          cell(g, p.arm, p.start).ns += p.end - p.start;  // the branch: where its arm began
+          continue;
+        }
         if (plan.block_ns() == 0) {
           cell(g, p.arm, 0).ns += p.end - p.start;
           continue;
@@ -327,6 +334,7 @@ class Reading {
       if (p.start > t) break;
     }
     if (found == nullptr) return std::nullopt;
+    if (plan_ && plan_->assignment() == AbAssignment::Branch) return found->start;
     std::int64_t at = std::max(t, found->start);
     if (found->end != kNoEnd && at >= found->end) at = found->end - 1;
     return plan_ ? plan_->block_of(at) : 0;
@@ -351,6 +359,9 @@ class Reading {
     const std::size_t horizons = r_.horizons_ns.size();
     // Pair and cluster of each cell.
     const bool by_block = plan.block_ns() > 0;
+    // branch: one instrument over one branch (the cells' block is the time its arms began), the
+    // branches the clusters.
+    const bool by_branch = plan.assignment() == AbAssignment::Branch;
     std::map<std::pair<std::size_t, std::int64_t>, std::size_t> pair_of;
     std::vector<std::vector<PairArm>> pairs;
     std::vector<std::int64_t> pair_cluster;
@@ -359,16 +370,16 @@ class Reading {
       const std::size_t stratum = c.instrument < stratum_.size() && stratum_[c.instrument] != kUnset
                                       ? stratum_[c.instrument]
                                       : 0;
-      const std::int64_t round = floor_div(c.block, rounds);
-      const auto key =
-          by_block ? std::make_pair(c.instrument, round) : std::make_pair(stratum, std::int64_t{0});
+      const std::int64_t round = by_branch ? c.block : floor_div(c.block, rounds);
+      const auto key = by_block || by_branch ? std::make_pair(c.instrument, round)
+                                             : std::make_pair(stratum, std::int64_t{0});
       const auto [it, added] = pair_of.emplace(key, pairs.size());
       if (added) {
         PairArm empty;
         empty.net_raw.assign(horizons, 0);
         empty.marked_raw.assign(horizons, 0);
         pairs.emplace_back(arms, empty);
-        pair_cluster.push_back(by_block ? round : static_cast<std::int64_t>(stratum));
+        pair_cluster.push_back(by_block || by_branch ? round : static_cast<std::int64_t>(stratum));
       }
       PairArm& s = pairs[it->second][static_cast<std::size_t>(c.arm)];
       s.ns += c.ns;

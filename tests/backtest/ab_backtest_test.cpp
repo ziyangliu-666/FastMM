@@ -274,3 +274,75 @@ TEST_CASE("backtest.ab: arms the strategy cannot run are refused before the run"
   shared.ab.arms[1].params = {{"enabled", "false"}};
   CHECK_THROWS(static_cast<void>(run_backtest(shared, "lead_mm")));
 }
+
+namespace {
+
+// The same test as branches: one run per arm over the same data and seed.
+BacktestConfig branch_config(std::string_view arms, int arm, const std::string& journal) {
+  std::string text = config(arms);
+  const std::string design = "assignment = \"crossover\"\nblock_s = 60\n";
+  text.replace(text.find(design), design.size(), "assignment = \"branch\"\n");
+  BacktestConfig cfg = BacktestConfig::from_config(Config::parse(text));
+  cfg.journal_out = journal;
+  cfg.measure_wall_clock = false;
+  cfg.ab_arm = arm;
+  return cfg;
+}
+
+}  // namespace
+
+TEST_CASE("backtest.ab: branches run each arm over the same data and read out paired") {
+  const Tape tape;
+  for (const bool aa : {false, true}) {
+    CAPTURE(aa);
+    const std::string_view arms = aa ? kSameArms : kArms;
+    std::vector<std::string> journals;
+    std::vector<std::string> hashes;
+    for (int arm = 0; arm < 2; ++arm) {
+      const std::string path = tmp_journal(arm == 0 ? "ab_branch_0.fmj" : "ab_branch_1.fmj");
+      const BacktestConfig cfg = branch_config(arms, arm, path);
+      ArraySource source(tape.columns());
+      const BacktestResult res = run_backtest(cfg, "basic_mm", &source);
+      REQUIRE(res.fills.size() > 50);
+      hashes.push_back(std::to_string(res.fills.size()) + " " +
+                       std::to_string(res.metrics.net_pnl));
+      // Every instrument is put in the run's arm once, at the start, and every order carries it.
+      JournalReader reader;
+      REQUIRE(reader.open(path));
+      int updates = 0;
+      std::size_t other = 0;
+      reader.for_each([&](const EventHeader* h) {
+        if (h->type == EventType::ParamUpdate) {
+          const auto& m = msg_cast<ParamUpdateMsg>(h);
+          CHECK(m.all_instruments());
+          CHECK(m.arm == arm + 1);
+          ++updates;
+        } else if (h->type == EventType::OutNewOrder && (h->flags & EventHeader::kOutbound) != 0) {
+          other += msg_cast<OutNewOrderMsg>(h).arm == arm + 1 ? 0U : 1U;
+        }
+      });
+      CHECK(updates == 1);
+      CHECK(other == 0);
+      const ReplayResult rp = replay_journal(path, cfg);
+      CHECK(rp.ok());
+      journals.push_back(path);
+    }
+    // An A/A branch is one run twice: the same fills (the orders differ only in their arm).
+    CHECK((hashes[0] == hashes[1]) == aa);
+    const AbReport r = ab_report(journals, AbReportOptions{});
+    CHECK(r.assignment == "branch");
+    CHECK(r.pairs == kInstruments);  // each instrument over the one branch, in both arms
+    CHECK(r.incomplete_pairs == 0);
+    CHECK(r.clusters == 1);
+    REQUIRE_FALSE(r.effects.empty());
+    for (const AbEffect& e : r.effects) {
+      CAPTURE(e.metric);
+      if (aa) CHECK(e.diff == doctest::Approx(0.0));
+    }
+  }
+  BacktestConfig unset = branch_config(kArms, -1, "");
+  ArraySource source(tape.columns());
+  CHECK_THROWS_WITH_AS(static_cast<void>(run_backtest(unset, "basic_mm", &source)),
+                       doctest::Contains("runs one arm per backtest"),
+                       std::invalid_argument);
+}

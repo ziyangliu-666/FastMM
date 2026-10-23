@@ -1972,6 +1972,13 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   // [ab]: the test's arm changes go out through the control socket's publisher, from this thread.
   std::unique_ptr<AbController> ab;
   if (cfg.ab.enabled()) {
+    if (cfg.ab.assignment == "branch") {
+      std::fprintf(stderr,
+                   "%s: [ab] assignment = \"branch\" runs each arm as a backtest of its own; a "
+                   "session runs one market\n",
+                   prog);
+      return kExitConfig;
+    }
     if (!publisher) {
       std::fprintf(stderr,
                    "%s: [ab] needs a strategy whose parameters fastmm-live can update (a "

@@ -592,7 +592,8 @@ inline constexpr KeySpec kConfigSchema[] = {
      true,
      "instrument (each instrument stays in one arm, the arms balanced on weights) | time (every "
      "instrument in the same arm, the arm changing each block) | crossover (instruments split as "
-     "with instrument, each one changing arm each block)"},
+     "with instrument, each one changing arm each block) | branch (a backtest only: one run per "
+     "arm over the same data and seed, every instrument in that arm from the start of trading)"},
     {"ab",
      "seed",
      KeyType::Int,

@@ -157,10 +157,12 @@ AbPlan::AbPlan(const AbSection& section,
     kind_ = AbAssignment::Crossover;
   } else if (s_.assignment == "instrument") {
     kind_ = AbAssignment::Instrument;
+  } else if (s_.assignment == "branch") {
+    kind_ = AbAssignment::Branch;
   } else {
-    throw ConfigError("ab.assignment must be instrument, time or crossover");
+    throw ConfigError("ab.assignment must be instrument, time, crossover or branch");
   }
-  if (kind_ != AbAssignment::Instrument) {
+  if (kind_ == AbAssignment::Time || kind_ == AbAssignment::Crossover) {
     if (s_.block_s <= 0 || s_.block_s > std::numeric_limits<std::int64_t>::max() / kNsPerSec / 4)
       throw ConfigError("ab.block_s must be > 0");
     block_ns_ = s_.block_s * kNsPerSec;
@@ -186,7 +188,7 @@ AbPlan::AbPlan(const AbSection& section,
   }
   slot_.assign(n, 0);
   stratum_.assign(n, 0);
-  if (kind_ == AbAssignment::Time) return;
+  if (kind_ == AbAssignment::Time || kind_ == AbAssignment::Branch) return;
   if (n < arms) {
     throw ConfigError(fmt::format(
         "[ab] assignment = \"{}\" splits {} instrument(s) over {} arms; it needs at least one "
@@ -255,6 +257,8 @@ int AbPlan::arm_at(std::size_t inst, std::int64_t t) const noexcept {
       return static_cast<int>(block_draw(block_of(t)));
     case AbAssignment::Crossover:
       return static_cast<int>((slot_[inst] + block_draw(block_of(t))) % arms());
+    case AbAssignment::Branch:
+      return branch_;
   }
   return kNoArm;
 }
@@ -294,7 +298,9 @@ AbController::AbController(AbPlan plan, ParamPublisher& publisher)
     : plan_(std::move(plan)), pub_(&publisher), current_(plan_.instruments(), AbPlan::kNoArm) {
   const AbSection& s = plan_.section();
   source_ = "ab:" + s.name;
-  if (plan_.assignment() != AbAssignment::Time && !publisher.per_instrument()) {
+  if ((plan_.assignment() == AbAssignment::Instrument ||
+       plan_.assignment() == AbAssignment::Crossover) &&
+      !publisher.per_instrument()) {
     throw std::invalid_argument(fmt::format(
         "[ab] assignment = \"{}\" gives instruments different parameters, and the strategy keeps "
         "one set for all of them (ParamScope::Shared); use assignment = \"time\"",

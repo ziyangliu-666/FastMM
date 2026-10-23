@@ -155,7 +155,7 @@ TEST_CASE("core.ab: a malformed [ab] table is refused with its line") {
   };
   refused("[ab]\nassignment = \"time\"\nblock_s = 60\n", "missing required key 'ab.name'");
   refused("[ab]\nname = \"x\"\nassignment = \"random\"\n[[ab.arms]]\nname = \"a\"\n",
-          "ab.assignment must be instrument, time or crossover");
+          "ab.assignment must be instrument, time, crossover or branch");
   refused("[ab]\nname = \"x\"\nassignment = \"time\"\n[[ab.arms]]\nname = \"a\"\n",
           "needs block_s");
   refused(

@@ -14,6 +14,10 @@
 //   crossover   both: an instrument's arm is its stratum slot plus the block's draw, modulo the
 //               number of arms, so each block splits the instruments and each run of blocks puts
 //               every instrument in every arm once.
+//   branch      a backtest runs once per arm over the same data and seed, every instrument in that
+//               run's arm (set_branch) from the test's start, the start of trading when it names
+//               none (set_default_start); fastmm-live refuses it. The runs share the market and the
+//               draws until their order flows differ, so each instrument is paired with itself.
 //
 // AbController keeps a session's instruments in the plan's arms. When an instrument's arm changes
 // it publishes the arm's parameters (the configured values with the arm's on top) as one
@@ -37,7 +41,7 @@ namespace fastmm {
 
 inline constexpr std::size_t kMaxAbArms = 16;
 
-enum class AbAssignment : std::uint8_t { Instrument, Time, Crossover };
+enum class AbAssignment : std::uint8_t { Instrument, Time, Crossover, Branch };
 [[nodiscard]] constexpr std::string_view to_string(AbAssignment a) noexcept {
   switch (a) {
     case AbAssignment::Instrument:
@@ -46,6 +50,8 @@ enum class AbAssignment : std::uint8_t { Instrument, Time, Crossover };
       return "time";
     case AbAssignment::Crossover:
       return "crossover";
+    case AbAssignment::Branch:
+      return "branch";
   }
   return "?";
 }
@@ -81,7 +87,13 @@ class AbPlan {
   }
   [[nodiscard]] std::int64_t start_ns() const noexcept { return start_ns_; }  // INT64_MIN: none
   [[nodiscard]] std::int64_t end_ns() const noexcept { return end_ns_; }      // INT64_MAX: none
-  [[nodiscard]] std::int64_t block_ns() const noexcept { return block_ns_; }  // 0: instrument
+  [[nodiscard]] std::int64_t block_ns() const noexcept { return block_ns_; }  // 0: no blocks
+  // branch: the arm of this run, and the start when [ab] start names none.
+  void set_branch(int arm) noexcept { branch_ = arm; }
+  [[nodiscard]] int branch() const noexcept { return branch_; }
+  void set_default_start(std::int64_t ns) noexcept {
+    if (s_.start.empty()) start_ns_ = ns;
+  }
 
   // The arm instrument `inst` is in at `t` (ns since the epoch): kNoArm before start and from end.
   [[nodiscard]] int arm_at(std::size_t inst, std::int64_t t) const noexcept;
@@ -106,6 +118,7 @@ class AbPlan {
   std::int64_t start_ns_;
   std::int64_t end_ns_;
   std::int64_t block_ns_ = 0;
+  int branch_ = 0;
   std::vector<std::uint8_t> slot_;
   std::vector<std::size_t> stratum_;
   std::vector<std::string> names_;

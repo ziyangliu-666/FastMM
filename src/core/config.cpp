@@ -181,16 +181,18 @@ void parse_ab(const toml::table& t, AbSection& ab) {
     fail_at(*t.get("name"), "ab.name must be 1 to 32 letters, digits, '_', '-' or '.'");
   get(t, "assignment", ab.assignment);
   const bool by_time = ab.assignment == "time" || ab.assignment == "crossover";
-  if (!by_time && ab.assignment != "instrument")
-    fail_at(*t.get("assignment"), "ab.assignment must be instrument, time or crossover");
+  if (!by_time && ab.assignment != "instrument" && ab.assignment != "branch")
+    fail_at(*t.get("assignment"), "ab.assignment must be instrument, time, crossover or branch");
   get(t, "seed", ab.seed);
   get(t, "block_s", ab.block_s);
   if (by_time && ab.block_s <= 0) {
     if (const auto* n = t.get("block_s")) fail_at(*n, "ab.block_s must be > 0");
     fail_at(t, fmt::format("ab.assignment = \"{}\" needs block_s", ab.assignment));
   }
-  if (!by_time && t.contains("block_s"))
-    fail_at(*t.get("block_s"), "ab.block_s: assignment = \"instrument\" has no blocks");
+  if (!by_time && t.contains("block_s")) {
+    fail_at(*t.get("block_s"),
+            fmt::format("ab.block_s: assignment = \"{}\" has no blocks", ab.assignment));
+  }
   std::int64_t start_ns = 0;
   std::int64_t end_ns = 0;
   for (const std::string_view key : {std::string_view("start"), std::string_view("end")}) {
@@ -206,8 +208,11 @@ void parse_ab(const toml::table& t, AbSection& ab) {
   if (!ab.start.empty() && !ab.end.empty() && end_ns <= start_ns)
     fail_at(*t.get("end"), "ab.end must be after ab.start");
   if (const auto* w = t.get_as<toml::table>("weights")) {
-    if (ab.assignment == "time")
-      fail_at(*w, "ab.weights: assignment = \"time\" puts every instrument in the same arm");
+    if (ab.assignment == "time" || ab.assignment == "branch") {
+      fail_at(*w,
+              fmt::format("ab.weights: assignment = \"{}\" puts every instrument in the same arm",
+                          ab.assignment));
+    }
     validate_table(*w, "ab.weights");
     for (const auto& [k, v] : *w) {
       const double x = v.value_or(-1.0);

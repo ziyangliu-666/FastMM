@@ -238,7 +238,7 @@ struct AbArmSection {
 };
 struct AbSection {
   std::string name;
-  std::string assignment;  // "instrument" | "time" | "crossover"
+  std::string assignment;  // "instrument" | "time" | "crossover" | "branch"
   std::uint64_t seed = 1;
   std::int64_t block_s = 0;  // time, crossover: the block, seconds
   std::string start;         // UTC; empty: from the start of the session

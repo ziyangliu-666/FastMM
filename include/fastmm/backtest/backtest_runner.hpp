@@ -56,6 +56,7 @@ class BacktestSession {
   struct Impl;
   BacktestConfig cfg_;
   MdSource* source_;
+  const ParamSchema* schema_;
   std::unique_ptr<SyntheticSource> synthetic_;
   std::unique_ptr<sim::MarketGenerator> generator_;
   std::unique_ptr<sim::SimBackend> backend_;

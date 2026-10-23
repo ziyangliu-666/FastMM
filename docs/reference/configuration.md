@@ -619,7 +619,7 @@ An A/B test of strategy parameters, in `fastmm-live` and in a backtest ([Run an 
 | Key | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string | yes | name of the test, up to 32 letters, digits, '_', '-' or '.'; the store and journal record it with every arm assignment |
-| `assignment` | string | yes | instrument (each instrument stays in one arm, the arms balanced on weights) \| time (every instrument in the same arm, the arm changing each block) \| crossover (instruments split as with instrument, each one changing arm each block) |
+| `assignment` | string | yes | instrument (each instrument stays in one arm, the arms balanced on weights) \| time (every instrument in the same arm, the arm changing each block) \| crossover (instruments split as with instrument, each one changing arm each block) \| branch (a backtest only: one run per arm over the same data and seed, every instrument in that arm from the start of trading) |
 | `seed` | integer |  | seed of the instrument split and of the order of the arms over the blocks (default 1) |
 | `block_s` | integer |  | time, crossover: block length, s; blocks start at multiples of it since 1970-01-01 UTC, and each run of as many blocks as there are arms gives every arm one, in an order drawn from seed (required with time and crossover, refused with instrument) |
 | `start` | string |  | UTC time the test starts, YYYY-MM-DD, YYYY-MM-DDTHH:MM or YYYY-MM-DDTHH:MM:SSZ; before it the configured parameters run (default: at the start of the session) |

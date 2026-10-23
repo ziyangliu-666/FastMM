@@ -9,9 +9,11 @@ An `[ab]` section runs two or more parameter sets of one strategy, the arms, in 
 | `instrument` | stays in one arm | instruments of similar weight with each other | a parameter set per instrument |
 | `time` | is in the arm every instrument is in, which changes each block | each instrument with itself in the neighbouring block | any that takes parameter updates |
 | `crossover` | changes arm each block, the instruments split between the arms in every block | each instrument with itself, and the arms within each block | a parameter set per instrument |
+| `branch` | is in one arm per run: `fastmm-backtest` runs the configuration once per arm over the same data and seed | each instrument with itself over the same market | any that takes parameter updates; a backtest only |
 
 - `crossover` removes both the difference between instruments and the difference between moments; it is the design to start from. `time` suits a strategy that keeps one parameter set. `instrument` suits a parameter whose effect outlasts a block, such as the inventory a wider spread lets build up.
 - Blocks are `block_s` long and start at multiples of it since 1970-01-01 UTC, so a backtest and a live session over the same hours share them. Each run of as many blocks as there are arms gives every arm one block, in an order drawn from `seed`. Make a block longer than the time the parameter takes to show its effect, and the test several runs long.
+- `branch` takes nothing from the market's noise: both arms see the same data, and the simulator's draws are the same until their orders differ. It tests what a change would have done over a recorded session, not how it does live; `fastmm-live` refuses it.
 - `instrument` and `crossover` sort the instruments by `[ab.weights]` (a recent daily volume, a volatility) and give each consecutive group of as many instruments as there are arms every arm once.
 
 A strategy keeps a parameter set per instrument when it derives from `StrategyBase<Params, ParamScope::PerInstrument>` and reads `params(id)` ([Strategy API](../../reference/strategy-api.md#parameters-per-instrument)); `basic_mm` and `avellaneda_stoikov` do.

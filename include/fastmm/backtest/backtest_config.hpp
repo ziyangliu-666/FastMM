@@ -130,6 +130,9 @@ struct BacktestConfig {
   bool params_from_journal = false;
   // [ab]: an A/B test of the strategy's parameters (strategies/ab_test.hpp); no arms: none.
   AbSection ab;
+  // [ab] assignment = "branch": the arm this run is (an index into ab.arms); fastmm-backtest runs
+  // each one in turn.
+  int ab_arm = -1;
   // Recorded data reaches the simulated venue in venue-time order (sim/venue_order.hpp), assuming
   // no event was received more than this after its venue time; zero keeps the recorded order.
   Duration reorder_window = milliseconds(1000);

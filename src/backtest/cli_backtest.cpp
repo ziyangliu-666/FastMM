@@ -10,6 +10,7 @@
 // registered twice by different code), 4 unreadable data, 5 run or output failure.
 #include "command_line.hpp"
 
+#include "fastmm/backtest/ab_report.hpp"
 #include "fastmm/backtest/backtest_runner.hpp"
 #include "fastmm/cli/backtest.hpp"
 #include "fastmm/cli/modules.hpp"
@@ -32,6 +33,64 @@ namespace {
 constexpr int kExitConfig = 3;
 constexpr int kExitData = 4;
 constexpr int kExitRun = 5;
+
+// [ab] assignment = "branch": the configuration once per arm over the same data and seed, each
+// run's results in <out>/<arm>/ and its journal there (or next to --journal-out, x.arm-<name>.fmj),
+// then the readout of fastmm-data ab over the arms' journals.
+int run_branches(const char* prog, const bt::BacktestConfig& cfg, bt::MdSource* source) {
+  if (cfg.output_dir.empty() && cfg.journal_out.empty()) {
+    std::fprintf(stderr,
+                 "%s: [ab] assignment = \"branch\" writes a journal per arm: give --out or "
+                 "--journal-out\n",
+                 prog);
+    return kExitConfig;
+  }
+  std::vector<std::string> journals;
+  Logger::instance().start(stderr, LogLevel::Warn);
+  for (std::size_t k = 0; k < cfg.ab.arms.size(); ++k) {
+    const std::string& arm = cfg.ab.arms[k].name;
+    bt::BacktestConfig c = cfg;
+    c.ab_arm = static_cast<int>(k);
+    if (!cfg.output_dir.empty()) c.output_dir = std::string(cfg.output_dir).append("/").append(arm);
+    if (!cfg.journal_out.empty()) {
+      std::string base = cfg.journal_out;
+      if (base.size() > 4 && base.ends_with(".fmj")) base.resize(base.size() - 4);
+      c.journal_out = base.append(".arm-").append(arm).append(".fmj");
+    } else {
+      c.journal_out = c.output_dir + "/session.fmj";
+    }
+    if (source != nullptr) source->reset();
+    bt::BacktestResult result;
+    try {
+      result = bt::run_backtest(c, c.strategy, source);
+    } catch (const std::invalid_argument& e) {
+      Logger::instance().stop();
+      std::fprintf(stderr, "%s: %s\n", prog, e.what());
+      return kExitConfig;
+    } catch (const std::exception& e) {
+      Logger::instance().stop();
+      std::fprintf(stderr, "%s: run failed: %s\n", prog, e.what());
+      return kExitRun;
+    }
+    std::printf("arm %s\n%s", arm.c_str(), result.summary_table().c_str());
+    if (!c.output_dir.empty() && !result.write_all(c.output_dir)) {
+      Logger::instance().stop();
+      std::fprintf(stderr, "%s: cannot write results to %s\n", prog, c.output_dir.c_str());
+      return kExitRun;
+    }
+    std::printf("session journal: %s\n\n", c.journal_out.c_str());
+    journals.push_back(c.journal_out);
+  }
+  Logger::instance().stop();
+  try {
+    std::fputs(bt::format_ab_report(bt::ab_report(journals, bt::AbReportOptions{})).c_str(),
+               stdout);
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "%s: the readout: %s\n", prog, e.what());
+    return kExitRun;
+  }
+  return 0;
+}
 
 }  // namespace
 
@@ -156,6 +215,9 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
     std::fprintf(stderr, "%s: data error: %s\n", prog, e.what());
     return kExitData;
   }
+
+  if (cfg.ab.enabled() && cfg.ab.assignment == "branch")
+    return run_branches(prog, cfg, source.get());
 
   Logger::instance().start(stderr, LogLevel::Warn);
   bt::BacktestResult result;

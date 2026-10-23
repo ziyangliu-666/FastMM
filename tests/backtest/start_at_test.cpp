@@ -365,3 +365,31 @@ TEST_CASE("backtest.start_at: [backtest] latency_from_journal") {
                        doctest::Contains("latency_from_journal needs a journal"),
                        std::invalid_argument);
 }
+
+TEST_CASE("backtest.start_at: branches from a checkpoint put their arm in when trading starts") {
+  const std::string first = tmp_path("start_at_branch_source.fmj");
+  BacktestConfig a = ewma_config();
+  a.engine.checkpoint_interval = seconds(2);
+  a.journal_out = first;
+  static_cast<void>(run_backtest<Ewma>(a));
+  BacktestConfig b = ewma_config();
+  b.initial_state = InitialState::Journal;
+  b.start_at = a.start + seconds(5);
+  b.ab.name = "branch-1";
+  b.ab.assignment = "branch";
+  b.ab.arms = {AbArmSection{"control", {}}, AbArmSection{"small", {{"quote_qty", "0.001"}}}};
+  for (int arm = 0; arm < 2; ++arm) {
+    b.ab_arm = arm;
+    b.journal_out = tmp_path(arm == 0 ? "start_at_branch_a.fmj" : "start_at_branch_b.fmj");
+    JournalSource src(first, true);
+    static_cast<void>(run_backtest<Ewma>(b, &src));
+    JournalReader r;
+    REQUIRE(r.open(b.journal_out));
+    std::vector<std::int64_t> at;
+    r.for_each([&](const EventHeader* h) {
+      if (h->type == EventType::ParamUpdate) at.push_back(h->recv_ts.ns);
+    });
+    REQUIRE(at.size() == 1);
+    CHECK(at[0] == (a.start + seconds(4)).ns);  // the checkpoint's time
+  }
+}

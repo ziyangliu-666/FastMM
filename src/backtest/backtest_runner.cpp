@@ -297,7 +297,7 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
                                  MdSource* source,
                                  const ParamSchema* schema,
                                  std::string_view strategy_meta)
-    : cfg_(cfg), source_(source) {
+    : cfg_(cfg), source_(source), schema_(schema) {
   if (cfg_.instruments.size() == 0) throw std::invalid_argument("backtest: no instruments");
   if (cfg_.initial_state == InitialState::StateFile && !cfg_.engine.state_file.empty()) {
     auto loaded = load_strategy_state(cfg_.engine.state_file, cfg_.engine.initial_state);
@@ -493,7 +493,9 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
   if (!cfg_.journal_out.empty()) {
     impl_->journal_ring = std::make_unique<MsgRing>(16U << 20);
     JournalSessionInfo info;
-    info.session_id = cfg_.seed;
+    // Each arm of a branch is a session of its own: its journal does not continue another arm's.
+    info.session_id =
+        cfg_.seed + (cfg_.ab_arm >= 0 ? (static_cast<std::uint64_t>(cfg_.ab_arm) + 1) << 48U : 0);
     info.start_ts = start;
     info.rng_seed = cfg_.engine.rng_seed;
     info.strategy = cfg_.strategy;
@@ -552,9 +554,12 @@ void BacktestSession::enable_ab(StrategyEntry::PublisherFactory publisher) {
     throw std::invalid_argument(
         "backtest: [ab] needs a strategy whose parameters are a FASTMM_PARAMS struct");
   }
-  if (cfg_.params_from_journal) {
+  const bool branch = cfg_.ab.assignment == "branch";
+  if (branch && (cfg_.ab_arm < 0 || static_cast<std::size_t>(cfg_.ab_arm) >= cfg_.ab.arms.size())) {
     throw std::invalid_argument(
-        "backtest: [ab] and params_from_journal both set the strategy's parameters; turn one off");
+        "backtest: [ab] assignment = \"branch\" runs one arm per backtest "
+        "(BacktestConfig::ab_arm); "
+        "fastmm-backtest runs every arm");
   }
   auto run = std::make_unique<AbRun>();
   const ParamSink sink{run.get(), [](void* c, const ParamUpdateMsg& m) noexcept {
@@ -573,10 +578,37 @@ void BacktestSession::enable_ab(StrategyEntry::PublisherFactory publisher) {
                        }};
   run->publisher = publisher(sink, cfg_.params, cfg_.instruments.size());
   try {
-    run->controller = std::make_unique<AbController>(
-        AbPlan(cfg_.ab, cfg_.instruments, cfg_.venue_names), *run->publisher);
+    AbPlan plan(cfg_.ab, cfg_.instruments, cfg_.venue_names);
+    if (branch) {
+      plan.set_branch(cfg_.ab_arm);
+      plan.set_default_start(trade_at_.valid() ? trade_at_.ns : backend_->clock.now().ns);
+    }
+    run->controller = std::make_unique<AbController>(std::move(plan), *run->publisher);
   } catch (const ConfigError& e) {
     throw std::invalid_argument(std::string("backtest: ") + e.what());
+  }
+  // The recorded updates keep the parameters the test does not own (params_from_journal).
+  if (!journal_params_.empty() && schema_ != nullptr) {
+    std::size_t dropped = 0;
+    for (ParamUpdateMsg& m : journal_params_) {
+      std::uint32_t kept = 0;
+      for (std::uint32_t i = 0; i < m.count; ++i) {
+        if (m.field[i] < schema_->size() &&
+            run->controller->owns(schema_->begin()[m.field[i]].name)) {
+          ++dropped;
+          continue;
+        }
+        m.field[kept] = m.field[i];
+        m.value[kept] = m.value[i];
+        ++kept;
+      }
+      m.count = kept;
+    }
+    std::erase_if(journal_params_, [](const ParamUpdateMsg& m) { return m.count == 0; });
+    if (dropped > 0) {
+      FASTMM_LOG_INFO("backtest: {} recorded parameter values left out: the [ab] arms set them",
+                      dropped);
+    }
   }
   ab_ = std::move(run);
 }
