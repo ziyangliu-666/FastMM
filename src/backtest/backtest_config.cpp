@@ -1,6 +1,7 @@
 #include "fastmm/backtest/backtest_config.hpp"
 
 #include "fastmm/backtest/fill_model.hpp"
+#include "fastmm/strategies/ab_test.hpp"
 
 #include <fmt/format.h>
 
@@ -344,7 +345,8 @@ std::vector<Duration> parse_horizons(const std::string& text) {
 }
 
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 36> kBacktestKeys = {"latency_fill_us",
+constexpr std::array<std::string_view, 37> kBacktestKeys = {"start_at",
+                                                            "latency_fill_us",
                                                             "latency_fill_jitter_us",
                                                             "latency_fill_sigma",
                                                             "latency_sigma",
@@ -486,6 +488,20 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   t.own_orders_in_feed = bt.get_bool("own_orders_in_feed", true);
   b.balances_from_journal = bt.get_bool("balances_from_journal", false);
   b.positions = read_positions(bt, b.instruments);
+  if (bt.has("start_at")) {
+    // Unix seconds, or a UTC time ("2026-10-20T08:00:00Z").
+    const std::string text = bt.get_string("start_at", "");
+    char* end = nullptr;
+    const double secs = std::strtod(text.c_str(), &end);
+    if (end != text.c_str() && *end == '\0' && secs > 0.0) {
+      b.start_at = Timestamp{std::llround(secs * 1e9)};
+    } else if (const std::optional<std::int64_t> utc = parse_utc_time(text)) {
+      b.start_at = Timestamp{*utc};
+    } else {
+      throw ConfigError("backtest.start_at: '" + text +
+                        "' is neither unix seconds nor a UTC time (2026-10-20T08:00:00Z)");
+    }
+  }
   b.params_from_journal = bt.get_bool("params_from_journal", false);
   b.ab = cfg.ab;
   if (const std::string s = bt.get_string("initial_state", "state_file"); s == "journal") {

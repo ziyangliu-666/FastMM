@@ -28,20 +28,28 @@ constexpr std::size_t kReserveOrders = 1U << 15;
 constexpr std::size_t kReserveFills = 1U << 14;
 constexpr std::size_t kReserveBars = 1U << 12;
 
-// The pool treasuries of a run ([venues.<primary>.treasury]) as a slow tier of the driver: at each
-// look they read the pools' simulated accounts (the venue's free amounts) and step, and their
-// transfers are carried out by a SimTreasuryPort at simulated times. A slow tier the caller set
-// (a Python strategy's) runs from the same hook at its own times.
-struct TreasuryTier {
+// What a run does at simulated times besides the engine's events, as a slow tier of the driver:
+//   * the pool treasuries ([venues.<primary>.treasury]): at each look they read the pools'
+//     simulated accounts (the venue's free amounts) and step, and their transfers are carried out
+//     by a SimTreasuryPort at simulated times;
+//   * the start of trading ([backtest] start_at): the strategy restores its checkpoint as at a warm
+//     standby's take-over (ControlCommand::TakeOver), then every venue an order can go to
+//     reconciles with the start positions, and the engine trades from there;
+//   * a slow tier the caller set (a Python strategy's), at its own times.
+struct RunTier {
   sim::SimTransport* transport = nullptr;
-  SimClock* clock = nullptr;
+  InlineFeed* feed = nullptr;
   std::vector<std::unique_ptr<Treasury>> treasuries;
   std::unique_ptr<sim::SimTreasuryPort> port;
-  Duration interval{};
-  Timestamp next_look{};
+  Duration interval{std::numeric_limits<std::int64_t>::max()};
+  Timestamp next_look = Timestamp::max();
+  std::vector<TreasuryBalance> rows;
+  Timestamp trade_at = Timestamp::max();
+  std::uint32_t trade_venues = 0;
+  bool take_over = false;
+  std::vector<ReconcileMsg> positions;
   sim::SlowHooks user{};
   Timestamp user_next = Timestamp::max();
-  std::vector<TreasuryBalance> rows;
 
   void look(Timestamp now) {
     const sim::SimAccounts* accounts = transport->accounts();
@@ -61,16 +69,33 @@ struct TreasuryTier {
     }
   }
 
+  void start_trading(Timestamp now) {
+    if (take_over) {
+      ControlMsg m{};
+      init_header(m, EventType::Control);
+      m.command = ControlCommand::TakeOver;
+      m.hdr.recv_ts = now;
+      if (!feed->push(m.hdr)) throw std::runtime_error("backtest: the engine's feed is full");
+    }
+    transport->publish_reconcile(now, trade_venues, positions);
+    trade_at = Timestamp::max();
+  }
+
+  [[nodiscard]] Timestamp next() const noexcept {
+    return std::min({user_next, next_look, port ? port->next_due() : Timestamp::max(), trade_at});
+  }
+
   static Timestamp run(void* ctx, Timestamp now) {
-    auto& tier = *static_cast<TreasuryTier*>(ctx);
-    tier.port->settle(now);
+    auto& tier = *static_cast<RunTier*>(ctx);
+    if (now >= tier.trade_at) tier.start_trading(now);
+    if (tier.port) tier.port->settle(now);
     if (tier.user.run != nullptr && now >= tier.user_next)
       tier.user_next = tier.user.run(tier.user.ctx, now);
     if (now >= tier.next_look) {
       tier.look(now);
       tier.next_look = now + tier.interval;
     }
-    return std::min({tier.user_next, tier.next_look, tier.port->next_due()});
+    return tier.next();
   }
 };
 }  // namespace
@@ -254,11 +279,37 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
       throw std::invalid_argument(
           "backtest: initial_state = \"journal\" needs a journal as the data source");
     }
-    const sim::SessionStart s = recorded->start();
-    cfg_.engine.initial_state = s.strategy;
+    const sim::SessionStart s = recorded->start(cfg_.start_at);
+    if (cfg_.start_at.valid() && !s.has_state) {
+      throw std::invalid_argument(
+          "backtest: start_at with initial_state = \"journal\": the journal has no checkpoint at "
+          "or before start_at (record the session with [engine] checkpoint_s)");
+    }
+    if (cfg_.start_at.valid()) {
+      // Restored when trading starts, as a warm standby's take-over does (RunTier).
+      cfg_.engine.initial_state.clear();
+      staged_state_ = s.strategy;
+      trade_at_ = s.at;
+    } else {
+      cfg_.engine.initial_state = s.strategy;
+    }
     start_positions_ = s.positions;
     start_note_ = s.note;
     FASTMM_LOG_INFO("backtest: {}", start_note_);
+  }
+  if (cfg_.start_at.valid()) {
+    if (!trade_at_.valid()) trade_at_ = cfg_.start_at;
+    // Every venue an order can go to reconciles when trading starts; until then the engine refuses
+    // orders (EngineConfig::await_reconcile), as before a live session's first reconciliation.
+    for (std::uint32_t v = 0; v < PoolPlan::kVenues; ++v) {
+      const VenueId primary = cfg_.transport.pools.primary(VenueId{static_cast<std::uint8_t>(v)});
+      if (std::any_of(cfg_.instruments.begin(), cfg_.instruments.end(), [&](const Instrument& i) {
+            return i.venue == primary;
+          }))
+        trade_venues_ |= 1U << v;
+    }
+    FASTMM_LOG_INFO("backtest: the strategy warms up on the data; trading starts at {} ns",
+                    trade_at_.ns);
   }
   for (const StartPosition& p : cfg_.positions) {
     std::erase_if(start_positions_,
@@ -324,7 +375,7 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
           "backtest: balances_from_journal needs one journal as the data source");
     }
     std::vector<sim::SimAccountConfig>& accounts = cfg_.transport.accounts;
-    for (const sim::SimAccountConfig& a : recorded->balances_at()) {
+    for (const sim::SimAccountConfig& a : recorded->balances_at(trade_at_)) {
       const bool traded =
           std::any_of(cfg_.instruments.begin(), cfg_.instruments.end(), [&](const Instrument& i) {
             return i.venue == cfg_.transport.pools.primary(a.venue);
@@ -363,6 +414,7 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
     info.quoting_enabled = cfg_.engine.quoting_enabled;
     info.replace_venues = cfg_.transport.replace_mask();
     info.own_in_feed = cfg_.transport.own_orders_in_feed;
+    info.await_reconcile = cfg_.engine.await_reconcile | trade_venues_;
     info.config_toml = cfg_.config_toml;
     info.params = schema;
     info.strategy_meta = strategy_meta;
@@ -377,6 +429,7 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
       throw std::runtime_error("backtest: cannot create journal " + cfg_.journal_out);
   }
   deps_.engine = cfg_.engine;
+  deps_.engine.await_reconcile |= trade_venues_;
   deps_.engine.fees = cfg_.transport.fees;  // what the simulated venue charges
   // The strategy's queue estimate uses the fill model's conservatism.
   deps_.engine.queue_conservatism_bps = cfg_.transport.queue_conservatism_bps;
@@ -478,33 +531,48 @@ BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,
     ab_->schedule = schedule;
   }
   driver.set_param_schedule(schedule);
-  std::unique_ptr<TreasuryTier> tier;
-  if (!cfg_.treasuries.empty()) {
-    tier = std::make_unique<TreasuryTier>();
+  std::unique_ptr<RunTier> tier;
+  if (!cfg_.treasuries.empty() || trade_at_.valid()) {
+    tier = std::make_unique<RunTier>();
     tier->transport = &b.transport;
-    tier->clock = &b.clock;
-    tier->port = std::make_unique<sim::SimTreasuryPort>(
-        b.transport, [&b] { return b.clock.now(); }, cfg_.transfer_latency);
-    tier->interval = Duration{std::numeric_limits<std::int64_t>::max()};
-    for (const TreasuryConfig& c : cfg_.treasuries) {
-      auto t = std::make_unique<Treasury>(c);
-      if (auto r = t->open(); !r) throw std::runtime_error("backtest: treasury: " + r.error());
-      tier->interval = Duration{std::min(tier->interval.ns, c.interval_ns)};
-      tier->treasuries.push_back(std::move(t));
+    tier->feed = &b.feed;
+    if (!cfg_.treasuries.empty()) {
+      tier->port = std::make_unique<sim::SimTreasuryPort>(
+          b.transport, [&b] { return b.clock.now(); }, cfg_.transfer_latency);
+      for (const TreasuryConfig& c : cfg_.treasuries) {
+        auto t = std::make_unique<Treasury>(c);
+        if (auto r = t->open(); !r) throw std::runtime_error("backtest: treasury: " + r.error());
+        tier->interval = Duration{std::min(tier->interval.ns, c.interval_ns)};
+        tier->treasuries.push_back(std::move(t));
+      }
+      tier->next_look = b.clock.now();
     }
-    tier->next_look = b.clock.now();
+    if (trade_at_.valid()) {
+      // The checkpoint's bytes are restored at the take-over.
+      tier->take_over = !staged_state_.empty();
+      if (tier->take_over) {
+        if (runner == nullptr)
+          throw std::invalid_argument("backtest: start_at from a checkpoint needs the runner");
+        runner->stage_strategy_state(staged_state_);
+      }
+      tier->trade_at = std::max(trade_at_, b.clock.now());
+      tier->trade_venues = trade_venues_;
+      tier->positions = start_positions_;
+    }
     tier->user = slow_;
     tier->user_next = slow_.run != nullptr ? slow_.first : Timestamp::max();
     sim::SlowHooks tier_hooks;
     tier_hooks.ctx = tier.get();
-    tier_hooks.run = &TreasuryTier::run;
-    tier_hooks.first = std::min(tier->next_look, tier->user_next);
+    tier_hooks.run = &RunTier::run;
+    tier_hooks.first = tier->next();
     driver.set_slow_hooks(tier_hooks);
   } else {
     driver.set_slow_hooks(slow_);
   }
-  // The recorded session's positions reach the engine at the first step, as its restore did live.
-  if (!start_positions_.empty()) b.transport.publish_positions(b.clock.now(), start_positions_);
+  // The recorded session's positions reach the engine at the first step, as its restore did live
+  // (with start_at, in the venues' reconciliation when trading starts).
+  if (!start_positions_.empty() && !trade_at_.valid())
+    b.transport.publish_positions(b.clock.now(), start_positions_);
   driver.start();
   const Timestamp start = b.clock.now();
   if (ab_) {
@@ -584,7 +652,7 @@ BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,
       r.treasury.limited += ts.limited;
       r.treasury.dry_run_plans += ts.dry_run_plans;
     }
-    r.treasury.transfers = tier->port->records();
+    if (tier->port) r.treasury.transfers = tier->port->records();
   }
   r.start_ts = start.ns;
   r.end_ts = b.clock.now().ns;

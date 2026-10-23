@@ -63,6 +63,11 @@ class BacktestSession {
   // the strategy's state came from.
   std::vector<ReconcileMsg> start_positions_;
   std::string start_note_;
+  // start_at: when trading starts, the venues that reconcile then (bit per venue id) and the
+  // checkpoint's bytes the strategy restores then.
+  Timestamp trade_at_{};
+  std::uint32_t trade_venues_ = 0;
+  std::string staged_state_;
   // params_from_journal: the session's updates on this strategy's schema, and the schedule they go
   // to when the caller sets none.
   std::vector<ParamUpdateMsg> journal_params_;

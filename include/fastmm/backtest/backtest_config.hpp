@@ -20,6 +20,7 @@
 //   initial_state = "state_file" | "journal" | "none", params_from_journal = false
 //   [backtest.balances] <ASSET> = "<amount>"  (and [backtest.venues.<name>.balances])
 //   [backtest.positions] <SYMBOL> = "<qty>" | "<qty>@<avg_px>"
+//   start_at = <unix s> | "<UTC time>"
 //   equity_bar_s = 1, initial_capital = 0
 //   markout_horizons_s = "1,10,60"
 //   output_dir = "runs/backtest", journal_out = ""
@@ -113,6 +114,13 @@ struct BacktestConfig {
   // part from the middle of a session, whose records do not repeat the positions, starts where the
   // session was.
   std::vector<StartPosition> positions;
+  // [backtest] start_at: the run reads the data from its start (the books and the strategy's view
+  // of the market warm up), but trading starts later: with initial_state = "journal" at the last
+  // checkpoint of the data journal at or before this time, whose state the strategy restores as a
+  // warm standby's take-over does, else at this time. Until then every venue an order can go to
+  // has not reconciled, so the engine refuses orders (NotReconciled); at the start each one
+  // reconciles with the start positions. Invalid: trading starts with the data.
+  Timestamp start_at{};
   // The data journal's parameter updates reach the strategy at the times the session received
   // them (sim::RecordedParams), mapped by name and type onto its schema.
   bool params_from_journal = false;

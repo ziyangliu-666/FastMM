@@ -261,6 +261,14 @@ class SimTransport final : public MatchingSink {
   // Reconcile Position messages (a recorded session's positions) to the engine at `now`, each on
   // the link of its header's venue, else its instrument's.
   void publish_positions(Timestamp now, std::span<const ReconcileMsg> positions) noexcept;
+  // A reconciliation of each venue in `venues` (bit per venue id) at venue time `ts`, as a live
+  // connector sends one when it connects: Begin, the `positions` on that venue, End, on the
+  // venue's own link. The engine refuses orders until every venue it awaits has reconciled
+  // (EngineConfig::await_reconcile): a backtest that warms its strategy up on the data before it
+  // trades ([backtest] start_at) starts trading here.
+  void publish_reconcile(Timestamp ts,
+                         std::uint32_t venues,
+                         std::span<const ReconcileMsg> positions) noexcept;
   // Historical event at venue time (hdr.exch_ts, falling back to recv_ts): updates the
   // venue-side fill model and forwards the event to the engine after md_in latency, in recorded
   // order when hdr.seq gives it (from 1, VenueOrderSource), else at once.

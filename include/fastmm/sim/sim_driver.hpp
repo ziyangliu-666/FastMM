@@ -71,7 +71,8 @@ struct EngineHooks {
 };
 
 // Code that runs at simulated times between engine events: the slow methods of a Python strategy
-// in a backtest.
+// in a backtest, and what a backtest does at its own times (backtest_runner.cpp). A message it
+// pushes into the engine's feed is taken by an engine step right after the run.
 struct SlowHooks {
   void* ctx = nullptr;
   // Runs what is due at `now` (the clock is at `now`) and returns the next time to run
@@ -211,6 +212,7 @@ class SimDriver {
         slow_next_ = slow_.run(slow_.ctx, t);
         if (slow_next_ <= t) slow_next_ = Timestamp{t.ns + 1};
         poll_stopped();
+        if (!stopped_ && !feed_.empty()) engine_step(false);  // what the run handed the engine
       }
     }
   }

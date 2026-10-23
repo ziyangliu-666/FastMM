@@ -337,6 +337,38 @@ void SimTransport::publish_positions(Timestamp now,
   }
 }
 
+void SimTransport::publish_reconcile(Timestamp ts,
+                                     std::uint32_t venues,
+                                     std::span<const ReconcileMsg> positions) noexcept {
+  for (std::uint32_t v = 0; v < 32; ++v) {
+    if (((venues >> v) & 1U) == 0) continue;
+    Link* l = link_of_venue(VenueId{static_cast<std::uint8_t>(v)});
+    if (l == nullptr) continue;
+    const auto push = [&](ReconcileMsg m) {
+      m.hdr.venue = l->id;
+      m.hdr.exch_ts = ts;
+      const Timestamp arrival = std::max(l->last_order_arrival, ts);
+      l->last_order_arrival = arrival;
+      m.hdr.recv_ts = arrival;
+      m.hdr.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
+      m.hdr.seq = 0;
+      if (!l->order_wire.try_push(&m.hdr, m.hdr.len)) ++stats_.wire_full;
+    };
+    ReconcileMsg begin{};
+    init_header(begin, EventType::Reconcile, InstrumentId{}, l->id);
+    begin.kind = ReconcileMsg::Kind::Begin;
+    begin.flags = ReconcileMsg::kExecutionsExact;  // nothing traded before: nothing to estimate
+    push(begin);
+    for (const ReconcileMsg& p : positions) {
+      if (p.hdr.venue == l->id && p.hdr.instrument.value < instruments_.size()) push(p);
+    }
+    ReconcileMsg end{};
+    init_header(end, EventType::Reconcile, InstrumentId{}, l->id);
+    end.kind = ReconcileMsg::Kind::End;
+    push(end);
+  }
+}
+
 void SimTransport::on_source_event(const EventHeader& md) noexcept {
   const Timestamp now = venue_time(md);
   const InstrumentId id = md.instrument;
