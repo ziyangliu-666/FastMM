@@ -564,3 +564,17 @@ def test_the_live_runner_loop_uses_the_wall_clock_and_records_failures():
     watched.begin_call(time.monotonic_ns(), 1_000_000)
     time.sleep(0.01)
     assert watched.check(time.monotonic_ns()) == slow_abi.FAILURE_TIMEOUT
+
+
+def test_slow_method_timings_keep_a_bounded_sample():
+    from fastmm._slow import runner
+
+    t = runner._Timing()
+    for ns in range(3 * runner.TIMING_SAMPLES):
+        t.add(ns)
+    assert t.calls == 3 * runner.TIMING_SAMPLES
+    assert t.max == 3 * runner.TIMING_SAMPLES - 1
+    assert len(t.samples) == runner.TIMING_SAMPLES
+    # A uniform sample of 0 .. 3N-1: its median is near 1.5N.
+    median = sorted(t.samples)[runner.TIMING_SAMPLES // 2]
+    assert abs(median - 1.5 * runner.TIMING_SAMPLES) < 0.05 * runner.TIMING_SAMPLES

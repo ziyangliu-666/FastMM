@@ -10,6 +10,8 @@ session's watchdog.
 
 from __future__ import annotations
 
+import array
+import random
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
@@ -34,6 +36,34 @@ IDLE_WAKE_NS = 1_000_000_000
 """Without @fastmm.every methods a backtest wakes the runner once per second to drain fills."""
 LIVE_POLL_NS = 10_000_000
 """run_thread(): heartbeat and fills drain interval while no method is due."""
+
+
+TIMING_SAMPLES = 65_536
+"""Wall times kept per method: every call up to this many, then a uniform sample of them."""
+
+
+class _Timing:
+    """Calls, max and a bounded uniform sample (reservoir) of one method's wall times, so a live
+    session that runs for weeks keeps a fixed amount of memory per method."""
+
+    __slots__ = ("calls", "max", "samples", "_rng")
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.max = 0
+        self.samples = array.array("q")
+        self._rng = random.Random(0)
+
+    def add(self, ns: int) -> None:
+        self.calls += 1
+        if ns > self.max:
+            self.max = ns
+        if len(self.samples) < TIMING_SAMPLES:
+            self.samples.append(ns)
+        else:
+            k = self._rng.randrange(self.calls)
+            if k < TIMING_SAMPLES:
+                self.samples[k] = ns
 
 
 class WallClock:
@@ -61,7 +91,7 @@ class SlowRunner:
         """The method running now (read by another thread to name a call past its timeout)."""
         self.overran: Optional[str] = None
         """The first method whose call ran past its timeout."""
-        self.timings: Dict[str, List[int]] = {name: [] for name, *_ in self.methods}
+        self.timings: Dict[str, _Timing] = {name: _Timing() for name, *_ in self.methods}
         self._due: List[int] = []
         self._fills: List[np.ndarray] = []
 
@@ -150,13 +180,14 @@ class SlowRunner:
     # ---- reporting -------------------------------------------------------------------------------
 
     def timing_rows(self) -> List[Tuple[str, int, int, int, int]]:
-        """(name, calls, p50 ns, p99 ns, max ns) of each @fastmm.every method's wall time."""
+        """(name, calls, p50 ns, p99 ns, max ns) of each @fastmm.every method's wall time; the
+        percentiles are exact up to TIMING_SAMPLES calls and of a uniform sample beyond."""
         rows = []
-        for name, samples in self.timings.items():
-            if samples:
-                a = np.asarray(samples, dtype=np.int64)
-                rows.append((name, len(a), int(np.percentile(a, 50)), int(np.percentile(a, 99)),
-                             int(a.max())))
+        for name, t in self.timings.items():
+            if t.calls:
+                a = np.frombuffer(t.samples, dtype=np.int64)
+                rows.append((name, t.calls, int(np.percentile(a, 50)), int(np.percentile(a, 99)),
+                             t.max))
             else:
                 rows.append((name, 0, 0, 0, 0))
         return rows
@@ -195,4 +226,4 @@ class SlowRunner:
             else:
                 ch.heartbeat(t1)
             if name in self.timings:
-                self.timings[name].append(t1 - t0)
+                self.timings[name].add(t1 - t0)
