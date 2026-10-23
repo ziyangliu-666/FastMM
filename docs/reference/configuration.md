@@ -22,7 +22,7 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 |---|---|---|---|
 | `name` | string |  | session name, used in logs, journal file names and the status file (default "fastmm") |
 | `cpu` | integer |  | CPU core of the engine thread; -1 = not pinned (default -1) |
-| `net_cpus` | integer array |  | CPU cores of the network threads, one per venue in order; with spin_mode = "adaptive" a thread whose core it shares with the engine or another network thread blocks when idle instead of spinning (default []) |
+| `net_cpus` | integer array |  | CPU cores of the network threads, one per venue in order; venues given the same core run on one thread when it polls (spin_mode = "busy", or net_spin_dedicated) and the core is not the engine's; otherwise, with spin_mode = "adaptive", a thread whose core it shares with the engine or another network thread blocks when idle instead of spinning (default []) |
 | `spin_mode` | string |  | busy (spin forever) \| adaptive (spin briefly, then block until work arrives; use on WSL2 and laptops) (default adaptive) |
 | `net_backend` | string |  | event loop of fastmm-live and fastmm-sim-exchange: epoll \| io_uring (Linux 5.13 or newer; falls back to epoll with a warning) (default epoll) |
 | `threading` | string |  | fastmm-live: split (engine and network threads, rings between them) \| single (one venue; its network loop, the engine and order sending run on the engine thread, cpu; net_cpus is ignored) (default split) |
@@ -49,7 +49,7 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `journal_ring_bytes` | integer |  | engine-to-journal ring, bytes, a power of two (default 16777216) |
 | `max_events_per_step` | integer |  | events taken from each ring per engine iteration (default 64) |
 | `feed_budget_per_ring` | integer |  | fastmm-live: events the engine takes from one input ring before the next ring's turn; 1 interleaves the rings, so a burst of one account's order events does not hold up the market data behind it (default 64) |
-| `net_spin_dedicated` | boolean |  | with spin_mode = "adaptive": a network thread pinned to a core of its own (net_cpus, shared with neither the engine nor another network thread) polls without ever blocking, as with "busy"; threads on shared or unpinned cores still block when idle (default false) |
+| `net_spin_dedicated` | boolean |  | with spin_mode = "adaptive": a network thread pinned to a core of its own (net_cpus, shared with neither the engine nor another network thread) polls without ever blocking, as with "busy", and so does the one thread of the venues net_cpus gives one core; threads on the engine's core or unpinned still block when idle (default false) |
 | `crossed_grace_ms` | integer |  | tolerate a crossed book this long before pulling its quotes, ms (default 100) |
 | `latency_publish_ms` | integer |  | latency histogram publish interval, ms (default 1000) |
 | `tsc_recalibrate_s` | integer |  | fastmm-live: TSC recalibration period, s; 0 = off (default 10) |

@@ -122,6 +122,16 @@ void wake_venue(void* ctx, VenueId v) noexcept;
                                     bool shared_cpu,
                                     bool spin_dedicated) noexcept;
 
+// The network threads: venues that net_cpus pins to one core share a thread when that thread polls
+// without blocking (spin_mode = "busy", or net_spin_dedicated) and the core is not the engine's;
+// each other venue has one of its own. Venue indices, each group in ascending order, the groups in
+// the order of their first venue.
+[[nodiscard]] std::vector<std::vector<std::size_t>> net_groups(int engine_cpu,
+                                                               std::span<const int> net_cpus,
+                                                               std::size_t venues,
+                                                               SpinMode spin,
+                                                               bool spin_dedicated);
+
 // The network thread (fm-net-<index>). Busy: poll sockets and the engine's wake flag forever.
 // Adaptive: the same while active and for a short spin after, then block in the reactor until a
 // socket, timer, posted task or the engine (wake_venue) needs the thread. s.consumer, when set, is
@@ -136,6 +146,21 @@ void net_loop(VenueSlot& s,
               SpinMode spin,
               bool shared_cpu = false,
               bool spin_dedicated = false);
+// A group of venues (net_groups) on one thread: each venue's turn of the loop above in order, as
+// often as the thread can; it never blocks. `index` names the thread (fm-net-<index>, its first
+// venue), the first venue's `stop` ends it, and each venue is connected, flushed and disconnected
+// as on a thread of its own.
+void net_loop(std::span<VenueSlot* const> group,
+              int cpu,
+              std::size_t index,
+              SpinMode spin,
+              bool shared_cpu,
+              bool spin_dedicated);
+
+// Starts the network threads of `slots` ([engine] net_cpus, spin_mode, net_spin_dedicated;
+// `engine_cpu`: the engine's core, -1 when it runs in another process): one per group of
+// net_groups, held by the group's first slot (VenueSlot::thread; the others' stay empty).
+void start_net_threads(VenueSlots& slots, const Config& cfg, int engine_cpu);
 
 // The once-a-second status line of a venue, and its latency and feed lines.
 void log_venue_status(const venues::Venue& v);

@@ -432,6 +432,24 @@ TEST_CASE("live session: a network thread shares its CPU with the engine or anot
   CHECK_FALSE(live::net_cpu_shared(1, cpus, 6));   // no entry: unpinned
 }
 
+TEST_CASE("live session: venues pinned to one core share a network thread when it polls") {
+  using Groups = std::vector<std::vector<std::size_t>>;
+  const std::vector<int> cpus{2, 0, 0, 3, -1, -1, 0};
+  // Busy, or adaptive with net_spin_dedicated: the venues on CPU 0 run on one thread; the one on
+  // the engine's core and the unpinned ones keep threads of their own.
+  CHECK(live::net_groups(3, cpus, 7, SpinMode::Busy, false) ==
+        Groups{{0}, {1, 2, 6}, {3}, {4}, {5}});
+  CHECK(live::net_groups(3, cpus, 7, SpinMode::Adaptive, true) ==
+        Groups{{0}, {1, 2, 6}, {3}, {4}, {5}});
+  // Adaptive without it: every venue has its own thread, which blocks when idle on a shared core.
+  CHECK(live::net_groups(3, cpus, 7, SpinMode::Adaptive, false) ==
+        Groups{{0}, {1}, {2}, {3}, {4}, {5}, {6}});
+  // Venues past the end of net_cpus are unpinned.
+  CHECK(live::net_groups(-1, std::vector<int>{1, 1}, 3, SpinMode::Busy, false) ==
+        Groups{{0, 1}, {2}});
+  CHECK(live::net_groups(-1, {}, 2, SpinMode::Busy, false) == Groups{{0}, {1}});
+}
+
 TEST_CASE("live session: net_spin_dedicated keeps a network thread alone on its core polling") {
   // Busy never blocks, whatever the core.
   CHECK(live::net_never_blocks(SpinMode::Busy, -1, false, false));

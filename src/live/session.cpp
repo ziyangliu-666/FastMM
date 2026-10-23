@@ -226,10 +226,19 @@ void log_topology(const Config& cfg, bool single, const VenueSlots& slots) {
   TopologyInput in;
   in.hot.push_back({"engine", cfg.engine.cpu});
   if (!single) {
-    for (std::size_t i = 0; i < slots.size(); ++i) {
-      const int cpu = i < cfg.engine.net_cpus.size() ? cfg.engine.net_cpus[i] : -1;
-      in.hot.push_back(
-          {"net " + std::to_string(i) + " (" + std::string(slots[i]->venue->name()) + ")", cpu});
+    // One hot thread per network thread: venues that share one are named together.
+    for (const std::vector<std::size_t>& g : net_groups(cfg.engine.cpu,
+                                                        cfg.engine.net_cpus,
+                                                        slots.size(),
+                                                        cfg.spin_mode(),
+                                                        cfg.engine.net_spin_dedicated)) {
+      const int cpu = g.front() < cfg.engine.net_cpus.size() ? cfg.engine.net_cpus[g.front()] : -1;
+      std::string name;
+      for (const std::size_t i : g) {
+        name += (name.empty() ? "net " : " + net ") + std::to_string(i) + " (" +
+                std::string(slots[i]->venue->name()) + ")";
+      }
+      in.hot.push_back({std::move(name), cpu});
     }
   }
   in.cores = cpu_cores();
@@ -2113,20 +2122,13 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   if (single) {
     engine_thread = std::thread(inline_loop, std::ref(inline_ctx), cfg.engine.cpu);
   } else {
-    for (std::size_t i = 0; i < slots.size(); ++i) {
-      const int cpu = i < cfg.engine.net_cpus.size() ? cfg.engine.net_cpus[i] : -1;
-      if (cfg.spin_mode() == SpinMode::Adaptive) slots[i]->consumer = &feed.waker();
-      const bool shared = net_cpu_shared(cfg.engine.cpu, cfg.engine.net_cpus, i);
-      slots[i]->thread = std::thread(net_loop,
-                                     std::ref(*slots[i]),
-                                     cpu,
-                                     i,
-                                     cfg.spin_mode(),
-                                     shared,
-                                     cfg.engine.net_spin_dedicated);
+    for (auto& s : slots) {
+      if (cfg.spin_mode() == SpinMode::Adaptive) s->consumer = &feed.waker();
     }
+    start_net_threads(slots, cfg, cfg.engine.cpu);
     engine_thread = std::thread([&] { runner->run(); });
     for (std::size_t i = 0; i < slots.size(); ++i) {
+      if (!slots[i]->thread.joinable()) continue;  // its group's thread is an earlier venue's
       const std::string name = "fm-net-" + std::to_string(i);
       set_rt_priority(slots[i]->thread, name, "net_rt_priority", cfg.engine.net_rt_priority);
     }

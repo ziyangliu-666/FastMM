@@ -9,7 +9,11 @@
 #include <bit>
 #include <cstdio>
 #include <exception>
+#include <span>
 #include <string>
+#include <thread>
+#include <utility>
+#include <vector>
 
 namespace fastmm::live {
 
@@ -164,57 +168,107 @@ bool net_never_blocks(SpinMode spin, int cpu, bool shared_cpu, bool spin_dedicat
   return spin == SpinMode::Busy || (spin_dedicated && cpu >= 0 && !shared_cpu);
 }
 
+std::vector<std::vector<std::size_t>> net_groups(int engine_cpu,
+                                                 std::span<const int> net_cpus,
+                                                 std::size_t venues,
+                                                 SpinMode spin,
+                                                 bool spin_dedicated) {
+  std::vector<std::vector<std::size_t>> groups;
+  const bool polls = spin == SpinMode::Busy || spin_dedicated;
+  for (std::size_t i = 0; i < venues; ++i) {
+    const int cpu = i < net_cpus.size() ? net_cpus[i] : -1;
+    if (polls && cpu >= 0 && cpu != engine_cpu) {
+      const auto same = [&](const std::vector<std::size_t>& g) { return net_cpus[g[0]] == cpu; };
+      if (const auto it = std::find_if(groups.begin(), groups.end(), same); it != groups.end()) {
+        it->push_back(i);
+        continue;
+      }
+    }
+    groups.push_back({i});
+  }
+  return groups;
+}
+
+namespace {
+
+// One venue's turn of its network thread: its reactor (blocking for at most kNetMaxBlockMs when
+// `block`), Venue::poll(), the orders the engine queued, the gateway's hook, and the engine's
+// wake-up when events went out. True when anything happened. `pushed`: the sinks' count the last
+// turn saw.
+bool net_turn(VenueSlot& s, bool busy, bool block, std::uint64_t& pushed) {
+  int wait_ms = 0;
+  // A posted task may switch s.blocked during run_once(): clear the flag that was set.
+  SleepFlag* const blocked = s.blocked;
+  if (block) {
+    // The engine takes the flag after it published (wake_venue, GatewayClient::wake_venue):
+    // either this recheck sees the work or the engine writes the eventfd.
+    blocked->set();
+    if (!s.wake.load(std::memory_order_acquire) &&
+        (s.pending == nullptr || !s.pending(s.hook_ctx)) && !s.stop.load(std::memory_order_acquire))
+      wait_ms = kNetMaxBlockMs;
+  }
+  bool active = s.reactor->run_once(wait_ms) > 0;
+  if (block) blocked->clear();
+  s.venue->poll();
+  if (s.wake.load(std::memory_order_relaxed) && s.wake.exchange(false, std::memory_order_acquire)) {
+    s.venue->on_wake();
+    active = true;
+  }
+  if (s.hook != nullptr && s.hook(s.hook_ctx) != 0) active = true;
+  Waker* const consumer = s.consumer;
+  if (busy && consumer == nullptr) return active;
+  if (const std::uint64_t p = s.md_sink.pushed() + s.order_sink.pushed(); p != pushed) {
+    pushed = p;
+    if (consumer != nullptr) consumer->notify();
+    active = true;
+  }
+  return active;
+}
+
+}  // namespace
+
 // Events pushed to the engine notify its feed, which wakes the engine only while it is blocked
-// (Engine::block_idle).
-void net_loop(
-    VenueSlot& s, int cpu, std::size_t index, SpinMode spin, bool shared_cpu, bool spin_dedicated) {
+// (Engine::block_idle). A group's venues take their turns one after the other; net_groups makes a
+// group only where its thread polls, so it never blocks.
+void net_loop(std::span<VenueSlot* const> group,
+              int cpu,
+              std::size_t index,
+              SpinMode spin,
+              bool shared_cpu,
+              bool spin_dedicated) {
   const std::string name = "fm-net-" + std::to_string(index);
   set_thread_name(name.c_str());
   pin_to_cpu(cpu);
   Logger::instance().attach_current_thread();
-  s.venue->connect(*s.reactor);
-  s.reactor->set_after_event(&send_queued_orders, &s);
+  for (VenueSlot* s : group) {
+    s->venue->connect(*s->reactor);
+    s->reactor->set_after_event(&send_queued_orders, s);
+  }
   const bool busy = spin == SpinMode::Busy;
   // Adaptive, alone on its core: polls like busy, and still notifies an adaptive engine.
-  const bool never_block = net_never_blocks(spin, cpu, shared_cpu, spin_dedicated);
+  const bool never_block =
+      group.size() > 1 || net_never_blocks(spin, cpu, shared_cpu, spin_dedicated);
   const std::int64_t spin_ns = shared_cpu ? 0 : kNetSpinNs;
-  if (shared_cpu && !busy)
+  if (group.size() > 1)
+    FASTMM_LOG_INFO("{}: CPU {} runs {} venues on this thread; polls without blocking",
+                    name,
+                    cpu,
+                    group.size());
+  else if (shared_cpu && !busy)
     FASTMM_LOG_INFO(
         "{}: CPU {} is shared with another pinned thread; blocks when idle, no spin", name, cpu);
   else if (never_block && !busy)
     FASTMM_LOG_INFO(
         "{}: CPU {} is its own; polls without blocking (net_spin_dedicated)", name, cpu);
-  std::uint64_t pushed = 0;
+  std::vector<std::uint64_t> pushed(group.size(), 0);
   std::int64_t idle_since = 0;  // 0 while active
   bool block = false;
-  while (!s.stop.load(std::memory_order_relaxed)) {
-    int wait_ms = 0;
-    // A posted task may switch s.blocked during run_once(): clear the flag that was set.
-    SleepFlag* const blocked = s.blocked;
-    if (block) {
-      // The engine takes the flag after it published (wake_venue, GatewayClient::wake_venue):
-      // either this recheck sees the work or the engine writes the eventfd.
-      blocked->set();
-      if (!s.wake.load(std::memory_order_acquire) &&
-          (s.pending == nullptr || !s.pending(s.hook_ctx)) &&
-          !s.stop.load(std::memory_order_acquire))
-        wait_ms = kNetMaxBlockMs;
-    }
-    bool active = s.reactor->run_once(wait_ms) > 0;
-    if (block) blocked->clear();
-    s.venue->poll();
-    if (s.wake.load(std::memory_order_relaxed) &&
-        s.wake.exchange(false, std::memory_order_acquire)) {
-      s.venue->on_wake();
-      active = true;
-    }
-    if (s.hook != nullptr && s.hook(s.hook_ctx) != 0) active = true;
-    Waker* const consumer = s.consumer;
-    if (busy && consumer == nullptr) continue;
-    if (const std::uint64_t p = s.md_sink.pushed() + s.order_sink.pushed(); p != pushed) {
-      pushed = p;
-      if (consumer != nullptr) consumer->notify();
-      active = true;
+  // The session stops every venue at once.
+  const std::atomic<bool>& stop = group.front()->stop;
+  while (!stop.load(std::memory_order_relaxed)) {
+    bool active = false;
+    for (std::size_t k = 0; k < group.size(); ++k) {
+      if (net_turn(*group[k], busy, block, pushed[k])) active = true;
     }
     if (never_block) continue;
     block = false;
@@ -228,14 +282,51 @@ void net_loop(
       _mm_pause();
     }
   }
-  s.venue->on_wake();  // flush cancels the engine queued during shutdown
-  // Writes the sockets did not take at once go out on their writable events: run the reactor until
-  // a 5 ms wait finds nothing to do, 100 ms at most.
+  for (VenueSlot* s : group) s->venue->on_wake();  // flush cancels queued during shutdown
+  // Writes the sockets did not take at once go out on their writable events: run the reactors
+  // until a round of waits (5 ms, 1 ms each in a group) finds nothing to do, 100 ms at most.
   const std::int64_t linger_until = net::Reactor::now_ns() + 100'000'000;
-  while (s.reactor->run_once(5) > 0 && net::Reactor::now_ns() < linger_until) {
+  const int wait_ms = group.size() > 1 ? 1 : 5;
+  for (bool busy_io = true; busy_io && net::Reactor::now_ns() < linger_until;) {
+    busy_io = false;
+    for (VenueSlot* s : group) {
+      if (s->reactor->run_once(wait_ms) > 0) busy_io = true;
+    }
   }
-  s.venue->disconnect();
-  s.reactor->run_once(0);
+  for (VenueSlot* s : group) {
+    s->venue->disconnect();
+    s->reactor->run_once(0);
+  }
+}
+
+void net_loop(
+    VenueSlot& s, int cpu, std::size_t index, SpinMode spin, bool shared_cpu, bool spin_dedicated) {
+  VenueSlot* const one[] = {&s};
+  net_loop(std::span<VenueSlot* const>(one), cpu, index, spin, shared_cpu, spin_dedicated);
+}
+
+void start_net_threads(VenueSlots& slots, const Config& cfg, int engine_cpu) {
+  const std::span<const int> cpus(cfg.engine.net_cpus);
+  const SpinMode spin = cfg.spin_mode();
+  const bool dedicated = cfg.engine.net_spin_dedicated;
+  for (const std::vector<std::size_t>& g :
+       net_groups(engine_cpu, cpus, slots.size(), spin, dedicated)) {
+    const std::size_t i = g.front();
+    const int cpu = i < cpus.size() ? cpus[i] : -1;
+    if (g.size() == 1) {
+      const bool shared = net_cpu_shared(engine_cpu, cpus, i);
+      slots[i]->thread = std::thread([s = slots[i].get(), cpu, i, spin, shared, dedicated] {
+        net_loop(*s, cpu, i, spin, shared, dedicated);
+      });
+      continue;
+    }
+    std::vector<VenueSlot*> members;
+    members.reserve(g.size());
+    for (const std::size_t k : g) members.push_back(slots[k].get());
+    slots[i]->thread = std::thread([members = std::move(members), cpu, i, spin, dedicated] {
+      net_loop(std::span<VenueSlot* const>(members), cpu, i, spin, false, dedicated);
+    });
+  }
 }
 
 void log_venue_status(const venues::Venue& v) {

@@ -43,9 +43,10 @@ inline constexpr KeySpec kConfigSchema[] = {
      "net_cpus",
      KeyType::IntArray,
      false,
-     "CPU cores of the network threads, one per venue in order; with spin_mode = \"adaptive\" a "
-     "thread whose core it shares with the engine or another network thread blocks when idle "
-     "instead of spinning (default [])"},
+     "CPU cores of the network threads, one per venue in order; venues given the same core run on "
+     "one thread when it polls (spin_mode = \"busy\", or net_spin_dedicated) and the core is not "
+     "the engine's; otherwise, with spin_mode = \"adaptive\", a thread whose core it shares with "
+     "the engine or another network thread blocks when idle instead of spinning (default [])"},
     {"engine",
      "spin_mode",
      KeyType::String,
@@ -201,7 +202,8 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "with spin_mode = \"adaptive\": a network thread pinned to a core of its own (net_cpus, "
      "shared with neither the engine nor another network thread) polls without ever blocking, as "
-     "with \"busy\"; threads on shared or unpinned cores still block when idle (default false)"},
+     "with \"busy\", and so does the one thread of the venues net_cpus gives one core; threads "
+     "on the engine's core or unpinned still block when idle (default false)"},
     {"engine",
      "crossed_grace_ms",
      KeyType::Int,
