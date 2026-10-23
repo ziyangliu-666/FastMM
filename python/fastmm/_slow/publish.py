@@ -93,6 +93,7 @@ class Publisher:
 
     def _validate(self, merged: Mapping[str, Any]) -> Optional[str]:
         shadow = copy.copy(self._instance)
-        shadow.__dict__.update(merged)
+        for name, value in merged.items():
+            self._params[name].store(shadow, value)
         err = self._cls.validate(shadow)
         return str(err) if err else None

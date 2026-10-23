@@ -18,8 +18,10 @@ manager, the journal and the outbound hash are the ones C++ strategies use.
 
 from __future__ import annotations
 
+import functools
 import inspect
 import math
+import operator
 import re
 import warnings
 from decimal import Decimal
@@ -219,16 +221,21 @@ def _parse_double(s: str) -> Optional[float]:
     return v if math.isfinite(v) else None
 
 
-class Param(Generic[T]):
+class Param(property, Generic[T]):
     """A strategy parameter: typed from its default (bool, int or float), with an optional range.
 
     Values from ``cfg.params`` (strings) and ``run_backtest(params=...)`` (Python scalars) are
     parsed like FASTMM_PARAM values in C++, with the same error messages. Read it as a plain
-    attribute: ``self.levels``.
+    attribute: ``self.levels``; an assignment is parsed and checked the same way.
+
+    Hooks read parameters on every event, so a read is the C-level get of a property whose getter
+    is ``operator.attrgetter("_fastmm_param_<name>")``: the instance's value, else the default the
+    class holds under that name. No Python code runs.
     """
 
     def __init__(self, default: T, *, min: Optional[T] = None, max: Optional[T] = None,
                  doc: str = "") -> None:
+        property.__init__(self)
         if isinstance(default, bool):
             self.type_name = "bool"
             self.type: type = bool
@@ -247,6 +254,7 @@ class Param(Generic[T]):
         self.max = None if max is None else self.type(max)
         self.doc = doc
         self.name = ""
+        self.slot = ""
         if self.type is float and not math.isfinite(default):
             raise ValueError("Param default must be finite")
         if not self._in_range(default):
@@ -255,22 +263,26 @@ class Param(Generic[T]):
 
     def __set_name__(self, owner: type, name: str) -> None:
         self.name = name
+        self.slot = "_fastmm_param_" + name
+        type.__setattr__(owner, self.slot, self.default)
+        property.__init__(self, operator.attrgetter(self.slot), functools.partial(Param._set, self))
 
-    @overload
-    def __get__(self, obj: None, objtype: Optional[type] = None) -> "Param[T]": ...
-    @overload
-    def __get__(self, obj: object, objtype: Optional[type] = None) -> T: ...
+    if TYPE_CHECKING:  # pragma: no cover - property's own __get__ runs
+        @overload
+        def __get__(self, obj: None, objtype: Optional[type] = None) -> "Param[T]": ...
+        @overload
+        def __get__(self, obj: object, objtype: Optional[type] = None) -> T: ...
+        def __get__(self, obj: Any, objtype: Any = None) -> Any: ...
 
-    def __get__(self, obj: Any, objtype: Any = None) -> Any:
-        if obj is None:
-            return self
-        return obj.__dict__.get(self.name, self.default)
-
-    def __set__(self, obj: Any, value: Any) -> None:
+    def _set(self, obj: Any, value: Any) -> None:
         err, typed = self.parse(value)
         if err is not None:
             raise ValueError(f"parameter '{self.name}': {err}")
-        obj.__dict__[self.name] = typed
+        self.store(obj, typed)
+
+    def store(self, obj: Any, value: Any) -> None:
+        """Sets a value parse() returned, without parsing it again."""
+        obj.__dict__[self.slot] = value
 
     def _format(self, v: Any) -> str:
         if self.type is bool:
@@ -407,13 +419,13 @@ class Strategy:
                 err, typed = p.parse(params[key])
                 if err is not None:
                     raise ValueError(f"parameter '{key}': {err}")
-                self.__dict__[key] = typed
+                p.store(self, typed)
             err = self.validate()
             if err:
                 raise ValueError(str(err))
         except BaseException:
             for name, value in before.items():
-                self.__dict__[name] = value
+                declared[name].store(self, value)
             raise
 
     def param_values(self) -> Dict[str, str]:
