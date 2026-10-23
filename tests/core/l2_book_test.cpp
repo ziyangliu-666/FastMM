@@ -4,6 +4,7 @@
 
 #include "fastmm/core/book/book_features.hpp"
 
+#include <algorithm>
 #include <map>
 #include <random>
 #include <vector>
@@ -226,4 +227,39 @@ TEST_CASE("core.book_features: imbalance and microprice") {
   b.apply_level(Side::Sell, px(102), qt(3));
   CHECK(imbalance(b, 1) == Ratio{});
   CHECK(microprice(b) == b.mid());
+}
+
+// apply_snapshot() loads a sorted side directly; the result must be what applying its levels
+// one by one gives, for any input order, duplicates, empty levels and more levels than fit.
+TEST_CASE("core.l2_book: a snapshot equals its levels applied one by one") {
+  for (std::uint32_t seed = 1; seed <= 300; ++seed) {
+    CAPTURE(seed);
+    std::mt19937 rng(seed);
+    std::vector<Level> side[2];
+    const auto shape = seed % 5;  // best-first, worst-first, shuffled, a duplicate, an empty level
+    for (std::size_t s = 0; s < 2; ++s) {
+      const std::size_t n = rng() % 100;
+      for (std::size_t k = 0; k < n; ++k) {
+        const auto off = static_cast<std::int64_t>(k) * (1 + static_cast<std::int64_t>(rng() % 3));
+        side[s].push_back(
+            {px(s == 0 ? 1000 - off : 1001 + off), qt(1 + static_cast<std::int64_t>(rng() % 9))});
+      }
+      if (shape == 1) std::reverse(side[s].begin(), side[s].end());
+      if (shape == 2) std::shuffle(side[s].begin(), side[s].end(), rng);
+      if (shape == 3 && !side[s].empty()) side[s].push_back(side[s][rng() % side[s].size()]);
+      if (shape == 4 && !side[s].empty()) side[s][rng() % side[s].size()].qty = Qty{};
+    }
+    L2Book<64> fast;
+    fast.apply_level(Side::Buy, px(1), qt(1));  // replaced by the snapshot
+    fast.apply_snapshot(side[0], side[1], 7, Timestamp{1});
+    L2Book<64> slow;
+    for (const Level& l : side[0]) slow.apply_level(Side::Buy, l.price, l.qty);
+    for (const Level& l : side[1]) slow.apply_level(Side::Sell, l.price, l.qty);
+    for (const Side s : {Side::Buy, Side::Sell}) {
+      REQUIRE(fast.depth(s) == slow.depth(s));
+      for (std::size_t i = 0; i < fast.depth(s); ++i) REQUIRE(fast.level(s, i) == slow.level(s, i));
+      CHECK(fast.truncated(s) == slow.truncated(s));
+    }
+    CHECK(fast.seq() == 7);
+  }
 }

@@ -116,6 +116,40 @@ static void BM_L2_Features(benchmark::State& state) {
 }
 BENCHMARK(BM_L2_Features);
 
+// A 1000-level snapshot per side, best first as the parsers send it, into the gateway's
+// L2Book<1024>. Inserting the levels one at a time put each at the front of the array and moved
+// everything stored: O(levels^2), about 8 MB moved per side.
+static void BM_L2_Snapshot1000(benchmark::State& state) {
+  auto b = std::make_unique<L2Book<1024>>();
+  std::vector<Level> bids;
+  std::vector<Level> asks;
+  for (std::int64_t i = 0; i < 1000; ++i) {
+    bids.push_back({px(10000 - i), Qty::from_int(1 + i % 7)});
+    asks.push_back({px(10001 + i), Qty::from_int(1 + i % 5)});
+  }
+  std::uint64_t seq = 0;
+  for (auto _ : state) {
+    b->apply_snapshot(bids, asks, ++seq, Timestamp{1});
+    benchmark::DoNotOptimize(b->best_bid());
+  }
+}
+BENCHMARK(BM_L2_Snapshot1000);
+
+// A level created and deleted behind the deepest of Arg levels in the gateway's L2Book<1024>: the
+// sorted array keeps the best level at the back, so a level at the deep end moves every level
+// stored (16 bytes each), twice.
+static void BM_L2_DeepLevelAddDelete(benchmark::State& state) {
+  auto b = std::make_unique<L2Book<1024>>();
+  const std::int64_t n = state.range(0);
+  for (std::int64_t i = 0; i < n; ++i) b->apply_level(Side::Buy, px(100000 - i), Qty::from_int(1));
+  for (auto _ : state) {
+    b->apply_level(Side::Buy, px(100000 - n - 5), Qty::from_int(1));
+    b->apply_level(Side::Buy, px(100000 - n - 5), Qty{});
+    benchmark::DoNotOptimize(b->best_bid());
+  }
+}
+BENCHMARK(BM_L2_DeepLevelAddDelete)->Arg(20)->Arg(256)->Arg(1000);
+
 static void BM_L3_AddCancelExecMix(benchmark::State& state) {
   auto b = std::make_unique<L3Book>(
       kTick, L3BookConfig{.price_window_ticks = 1U << 16, .max_orders = 1U << 20});

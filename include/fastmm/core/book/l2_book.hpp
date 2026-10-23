@@ -2,7 +2,9 @@
 // L2Book<kMaxDepth>: price-aggregated book for crypto feeds (5.4).
 //
 // Each side is a sorted StaticVector<Level> with the BEST level at back(): top-of-book is
-// O(1), and the common near-top insert/erase only memmoves a handful of 16-byte levels.
+// O(1), and the common near-top insert/erase only memmoves a handful of 16-byte levels; an
+// insert or erase moves the levels better than its own (into a full side, the ones worse than
+// it, as the worst level goes), and a snapshot loads in O(levels).
 // Bids are stored ascending by price, asks descending, so both sides share one code path
 // keyed on "distance from best". Lookups scan the top 16 linearly and bisect the rest.
 //
@@ -15,6 +17,7 @@
 #include "fastmm/core/containers/static_vector.hpp"
 #include "fastmm/core/messages.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -97,20 +100,25 @@ class L2Book {
     if (FASTMM_UNLIKELY(v.full())) {
       truncated_[static_cast<std::size_t>(side)] = true;
       if (i == 0) return false;  // worse than everything we hold
-      v.erase_front();           // drop the worst level to make room
-      --i;
+      // Drop the worst level and insert in one shift: only the i - 1 levels worse than the
+      // new one move, as an insert into a side with room moves the ones better than it.
+      std::copy(v.begin() + 1, v.begin() + i, v.begin());
+      v[i - 1] = Level{price, qty};
+      return true;
     }
     v.insert_at(i, Level{price, qty});
     return true;
   }
 
+  // O(levels) for a snapshot sorted best-first or worst-first with no empty level (what every
+  // parser sends); any other input is applied level by level.
   void apply_snapshot(std::span<const Level> bids,
                       std::span<const Level> asks,
                       std::uint64_t seq,
                       Timestamp ts) noexcept {
     clear();
-    for (const Level& l : bids) apply_level(Side::Buy, l.price, l.qty);
-    for (const Level& l : asks) apply_level(Side::Sell, l.price, l.qty);
+    load_side(Side::Buy, bids);
+    load_side(Side::Sell, asks);
     have_snapshot_ = true;
     seq_ = seq;
     last_update_ = ts;
@@ -256,6 +264,34 @@ class L2Book {
     if (k == 0) return;
     v.erase_front(k);
     truncated_[static_cast<std::size_t>(side)] = true;
+  }
+  // Snapshot side into an empty side. Levels arrive one at a time best-first would each go to
+  // the front of the array (the worst end) and move everything stored: O(levels^2).
+  void load_side(Side side, std::span<const Level> in) noexcept {
+    auto& v = levels(side);
+    const std::size_t n = in.size();
+    int order = 0;  // 1: best-first, -1: worst-first, 0: neither
+    if (n > 0 && in[0].qty.is_positive()) {
+      order = n == 1 ? 1 : better(side, in[0].price, in[1].price) ? 1 : -1;
+      for (std::size_t k = 1; k < n && order != 0; ++k) {
+        const bool ok =
+            in[k].qty.is_positive() && (order == 1 ? better(side, in[k - 1].price, in[k].price)
+                                                   : better(side, in[k].price, in[k - 1].price));
+        if (!ok) order = 0;
+      }
+    }
+    if (order == 0) {
+      for (const Level& l : in) apply_level(side, l.price, l.qty);
+      return;
+    }
+    const std::size_t m = n < kMaxDepth ? n : kMaxDepth;  // the best m levels
+    v.resize_uninitialized(m);
+    if (order == 1) {
+      for (std::size_t k = 0; k < m; ++k) v[m - 1 - k] = in[k];
+    } else {
+      for (std::size_t k = 0; k < m; ++k) v[k] = in[n - m + k];
+    }
+    if (n > m) truncated_[static_cast<std::size_t>(side)] = true;
   }
   void update_crossed(Timestamp ts) noexcept {
     if (crossed()) {
