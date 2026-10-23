@@ -743,3 +743,17 @@ def test_trade_view_names_the_buyer_and_the_seller(example_config, tmp_path):
                         (13, None, None)]
     with pytest.raises(fastmm.StaleViewError):
         s.view.buyer
+
+
+def test_balances_merge_into_the_synthetic_market(example_config):
+    """A merged source is never null, so the binding builds the synthetic stream to merge with."""
+    cfg = _cfg(example_config)
+    cfg.duration_s = 5
+    s = fastmm.Strategy()
+    cfg.fill_model = "l2_queue"
+    result, error = fastmm._core._run_strategy(cfg, "synthetic", s, "plain", [], {}, balances=[])
+    assert error is None and result.md_events > 0
+    cfg.fill_model = "matching"
+    with pytest.raises(ValueError, match="l2_queue"):
+        fastmm._core._run_strategy(cfg, "synthetic", fastmm.Strategy(), "plain", [], {},
+                                   balances=[])

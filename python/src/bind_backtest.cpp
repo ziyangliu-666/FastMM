@@ -873,7 +873,18 @@ void bind_backtest(py::module_& m) {
         if (balances.is_none() && perp_states.is_none())
           return run_python_strategy(cfg, source.get(), instance, name, hooks);
         std::vector<bt::MdSource*> parts{&balance_source, &perp_source};
-        if (source) parts.push_back(source.get());
+        if (!source) {
+          // A merged source is never null, so the session would not build the synthetic market
+          // itself: under the L2 queue model it is a stream to merge with; the matching model's
+          // generator is not.
+          if (cfg.transport.fill_model == sim::FillModel::Matching) {
+            throw py::value_error(
+                "fastmm: balances and perp_states merge into recorded data, or into the "
+                "synthetic market with fill_model='l2_queue'");
+          }
+          source = std::make_unique<bt::SyntheticSource>(bt::synthetic_source_config(cfg));
+        }
+        parts.push_back(source.get());
         bt::MergedSource merged(std::move(parts));
         return run_python_strategy(cfg, &merged, instance, name, hooks);
       },
