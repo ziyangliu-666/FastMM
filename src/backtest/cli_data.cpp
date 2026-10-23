@@ -9,6 +9,8 @@
 //       [--from-live-state] [--csv grid.csv]
 //   fastmm-data ab runs/mm-*.fmj [--aa runs/aa-*.fmj] [--maker-rebate-bps 0.8] [--json]
 //       [--csv cells.csv]
+//   fastmm-data events session.fmj session.1.fmj [--symbol BTCUSDT | --symbol '*' --trades-only]
+//       [--from-ns N] [--to-ns N] [--out events.csv]
 //
 // Downloading the files themselves is `python3 -m fastmm.data fetch` (no third-party packages).
 //
@@ -22,6 +24,7 @@
 #include "fastmm/backtest/data_registry.hpp"
 #include "fastmm/backtest/fill_check.hpp"
 #include "fastmm/backtest/live_analysis.hpp"
+#include "fastmm/backtest/order_events.hpp"
 #include "fastmm/cli/data.hpp"
 #include "fastmm/cli/modules.hpp"
 #include "fastmm/config/config.hpp"
@@ -75,6 +78,20 @@ int data(int argc, char** argv) {
       "list", "registered data sources, their options and what each one carries");
   const CLI::App* convert = app.add_subcommand(
       "convert", "decode a source into an .fmj journal, the format a backtest replays fastest");
+  CLI::App* events_cmd = app.add_subcommand(
+      "events", "a session's own orders, venue answers, balances and parameter updates as CSV");
+  std::vector<std::string> event_journals;
+  std::int64_t events_from = 0;
+  std::int64_t events_to = 0;
+  events_cmd->add_option("journals", event_journals, "journals (the parts of a session in order)")
+      ->required();
+  events_cmd->add_option("--from-ns", events_from, "only events received at or after (unix ns)");
+  events_cmd->add_option("--to-ns", events_to, "only events received before (unix ns)");
+  std::vector<std::string> event_symbols;
+  events_cmd->add_option(
+      "--symbol", event_symbols, "also the market data of this symbol, '*' every one (repeatable)");
+  bool events_trades_only = false;
+  events_cmd->add_flag("--trades-only", events_trades_only, "--symbol: trades only, no books");
   CLI::App* fill_check = app.add_subcommand(
       "fill-check",
       "how many of a live session's resting orders the l2_queue fill model would have filled");
@@ -162,7 +179,8 @@ int data(int argc, char** argv) {
          "convert: backtest config supplying the instruments; calibrate --backtest: the "
          "configuration to run instead of the journals' own, one for all or one per journal")
       ->option_text("<file.toml>");
-  app.add_option("--out", out, "convert: output journal")->option_text("<file.fmj>");
+  app.add_option("--out", out, "convert: output journal; events: the CSV (default: stdout)")
+      ->option_text("<file>");
   app.add_option("--seed", seed, "convert: session id stamped in the journal (default 1)")
       ->option_text("<n>");
   app.add_option("--conservatism",
@@ -197,8 +215,10 @@ int data(int argc, char** argv) {
     return 0;
   }
   if (!list->parsed() && !convert->parsed() && !fill_check->parsed() && !calibrate->parsed() &&
-      !analyze->parsed() && !ab->parsed())
-    return usage_error(app, "a command is required: list, convert, fill-check, calibrate or ab");
+      !analyze->parsed() && !ab->parsed() && !events_cmd->parsed())
+    return usage_error(app,
+                       "a command is required: list, convert, fill-check, calibrate, analyze, ab "
+                       "or events");
   const auto write_csv = [&](const std::string& text) {
     std::ofstream f(csv, std::ios::trunc);
     f << text;
@@ -249,6 +269,27 @@ int data(int argc, char** argv) {
       return kExitData;
     }
     std::fputs(("\n" + bt::format_backtest_gaps(gaps)).c_str(), stdout);
+    return 0;
+  }
+  if (events_cmd->parsed()) {
+    std::FILE* f = out.empty() ? stdout : std::fopen(out.c_str(), "w");
+    if (f == nullptr) {
+      std::fprintf(stderr, "%s: cannot write %s\n", prog, out.c_str());
+      return kExitWrite;
+    }
+    bt::OrderEventsOptions opt;
+    opt.from_ns = events_from;
+    opt.to_ns = events_to;
+    opt.symbols = event_symbols;
+    opt.md_books = !events_trades_only;
+    try {
+      bt::write_order_events(event_journals, f, opt);
+    } catch (const std::exception& e) {
+      std::fprintf(stderr, "%s: %s\n", prog, e.what());
+      if (f != stdout) std::fclose(f);
+      return kExitData;
+    }
+    if (f != stdout && std::fclose(f) != 0) return kExitWrite;
     return 0;
   }
   if (list->parsed()) {

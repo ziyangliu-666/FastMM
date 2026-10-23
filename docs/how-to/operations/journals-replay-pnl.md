@@ -180,6 +180,21 @@ The line under the table counts the first live fills whose exec id is a trade id
 
 `--market other.fmj` replays the market data of another journal recorded over the same period (a recorder on another host, a feed with more depth) instead of the session's own. Its instruments are matched to the session's by venue id and symbol; messages on others are counted. The session's own orders are still taken out of its depth.
 
+## Compare a backtest with the live session
+
+A backtest over a live session's journal (`journal:<file>,strip_own=1`) re-decides every order, so its fills can only be compared with the session's once both are laid out the same way. `fastmm-data events` writes a session's own traffic as CSV, one row per record: the orders, cancels and replaces it sent, the venue's acks, rejects, cancel acks and rejects, fills and expiries, the balances it reported, the reconciliations and the parameter updates. Run it over the live parts and over the backtest's journal (`fastmm-backtest --journal-out`) and the two files line up:
+
+```bash
+./build/release/bin/fastmm-data events j/session.7.fmj j/session.8.fmj --out live.csv
+./build/release/bin/fastmm-backtest --config replay.toml --data "journal:j/session.7.fmj,strip_own=1" \
+    --journal-out runs/r/bt.fmj --out runs/r
+./build/release/bin/fastmm-data events runs/r/bt.fmj --out replay.csv
+```
+
+The columns are `type,time,venue_time,venue,symbol,id,side,price,qty,a,b,c,d,e,flags,trigger,engine`. `time` is the receive time (the send time of an outbound message), `venue_time` the venue's, `venue` the account the record came from or went to, `trigger` the receive time of the event an outbound message answered, `engine` the time the engine took an inbound record in (in a part that begins without an absolute engine time, relative to its first record). `a` to `e` depend on the type: a new order's type, time in force and reduce-only flag; a reject's reason, venue code and text; a fill's liquidity (1 maker, 2 taker), fee, fee asset, exec id and leaves; a balance's asset, free, locked, total and equity; a reconciliation's kind (0 begin, 1 open order, 2 position, 3 end) and filled quantity; a parameter update's `name=value` pairs, origin and source. `flags` holds the record's header flags, and for a fill or a balance the message's own flags shifted by 8 (a fill flagged 256 is a replay of an execution the session already had, from the venue's trade history). `--symbol <S>` adds the trades, book tickers and depth levels of that symbol, `--symbol '*' --trades-only` every public trade, whose id is the exec id of the session's fill against it on Binance spot.
+
+With both files, an order of the backtest that went out within a few milliseconds of a live one, at the same price, on the same symbol and side, is the same decision; its fills say how the fill model treated it. A live fill the backtest has no order near tells where the two runs parted.
+
 ## Check PnL
 
 A session's PnL has four views:

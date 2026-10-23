@@ -196,7 +196,7 @@ The flags override `[backtest]` ([Configuration](configuration.md#backtest)).
 
 ## fastmm-data
 
-Lists the market-data sources a backtest can read and packs any of them into a journal ([Market-data sources](data-sources.md)). Downloading the files a source reads is `python3 -m fastmm.data fetch`. `fill-check` compares a live session's fills with the `l2_queue` fill model ([Check the fill model against live fills](../how-to/operations/journals-replay-pnl.md#check-the-fill-model-against-live-fills)); `calibrate` fits its conservatism and the simulated latencies to several sessions and prints the `[backtest]` keys ([Calibrating against live sessions](../explanation/backtesting.md#calibrating-against-live-sessions)). `ab` reads an `[ab]` test out of the journals that ran it ([Run an A/B test](../how-to/strategies/ab-test.md#read-it-out)); its options are `--horizons-ms`, `--maker-rebate-bps`, `--resamples`, `--aa <file.fmj>...`, `--json` and `--csv`.
+Lists the market-data sources a backtest can read and packs any of them into a journal ([Market-data sources](data-sources.md)). Downloading the files a source reads is `python3 -m fastmm.data fetch`. `fill-check` compares a live session's fills with the `l2_queue` fill model ([Check the fill model against live fills](../how-to/operations/journals-replay-pnl.md#check-the-fill-model-against-live-fills)); `calibrate` fits its conservatism and the simulated latencies to several sessions and prints the `[backtest]` keys ([Calibrating against live sessions](../explanation/backtesting.md#calibrating-against-live-sessions)). `ab` reads an `[ab]` test out of the journals that ran it ([Run an A/B test](../how-to/strategies/ab-test.md#read-it-out)); its options are `--horizons-ms`, `--maker-rebate-bps`, `--resamples`, `--aa <file.fmj>...`, `--json` and `--csv`. `events` writes a session's own traffic out of its journal parts as CSV, one row per record in journal order: the orders, cancels and replaces it sent, the venue's acks, rejects, cancel acks and rejects, fills and expiries, its balances, reconciliations and parameter updates, with the receive time, the venue's time, the venue (the pool member), the trigger's receive time of an outbound message and the engine's time of a consumed one; `--symbol <S>` (repeatable, `*` for all) adds the trades, book tickers and depth levels of those symbols (`--trades-only`: trades alone), `--from-ns` and `--to-ns` keep a window of receive times, `--out` names the file. The same rows out of a live session's journal and a backtest's (`--journal-out`) match order for order ([Compare a backtest with the live session](../how-to/operations/journals-replay-pnl.md#compare-a-backtest-with-the-live-session)).
 
 <!-- BEGIN cli-help fastmm-data -->
 ```text
@@ -211,7 +211,7 @@ OPTIONS:
   --config <file.toml>        convert: backtest config supplying the instruments; calibrate
                               --backtest: the configuration to run instead of the journals'
                               own, one for all or one per journal
-  --out <file.fmj>            convert: output journal
+  --out <file>                convert: output journal; events: the CSV (default: stdout)
   --seed <n>                  convert: session id stamped in the journal (default 1)
   --conservatism <c,...>      fill-check, calibrate: queue_conservatism values to compare
                               (default 0,0.5,1; calibrate 0,0.25,0.5,0.75,1)
@@ -224,6 +224,8 @@ SUBCOMMANDS:
                               carries
   convert                     decode a source into an .fmj journal, the format a backtest
                               replays fastest
+  events                      a session's own orders, venue answers, balances and parameter
+                              updates as CSV
   fill-check                  how many of a live session's resting orders the l2_queue fill
                               model would have filled
   analyze                     what a live session's fills were worth: maker share, spread

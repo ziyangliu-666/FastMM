@@ -237,6 +237,20 @@ class JournalBuilder {
     end.kind = ReconcileMsg::Kind::End;
     put(end.hdr);
   }
+  // One balance row of venue `venue_id` (flags: BalanceMsg::kSnapshot, kSnapshotEnd).
+  void balance(const char* asset,
+               const char* total,
+               std::uint8_t flags,
+               std::uint8_t venue_id = 0) {
+    BalanceMsg m{};
+    init_header(m, EventType::Balance, InstrumentId{}, VenueId{venue_id});
+    m.asset = FixedString<8>(asset);
+    m.total = Notional::from_decimal(total).value();
+    m.free = m.total;
+    m.equity = m.total;
+    m.flags = flags;
+    put(m.hdr);
+  }
 
  private:
   void put(EventHeader& h, bool outbound = false) {
