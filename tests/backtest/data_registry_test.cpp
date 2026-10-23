@@ -247,6 +247,44 @@ TEST_CASE("backtest.data: tardis rows of one timestamp form one L2 message") {
   CHECK(e[2].qty == qt("0"));
 }
 
+TEST_CASE("backtest.data: tardis from a time in the day starts on the book it had there") {
+  // The day's snapshot, a delta before the start and one after it.
+  const std::string book =
+      std::string(kTardisBook) + "binance,X,1788220800200000,1788220800201000,false,ask,100.2,1\n";
+  const std::string dir =
+      write_cache("bt_tardis_from",
+                  tardis_key("binance", "incremental_book_L2", "X", "2026-09-01", ".csv"),
+                  book);
+  TardisSourceConfig cfg;
+  cfg.dir = dir;
+  cfg.exchange = "binance";
+  cfg.symbol = "X";
+  cfg.dates = {"2026-09-01"};
+  cfg.trades = false;
+  cfg.from = Timestamp{1'788'220'800'150'000'000};
+  TardisDataset src(cfg);
+  const std::vector<Event> e = drain_events(src);
+
+  REQUIRE(e.size() == 2);
+  // The snapshot with the delta before the start applied, stamped with the first row after it.
+  CHECK(e[0].type == EventType::BookSnapshot);
+  CHECK(e[0].snapshot);
+  CHECK(e[0].ts == 1'788'220'800'200'000'000);
+  CHECK(e[0].bids == 1);
+  CHECK(e[0].px == px("100.0"));
+  CHECK(e[0].qty == qt("7"));
+  CHECK(e[0].asks == 2);
+  CHECK(e[1].type == EventType::BookDelta);
+  CHECK(e[1].asks == 1);
+  src.reset();
+  CHECK(drain_events(src).size() == 2);
+
+  // From the snapshot's own time nothing is added.
+  cfg.from = Timestamp{1'788'220'800'000'000'000};
+  TardisDataset whole(cfg);
+  CHECK(drain_events(whole).size() == 3);
+}
+
 TEST_CASE("backtest.data: open_data resolves specs, paths and unknown names") {
   const std::string dir = write_cache(
       "bt_open",

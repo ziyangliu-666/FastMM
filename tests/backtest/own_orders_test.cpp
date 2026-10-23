@@ -135,6 +135,44 @@ TEST_CASE("backtest.journal_source: strip_own takes our orders out of depth and 
   CHECK(js.next()->type == EventType::BookSnapshot);
 }
 
+TEST_CASE("backtest.journal_source: strip_own takes our orders out of a snapshot deeper than 256") {
+  // A depth snapshot of 300 levels a side (a Binance USD-M snapshot has up to 1000) is a record
+  // larger than an EventBuf.
+  constexpr std::uint32_t kDeep = 300;
+  std::vector<Level> deep_bids;
+  std::vector<Level> deep_asks;
+  for (std::uint32_t k = 0; k < kDeep; ++k) {
+    const std::int64_t off = static_cast<std::int64_t>(k) * px("0.01").raw;
+    deep_bids.push_back(Level{Price::from_raw(px("100.00").raw - off), qt("2")});
+    deep_asks.push_back(Level{Price::from_raw(px("100.05").raw + off), qt("1")});
+  }
+  const std::string path = tmp_path("own_orders_deep.fmj");
+  {
+    JournalBuilder j(path, true);
+    j.venue = kV0;
+    j.book(true, {{"100.00", "2"}}, {{"100.05", "1"}});
+    j.out_new(1, Side::Buy, "100.00", "1");
+    j.now += kMs;
+    j.venue = kV0 + kMs;
+    j.ack(1);
+    j.venue = kV0 + 2 * kMs;
+    j.levels(true, deep_bids, deep_asks);
+  }
+  JournalSource js(path, true);
+  REQUIRE(js.next() != nullptr);
+  const EventHeader* h = js.next();
+  REQUIRE(h != nullptr);
+  REQUIRE(h->type == EventType::BookSnapshot);
+  const auto& d = msg_cast<BookDeltaMsg>(h);
+  REQUIRE(d.bid_count == kDeep);
+  CHECK(d.ask_count == kDeep);
+  CHECK(d.bids()[0] == Level{px("100.00"), qt("1")});  // ours taken out
+  CHECK(d.bids()[1] == deep_bids[1]);
+  CHECK(d.asks()[kDeep - 1] == deep_asks[kDeep - 1]);
+  CHECK(js.stripper()->stats().levels_adjusted == 1);
+  CHECK(js.next() == nullptr);
+}
+
 TEST_CASE("backtest.journal_source: strip_own through the data spec, live journals only") {
   const std::string path = live_journal("own_orders_spec.fmj");
   const auto src = open_data("journal:" + path + ",strip_own=1");

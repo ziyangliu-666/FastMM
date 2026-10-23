@@ -27,6 +27,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -144,9 +145,10 @@ class OwnOrderStripper {
     return own_.own_at(inst, side, px, t);
   }
 
-  // `h` with our quantity taken out: `h` itself when nothing changes, a copy in `buf`, or nullptr
-  // for a BookTicker that a backtest's simulated venue sent for our orders (kSynthetic). A ticker
-  // side that was only ours keeps its price with quantity 0: the ticker alone cannot tell the level
+  // `h` with our quantity taken out: `h` itself when nothing changes, a copy in `buf` (in a buffer
+  // of the stripper's own when `h` is larger, valid until the next call), or nullptr for a
+  // BookTicker that a backtest's simulated venue sent for our orders (kSynthetic). A ticker side
+  // that was only ours keeps its price with quantity 0: the ticker alone cannot tell the level
   // behind it, and its other side is still the venue's touch. Trades and other messages pass
   // unchanged.
   const EventHeader* strip(const EventHeader& h, sim::EventBuf& buf) noexcept;
@@ -154,8 +156,15 @@ class OwnOrderStripper {
   [[nodiscard]] const Stats& stats() const noexcept { return stats_; }
 
  private:
+  struct alignas(64) WideBuf {
+    std::byte bytes[kMaxMsgBytes];
+  };
+
   OwnQuantity own_{/*keep_all=*/true};
   Stats stats_;
+  // The copy of a message larger than an EventBuf (a depth snapshot of up to
+  // kMaxBookLevelsPerMsg a side), returned instead of the caller's buffer.
+  std::unique_ptr<WideBuf> wide_ = std::make_unique<WideBuf>();
 };
 
 }  // namespace fastmm::bt

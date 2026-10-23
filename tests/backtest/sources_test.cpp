@@ -9,7 +9,9 @@
 #include "fastmm/backtest/synthetic_source.hpp"
 
 #include <cstring>
+#include <fstream>
 #include <stdexcept>
+#include <string>
 
 using namespace fastmm;
 using namespace fastmm::bt;
@@ -80,6 +82,99 @@ TEST_CASE("backtest.csv: rows group into snapshot, delta, trade and ticker messa
 
   src.reset();
   CHECK(drain(src).size() == 4);
+}
+
+TEST_CASE("backtest.csv: a book ticker row fills its own side, the other is empty") {
+  CsvSource src = CsvSource::from_text(
+      "100,B,0,A,100.6,3,1\n"  // the ask alone
+      "150,B,0,B,99.4,1,2\n"   // both
+      "150,B,0,A,100.7,2,2\n"
+      "200,B,0,B,99.5,2,3\n"   // the bid alone: no ask from the message before
+      "250,B,0,A,100.8,1,4\n"  // ask then bid, one message
+      "250,B,0,B,99.6,1,4\n");
+  const auto ticker = [&] {
+    const EventHeader* h = src.next();
+    REQUIRE(h != nullptr);
+    REQUIRE(h->type == EventType::BookTicker);
+    return msg_cast<BookTickerMsg>(h);
+  };
+  BookTickerMsg t = ticker();
+  CHECK(t.bid_px == Price{});
+  CHECK(t.bid_qty.is_zero());
+  CHECK(t.ask_px == px("100.6"));
+  CHECK(t.ask_qty == qt("3"));
+  t = ticker();
+  CHECK(t.bid_px == px("99.4"));
+  CHECK(t.ask_px == px("100.7"));
+  t = ticker();
+  CHECK(t.bid_px == px("99.5"));
+  CHECK(t.ask_px == Price{});
+  CHECK(t.ask_qty.is_zero());
+  t = ticker();
+  CHECK(t.bid_px == px("99.6"));
+  CHECK(t.ask_px == px("100.8"));
+  CHECK(src.next() == nullptr);
+}
+
+TEST_CASE("backtest.csv: a delta of more than 256 rows a side is split, a snapshot truncated") {
+  std::string text;
+  const auto rows = [&](char type, std::uint64_t seq, int n_bids, int n_asks) {
+    for (int k = 0; k < n_bids; ++k)
+      text += "100," + std::string(1, type) + ",0,B," + std::to_string(1000 - k) + ",1," +
+              std::to_string(seq) + "\n";
+    for (int k = 0; k < n_asks; ++k)
+      text += "100," + std::string(1, type) + ",0,A," + std::to_string(2000 + k) + ",0," +
+              std::to_string(seq) + "\n";
+  };
+  rows('S', 1, 300, 1);
+  rows('D', 2, 300, 2);
+  CsvSource src = CsvSource::from_text(text);
+  const EventHeader* h = src.next();
+  REQUIRE(h != nullptr);
+  CHECK(h->type == EventType::BookSnapshot);
+  CHECK(msg_cast<BookDeltaMsg>(h).bid_count == 256);  // the best 256
+  CHECK(msg_cast<BookDeltaMsg>(h).ask_count == 1);
+  // The delta: 256 bids, then the other 44 and the asks; every row arrives.
+  h = src.next();
+  REQUIRE(h != nullptr);
+  CHECK(h->type == EventType::BookDelta);
+  CHECK(msg_cast<BookDeltaMsg>(h).bid_count == 256);
+  CHECK(msg_cast<BookDeltaMsg>(h).ask_count == 0);
+  CHECK(msg_cast<BookDeltaMsg>(h).bids()[255].price == px("745"));
+  h = src.next();
+  REQUIRE(h != nullptr);
+  CHECK(h->type == EventType::BookDelta);
+  CHECK(h->exch_ts == Timestamp{100});
+  CHECK(msg_cast<BookDeltaMsg>(h).bid_count == 44);
+  CHECK(msg_cast<BookDeltaMsg>(h).bids()[0].price == px("744"));
+  CHECK(msg_cast<BookDeltaMsg>(h).ask_count == 2);
+  CHECK(src.next() == nullptr);
+}
+
+TEST_CASE("backtest.csv: a file streams to the same events as its text") {
+  const std::string path = (fastmm::test::tmp_dir() / "sources_stream.csv").string();
+  {
+    std::string crlf;
+    for (const char c : std::string(kTape)) {
+      if (c == '\n') crlf += '\r';
+      crlf += c;
+    }
+    crlf.pop_back();  // no newline after the last row
+    crlf.pop_back();
+    std::ofstream(path, std::ios::binary) << crlf;
+  }
+  CsvSource text = CsvSource::from_text(kTape);
+  CsvSource file(path);
+  CHECK(file.rows() == text.rows());
+  CHECK(file.start_ts() == Timestamp{100});
+  const auto want = drain(text);
+  CHECK(drain(file) == want);
+  file.reset();
+  CHECK(drain(file) == want);
+
+  const std::string bad = (fastmm::test::tmp_dir() / "sources_stream_bad.csv").string();
+  std::ofstream(bad, std::ios::binary) << "1,T,0,B,1,1,1\n2,T,0,B,1,1,2\n2,X,0,B,1,1,3\n";
+  CHECK_THROWS_WITH_AS(CsvSource{bad}, doctest::Contains("(line 3)"), std::runtime_error);
 }
 
 TEST_CASE("backtest.csv: malformed input is rejected with the line number") {

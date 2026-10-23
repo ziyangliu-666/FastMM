@@ -14,6 +14,7 @@
 #include "fastmm/backtest/binance_source.hpp"
 #include "fastmm/backtest/data_source.hpp"
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -43,7 +44,9 @@ struct TardisSourceConfig {
                                      std::string_view date,
                                      std::string_view ext);
 
-// One normalized CSV, book or trades, decided by `book`.
+// One normalized CSV, book or trades, decided by `book`. With `from` set, the book rows before it
+// build a book that goes out as one snapshot at the first row at or after `from`, so a run that
+// starts in the middle of the day starts on the book the file had there.
 class TardisFileSource final : public MdSource {
  public:
   TardisFileSource(const std::string& path, const TardisSourceConfig& cfg, bool book);
@@ -54,6 +57,8 @@ class TardisFileSource final : public MdSource {
 
  private:
   bool provide(Row& r);
+  void keep(const Row& r);
+  bool prime(const Row& first);
 
   CsvLineReader reader_;
   TardisSourceConfig cfg_;
@@ -63,6 +68,17 @@ class TardisFileSource final : public MdSource {
   Timestamp first_ts_{};
   std::uint64_t rows_ = 0;
   bool done_ = false;
+  // The book before `from` (raw price -> raw quantity), then the snapshot it becomes: the primer_
+  // rows, followed by held_, the first row at or after `from`.
+  std::map<std::int64_t, std::int64_t> bids_;
+  std::map<std::int64_t, std::int64_t> asks_;
+  std::int64_t snapshot_ts_ = 0;
+  bool in_snapshot_ = false;
+  bool primed_ = false;
+  std::vector<Row> primer_;
+  std::size_t primer_at_ = 0;
+  Row held_{};
+  bool have_held_ = false;
 };
 
 // Book and trades of one symbol over a range of days, chained by day and merged by time.

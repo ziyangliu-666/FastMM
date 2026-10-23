@@ -107,6 +107,39 @@ class Writer {
     stamp(d.hdr);
   }
 
+  // An order on `inst` sent now and acked by venue 0 3 ms later, received 2 ms after that.
+  void order_acked(std::uint32_t inst, std::uint64_t id) {
+    OutNewOrderMsg o{};
+    init_header(o, EventType::OutNewOrder, InstrumentId{inst}, VenueId{0});
+    o.cl_ord_id = ClientOrderId{id};
+    o.side = Side::Buy;
+    o.price = px("99");
+    o.qty = qt("1");
+    o.hdr.recv_ts = Timestamp{now_};
+    REQUIRE(w_.record_outbound(o.hdr));
+    OrderAckMsg a{};
+    init_header(a, EventType::OrderAck, InstrumentId{inst}, VenueId{0});
+    a.cl_ord_id = ClientOrderId{id};
+    a.hdr.exch_ts = Timestamp{now_ + 3'000'000};
+    a.hdr.recv_ts = Timestamp{now_ + 5'000'000};
+    REQUIRE(w_.record(a.hdr));
+    now_ += 5'000'000;
+  }
+  // A balance snapshot of one row and a deposit, on venue 0's account.
+  void account() {
+    BalanceMsg b{};
+    init_header(b, EventType::Balance, InstrumentId{}, VenueId{0});
+    b.asset = FixedString<8>("USDT");
+    b.total = b.free = b.equity = Notional::from_decimal("1000").value();
+    b.flags = static_cast<std::uint8_t>(BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd);
+    stamp(b.hdr);
+    AccountFlowMsg f{};
+    init_header(f, EventType::AccountFlow, InstrumentId{}, VenueId{0});
+    f.asset = FixedString<8>("USDT");
+    f.amount = Notional::from_decimal("10").value();
+    stamp(f.hdr);
+  }
+
  private:
   void stamp(EventHeader& h) {
     h.recv_ts = h.exch_ts = Timestamp{now_};
@@ -213,4 +246,39 @@ TEST_CASE("backtest.journal_remap: a symbol the configuration lacks drops its ev
   src.reset();
   CHECK(drain(src).size() == 2);
   CHECK(src.dropped() == 1);
+}
+
+TEST_CASE("backtest.journal_remap: recorded latencies, balances and flows follow the remap") {
+  const std::string path = fresh("journal_remap_session.fmj");
+  InstrumentTable rec;
+  REQUIRE(rec.add(instrument("X", VenueId{0})));
+  REQUIRE(rec.add(instrument("Q", VenueId{0})));
+  const InstrumentTable cfg = configured();  // X is id 2 on venue 1; no Q
+  constexpr std::int64_t kSent = 1'000'000'000;
+  {
+    Writer w(path, rec);
+    w.order_acked(0, 5);  // X
+    w.order_acked(1, 6);  // Q
+    w.account();
+  }
+  using Path = sim::RecordedLatency::Path;
+  JournalSource plain(path);
+  const sim::RecordedSession& as_recorded = *plain.recorded();
+  CHECK(as_recorded.latency.out(Path::New, VenueId{0}, 0, Timestamp{kSent}).ns > 0);
+  CHECK(as_recorded.balances.front().hdr.venue == VenueId{0});
+
+  // The configuration's ids: X's latencies on venue 1, id 2; Q's dropped; venue 0's account is
+  // venue 1's, where its first mapped instrument is.
+  JournalSource src(path, false, true, &cfg);
+  const sim::RecordedSession& s = *src.recorded();
+  CHECK(s.latency.out(Path::New, VenueId{1}, 2, Timestamp{kSent}).ns == 3'500'000);
+  CHECK(s.latency.out(Path::New, VenueId{0}, 0, Timestamp{kSent}).ns == 0);
+  CHECK(s.latency.in(Path::Ack, VenueId{1}, Timestamp{kSent + 3'500'000}).ns == 1'500'000);
+  CHECK(s.latency.size() == 2);
+  REQUIRE(s.balances.size() == 1);
+  CHECK(s.balances.front().hdr.venue == VenueId{1});
+  REQUIRE(s.flows.size() == 1);
+  CHECK(s.flows.front().hdr.venue == VenueId{1});
+  REQUIRE(s.balances_at().size() == 1);
+  CHECK(s.balances_at().front().venue == VenueId{1});
 }

@@ -1,11 +1,14 @@
 #pragma once
 // CsvSource: hand-rolled parser for the row format documented in data_source.hpp
 // (`ts_ns,type,inst,side,price,qty,seq`, optional header line, '#' comments). Prices and
-// quantities are parsed exactly with Fixed::from_decimal; the whole file is read once at
-// construction and next() allocates nothing.
+// quantities are parsed exactly with Fixed::from_decimal. A file is streamed through
+// CsvLineReader, read once at construction to validate it and count its rows, then again from
+// the start; next() allocates nothing.
+#include "fastmm/backtest/binance_source.hpp"
 #include "fastmm/backtest/data_source.hpp"
 
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -27,10 +30,12 @@ class CsvSource final : public MdSource {
   static bool parse_row(std::string_view line, Row& out);
 
  private:
-  CsvSource(std::string text, VenueId venue, int /*tag*/);
+  CsvSource(std::string text, std::unique_ptr<CsvLineReader> file, VenueId venue);
+  bool next_line(std::string_view& line);
   bool provide(Row& r);
 
-  std::string text_;
+  std::string text_;                     // from_text(): the whole input
+  std::unique_ptr<CsvLineReader> file_;  // a path: read a buffer at a time
   std::size_t pos_ = 0;
   std::size_t line_no_ = 0;
   std::size_t rows_ = 0;

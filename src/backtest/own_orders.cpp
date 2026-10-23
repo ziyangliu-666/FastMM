@@ -327,9 +327,11 @@ const EventHeader* OwnOrderStripper::strip(const EventHeader& h, sim::EventBuf& 
           touched =
               touched || (l.qty.is_positive() && own_at(h.instrument, s, l.price, t).is_positive());
       }
-      if (!touched || h.len > sizeof(buf.bytes)) return &h;
-      std::memcpy(buf.bytes, &h, h.len);
-      auto& out = buf.as<BookDeltaMsg>();
+      if (!touched || h.len > kMaxMsgBytes) return &h;
+      // A depth snapshot deeper than an EventBuf holds is stripped in a buffer of our own.
+      std::byte* copy = h.len <= sizeof(buf.bytes) ? buf.bytes : wide_->bytes;
+      std::memcpy(copy, &h, h.len);
+      auto& out = *reinterpret_cast<BookDeltaMsg*>(copy);
       // A delta keeps its levels (quantity 0 deletes one); a snapshot drops the emptied ones.
       std::uint32_t nb = 0;
       std::uint32_t na = 0;

@@ -66,7 +66,9 @@ class JournalSource final : public MdSource {
   // What the parts say about the session (sim/recorded_session.hpp): its states and checkpoints
   // (journal_state.hpp), the positions reconciled before its first order, its ParamUpdate records
   // with the first part's parameter table, its balance rows (account rows, kAccount, left out) and
-  // its flows. With remap, their instruments are the configuration's.
+  // its flows, and its recorded latencies. With remap, their instruments are the configuration's,
+  // and an account's venue that of the first mapped instrument the journal lists on it (a venue
+  // with none keeps its id); a latency of an instrument the configuration lacks is dropped.
   [[nodiscard]] const sim::RecordedSession* recorded() const override { return &session_; }
 
   [[nodiscard]] static bool is_market_data(EventType t) noexcept {

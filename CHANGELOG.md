@@ -49,6 +49,11 @@ All notable changes are recorded here (Keep a Changelog format).
 - sim: a spot market buy is held at the levels it would take, not at the touch.
 - sim: a FOK order under self-trade prevention fills whole or not at all.
 - sim: an inverse contract's entry price is the harmonic mean of its fills.
+- backtest: `tardis` with `start=` begins from the book of that time, not from its deltas alone.
+- backtest: `strip_own` strips snapshots deeper than 256 levels a side.
+- backtest: `remap=true` renumbers a journal's recorded latencies, balances and flows too.
+- backtest: a CSV book-ticker row fills its own side; a delta past 256 rows a side is split.
+- backtest: a CSV file streams instead of being read into memory.
 
 ### Documentation
 - docs: a how-to replays a live session from a checkpoint and compares configurations from it.

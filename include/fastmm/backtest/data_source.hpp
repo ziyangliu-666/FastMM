@@ -8,13 +8,15 @@
 // Row format (CSV columns / array dtypes):
 //   ts_ns  int64   event time
 //   type   S | D | T | B   (0 | 1 | 2 | 3 in arrays): snapshot level, delta level,
-//                          trade, book ticker (two rows: bid then ask)
+//                          trade, book ticker (a row per side, the two of one (ts, inst) form
+//                          one message; a side without a row is empty)
 //   inst   uint32  dense instrument id
 //   side   B | A   (0 | 1): bid/ask, or the aggressor side for trades
 //   price  decimal string / int64 raw 1e-8 / double
 //   qty    decimal string / int64 raw 1e-8 / double     (0 == delete level)
 //   seq    uint64  venue update id; consecutive S/D rows with equal (ts, inst, seq) form
-//                  one message
+//                  one message (a snapshot keeps 256 levels a side; a delta with more rows
+//                  on a side becomes several consecutive messages)
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/sim/md_source.hpp"
@@ -75,19 +77,23 @@ class RowAssembler {
         auto& t = buf_.as<BookTickerMsg>();
         init_header(t, EventType::BookTicker, InstrumentId{first.inst}, venue_);
         stamp(t.hdr, first);
-        t.bid_px = first.price;
-        t.bid_qty = first.qty;
+        // Each row fills its own side; a side with no row of this (ts, inst) is empty.
+        t.bid_px = t.ask_px = Price{};
+        t.bid_qty = t.ask_qty = Qty{};
+        put_side(t, first);
         if (fetch(provide) && row_.type == RowType::Ticker && row_.ts == first.ts &&
-            row_.inst == first.inst && row_.side == Side::Sell) {
-          t.ask_px = row_.price;
-          t.ask_qty = row_.qty;
+            row_.inst == first.inst && row_.side != first.side) {
+          put_side(t, row_);
           have_row_ = false;
         }
         return &t.hdr;
       }
       case RowType::Snapshot:
       case RowType::Delta: {
-        // Collect bids and asks of the same (ts, inst, seq, type) group.
+        // Collect bids and asks of the same (ts, inst, seq, type) group. A snapshot keeps the
+        // first kMaxLevels rows of a side; a delta that has more ends its message there and the
+        // rest of the group follows in the next one, so no level change is lost.
+        const bool snap = first.type == RowType::Snapshot;
         std::uint32_t nb = 0;
         std::uint32_t na = 0;
         Row cur = first;
@@ -102,11 +108,11 @@ class RowAssembler {
               row_.seq != first.seq) {
             break;  // row_ stays buffered (have_row_ == true)
           }
+          if (!snap && (row_.side == Side::Buy ? nb : na) == kMaxLevels) break;  // likewise
           have_row_ = false;
           cur = row_;
         }
         auto& d = buf_.as<BookDeltaMsg>();
-        const bool snap = first.type == RowType::Snapshot;
         init_header(d,
                     snap ? EventType::BookSnapshot : EventType::BookDelta,
                     InstrumentId{first.inst},
@@ -133,6 +139,10 @@ class RowAssembler {
   bool fetch(Provider& provide) {
     have_row_ = provide(row_);
     return have_row_;
+  }
+  static void put_side(BookTickerMsg& t, const Row& r) noexcept {
+    (r.side == Side::Buy ? t.bid_px : t.ask_px) = r.price;
+    (r.side == Side::Buy ? t.bid_qty : t.ask_qty) = r.qty;
   }
   static void stamp(EventHeader& h, const Row& r) noexcept {
     h.exch_ts = h.recv_ts = Timestamp{r.ts};

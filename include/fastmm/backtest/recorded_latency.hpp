@@ -19,7 +19,9 @@ class RecordedLatencyCollector {
  public:
   void on_event(const EventHeader& h);
   // The latencies; fills are resolved against the trades seen.
-  [[nodiscard]] sim::RecordedLatency finish() const;
+  [[nodiscard]] sim::RecordedLatency finish() const { return sim::RecordedLatency(samples()); }
+  // The samples finish() builds them from, with the journal's venue and instrument ids.
+  [[nodiscard]] std::vector<sim::RecordedLatency::Sample> samples() const;
 
  private:
   struct Sent {

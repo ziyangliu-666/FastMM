@@ -78,7 +78,7 @@ void RecordedLatencyCollector::on_event(const EventHeader& h) {
   replies_.push_back(r);
 }
 
-sim::RecordedLatency RecordedLatencyCollector::finish() const {
+std::vector<sim::RecordedLatency::Sample> RecordedLatencyCollector::samples() const {
   using Path = sim::RecordedLatency::Path;
   // A venue time in whole milliseconds is somewhere in its millisecond: take the middle.
   const std::int64_t half = ms_ && venue_times_ > 0 ? kMs / 2 : 0;
@@ -107,7 +107,7 @@ sim::RecordedLatency RecordedLatencyCollector::finish() const {
     back.path = r.path == Path::Fill ? Path::Fill : Path::Ack;
     if (back.took_ns > 0) out.push_back(back);
   }
-  return sim::RecordedLatency(out);
+  return out;
 }
 
 sim::RecordedLatency recorded_latency(std::span<JournalReader> parts) {

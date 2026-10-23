@@ -53,12 +53,20 @@ class JournalBuilder {
   void book(bool snapshot,
             std::vector<std::pair<const char*, const char*>> bids,
             std::vector<std::pair<const char*, const char*>> asks) {
+    std::vector<Level> b;
+    std::vector<Level> a;
+    for (const auto& [p, q] : bids) b.push_back(Level{px(p), qt(q)});
+    for (const auto& [p, q] : asks) a.push_back(Level{px(p), qt(q)});
+    levels(snapshot, b, a);
+  }
+  // Any depth up to kMaxBookLevelsPerMsg a side (a record larger than an EventBuf beyond 256).
+  void levels(bool snapshot, const std::vector<Level>& bids, const std::vector<Level>& asks) {
     const auto nb = static_cast<std::uint32_t>(bids.size());
     const auto na = static_cast<std::uint32_t>(asks.size());
-    alignas(64) std::byte buf[BookDeltaMsg::size_for(8, 8)]{};
-    REQUIRE(nb <= 8);
-    REQUIRE(na <= 8);
-    auto& d = *reinterpret_cast<BookDeltaMsg*>(buf);
+    REQUIRE(nb <= kMaxBookLevelsPerMsg);
+    REQUIRE(na <= kMaxBookLevelsPerMsg);
+    std::vector<std::uint64_t> buf((BookDeltaMsg::size_for(nb, na) + 7) / 8);
+    auto& d = *reinterpret_cast<BookDeltaMsg*>(buf.data());
     init_header(d,
                 snapshot ? EventType::BookSnapshot : EventType::BookDelta,
                 InstrumentId{0},
@@ -68,8 +76,8 @@ class JournalBuilder {
     d.bid_count = nb;
     d.ask_count = na;
     std::size_t i = 0;
-    for (const auto& [p, q] : bids) d.levels()[i++] = Level{px(p), qt(q)};
-    for (const auto& [p, q] : asks) d.levels()[i++] = Level{px(p), qt(q)};
+    for (const Level& l : bids) d.levels()[i++] = l;
+    for (const Level& l : asks) d.levels()[i++] = l;
     put(d.hdr);
   }
   void trade(const char* p, const char* q, Side aggressor, std::uint64_t id = 0) {

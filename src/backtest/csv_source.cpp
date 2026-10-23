@@ -2,20 +2,20 @@
 
 #include <cstdint>
 #include <cstdlib>
-#include <fstream>
-#include <sstream>
+#include <memory>
 #include <stdexcept>
+#include <utility>
 
 namespace fastmm::bt {
 
 namespace {
 
-std::string read_all(const std::string& path) {
-  std::ifstream in(path, std::ios::binary);
-  if (!in) throw std::runtime_error("CsvSource: cannot open " + path);
-  std::ostringstream ss;
-  ss << in.rdbuf();
-  return ss.str();
+std::unique_ptr<CsvLineReader> open_file(const std::string& path) {
+  try {
+    return std::make_unique<CsvLineReader>(path);
+  } catch (const std::runtime_error&) {
+    throw std::runtime_error("CsvSource: cannot open " + path);
+  }
 }
 
 std::string_view trim(std::string_view s) noexcept {
@@ -103,47 +103,54 @@ bool CsvSource::parse_row(std::string_view line, Row& out) {
   return true;
 }
 
-CsvSource::CsvSource(std::string text, VenueId venue, int) : text_(std::move(text)), asm_(venue) {
+CsvSource::CsvSource(std::string text, std::unique_ptr<CsvLineReader> file, VenueId venue)
+    : text_(std::move(text)), file_(std::move(file)), asm_(venue) {
   // First pass: count rows and find the first timestamp (validates the whole file).
   Row r;
   std::int64_t prev_ts = 0;
-  std::size_t pos = 0;
-  std::size_t line_no = 0;
-  while (pos < text_.size()) {
-    const std::size_t nl = text_.find('\n', pos);
-    const std::string_view line(text_.data() + pos,
-                                (nl == std::string::npos ? text_.size() : nl) - pos);
-    pos = nl == std::string::npos ? text_.size() : nl + 1;
-    ++line_no;
+  std::string_view line;
+  while (next_line(line)) {
     try {
       if (!parse_row(line, r)) continue;
     } catch (const std::runtime_error& e) {
-      throw std::runtime_error(std::string(e.what()) + " (line " + std::to_string(line_no) + ")");
+      throw std::runtime_error(std::string(e.what()) + " (line " + std::to_string(line_no_) + ")");
     }
     if (rows_ == 0) {
       first_ts_ = Timestamp{r.ts};
     } else if (r.ts < prev_ts) {
-      throw std::runtime_error("CsvSource: ts_ns decreases (line " + std::to_string(line_no) + ")");
+      throw std::runtime_error("CsvSource: ts_ns decreases (line " + std::to_string(line_no_) +
+                               ")");
     }
     prev_ts = r.ts;
     ++rows_;
   }
+  reset();
 }
 
 CsvSource::CsvSource(const std::string& path, VenueId venue)
-    : CsvSource(read_all(path), venue, 0) {}
+    : CsvSource(std::string{}, open_file(path), venue) {}
 
 CsvSource CsvSource::from_text(std::string text, VenueId venue) {
-  return CsvSource(std::move(text), venue, 0);
+  return CsvSource(std::move(text), nullptr, venue);
+}
+
+bool CsvSource::next_line(std::string_view& line) {
+  if (file_ != nullptr) {
+    if (!file_->next(line)) return false;
+  } else {
+    if (pos_ >= text_.size()) return false;
+    const std::size_t nl = text_.find('\n', pos_);
+    const std::size_t end = nl == std::string::npos ? text_.size() : nl;
+    line = std::string_view(text_.data() + pos_, end - pos_);
+    pos_ = nl == std::string::npos ? text_.size() : nl + 1;
+  }
+  ++line_no_;
+  return true;
 }
 
 bool CsvSource::provide(Row& r) {
-  while (pos_ < text_.size()) {
-    const std::size_t nl = text_.find('\n', pos_);
-    const std::string_view line(text_.data() + pos_,
-                                (nl == std::string::npos ? text_.size() : nl) - pos_);
-    pos_ = nl == std::string::npos ? text_.size() : nl + 1;
-    ++line_no_;
+  std::string_view line;
+  while (next_line(line)) {
     if (parse_row(line, r)) return true;
   }
   return false;
@@ -154,6 +161,7 @@ const EventHeader* CsvSource::next() {
 }
 
 void CsvSource::reset() {
+  if (file_ != nullptr) file_->rewind();
   pos_ = 0;
   line_no_ = 0;
   asm_.reset();

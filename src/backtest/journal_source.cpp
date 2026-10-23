@@ -7,6 +7,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <filesystem>
@@ -127,9 +128,29 @@ JournalSource::JournalSource(const std::string& path,
   }
   for (const JournalParam& p : parts_.front().params())
     session_.params.table.emplace_back(std::string(p.name), p.type);
-  session_.latency = latency.finish();
+  std::vector<sim::RecordedLatency::Sample> latencies = latency.samples();
   read_states(parts_, session_);
   if (remap_) {
+    // An account's venue becomes the configured venue of the first mapped instrument the journal
+    // lists on it; a venue with none (a pool member's account) keeps its id.
+    std::array<VenueId, 256> venue_to{};
+    std::array<bool, 256> venue_mapped{};
+    const std::span<const Instrument> recorded = parts_.front().instruments();
+    for (std::size_t j = 0; j < recorded.size(); ++j) {
+      const std::uint8_t v = recorded[j].venue.value;
+      if (map_[j] == kUnmapped || venue_mapped[v]) continue;
+      venue_to[v] = map_venue_[j];
+      venue_mapped[v] = true;
+    }
+    const auto account = [&](VenueId v) { return venue_mapped[v.value] ? venue_to[v.value] : v; };
+    std::erase_if(latencies, [&](sim::RecordedLatency::Sample& s) {
+      if (s.instrument >= map_.size() || map_[s.instrument] == kUnmapped) return true;
+      s.instrument = map_[s.instrument];
+      s.venue = account(s.venue);
+      return false;
+    });
+    for (BalanceMsg& m : session_.balances) m.hdr.venue = account(m.hdr.venue);
+    for (AccountFlowMsg& m : session_.flows) m.hdr.venue = account(m.hdr.venue);
     const auto remapped = [&](std::vector<ReconcileMsg>& v) {
       std::vector<ReconcileMsg> kept;
       for (ReconcileMsg m : v) {
@@ -154,6 +175,7 @@ JournalSource::JournalSource(const std::string& path,
       k.orders = std::move(kept);
     }
   }
+  session_.latency = sim::RecordedLatency(latencies);
 }
 
 const EventHeader* JournalSource::next() {

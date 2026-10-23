@@ -48,12 +48,77 @@ void TardisFileSource::reset() {
   prev_ts_ = 0;
   rows_ = 0;
   done_ = false;
+  bids_.clear();
+  asks_.clear();
+  in_snapshot_ = false;
+  primed_ = false;
+  primer_.clear();
+  primer_at_ = 0;
+  have_held_ = false;
+}
+
+// A row before `from` updates the book kept for the first message at or after it. The rows of a
+// snapshot share one timestamp, and the first of them replaces what was there.
+void TardisFileSource::keep(const Row& r) {
+  if (r.type == RowType::Snapshot) {
+    if (!in_snapshot_ || r.ts != snapshot_ts_) {
+      bids_.clear();
+      asks_.clear();
+    }
+    in_snapshot_ = true;
+    snapshot_ts_ = r.ts;
+  } else {
+    in_snapshot_ = false;
+  }
+  auto& side = r.side == Side::Buy ? bids_ : asks_;
+  if (r.qty.is_positive()) {
+    side[r.price.raw] = r.qty.raw;
+  } else {
+    side.erase(r.price.raw);
+  }
+}
+
+// The book kept from before `from` goes out as a snapshot stamped with the first row at or after
+// it, which follows it; nothing when that row starts a snapshot itself. True when there is one.
+bool TardisFileSource::prime(const Row& first) {
+  primed_ = true;
+  if (first.type != RowType::Snapshot && (!bids_.empty() || !asks_.empty())) {
+    Row r = first;
+    r.type = RowType::Snapshot;
+    r.seq = 0;
+    r.side = Side::Buy;
+    for (auto it = bids_.rbegin(); it != bids_.rend(); ++it) {  // best first
+      r.price = Price::from_raw(it->first);
+      r.qty = Qty::from_raw(it->second);
+      primer_.push_back(r);
+    }
+    r.side = Side::Sell;
+    for (const auto& [p, q] : asks_) {
+      r.price = Price::from_raw(p);
+      r.qty = Qty::from_raw(q);
+      primer_.push_back(r);
+    }
+    held_ = first;
+    have_held_ = true;
+  }
+  bids_.clear();
+  asks_.clear();
+  return have_held_;
 }
 
 // Book rows:   exchange,symbol,timestamp,local_timestamp,is_snapshot,side,price,amount
 // Trade rows:  exchange,symbol,timestamp,local_timestamp,id,side,price,amount
 // The two layouts differ only in what field 4 means, so one parser reads both.
 bool TardisFileSource::provide(Row& r) {
+  if (primer_at_ < primer_.size()) {
+    r = primer_[primer_at_++];
+    return true;
+  }
+  if (have_held_) {
+    have_held_ = false;
+    r = held_;
+    return true;
+  }
   std::string_view f[8];
   while (!done_) {
     std::string_view line;
@@ -64,14 +129,16 @@ bool TardisFileSource::provide(Row& r) {
       fail(reader_.path() + ":" + std::to_string(reader_.line_no()) + ": expected 8 fields, got " +
            std::to_string(n));
     std::int64_t ts = 0;
-    if (!parse_epoch_ns(f[cfg_.local_clock ? 3 : 2], ts)) {
+    const std::string_view ts_field = f[cfg_.local_clock ? 3 : 2];
+    if (!parse_epoch_ns(ts_field, ts)) {
       if (reader_.line_no() == 1) continue;  // header
       fail(reader_.path() + ":" + std::to_string(reader_.line_no()) + ": bad timestamp '" +
-           std::string(f[2]) + "'");
+           std::string(ts_field) + "'");
     }
     if (ts < prev_ts_) ts = prev_ts_;
     prev_ts_ = ts;
-    if (cfg_.from.valid() && ts < cfg_.from.ns) continue;
+    const bool before = cfg_.from.valid() && ts < cfg_.from.ns;
+    if (before && !book_) continue;
     if (cfg_.to.valid() && ts > cfg_.to.ns) {
       done_ = true;
       return false;
@@ -88,6 +155,10 @@ bool TardisFileSource::provide(Row& r) {
       r.type = f[4] == "true" ? RowType::Snapshot : RowType::Delta;
       r.side = f[5] == "bid" ? Side::Buy : Side::Sell;
       r.seq = 0;  // the feed has no update id: rows of one timestamp form one message
+      if (before) {
+        keep(r);
+        continue;
+      }
     } else {
       r.type = RowType::Trade;
       r.side = f[5] == "buy" ? Side::Buy : Side::Sell;  // aggressor
@@ -96,6 +167,7 @@ bool TardisFileSource::provide(Row& r) {
       r.seq = id;
     }
     ++rows_;
+    if (book_ && !primed_ && prime(r)) r = primer_[primer_at_++];
     return true;
   }
   return false;
