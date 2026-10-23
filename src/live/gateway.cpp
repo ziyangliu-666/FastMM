@@ -19,6 +19,7 @@
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/underlying.hpp"
 #include "fastmm/live/control_socket.hpp"
+#include "fastmm/live/sd_notify.hpp"
 #include "fastmm/live/session.hpp"
 #include "fastmm/live/shutdown_guard.hpp"
 #include "fastmm/live/venue_slot.hpp"
@@ -3609,8 +3610,13 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
   std::int64_t ticks = 0;
   std::int64_t next_status = start + 250'000'000;
   std::vector<pollfd> fds;
+  // Under a Type=notify unit the strategies that need the gateway start now, with the socket
+  // listening (deploy/fastmm-gateway.service).
+  SystemdNotifier systemd;
+  static_cast<void>(systemd.notify("READY=1\nSTATUS=serving"));
   while (g_gw_signal == 0) {
     const std::int64_t now = steady_now().ns;
+    systemd.keep_alive(now);
     if (opts.duration_ns > 0 && now - start >= opts.duration_ns) break;
     fds.clear();
     fds.push_back(pollfd{listen_fd, POLLIN, 0});
@@ -3654,6 +3660,7 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
       Logger::instance().flush();
     }
   }
+  static_cast<void>(systemd.notify("STOPPING=1"));
   FASTMM_LOG_WARN("fastmm-gateway: shutting down ({})",
                   g_gw_signal != 0 ? std::string_view("signal") : std::string_view("duration"));
   ::close(listen_fd);

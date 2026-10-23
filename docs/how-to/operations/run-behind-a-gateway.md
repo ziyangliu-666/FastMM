@@ -179,7 +179,7 @@ A strategy that stops cleanly cancels its own quotes through the gateway first a
 
 ## Run under systemd
 
-`deploy/fastmm-gateway.service` runs the gateway and `deploy/fastmm-live@.service` one strategy per instance (`fastmm-live@mm1` runs `/etc/fastmm/mm1.toml` attached to `/var/lib/fastmm/runs/gateway.gw`, so the gateway's `[engine] name` is `gateway`). Enable each instance: it is then wanted by the gateway, so every start of the gateway, its automatic restart after a crash included, starts the strategies again, and stopping the gateway stops them. A strategy exits 5 when its gateway goes away and is not restarted for that alone.
+`deploy/fastmm-gateway.service` runs the gateway and `deploy/fastmm-live@.service` one strategy per instance (`fastmm-live@mm1` runs `/etc/fastmm/mm1.toml` attached to `/var/lib/fastmm/runs/gateway.gw`, so the gateway's `[engine] name` is `gateway`). Enable each instance: it is then wanted by the gateway, so every start of the gateway, its automatic restart after a crash included, starts the strategies again, and stopping the gateway stops them. The gateway's unit is `Type=notify`: the strategies start once it says `READY=1`, with its socket listening, rather than while it still loads reference data and before there is anything to attach to. A strategy exits 5 when its gateway goes away and is not restarted for that alone.
 
 ```bash
 sudo systemctl enable --now fastmm-gateway fastmm-live@mm1 fastmm-live@mm2

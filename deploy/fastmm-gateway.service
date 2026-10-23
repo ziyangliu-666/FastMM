@@ -12,7 +12,12 @@ StartLimitIntervalSec=600
 StartLimitBurst=5
 
 [Service]
-Type=exec
+# READY=1 once its socket listens: the fastmm-live@ units ordered after it start then, not while
+# it still loads reference data. The control loop sends WATCHDOG=1.
+Type=notify
+NotifyAccess=main
+WatchdogSec=30
+TimeoutStartSec=180
 User=fastmm
 Group=fastmm
 WorkingDirectory=/var/lib/fastmm

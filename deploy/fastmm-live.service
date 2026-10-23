@@ -10,7 +10,15 @@ After=network-online.target time-sync.target
 Wants=network-online.target
 
 [Service]
-Type=exec
+# READY=1 once the session trades (or waits as a standby): until then the unit is "activating" and
+# whatever is ordered after it waits. The control loop sends WATCHDOG=1; one that stops for
+# WatchdogSec is killed (SIGABRT) and restarted. An engine thread stuck in a strategy hook is
+# [engine] stall_ms's to catch: it cancels every order first.
+Type=notify
+NotifyAccess=main
+WatchdogSec=30
+# Reference data and account queries come before READY=1.
+TimeoutStartSec=180
 User=fastmm
 Group=fastmm
 WorkingDirectory=/var/lib/fastmm

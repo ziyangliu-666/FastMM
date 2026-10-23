@@ -19,6 +19,7 @@
 #include "fastmm/live/instance_lock.hpp"
 #include "fastmm/live/live_backend.hpp"
 #include "fastmm/live/restart_check.hpp"
+#include "fastmm/live/sd_notify.hpp"
 #include "fastmm/live/shutdown_guard.hpp"
 #include "fastmm/live/thread_affinity.hpp"
 #include "fastmm/live/treasury_thread.hpp"
@@ -789,6 +790,9 @@ namespace {
 int run_session(const Config& cfg, const LiveOptions& opts) {
   const char* prog = opts.program.c_str();
   const LiveStrategy* const custom = opts.strategy;
+  // Under a Type=notify unit: READY=1 once the session serves (trades, or waits as a standby),
+  // WATCHDOG=1 from the control loop, STOPPING=1 when the shutdown starts.
+  SystemdNotifier systemd;
   // ---- instruments, venues, reference data (main thread, blocking) ---------------------
   // Attached to fastmm-gateway: the venues, their reference data and the instrument table are the
   // gateway's.
@@ -915,7 +919,9 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
             lock_path,
             ctl_path);
       }
+      static_cast<void>(systemd.notify("READY=1\nSTATUS=standby: waiting for the instance lock"));
       while (st == InstanceLock::Status::Held) {
+        systemd.keep_alive(monotonic_ns());
         if (g_signal != 0) {
           FASTMM_LOG_WARN("standby: stopped by a signal before taking over; nothing was traded");
           return kExitOk;
@@ -2640,6 +2646,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     if (auditor) auditor->start();
     FASTMM_LOG_WARN("standby: took over after {} ms warm; opening the private channels",
                     (steady_now().ns - warm_start) / 1'000'000);
+    static_cast<void>(systemd.notify("STATUS=trading"));
     return 0;
   };
   if (warm)
@@ -2656,6 +2663,9 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   // tripped, a failed journal, the standby's lock); a command on the control socket and a signal
   // wake it at once.
   std::vector<pollfd> wait_fds;
+  static_cast<void>(systemd.notify(owner ? "READY=1\nSTATUS=trading"
+                                         : "READY=1\nSTATUS=standby: warm, waiting for the "
+                                           "instance lock"));
   while (reason == 0) {
     wait_fds.clear();
     wait_fds.push_back(pollfd{signal_wake_fd(), POLLIN, 0});
@@ -2707,6 +2717,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     if (ab && owner) static_cast<void>(ab->poll(wall_now()));
     if (g_signal != 0) reason = 2;
     const std::int64_t now = steady_now().ns;
+    systemd.keep_alive(now);
     if (opts.duration_ns > 0 && now - start >= opts.duration_ns) reason = reason == 0 ? 1 : reason;
     for (auto& s : slots) {
       if (s->order_overflows.load(std::memory_order_relaxed) != 0 && reason == 0) {
@@ -2817,6 +2828,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     }
   }
   shutdown_watchdog.stop_requested();  // --duration, a kill switch, fastmm-ctl stop, ...
+  static_cast<void>(systemd.notify("STOPPING=1"));
   if (reason == 12) {
     // Nothing that waits for the engine can finish: no kill switch it would take, no join. Every
     // venue cancels all over its own REST connection, the PnL ledger and the status file get their
