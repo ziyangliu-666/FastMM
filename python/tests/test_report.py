@@ -95,3 +95,76 @@ def test_missing_metrics_drop_their_panel(tmp_path):
     assert "Markouts" not in html
     assert "Equity and inventory" not in html
     assert "&mdash;" in html  # an em dash where a number is not known
+
+
+def _journal(path, instruments, events):
+    """A minimal session journal: header, instrument records and one block of events."""
+    import struct
+
+    header = bytearray(256)
+    header[0:4] = b"FMJ1"
+    struct.pack_into("<III", header, 4, 3, 256 + 128 * len(instruments), len(instruments))
+    records = b""
+    for i, symbol in enumerate(instruments):
+        r = bytearray(128)
+        struct.pack_into("<I", r, 0, i)
+        r[80:80 + len(symbol)] = symbol.encode()
+        r[100] = len(symbol)
+        records += bytes(r)
+    body = b"".join(events)
+    block = struct.pack("<4sIQQIII28s", b"FMJB", len(body), 0, 0, 0, 0, 0, b"")
+    path.write_bytes(bytes(header) + records + block + body)
+
+
+def _event(etype, inst, ts, body):
+    import struct
+
+    e = bytearray(64)
+    struct.pack_into("<IBBBBI", e, 0, 64 + len(body), etype, 0, 0, 0, inst)
+    struct.pack_into("<q", e, 40, ts)
+    return bytes(e) + body
+
+
+def _ticker(inst, ts, bid, ask):
+    import struct
+
+    b = bytearray(64)
+    struct.pack_into("<q8xq", b, 0, round(bid * 1e8), round(ask * 1e8))
+    return _event(3, inst, ts, bytes(b))
+
+
+def _fill(inst, ts, side, px, qty, exec_id):
+    import struct
+
+    b = bytearray(144)
+    b[49:49 + len(exec_id)] = exec_id
+    b[89] = len(exec_id)
+    struct.pack_into("<qqqqq", b, 96, round(px * 1e8), round(qty * 1e8), 0, 0, 0)
+    b[136] = side
+    b[137] = 1
+    return _event(9, inst, ts, bytes(b))
+
+
+def test_session_report_keeps_a_book_per_instrument(tmp_path):
+    """A buy of one instrument and a sell of another are two open positions, each marked at its
+    own price, not one closed round trip."""
+    path = tmp_path / "two.fmj"
+    _journal(path, ["AAAUSDT", "BBBUSDT"], [
+        _ticker(0, 1, 99.9, 100.1),
+        _ticker(1, 1, 2999.0, 3001.0),
+        _fill(0, 2, 0, 100.0, 1.0, b"a"),
+        _fill(1, 3, 1, 3000.0, 1.0, b"b"),
+        _ticker(0, 4, 100.9, 101.1),
+        _ticker(1, 4, 2989.0, 2991.0),
+    ])
+    run = report_module.read_journal(path)
+    m = run.metrics
+    assert m["fills"] == 2
+    assert m["realized_pnl"] == pytest.approx(0.0)
+    # +1 on AAA (100 -> 101) and +10 on the short BBB (3000 -> 2990).
+    assert m["unrealized_pnl"] == pytest.approx(11.0)
+    assert m["net_pnl"] == pytest.approx(11.0)
+    assert m["final_position"] == pytest.approx(1.0)
+    assert run.symbol == "AAAUSDT"
+    assert run.equity["mid"][-1] == pytest.approx(101.0)
+    assert any("2 instruments traded" in n for n in run.notes)

@@ -42,7 +42,7 @@ Every number is one the run reported. A missing input removes its panel.
 
 ## A session report is smaller
 
-A live session journal records the fills, not the venue's book at each fill, so a session report has no markouts, no spread capture and no fill quality, and says so. It marks inventory at the last book ticker the venue published (or the last trade print), and splits the PnL into realized, unrealized and fees only.
+A live session journal records the fills, not the venue's book at each fill, so a session report has no markouts, no spread capture and no fill quality, and says so. It marks each instrument's inventory at the last book ticker the venue published for it (or its last trade print), and splits the PnL into realized, unrealized and fees only. With several instruments the PnL is their sum, and the position and mid charts are those of the first instrument that traded.
 
 For the full set of panels, backtest the journal (`fastmm-backtest --data session.fmj --out runs/replayed`) and report on that. Those numbers are a simulation over the session's market data, not the session ([Backtesting](../explanation/backtesting.md)).
 

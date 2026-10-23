@@ -163,20 +163,32 @@ def read_journal(path: PathLike, config: Optional[PathLike] = None) -> Run:
 
 
 def _session_metrics(run: Run, s: Dict[str, Any]) -> None:
-    """Position, PnL and the marked equity of a session, from its fills and mark prices."""
+    """Position, PnL and the marked equity of a session, from its fills and mark prices.
+
+    Each instrument keeps its own position, average cost and mark; PnL and equity are their sum.
+    The position and mid series are those of the instrument the report is about: the first one
+    that traded.
+    """
     fills = s["fills"]
     marks = s["marks"]
     header = s["header"]
     counts = s["counts"]
-    events: List[Tuple[int, int, Optional[Dict[str, Any]], Optional[float]]] = []
+    events: List[Tuple[int, int, int, Optional[Dict[str, Any]], Optional[float]]] = []
     for f in fills:
-        events.append((f["ts"], 0, f, None))
-    for ts, mid in marks:
-        events.append((ts, 1, None, mid))
+        events.append((f["ts"], 0, f["instrument"], f, None))
+    for ts, inst, mid in marks:
+        events.append((ts, 1, inst, None, mid))
     events.sort(key=lambda e: (e[0], e[1]))
+    traded = list(dict.fromkeys(f["instrument"] for f in fills))
+    shown = traded[0] if traded else (marks[0][1] if marks else 0)
+    names = {i["id"]: i["symbol"] for i in s["instruments"]}
+    if shown in names:
+        run.symbol = names[shown]
 
-    position = fees = realized = 0.0
-    avg_px = 0.0
+    position: Dict[int, float] = {}
+    avg_px: Dict[int, float] = {}
+    mark: Dict[int, float] = {}
+    fees = realized = 0.0
     volume_base = volume_quote = 0.0
     maker = taker = 0
     other_fees = 0
@@ -185,15 +197,19 @@ def _session_metrics(run: Run, s: Dict[str, Any]) -> None:
     eq_col: List[float] = []
     pos_col: List[float] = []
     mid_col: List[float] = []
-    mark = marks[0][1] if marks else None
     fill_ts: List[int] = []
     fill_side: List[str] = []
     fill_qty: List[float] = []
     fill_fee: List[float] = []
     fill_liq: List[str] = []
-    for ts, _kind, fill, mid in events:
+
+    def unrealized() -> float:
+        # An instrument traded before its first mark is marked at its average cost.
+        return sum(q * (mark.get(i, avg_px[i]) - avg_px[i]) for i, q in position.items() if q)
+
+    for ts, _kind, inst, fill, mid in events:
         if mid is not None:
-            mark = mid
+            mark[inst] = mid
         if fill is not None:
             qty = fill["qty"]
             px = fill["price"]
@@ -207,15 +223,18 @@ def _session_metrics(run: Run, s: Dict[str, Any]) -> None:
             else:
                 other_fees += 1
             # Average cost: a trade that reduces the position books the difference as realized.
-            if position == 0 or (position > 0) == (signed > 0):
-                total = position + signed
-                avg_px = (avg_px * position + px * signed) / total if total else 0.0
+            held = position.get(inst, 0.0)
+            avg = avg_px.get(inst, 0.0)
+            if held == 0 or (held > 0) == (signed > 0):
+                total = held + signed
+                avg = (avg * held + px * signed) / total if total else 0.0
             else:
-                closed = min(abs(position), abs(signed)) * (1 if position > 0 else -1)
-                realized += closed * (px - avg_px)
-                if abs(signed) > abs(position):
-                    avg_px = px
-            position += signed
+                closed = min(abs(held), abs(signed)) * (1 if held > 0 else -1)
+                realized += closed * (px - avg)
+                if abs(signed) > abs(held):
+                    avg = px
+            position[inst] = held + signed
+            avg_px[inst] = avg
             volume_base += qty
             volume_quote += qty * px
             maker += fill["liquidity"] == "maker"
@@ -225,29 +244,33 @@ def _session_metrics(run: Run, s: Dict[str, Any]) -> None:
             fill_qty.append(qty)
             fill_fee.append(fee if fill["fee_asset"] == "quote" else fee * px)
             fill_liq.append(fill["liquidity"])
-        if mark is None:
+        if shown not in mark:
             continue
-        unrealized = position * (mark - avg_px)
+        pos = position.get(shown, 0.0)
         ts_col.append(ts)
-        eq_col.append(realized + unrealized - fees)
-        pos_col.append(position)
-        mid_col.append(mark)
-        inventory_sum += position
-        inventory_abs += abs(position)
-        inventory_max = max(inventory_max, abs(position))
+        eq_col.append(realized + unrealized() - fees)
+        pos_col.append(pos)
+        mid_col.append(mark[shown])
+        inventory_sum += pos
+        inventory_abs += abs(pos)
+        inventory_max = max(inventory_max, abs(pos))
     run.equity = {"ts": ts_col, "equity": eq_col, "position": pos_col, "mid": mid_col,
                   "quoted": []}
     run.fills = {"ts": fill_ts, "side": fill_side, "qty": fill_qty, "fee": fill_fee,
                  "liquidity": fill_liq}
+    if len(traded) > 1:
+        run.notes.append(
+            f"{len(traded)} instruments traded: the PnL and equity are their sum, each marked at "
+            f"its own price; the position and mid shown are {run.symbol or shown}'s.")
     n = max(len(ts_col), 1)
-    unrealized = position * (mark - avg_px) if mark is not None else 0.0
+    open_pnl = unrealized()
     start, end = s["first_ts"], s["last_ts"]
     run.metrics.update({
-        "net_pnl": realized + unrealized - fees,
+        "net_pnl": realized + open_pnl - fees,
         "realized_pnl": realized,
-        "unrealized_pnl": unrealized,
+        "unrealized_pnl": open_pnl,
         "fees": fees,
-        "final_position": position,
+        "final_position": position.get(shown, 0.0),
         "fills": len(fills),
         "maker_fills": maker,
         "taker_fills": taker,
