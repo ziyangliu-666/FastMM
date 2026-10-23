@@ -9,6 +9,8 @@
 #include "fastmm/venues/okx/okx_md_feed.hpp"
 #include "fastmm/venues/padded_json.hpp"
 
+#include <map>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -220,6 +222,50 @@ TEST_CASE("okx.checksum: CRC-32 of the first 25 interleaved levels, as zlib comp
   const std::string text = deep.checksum_text();
   CHECK(text.find("976:1") != std::string::npos);
   CHECK(text.find("975:1") == std::string::npos);
+}
+
+// The shadow book is a ring that moves the shorter side of each change; it must hold exactly
+// what a sorted map of the same changes holds, at any depth, through a full side.
+TEST_CASE("okx.shadow_book: levels equal a std::map of the same changes") {
+  for (std::uint32_t seed = 1; seed <= 40; ++seed) {
+    CAPTURE(seed);
+    std::mt19937 rng(seed);
+    OkxShadowBook b;
+    std::map<std::int64_t, std::string> m[2];  // best first: -price for bids, price for asks
+    for (int op = 0; op < 6000; ++op) {
+      const bool bid = (rng() & 1U) != 0;
+      // Mostly near the touch, sometimes deep, so a side fills past kMaxLevels.
+      const std::int64_t off = rng() % 4 == 0 ? static_cast<std::int64_t>(rng() % 700)
+                                              : static_cast<std::int64_t>(rng() % 30);
+      const std::int64_t p = bid ? 100000 - off : 100001 + off;
+      const bool remove = rng() % 3 == 0;
+      const std::string px_text = std::to_string(p);  // the book copies the text
+      static const char* const kSizes[] = {"1", "2.5", "7.10"};
+      const char* sz = remove ? "0" : kSizes[rng() % 3];
+      REQUIRE(b.apply(bid, OkxLevelText{Price::from_int(p).raw, px_text, sz, remove}));
+      auto& side = m[bid ? 0 : 1];
+      const std::int64_t key = bid ? -p : p;  // best first in both
+      if (remove) {
+        side.erase(key);
+      } else if (side.count(key) != 0 || side.size() < OkxShadowBook::kMaxLevels ||
+                 key < std::prev(side.end())->first) {
+        side[key] = sz;
+        if (side.size() > OkxShadowBook::kMaxLevels) side.erase(std::prev(side.end()));
+      }
+      if (op % 200 != 199) continue;
+      for (int s = 0; s < 2; ++s) {
+        const bool is_bid = s == 0;
+        REQUIRE((is_bid ? b.bid_count() : b.ask_count()) == m[s].size());
+        std::size_t i = 0;
+        for (const auto& [level_key, size] : m[s]) {
+          const std::int64_t price = is_bid ? -level_key : level_key;
+          REQUIRE(b.level_px(is_bid, i) == std::to_string(price));
+          REQUIRE(b.level_sz(is_bid, i) == size);
+          ++i;
+        }
+      }
+    }
+  }
 }
 
 TEST_CASE("okx.book_sync: a seqId gap resyncs and resubscribes, a heartbeat and a reset do not") {

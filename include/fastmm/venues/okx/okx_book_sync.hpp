@@ -87,13 +87,14 @@ struct OkxLevelText {
 // a side is full (it cannot be among the 25 the checksum covers).
 class OkxShadowBook {
  public:
-  static constexpr std::size_t kMaxLevels = 512;
+  static constexpr std::size_t kMaxLevels = 512;  // a power of two (a ring)
+  static_assert((kMaxLevels & (kMaxLevels - 1)) == 0);
   static constexpr std::size_t kChecksumLevels = 25;
   static constexpr std::size_t kMaxText = 30;  // price or size text
 
   void clear() noexcept {
-    bids_.n = 0;
-    asks_.n = 0;
+    bids_.n = bids_.head = 0;
+    asks_.n = asks_.head = 0;
   }
   // False when a text is longer than kMaxText (the book cannot be checked; resync).
   [[nodiscard]] bool apply(bool bid, const OkxLevelText& l) noexcept {
@@ -103,6 +104,13 @@ class OkxShadowBook {
   }
   [[nodiscard]] std::size_t bid_count() const noexcept { return bids_.n; }
   [[nodiscard]] std::size_t ask_count() const noexcept { return asks_.n; }
+  // Price and size text of the i-th level from the best (tests and diagnostics).
+  [[nodiscard]] std::string_view level_px(bool bid, std::size_t i) const noexcept {
+    return (bid ? bids_ : asks_).at(i).px();
+  }
+  [[nodiscard]] std::string_view level_sz(bool bid, std::size_t i) const noexcept {
+    return (bid ? bids_ : asks_).at(i).sz();
+  }
 
   // The venue's checksum of this book: CRC-32 of the first 25 levels, interleaved, as int32.
   [[nodiscard]] std::int32_t checksum() const noexcept {
@@ -116,8 +124,8 @@ class OkxShadowBook {
       crc = crc32_update(crc, lv.sz());
     };
     for (std::size_t i = 0; i < kChecksumLevels; ++i) {
-      if (i < bids_.n) add(bids_.levels[i]);
-      if (i < asks_.n) add(asks_.levels[i]);
+      if (i < bids_.n) add(bids_.at(i));
+      if (i < asks_.n) add(asks_.at(i));
     }
     return static_cast<std::int32_t>(crc ^ 0xFFFFFFFFU);
   }
@@ -129,8 +137,8 @@ class OkxShadowBook {
       s.append(lv.px()).append(":").append(lv.sz());
     };
     for (std::size_t i = 0; i < kChecksumLevels; ++i) {
-      if (i < bids_.n) add(bids_.levels[i]);
-      if (i < asks_.n) add(asks_.levels[i]);
+      if (i < bids_.n) add(bids_.at(i));
+      if (i < asks_.n) add(asks_.at(i));
     }
     return s;
   }
@@ -149,41 +157,60 @@ class OkxShadowBook {
       sz_len = static_cast<std::uint8_t>(s.size());
     }
   };
+  // A side is a ring of kMaxLevels levels, best first from `head`. A level inserted or removed
+  // moves the levels on its shorter side, toward the touch or toward the deep end, so a change
+  // near the touch moves the few levels better than it, and a snapshot (best first) appends.
   struct Side {
+    static constexpr std::size_t kMask = kMaxLevels - 1;
     std::array<Level, kMaxLevels> levels{};
+    std::size_t head = 0;
     std::size_t n = 0;
+    [[nodiscard]] Level& at(std::size_t i) noexcept { return levels[(head + i) & kMask]; }
+    [[nodiscard]] const Level& at(std::size_t i) const noexcept {
+      return levels[(head + i) & kMask];
+    }
     // Position of the first level not better than `px` for this side.
     [[nodiscard]] std::size_t lower(std::int64_t px, bool bid) const noexcept {
-      const auto* b = levels.data();
-      const auto* e = b + n;
-      const auto* it =
-          bid ? std::lower_bound(
-                    b, e, px, [](const Level& lv, std::int64_t p) { return lv.px_raw > p; })
-              : std::lower_bound(
-                    b, e, px, [](const Level& lv, std::int64_t p) { return lv.px_raw < p; });
-      return static_cast<std::size_t>(it - b);
+      std::size_t lo = 0;
+      std::size_t hi = n;
+      while (lo < hi) {
+        const std::size_t mid = lo + (hi - lo) / 2;
+        const std::int64_t p = at(mid).px_raw;
+        if (bid ? p > px : p < px) {
+          lo = mid + 1;
+        } else {
+          hi = mid;
+        }
+      }
+      return lo;
     }
     void apply(const OkxLevelText& l, bool bid) noexcept {
       const std::size_t i = lower(l.px_raw, bid);
-      const bool found = i < n && levels[i].px_raw == l.px_raw;
+      const bool found = i < n && at(i).px_raw == l.px_raw;
       if (l.remove) {
         if (!found) return;
-        std::copy(levels.begin() + static_cast<std::ptrdiff_t>(i) + 1,
-                  levels.begin() + static_cast<std::ptrdiff_t>(n),
-                  levels.begin() + static_cast<std::ptrdiff_t>(i));
+        if (i < n - 1 - i) {
+          for (std::size_t k = i; k > 0; --k) at(k) = at(k - 1);
+          head = (head + 1) & kMask;
+        } else {
+          for (std::size_t k = i; k + 1 < n; ++k) at(k) = at(k + 1);
+        }
         --n;
         return;
       }
       if (found) {
-        levels[i].set_size(l.sz);
+        at(i).set_size(l.sz);
         return;
       }
       if (i >= kMaxLevels) return;  // deeper than we keep
       if (n == kMaxLevels) --n;     // the deepest falls away
-      std::copy_backward(levels.begin() + static_cast<std::ptrdiff_t>(i),
-                         levels.begin() + static_cast<std::ptrdiff_t>(n),
-                         levels.begin() + static_cast<std::ptrdiff_t>(n) + 1);
-      Level& lv = levels[i];
+      if (i < n - i) {
+        head = (head + kMaxLevels - 1) & kMask;  // the levels better than i move up by one
+        for (std::size_t k = 0; k < i; ++k) at(k) = at(k + 1);
+      } else {
+        for (std::size_t k = n; k > i; --k) at(k) = at(k - 1);
+      }
+      Level& lv = at(i);
       lv.px_raw = l.px_raw;
       std::memcpy(lv.px_text, l.px.data(), l.px.size());
       lv.px_len = static_cast<std::uint8_t>(l.px.size());
