@@ -53,6 +53,17 @@ class RingBuffer {
   }
   [[nodiscard]] T& operator[](std::size_t i) noexcept { return buf_[(head_ + i) & (N - 1)]; }
 
+  // Positions count pushes from 0: the element pushed at position `pos` stays reachable through
+  // at_pos(pos) until it is overwritten (an index can map keys to positions).
+  [[nodiscard]] std::uint64_t head_pos() const noexcept { return head_; }
+  [[nodiscard]] std::uint64_t next_pos() const noexcept { return tail_; }
+  [[nodiscard]] T* at_pos(std::uint64_t pos) noexcept {
+    return pos - head_ < size() ? &buf_[pos & (N - 1)] : nullptr;
+  }
+  [[nodiscard]] const T* at_pos(std::uint64_t pos) const noexcept {
+    return pos - head_ < size() ? &buf_[pos & (N - 1)] : nullptr;
+  }
+
   // Linear scan (newest first); returns nullptr if absent.
   template <class Pred>
   [[nodiscard]] const T* find_if(Pred&& p) const noexcept {

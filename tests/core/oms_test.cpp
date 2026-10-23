@@ -5,6 +5,7 @@
 #include "fastmm/core/session_state.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <random>
 #include <string>
@@ -428,6 +429,44 @@ TEST_CASE("core.oms: best own price stays the best open price through random ter
     }
     check_best();
   }
+}
+
+// The terminal records are found through an index: an id the OMS never had (another client's
+// order on a shared account) costs one probe whether the ring holds no record or 4096. It
+// walked the ring before, 4096 records for every such ack, cancel or fill.
+TEST_CASE("core.oms: recently-terminal lookups cost the same with the ring full") {
+  Oms oms;
+  std::vector<ClientOrderId> ended;
+  auto lookups = [&] {
+    std::size_t n = 0;
+    for (std::uint32_t k = 0; k < 20000; ++k)
+      n += oms.classify(make_cl_ord_id(9, 1'000'000 + k)) == OrderClass::Unknown ? 1U : 0U;
+    return n;
+  };
+  auto best = [&] {
+    double t = 1e9;
+    for (int r = 0; r < 5; ++r) {
+      const auto t0 = std::chrono::steady_clock::now();
+      CHECK(lookups() == 20000);
+      t = std::min(t, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    }
+    return t;
+  };
+  const double empty = best();
+  for (std::size_t i = 0; i < kRecentlyTerminal + 100; ++i) {
+    const ClientOrderId id = oms.next_cl_ord_id();
+    ended.push_back(id);
+    static_cast<void>(oms.submit(req(Side::Buy, 1, 1), id, {}));
+    oms.on_reject(reject(id));
+  }
+  const double full = best();
+  CAPTURE(empty);
+  CAPTURE(full);
+  CHECK(full < 8 * empty);
+  // The ring keeps exactly the newest kRecentlyTerminal.
+  CHECK(oms.classify(ended[99]) == OrderClass::Unknown);
+  CHECK(oms.classify(ended[100]) == OrderClass::RecentlyTerminal);
+  CHECK(oms.classify(ended.back()) == OrderClass::RecentlyTerminal);
 }
 
 TEST_CASE("core.oms: recently-terminal ring evicts oldest") {

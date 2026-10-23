@@ -613,10 +613,7 @@ class Oms {
   }
   [[nodiscard]] OrderClass classify(ClientOrderId id) const noexcept {
     if (by_id_.contains(id)) return OrderClass::Open;
-    if (recently_terminal_.find_if([&](const TerminalRecord& r) { return r.cl_ord_id == id; }) !=
-        nullptr) {
-      return OrderClass::RecentlyTerminal;
-    }
+    if (find_terminal(id) != nullptr) return OrderClass::RecentlyTerminal;
     return OrderClass::Unknown;
   }
   // Ascending handle order (deterministic). F(Handle<Order>, const Order&).
@@ -713,8 +710,15 @@ class Oms {
     }
   }
 
+  // The newest terminal record of `id`, through the index: an id the OMS never had (another
+  // client's order on a shared account) costs one hash probe, not a walk of the ring.
+  [[nodiscard]] const TerminalRecord* find_terminal(ClientOrderId id) const noexcept {
+    const std::uint64_t* pos = terminal_pos_.find(id);
+    return pos == nullptr ? nullptr : recently_terminal_.at_pos(*pos);
+  }
   [[nodiscard]] TerminalRecord* find_terminal(ClientOrderId id) noexcept {
-    return recently_terminal_.find_if([&](const TerminalRecord& t) { return t.cl_ord_id == id; });
+    const std::uint64_t* pos = terminal_pos_.find(id);
+    return pos == nullptr ? nullptr : recently_terminal_.at_pos(*pos);
   }
 
   // Adds `r` to the recently terminal orders. The oldest one leaves when they are full, and with it
@@ -729,8 +733,14 @@ class Oms {
         ++stats_.synthetic_forgotten;
         --stats_.synthetic_pending;
       }
+      // The index names the newest record of an id: drop it only if that is the one leaving.
+      const std::uint64_t* pos = terminal_pos_.find(gone.cl_ord_id);
+      if (pos != nullptr && *pos == recently_terminal_.head_pos())
+        terminal_pos_.erase(gone.cl_ord_id);
     }
+    const std::uint64_t pos = recently_terminal_.next_pos();
     recently_terminal_.push(r);
+    terminal_pos_.assign(r.cl_ord_id, pos);
   }
 
   // A fill for an order that already ended: a cancel ack (or a cancel reject for an order the venue
@@ -763,8 +773,7 @@ class Oms {
       u.handle = *p;
       return *p;
     }
-    const TerminalRecord* r =
-        recently_terminal_.find_if([&](const TerminalRecord& t) { return t.cl_ord_id == id; });
+    const TerminalRecord* r = find_terminal(id);
     if (r != nullptr) {
       // The slot is gone; a late fill still needs to know what it was for.
       u.known = true;
@@ -925,6 +934,8 @@ class Oms {
   InstBits by_inst_;
   OpenHashMap<ClientOrderId, Handle<Order>, kMaxOpenOrders * 4> by_id_;  // ids + pending ids
   RingBuffer<TerminalRecord, kRecentlyTerminal> recently_terminal_;
+  // cl_ord_id -> position in recently_terminal_ of its newest record.
+  OpenHashMap<ClientOrderId, std::uint64_t, kRecentlyTerminal * 2> terminal_pos_;
   // On the heap: its ring of ids alone is 512 KiB.
   std::unique_ptr<RecentMap<std::uint64_t, std::uint8_t, kExecMemory>> exec_seen_ =
       std::make_unique<RecentMap<std::uint64_t, std::uint8_t, kExecMemory>>();
