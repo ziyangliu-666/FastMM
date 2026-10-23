@@ -15,6 +15,8 @@ from __future__ import annotations
 import sqlite3
 from typing import TYPE_CHECKING, Any, Dict, Iterable, Optional, Sequence, Union
 
+from . import _core
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import os
 
@@ -23,8 +25,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 FIXED_SCALE = 1e-8
 """Scale of the raw int64 fixed-point columns (`price_raw`, `qty_raw`, `realized_raw`, ...)."""
 
-SCHEMA_VERSION = 10
-"""Schema version this module reads; a newer store is refused."""
+SCHEMA_VERSION: int = _core._store_schema_version
+"""Schema version this module reads (the one the engine writes); a newer store is refused."""
 
 _NS_COLUMNS = frozenset(
     {"ts_ns", "started_ns", "stopped_ns", "created_ns", "updated_ns", "last_ns"}
@@ -250,145 +252,17 @@ class Store:
     def _ledger_pnl(
         self, since: Optional[str], until: Optional[str], instrument: Optional[str]
     ) -> "pd.DataFrame":
-        """The fills' PnL by day, account and symbol (src/store/sqlite_reader.cpp, pnl())."""
+        """The fills' PnL by day, account and symbol: fastmm-pnl's reader
+        (src/store/sqlite_reader.cpp), so both read the same numbers."""
         pd = _pandas()
-        scale = 1e8
-        sym = " WHERE f.symbol = ?" if instrument else ""
-        params = (instrument,) if instrument else ()
-        rows = self._db.execute(
-            "SELECT f.session_id, f.day, s.engine, COALESCE(NULLIF(i.account, ''), f.account),"
-            " f.account, f.symbol, f.side, f.price_raw, f.qty_raw, f.booked_qty_raw,"
-            " f.named_qty_raw, f.fee_raw, f.synthetic, f.exec_id, f.position_qty_raw,"
-            " f.position_avg_px_raw, f.position_realized_raw - f.position_fees_raw,"
-            " COALESCE(i.settlement_ccy, ''), COALESCE(i.inverse, 0),"
-            " COALESCE(NULLIF(i.multiplier_raw, 0), 100000000), f.instrument_id"
-            " FROM fills f JOIN sessions s ON s.session_id = f.session_id"
-            " LEFT JOIN instruments i ON i.session_id = f.session_id"
-            " AND i.instrument_id = f.instrument_id" + sym + " ORDER BY f.ts_ns, f.session_id, f.seq",
-            params,
-        )
-        days: Dict[Any, Dict[str, Any]] = {}
-
-        def bucket(key, ccy):
-            b = days.get(key)
-            if b is None:
-                b = days[key] = dict(
-                    realized=0.0, funding=0, fees=0, gross=0, fills=0, estimates=0,
-                    books=None, ccy=ccy,
-                )
-            if ccy:
-                b["ccy"] = ccy
-            return b
-
-        def wanted(day):
-            return (not since or day >= since) and (not until or day <= until)
-
-        books: Dict[Any, list] = {}
-        seen = set()
-        last: Dict[Any, int] = {}
-        for (session, day, engine, holder, account, symbol, side, px, qty, booked, named, fee,
-             synthetic, exec_id, pos_qty, pos_avg, engine_net, ccy, inverse, mult_raw,
-             inst) in rows:
-            prev_net = last.get((session, inst), 0)
-            last[(session, inst)] = engine_net
-            if synthetic:
-                moved = qty - named
-            else:
-                key = (engine, account, symbol, side, exec_id)
-                if exec_id and key in seen:
-                    continue  # another session stored it too
-                seen.add(key)
-                moved = booked + named
-            out = bucket((day, holder, symbol), ccy)
-            counted = wanted(day)
-            book = books.get((engine, holder, symbol))
-            if book is None:
-                books[(engine, holder, symbol)] = [pos_qty, float(pos_avg)]
-                if counted:
-                    out["realized"] += engine_net - prev_net + fee
-                    out["fees"] += fee
-            elif moved > 0:
-                d = -moved if side == "Sell" else moved
-                held, avg = book
-                realized = 0.0
-                if held == 0 or (held > 0) == (d > 0):
-                    book[1] = (avg * abs(held) + px * moved) / (abs(held) + moved)
-                    book[0] = held + d
-                else:
-                    closed = min(moved, abs(held))
-                    sign = 1.0 if held > 0 else -1.0
-                    mult = mult_raw / scale
-                    if inverse:
-                        realized = (
-                            sign * closed * mult * (scale / avg - scale / px)
-                            if avg > 0 and px > 0
-                            else 0.0
-                        )
-                    else:
-                        realized = sign * closed * (px - avg) / scale * mult
-                    book[0] = held + d
-                    if book[0] == 0:
-                        book[1] = 0.0
-                    elif (book[0] > 0) != (held > 0):
-                        book[1] = float(px)
-                if counted:
-                    out["realized"] += realized
-                    if not synthetic:
-                        out["fees"] += fee
-            if counted:
-                if moved > 0:
-                    out["gross"] += moved
-                if synthetic:
-                    out["estimates"] += 1 if moved > 0 else 0
-                else:
-                    out["fills"] += 1
-        paid = set()
-        for session, day, engine, holder, symbol, fid, amount, ccy in self._db.execute(
-            "SELECT g.session_id, g.day, s.engine, COALESCE(NULLIF(i.account, ''), g.account),"
-            " g.symbol, g.funding_id, g.amount_raw, COALESCE(i.settlement_ccy, '')"
-            " FROM funding g JOIN sessions s ON s.session_id = g.session_id"
-            " LEFT JOIN instruments i ON i.session_id = g.session_id"
-            " AND i.instrument_id = g.instrument_id"
-            + sym.replace("f.", "g.")
-            + " ORDER BY g.ts_ns, g.session_id, g.seq",
-            params,
-        ):
-            if fid and (engine, holder, symbol, fid) in paid:
-                continue
-            paid.add((engine, holder, symbol, fid))
-            if not wanted(day):
-                continue
-            out = bucket((day, holder, symbol), ccy)
-            out["funding"] += amount
-            out["realized"] += amount
-        for day, holder, symbol, ccy, net in self._db.execute(
-            "SELECT day, account, symbol, settlement_ccy, SUM(realized_raw) - SUM(fees_raw)"
-            " FROM pnl_daily" + (" WHERE symbol = ?" if instrument else "")
-            + " GROUP BY day, account, symbol, settlement_ccy",
-            params,
-        ):
-            if not wanted(day):
-                continue
-            out = bucket((day, holder, symbol), ccy)
-            out["books"] = (out["books"] or 0) + net
-        records = []
-        for (day, holder, symbol), b in sorted(days.items()):
-            if not (b["fills"] or b["estimates"] or b["funding"] or b["books"] is not None):
-                continue
-            realized = round(b["realized"])
-            records.append(
-                dict(
-                    day=day, account=holder, symbol=symbol, settlement_ccy=b["ccy"],
-                    realized=realized / scale, funding=b["funding"] / scale,
-                    fees=b["fees"] / scale, net=(realized - b["fees"]) / scale,
-                    gross_traded=b["gross"] / scale, fills=b["fills"],
-                    estimates=b["estimates"],
-                    books_net=None if b["books"] is None else b["books"] / scale,
-                )
-            )
-        columns = ["day", "account", "symbol", "settlement_ccy", "realized", "funding", "fees",
-                   "net", "gross_traded", "fills", "estimates", "books_net"]
-        return pd.DataFrame.from_records(records, columns=columns)
+        columns, rows = _core._store_pnl(self.path, instrument or "", since or "", until or "")
+        frame = pd.DataFrame(rows, columns=columns)
+        for name in ("realized", "funding", "fees", "net", "gross_traded", "books_net"):
+            column = frame[name]
+            frame[name] = pd.to_numeric(column.where(column != "")).astype("float64")
+        for name in ("fills", "estimates"):
+            frame[name] = frame[name].astype("int64")
+        return frame
 
     def funding(
         self,

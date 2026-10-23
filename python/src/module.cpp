@@ -57,6 +57,7 @@ PYBIND11_MODULE(_core, m) {
   fb::bind_strategies(m);
   fb::bind_strategy_api(m);
   fb::bind_hot(m);
+  fb::bind_store(m);
 
   m.def(
       "enable_logging",

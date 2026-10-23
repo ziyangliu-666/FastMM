@@ -267,6 +267,35 @@ def test_fixed_scale_matches_the_engine():
     assert fastmm.store.FIXED_SCALE == fastmm.FIXED_SCALE
 
 
+def test_a_store_at_the_engines_schema_version_opens(tmp_path):
+    """The version the module accepts is the engine's (kSqliteSchemaVersion), so a store the
+    current engine wrote opens, and its PnL comes from the reader fastmm-pnl uses."""
+    text = SCHEMA.read_text()
+    version = fastmm.store.SCHEMA_VERSION
+    assert f"constexpr std::string_view kV{version} = " in text
+    assert f"constexpr std::string_view kV{version + 1} = " not in text
+    path = tmp_path / "current.db"
+    db = sqlite3.connect(path)
+    db.executescript(
+        "CREATE TABLE schema_version (version INTEGER NOT NULL, applied_ns INTEGER NOT NULL,"
+        f" fastmm TEXT NOT NULL); INSERT INTO schema_version VALUES ({version}, 0, 'test');"
+    )
+    for v in range(1, version + 1):
+        db.executescript(_sql_between(text, f'constexpr std::string_view kV{v} = R"SQL(', ')SQL";'))
+    db.commit()
+    db.close()
+    with fastmm.open_store(path) as store:
+        assert store.schema_version == version
+        assert store.pnl().empty
+        assert list(store.pnl().columns)[:4] == ["day", "account", "symbol", "settlement_ccy"]
+    db = sqlite3.connect(path)
+    db.execute("UPDATE schema_version SET version = ?", (version + 1,))
+    db.commit()
+    db.close()
+    with pytest.raises(ValueError, match="schema version"):
+        fastmm.open_store(path)
+
+
 def test_pnl_counts_each_execution_once(tmp_path):
     """Schema 10: an estimate an execution named, a copy another session stored and a venue
     account at another id in the next session are each counted once, by the account's name."""

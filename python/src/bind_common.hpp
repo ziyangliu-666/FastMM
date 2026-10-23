@@ -28,6 +28,7 @@ void bind_strategies(py::module_& m);
 void bind_strategy_api(py::module_& m);
 void bind_hot(py::module_& m);
 void bind_research(py::module_& m);
+void bind_store(py::module_& m);
 
 // The `data=` argument of the entry points that take one without a BacktestConfig behind it: a
 // "<source>:<args>" spec, a .fmj / .csv path, or a dict of numpy columns. The buffers a dict
