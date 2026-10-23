@@ -23,6 +23,7 @@
 
 #include <pybind11/stl.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -360,11 +361,17 @@ void PyRun::periodic() noexcept {
 
 InstrumentId PyRun::resolve(py::handle inst) const {
   const std::size_t n = inst_objs_.size();
-  for (std::size_t i = 0; i < n; ++i) {  // the objects the run hands out: pointer compare
-    if (inst.ptr() == inst_objs_[i].ptr()) return InstrumentId{static_cast<std::uint32_t>(i)};
-  }
   long long v = -1;
-  if (py::isinstance<InstrumentInfo>(inst)) {
+  if (PyLong_CheckExact(inst.ptr()) != 0) {  // an int id
+    v = PyLong_AsLongLong(inst.ptr());
+    if (v == -1 && PyErr_Occurred() != nullptr) throw py::error_already_set();
+  } else if (const auto it =
+                 std::find_if(inst_objs_.begin(),
+                              inst_objs_.end(),
+                              [&inst](const py::object& o) { return o.ptr() == inst.ptr(); });
+             it != inst_objs_.end()) {  // an object the run handed out: pointer compare
+    return InstrumentId{static_cast<std::uint32_t>(it - inst_objs_.begin())};
+  } else if (py::isinstance<InstrumentInfo>(inst)) {
     v = inst.cast<const InstrumentInfo&>().inst.id.value;
   } else if (PyIndex_Check(inst.ptr()) != 0 && PyBool_Check(inst.ptr()) == 0) {
     v = py::int_(py::reinterpret_borrow<py::object>(inst)).cast<long long>();
