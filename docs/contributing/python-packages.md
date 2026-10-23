@@ -14,7 +14,7 @@ FASTMM_BIN_DIR=build/release/bin .venv/bin/python -m pytest python/live/tests -q
 
 The live tests start `fastmm-sim-exchange` from `FASTMM_BIN_DIR` (default `build/release/bin`) on free ports and are skipped without it.
 
-Regenerate the type stub after changing the bindings:
+Regenerate the type stub after changing the bindings; with `pybind11-stubgen` installed (the `dev` extra pins its version), `python/tests/test_packaging.py` fails until you do:
 
 ```bash
 .venv/bin/pybind11-stubgen fastmm._core -o /tmp/stubs

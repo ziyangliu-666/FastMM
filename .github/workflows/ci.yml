@@ -361,8 +361,9 @@ jobs:
       - name: wheel (scikit-build-core, FASTMM_BUILD_NET=OFF)
         run: CXX=g++-13 pip wheel . -w dist --no-deps -v
       - name: install wheel + test deps
-        # numba: python/tests/test_hot.py and the hot example (the fastmm-engine[hot] extra)
-        run: pip install "$(ls dist/fastmm_engine-*.whl)[hot]" pytest pandas
+        # numba: python/tests/test_hot.py and the hot example (the fastmm-engine[hot] extra);
+        # pybind11-stubgen: the type stub check in python/tests/test_packaging.py
+        run: pip install "$(ls dist/fastmm_engine-*.whl)[hot]" pytest pandas pybind11-stubgen==3.0.0
       - name: wheel holds only the package
         run: python -m zipfile -l dist/fastmm_engine-*.whl | awk 'NR>1 {print $1}' | grep -vE '^fastmm(/|_engine-[0-9.]+\.dist-info/)' && exit 1 || true
       - name: pytest (against the installed wheel)

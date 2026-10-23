@@ -35,6 +35,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace fastmm::py_bind {
@@ -1530,9 +1531,10 @@ void bind_strategy_api(py::module_& m) {
       "What the [risk] rate limit and a venue's own limits still admit (a copy). The venue's "
       "windows are (used, limit) or None where it declares none; a backtest knows no venue.",
       py::is_final());
-  const auto rate_window = [](const RateWindow& w) -> py::object {
-    if (!w.known()) return py::none();
-    return py::make_tuple(w.used, w.limit);
+  const auto rate_window =
+      [](const RateWindow& w) -> std::optional<std::tuple<std::int64_t, std::int64_t>> {
+    if (!w.known()) return std::nullopt;
+    return std::tuple{w.used, w.limit};
   };
   budget_cls
       .def_property_readonly(

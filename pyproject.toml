@@ -30,7 +30,7 @@ plot = ["matplotlib>=3.7"]
 hot = ["numba>=0.61,<0.68", "llvmlite>=0.44,<0.50", "pandas>=2.0"]
 # Same version as fastmm (python/tests/test_packaging.py checks it).
 live = ["fastmm-engine-live==0.8.0"]
-dev = ["pytest>=7", "pandas>=2.0", "pybind11-stubgen"]
+dev = ["pytest>=7", "pandas>=2.0", "pybind11-stubgen==3.0.0"]
 
 [tool.scikit-build]
 cmake.version = ">=3.25"

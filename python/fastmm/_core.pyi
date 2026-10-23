@@ -5,7 +5,9 @@ from __future__ import annotations
 import collections.abc
 import numpy
 import typing
-__all__: list[str] = ['BacktestConfig', 'BacktestResult', 'Balance', 'BalanceView', 'BookTickerView', 'BookView', 'ConfigError', 'ConnectionView', 'Context', 'FeatureTable', 'Fees', 'FillView', 'Funding', 'Instrument', 'Margin', 'OptionTickerView', 'Order', 'OrderBook', 'OrderRejected', 'OrderUpdateView', 'PerpStateView', 'Portfolio', 'PositionView', 'RefPrice', 'RiskHeadroom', 'StaleViewError', 'TradeView', 'VenueHealth', 'build_info', 'convert_data', 'data_sources', 'disable_logging', 'enable_logging', 'evaluate_signal', 'features', 'inspect_journal', 'run_backtest', 'strategies', 'sweep', 'walk_forward']
+__all__: list[str] = ['BacktestConfig', 'BacktestResult', 'Balance', 'BalanceView', 'BookTickerView', 'BookView', 'ConfigError', 'ConnectionView', 'Context', 'FeatureTable', 'Fees', 'FillView', 'Funding', 'Instrument', 'Margin', 'OptionTickerView', 'Order', 'OrderBook', 'OrderBudget', 'OrderRejected', 'OrderUpdateView', 'PerpStateView', 'Portfolio', 'PositionView', 'RefPrice', 'RiskHeadroom', 'RiskReject', 'StaleViewError', 'TradeView', 'VenueHealth', 'build_info', 'convert_data', 'data_sources', 'disable_logging', 'enable_logging', 'evaluate_signal', 'features', 'inspect_journal', 'run_backtest', 'strategies', 'sweep', 'walk_forward']
+class ConfigError(ValueError):
+    pass
 class BacktestConfig:
     """
     Everything one backtest needs: engine, instruments, strategy and parameters, simulated venue (fill model, latency, fees) and the synthetic market. Build one with from_toml() or single_instrument().
@@ -182,22 +184,6 @@ class BacktestConfig:
     def max_param_age_ms(self, arg1: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
     @property
-    def state_file(self) -> str:
-        """
-        [strategy] state_file: the strategy's restore() reads it at the start and its state() is written to it at the end ('' = none).
-        """
-    @state_file.setter
-    def state_file(self, arg1: str) -> None:
-        ...
-    @property
-    def state_interval_s(self) -> int:
-        """
-        [strategy] state_interval_s: how often the state is taken, seconds of engine time (default 300).
-        """
-    @state_interval_s.setter
-    def state_interval_s(self, arg1: typing.SupportsInt | typing.SupportsIndex) -> None:
-        ...
-    @property
     def measure_wall_clock(self) -> bool:
         """
         Measure wall-clock tick-to-order per engine step.
@@ -284,6 +270,22 @@ class BacktestConfig:
         """
     @start_ns.setter
     def start_ns(self, arg1: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def state_file(self) -> str:
+        """
+        [strategy] state_file: the strategy's restore() reads it at the start and its state() is written to it at the end ('' = none).
+        """
+    @state_file.setter
+    def state_file(self, arg1: str) -> None:
+        ...
+    @property
+    def state_interval_s(self) -> int:
+        """
+        [strategy] state_interval_s: how often the state is taken, seconds of engine time (default 300).
+        """
+    @state_interval_s.setter
+    def state_interval_s(self, arg1: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
     @property
     def strategy(self) -> str:
@@ -435,379 +437,20 @@ class BacktestResult:
     @property
     def wall_seconds(self) -> float:
         ...
-class Balance:
+class _TimeSlice:
     """
-    One asset of a venue's account now (a copy): free, locked and total are the venue's last report moved by this engine's orders and fills since; equity and maintenance are the report's.
+    Internal: the data of one walk-forward fold, [start_ns, end_ns) of `data`, for the run functions of a Python strategy.
     """
-    def __repr__(self) -> str:
+    def __init__(self, data: typing.Any, start_ns: typing.SupportsInt | typing.SupportsIndex, end_ns: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
     @property
-    def as_of_ns(self) -> int:
+    def data(self) -> typing.Any:
         ...
     @property
-    def equity(self) -> float:
+    def end_ns(self) -> int:
         ...
     @property
-    def equity_raw(self) -> int:
-        ...
-    @property
-    def free(self) -> float:
-        ...
-    @property
-    def free_raw(self) -> int:
-        ...
-    @property
-    def known(self) -> bool:
-        ...
-    @property
-    def locked(self) -> float:
-        ...
-    @property
-    def locked_raw(self) -> int:
-        ...
-    @property
-    def maintenance(self) -> float:
-        ...
-    @property
-    def maintenance_raw(self) -> int:
-        ...
-    @property
-    def total(self) -> float:
-        ...
-    @property
-    def total_raw(self) -> int:
-        ...
-class BalanceView:
-    """
-    The venue's report of one asset of the account (valid inside on_balance). Amounts are absolute, in the asset.
-    """
-    @property
-    def account(self) -> bool:
-        ...
-    @property
-    def asset(self) -> str:
-        ...
-    @property
-    def equity(self) -> float:
-        ...
-    @property
-    def equity_raw(self) -> int:
-        ...
-    @property
-    def exch_ts_ns(self) -> int:
-        ...
-    @property
-    def free(self) -> float:
-        ...
-    @property
-    def free_raw(self) -> int:
-        ...
-    @property
-    def locked(self) -> float:
-        ...
-    @property
-    def locked_raw(self) -> int:
-        ...
-    @property
-    def maintenance(self) -> float:
-        ...
-    @property
-    def maintenance_raw(self) -> int:
-        ...
-    @property
-    def recv_ts_ns(self) -> int:
-        ...
-    @property
-    def snapshot(self) -> bool:
-        ...
-    @property
-    def snapshot_end(self) -> bool:
-        ...
-    @property
-    def total(self) -> float:
-        ...
-    @property
-    def total_raw(self) -> int:
-        ...
-    @property
-    def venue(self) -> int:
-        ...
-class BookTickerView:
-    """
-    Best bid and ask update (valid inside on_book_ticker).
-    """
-    @property
-    def ask_price(self) -> float:
-        ...
-    @property
-    def ask_price_raw(self) -> int:
-        ...
-    @property
-    def ask_qty(self) -> float:
-        ...
-    @property
-    def ask_qty_raw(self) -> int:
-        ...
-    @property
-    def bid_price(self) -> float:
-        ...
-    @property
-    def bid_price_raw(self) -> int:
-        ...
-    @property
-    def bid_qty(self) -> float:
-        ...
-    @property
-    def bid_qty_raw(self) -> int:
-        ...
-    @property
-    def exch_ts_ns(self) -> int:
-        ...
-    @property
-    def instrument(self) -> int:
-        ...
-    @property
-    def recv_ts_ns(self) -> int:
-        ...
-class BookView:
-    """
-    The engine's L2 book of one instrument. Valid only inside the hook that received it or called ctx.book().
-    """
-    def depth(self, side: typing.SupportsInt | typing.SupportsIndex) -> int:
-        ...
-    def imbalance(self, levels: typing.SupportsInt | typing.SupportsIndex = 1) -> float:
-        """
-        (bid qty - ask qty) / (bid qty + ask qty) over the top levels, in [-1, 1].
-        """
-    def level(self, side: typing.SupportsInt | typing.SupportsIndex, i: typing.SupportsInt | typing.SupportsIndex) -> tuple:
-        """
-        (price, qty) of level i (0 is best); (0.0, 0.0) past the depth.
-        """
-    def level_raw(self, side: typing.SupportsInt | typing.SupportsIndex, i: typing.SupportsInt | typing.SupportsIndex) -> tuple:
-        ...
-    def microprice(self) -> float:
-        ...
-    def microprice_raw(self) -> int:
-        ...
-    @property
-    def best_ask(self) -> tuple:
-        ...
-    @property
-    def best_ask_raw(self) -> tuple:
-        ...
-    @property
-    def best_bid(self) -> tuple:
-        ...
-    @property
-    def best_bid_raw(self) -> tuple:
-        ...
-    @property
-    def instrument(self) -> int:
-        ...
-    @property
-    def last_update_ns(self) -> int:
-        ...
-    @property
-    def mid(self) -> float:
-        ...
-    @property
-    def mid_raw(self) -> int:
-        ...
-    @property
-    def seq(self) -> int:
-        ...
-    @property
-    def spread(self) -> float:
-        ...
-    @property
-    def spread_raw(self) -> int:
-        ...
-    @property
-    def valid(self) -> bool:
-        ...
-class ConfigError(ValueError):
-    pass
-class ConnectionView:
-    """
-    A venue connection state change (valid inside on_connection).
-    """
-    @property
-    def channel(self) -> int:
-        ...
-    @property
-    def live(self) -> bool:
-        ...
-    @property
-    def reason_code(self) -> int:
-        ...
-    @property
-    def recv_ts_ns(self) -> int:
-        ...
-    @property
-    def state(self) -> str:
-        ...
-    @property
-    def venue(self) -> int:
-        ...
-class Context:
-    """
-    What a Python strategy sees (mirrors the C++ StrategyContext). Usable only inside a hook.
-    """
-    def balance(self, venue: typing.SupportsInt | typing.SupportsIndex, asset: str) -> Balance:
-        """
-        One asset of a venue's account: the venue's last report (on_balance) moved by this engine's orders and fills since. known is False until the venue reports it.
-        """
-    def balance_room(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price: typing.Any) -> float | None:
-        """
-        Largest quantity of the instrument on `side` at `price` the balance covers, rounded down to the lot; None while the venue has not reported the balance that side draws on.
-        """
-    def balance_room_raw(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price_raw: typing.Any) -> int | None:
-        ...
-    def balances_live(self) -> bool:
-        """
-        A venue has reported balances (before that, balance() is unknown everywhere).
-        """
-    def best_ex_self(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex) -> tuple:
-        """
-        (price, qty) of the book's best level on one side after own_qty is taken out; a level that was only ours is skipped. (0.0, 0.0) when none is left.
-        """
-    def best_ex_self_raw(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex) -> tuple:
-        ...
-    def book(self, inst: typing.Any) -> typing.Any:
-        """
-        The instrument's book view (valid until the current hook returns).
-        """
-    def cancel(self, order_id: typing.SupportsInt | typing.SupportsIndex) -> bool:
-        """
-        Request a cancel; False when the order is unknown or cannot be cancelled.
-        """
-    def cancel_timer(self, timer_id: typing.SupportsInt | typing.SupportsIndex) -> bool:
-        ...
-    def contains(self, inst: typing.Any) -> bool:
-        ...
-    def every(self, period_ns: typing.SupportsInt | typing.SupportsIndex, tag: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
-        """
-        Repeating timer; on_timer(ctx, timer_id, tag) fires every period_ns. Returns the id.
-        """
-    def fees(self, inst: typing.Any) -> Fees:
-        """
-        Maker and taker rates of the instrument: the ones the simulated venue charges.
-        """
-    def funding(self, inst: typing.Any) -> Funding:
-        """
-        The venue's funding of a perpetual (on_perp_state), with its age.
-        """
-    def index(self, inst: typing.Any) -> RefPrice:
-        """
-        The venue's index price of a derivative (on_perp_state), with its age.
-        """
-    def instrument(self, inst: typing.Any) -> typing.Any:
-        ...
-    def margin(self, venue: typing.SupportsInt | typing.SupportsIndex = 0) -> Margin:
-        """
-        The venue's margin: its account-wide margin where it reports one, else the settlement asset of its first derivative.
-        """
-    def mark(self, inst: typing.Any) -> RefPrice:
-        """
-        The venue's mark price of a derivative (on_perp_state), with its age.
-        """
-    def once(self, delay_ns: typing.SupportsInt | typing.SupportsIndex, tag: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
-        """
-        One-shot timer after delay_ns. Returns the id.
-        """
-    def open_qty(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex) -> float:
-        ...
-    def open_qty_raw(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex) -> int:
-        ...
-    def order(self, order_id: typing.SupportsInt | typing.SupportsIndex) -> typing.Any:
-        """
-        Snapshot of an open order, or None once it is terminal.
-        """
-    def own_qty(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price: typing.SupportsFloat | typing.SupportsIndex, at_ns: typing.Any = None) -> float:
-        """
-        Our resting quantity that the venue's feed shows at this price, as of the book's last update or of venue time at_ns. 0.0 where the feed does not show our orders (a backtest).
-        """
-    def own_qty_raw(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price_raw: typing.SupportsInt | typing.SupportsIndex, at_ns: typing.Any = None) -> int:
-        ...
-    def portfolio(self) -> Portfolio:
-        """
-        PnL totals over every instrument.
-        """
-    def position(self, inst: typing.Any) -> typing.Any:
-        ...
-    def pull_all_quotes(self) -> None:
-        ...
-    def pull_quotes(self, inst: typing.Any) -> None:
-        ...
-    def queue_ahead(self, order_id: typing.SupportsInt | typing.SupportsIndex) -> typing.Any:
-        """
-        Estimated quantity resting ahead of an open order at its price (the l2_queue model on the market data the strategy sees), or None before the ack and once it is terminal. Queues are tracked from the first call on; call it in on_start to cover every order from its ack.
-        """
-    def queue_ahead_raw(self, order_id: typing.SupportsInt | typing.SupportsIndex) -> typing.Any:
-        ...
-    def randint(self, lo: typing.SupportsInt | typing.SupportsIndex, hi: typing.SupportsInt | typing.SupportsIndex) -> int:
-        """
-        Integer in [lo, hi] inclusive from the engine's seeded RNG.
-        """
-    def random(self) -> float:
-        """
-        Float in [0, 1) from the engine's seeded RNG (deterministic).
-        """
-    def replace(self, order_id: typing.SupportsInt | typing.SupportsIndex, price: typing.Any, qty: typing.Any) -> None:
-        """
-        Cancel-replace (venues that support it). Raises OrderRejected.
-        """
-    def replace_raw(self, order_id: typing.SupportsInt | typing.SupportsIndex, price_raw: typing.Any, qty_raw: typing.Any) -> None:
-        ...
-    def request_stop(self) -> None:
-        """
-        End the backtest after the current event.
-        """
-    def risk_headroom(self, inst: typing.Any) -> RiskHeadroom:
-        """
-        What each [risk] limit still admits on the instrument now; an order of exactly a room passes that limit.
-        """
-    def send(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price: typing.Any, qty: typing.Any, *, post_only: bool = False, reduce_only: bool = False, ioc: bool = False, tag: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
-        """
-        Send a limit order (risk-checked, journaled); returns its client order id. The price is rounded passively to the tick and the quantity down to the lot. Raises OrderRejected.
-        """
-    def send_raw(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price_raw: typing.Any, qty_raw: typing.Any, *, post_only: bool = False, reduce_only: bool = False, ioc: bool = False, tag: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
-        ...
-    def set_quotes(self, inst: typing.Any, bids: typing.Any = None, asks: typing.Any = None) -> bool:
-        """
-        Desired ladder as sequences of (price, qty) floats, level 0 first (at most 8 per side). Prices are rounded to the tick passively (bids down, asks up), quantities down to the lot; a non-positive price or quantity drops the level. Returns False when quoting is disabled.
-        """
-    def set_quotes_raw(self, inst: typing.Any, bids: typing.Any = None, asks: typing.Any = None) -> bool:
-        """
-        Like set_quotes with raw int prices and quantities (1e-8 scale), used as given.
-        """
-    def venue_health(self, venue: typing.SupportsInt | typing.SupportsIndex = 0) -> VenueHealth:
-        """
-        Feed lag, order round trip and the feed-lag gate of a venue.
-        """
-    def order_budget(self, venue: typing.SupportsInt | typing.SupportsIndex = 0) -> OrderBudget:
-        """
-        What the [risk] rate limit and the venue's own limits still admit now; a backtest knows only the local token bucket.
-        """
-    def working_quote(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, level: typing.SupportsInt | typing.SupportsIndex = 0) -> typing.Any:
-        """
-        The open order in a quote slot, or None.
-        """
-    @property
-    def instruments(self) -> tuple:
-        """
-        Every instrument of the table, as a tuple of Instrument (index == id).
-        """
-    @property
-    def killed(self) -> bool:
-        ...
-    @property
-    def now_ns(self) -> int:
-        """
-        Engine time of the event, timer, start or stop being processed (ns).
-        """
-    @property
-    def quoting_enabled(self) -> bool:
+    def start_ns(self) -> int:
         ...
 class FeatureTable:
     """
@@ -861,110 +504,82 @@ class FeatureTable:
     @property
     def start_ts(self) -> int:
         ...
-class Fees:
+class OrderBook:
     """
-    Maker and taker rates of one instrument (a copy).
+    Price-aggregated L2 book (up to 256 levels per side) for research. Prices and quantities are floats, stored in 1e-8 fixed point; best-first level order.
     """
+    def __init__(self) -> None:
+        ...
     def __repr__(self) -> str:
         ...
-    @property
-    def maker_bps(self) -> float:
-        ...
-    @property
-    def maker_cbps(self) -> int:
-        ...
-    @property
-    def taker_bps(self) -> float:
-        ...
-    @property
-    def taker_cbps(self) -> int:
-        ...
-class FillView:
-    """
-    One execution, after position and fees are updated (valid inside on_fill).
-    """
-    @property
-    def exch_ts_ns(self) -> int:
-        ...
-    @property
-    def fee(self) -> float:
-        ...
-    @property
-    def fee_converted(self) -> bool:
-        ...
-    @property
-    def fee_raw(self) -> int:
-        ...
-    @property
-    def instrument(self) -> int:
-        ...
-    @property
-    def known(self) -> bool:
-        ...
-    @property
-    def late(self) -> bool:
-        ...
-    @property
-    def liquidity(self) -> int:
-        ...
-    @property
-    def order_done(self) -> bool:
-        ...
-    @property
-    def order_id(self) -> int:
-        ...
-    @property
-    def position_delta(self) -> float:
-        ...
-    @property
-    def position_delta_raw(self) -> int:
-        ...
-    @property
-    def price(self) -> float:
-        ...
-    @property
-    def price_raw(self) -> int:
-        ...
-    @property
-    def qty(self) -> float:
-        ...
-    @property
-    def qty_raw(self) -> int:
-        ...
-    @property
-    def side(self) -> int:
-        ...
-    @property
-    def update(self) -> typing.Any:
-        ...
-class Funding:
-    """
-    A venue's funding of a perpetual now (a copy): the rate per interval it will apply at next_ns (0: continuous); positive: longs pay shorts. stale: older than [accounting] stale_funding_ms, or never reported.
-    """
-    def __repr__(self) -> str:
-        ...
-    def over(self, seconds: typing.SupportsFloat | typing.SupportsIndex) -> float:
+    def apply_delta(self, bids: typing.Any = None, asks: typing.Any = None) -> None:
         """
-        The rate over a holding time of `seconds`: rate * seconds / interval.
+        Set/update levels; qty 0 deletes the level.
+        """
+    def apply_snapshot(self, bids: typing.Any, asks: typing.Any) -> None:
+        """
+        Replace the book. bids/asks: (n, 2) float arrays or sequences of (price, qty).
+        """
+    def asks(self, n: typing.SupportsInt | typing.SupportsIndex | None = None) -> numpy.ndarray:
+        """
+        Top n ask levels (all if None) as an (k, 2) float64 array, best first.
+        """
+    def best_ask(self) -> typing.Any:
+        """
+        (price, qty) of the best ask, or None.
+        """
+    def best_bid(self) -> typing.Any:
+        """
+        (price, qty) of the best bid, or None.
+        """
+    def bids(self, n: typing.SupportsInt | typing.SupportsIndex | None = None) -> numpy.ndarray:
+        """
+        Top n bid levels (all if None) as an (k, 2) float64 array, best first.
+        """
+    def clear(self) -> None:
+        ...
+    def imbalance(self, levels: typing.SupportsInt | typing.SupportsIndex = 1) -> float:
+        """
+        (bid qty - ask qty) / (bid qty + ask qty) over the top `levels`, in [-1, 1].
+        """
+    def microprice(self) -> typing.Any:
+        """
+        Top-of-book quantity-weighted mid, or None if a side is empty.
+        """
+    def mid(self) -> typing.Any:
+        """
+        (best bid + best ask) / 2, or None if a side is empty.
+        """
+    def spread(self) -> typing.Any:
+        """
+        best ask - best bid, or None if a side is empty.
+        """
+    def weighted_mid(self, levels: typing.SupportsInt | typing.SupportsIndex = 5) -> typing.Any:
+        """
+        Mid of the per-side quantity-weighted prices over the top `levels`.
         """
     @property
-    def at_ns(self) -> int:
+    def ask_depth(self) -> int:
         ...
     @property
-    def interval_ns(self) -> int:
+    def bid_depth(self) -> int:
         ...
     @property
-    def next_ns(self) -> int:
+    def crossed(self) -> bool:
         ...
     @property
-    def rate(self) -> float:
-        ...
-    @property
-    def stale(self) -> bool:
-        ...
-    @property
-    def usable(self) -> bool:
-        ...
+    def truncated(self) -> bool:
+        """
+        A side overflowed 256 levels since the last snapshot.
+        """
+class StaleViewError(RuntimeError):
+    """
+    A view (book, fill, trade, ...) was read outside the hook that received it.
+    """
+class OrderRejected(Exception):
+    """
+    ctx.send() or ctx.replace() was rejected; .reason is the RejectReason name.
+    """
 class Instrument:
     """
     Reference data of one instrument (a copy; safe to keep).
@@ -1039,112 +654,6 @@ class Instrument:
     @property
     def venue(self) -> int:
         ...
-class Margin:
-    """
-    A venue's margin (a copy): its account-wide margin where it reports one, else the settlement asset of its first derivative.
-    """
-    def __repr__(self) -> str:
-        ...
-    @property
-    def account(self) -> bool:
-        ...
-    @property
-    def as_of_ns(self) -> int:
-        ...
-    @property
-    def asset(self) -> str:
-        ...
-    @property
-    def available(self) -> float:
-        ...
-    @property
-    def available_raw(self) -> int:
-        ...
-    @property
-    def equity(self) -> float:
-        ...
-    @property
-    def equity_raw(self) -> int:
-        ...
-    @property
-    def initial(self) -> float:
-        ...
-    @property
-    def initial_raw(self) -> int:
-        ...
-    @property
-    def known(self) -> bool:
-        ...
-    @property
-    def maintenance(self) -> float:
-        ...
-    @property
-    def maintenance_raw(self) -> int:
-        ...
-    @property
-    def wallet(self) -> float:
-        ...
-    @property
-    def wallet_raw(self) -> int:
-        ...
-class OptionTickerView:
-    """
-    Venue mark, IVs and greeks (valid inside on_option_ticker).
-    """
-    @property
-    def ask_iv(self) -> float:
-        ...
-    @property
-    def bid_iv(self) -> float:
-        ...
-    @property
-    def delta(self) -> float:
-        ...
-    @property
-    def exch_ts_ns(self) -> int:
-        ...
-    @property
-    def gamma(self) -> float:
-        ...
-    @property
-    def index_price(self) -> float:
-        ...
-    @property
-    def index_price_raw(self) -> int:
-        ...
-    @property
-    def instrument(self) -> int:
-        ...
-    @property
-    def interest_rate(self) -> float:
-        ...
-    @property
-    def mark_iv(self) -> float:
-        ...
-    @property
-    def mark_price(self) -> float:
-        ...
-    @property
-    def mark_price_raw(self) -> int:
-        ...
-    @property
-    def recv_ts_ns(self) -> int:
-        ...
-    @property
-    def rho(self) -> float:
-        ...
-    @property
-    def theta(self) -> float:
-        ...
-    @property
-    def underlying_price(self) -> float:
-        ...
-    @property
-    def underlying_price_raw(self) -> int:
-        ...
-    @property
-    def vega(self) -> float:
-        ...
 class Order:
     """
     Snapshot of one of our orders (a copy; safe to keep).
@@ -1214,108 +723,400 @@ class Order:
         """
         The venue's accept time from the ack (exch_ts, ns; whole ms on Binance); 0 before the ack or when the venue gives none.
         """
-class OrderBudget:
+class Portfolio:
     """
-    What the [risk] rate limit and a venue's own limits still admit (a copy). The venue's windows are (used, limit) or None where it declares none; a backtest knows no venue.
+    PnL totals over every instrument (a copy).
     """
-    def __repr__(self) -> str:
+    @property
+    def fees(self) -> float:
         ...
     @property
-    def local_tokens(self) -> int | None:
+    def fees_raw(self) -> int:
         ...
     @property
-    def orders_10s(self) -> tuple[int, int] | None:
+    def net(self) -> float:
         ...
     @property
-    def orders_1m(self) -> tuple[int, int] | None:
+    def net_raw(self) -> int:
         ...
     @property
-    def orders_1d(self) -> tuple[int, int] | None:
+    def realized(self) -> float:
         ...
     @property
-    def weight(self) -> tuple[int, int] | None:
+    def realized_raw(self) -> int:
         ...
     @property
-    def venue_paused(self) -> bool:
+    def unrealized(self) -> float:
         ...
     @property
-    def venue_known(self) -> bool:
+    def unrealized_raw(self) -> int:
         ...
-    @property
-    def orders_remaining(self) -> int | None:
-        ...
-class OrderBook:
+class BookView:
     """
-    Price-aggregated L2 book (up to 256 levels per side) for research. Prices and quantities are floats, stored in 1e-8 fixed point; best-first level order.
+    The engine's L2 book of one instrument. Valid only inside the hook that received it or called ctx.book().
     """
-    def __init__(self) -> None:
-        ...
-    def __repr__(self) -> str:
-        ...
-    def apply_delta(self, bids: typing.Any = None, asks: typing.Any = None) -> None:
-        """
-        Set/update levels; qty 0 deletes the level.
-        """
-    def apply_snapshot(self, bids: typing.Any, asks: typing.Any) -> None:
-        """
-        Replace the book. bids/asks: (n, 2) float arrays or sequences of (price, qty).
-        """
-    def asks(self, n: typing.SupportsInt | typing.SupportsIndex | None = None) -> numpy.ndarray:
-        """
-        Top n ask levels (all if None) as an (k, 2) float64 array, best first.
-        """
-    def best_ask(self) -> typing.Any:
-        """
-        (price, qty) of the best ask, or None.
-        """
-    def best_bid(self) -> typing.Any:
-        """
-        (price, qty) of the best bid, or None.
-        """
-    def bids(self, n: typing.SupportsInt | typing.SupportsIndex | None = None) -> numpy.ndarray:
-        """
-        Top n bid levels (all if None) as an (k, 2) float64 array, best first.
-        """
-    def clear(self) -> None:
+    def depth(self, side: typing.SupportsInt | typing.SupportsIndex) -> int:
         ...
     def imbalance(self, levels: typing.SupportsInt | typing.SupportsIndex = 1) -> float:
         """
-        (bid qty - ask qty) / (bid qty + ask qty) over the top `levels`, in [-1, 1].
+        (bid qty - ask qty) / (bid qty + ask qty) over the top levels, in [-1, 1].
         """
-    def microprice(self) -> typing.Any:
+    def level(self, side: typing.SupportsInt | typing.SupportsIndex, i: typing.SupportsInt | typing.SupportsIndex) -> tuple:
         """
-        Top-of-book quantity-weighted mid, or None if a side is empty.
+        (price, qty) of level i (0 is best); (0.0, 0.0) past the depth.
         """
-    def mid(self) -> typing.Any:
-        """
-        (best bid + best ask) / 2, or None if a side is empty.
-        """
-    def spread(self) -> typing.Any:
-        """
-        best ask - best bid, or None if a side is empty.
-        """
-    def weighted_mid(self, levels: typing.SupportsInt | typing.SupportsIndex = 5) -> typing.Any:
-        """
-        Mid of the per-side quantity-weighted prices over the top `levels`.
-        """
-    @property
-    def ask_depth(self) -> int:
+    def level_raw(self, side: typing.SupportsInt | typing.SupportsIndex, i: typing.SupportsInt | typing.SupportsIndex) -> tuple:
+        ...
+    def microprice(self) -> float:
+        ...
+    def microprice_raw(self) -> int:
         ...
     @property
-    def bid_depth(self) -> int:
+    def best_ask(self) -> tuple:
         ...
     @property
-    def crossed(self) -> bool:
+    def best_ask_raw(self) -> tuple:
         ...
     @property
-    def truncated(self) -> bool:
-        """
-        A side overflowed 256 levels since the last snapshot.
-        """
-class OrderRejected(Exception):
+    def best_bid(self) -> tuple:
+        ...
+    @property
+    def best_bid_raw(self) -> tuple:
+        ...
+    @property
+    def instrument(self) -> int:
+        ...
+    @property
+    def last_update_ns(self) -> int:
+        ...
+    @property
+    def mid(self) -> float:
+        ...
+    @property
+    def mid_raw(self) -> int:
+        ...
+    @property
+    def seq(self) -> int:
+        ...
+    @property
+    def spread(self) -> float:
+        ...
+    @property
+    def spread_raw(self) -> int:
+        ...
+    @property
+    def valid(self) -> bool:
+        ...
+class PositionView:
     """
-    ctx.send() or ctx.replace() was rejected; .reason is the RejectReason name.
+    Position and PnL of one instrument (valid inside the hook).
     """
+    @property
+    def avg_price(self) -> float:
+        ...
+    @property
+    def avg_price_raw(self) -> int:
+        ...
+    @property
+    def fees(self) -> float:
+        ...
+    @property
+    def fees_raw(self) -> int:
+        ...
+    @property
+    def fills(self) -> int:
+        ...
+    @property
+    def instrument(self) -> int:
+        ...
+    @property
+    def net_pnl(self) -> float:
+        ...
+    @property
+    def net_pnl_raw(self) -> int:
+        ...
+    @property
+    def qty(self) -> float:
+        ...
+    @property
+    def qty_raw(self) -> int:
+        ...
+    @property
+    def realized(self) -> float:
+        ...
+    @property
+    def realized_raw(self) -> int:
+        ...
+    @property
+    def unrealized(self) -> float:
+        ...
+    @property
+    def unrealized_raw(self) -> int:
+        ...
+class TradeView:
+    """
+    A public trade (valid inside on_trade).
+    """
+    @property
+    def aggressor(self) -> int:
+        ...
+    @property
+    def buyer(self) -> typing.Any:
+        ...
+    @property
+    def exch_ts_ns(self) -> int:
+        ...
+    @property
+    def instrument(self) -> int:
+        ...
+    @property
+    def price(self) -> float:
+        ...
+    @property
+    def price_raw(self) -> int:
+        ...
+    @property
+    def qty(self) -> float:
+        ...
+    @property
+    def qty_raw(self) -> int:
+        ...
+    @property
+    def recv_ts_ns(self) -> int:
+        ...
+    @property
+    def seller(self) -> typing.Any:
+        ...
+    @property
+    def trade_id(self) -> int:
+        ...
+class BookTickerView:
+    """
+    Best bid and ask update (valid inside on_book_ticker).
+    """
+    @property
+    def ask_price(self) -> float:
+        ...
+    @property
+    def ask_price_raw(self) -> int:
+        ...
+    @property
+    def ask_qty(self) -> float:
+        ...
+    @property
+    def ask_qty_raw(self) -> int:
+        ...
+    @property
+    def bid_price(self) -> float:
+        ...
+    @property
+    def bid_price_raw(self) -> int:
+        ...
+    @property
+    def bid_qty(self) -> float:
+        ...
+    @property
+    def bid_qty_raw(self) -> int:
+        ...
+    @property
+    def exch_ts_ns(self) -> int:
+        ...
+    @property
+    def instrument(self) -> int:
+        ...
+    @property
+    def recv_ts_ns(self) -> int:
+        ...
+class OptionTickerView:
+    """
+    Venue mark, IVs and greeks (valid inside on_option_ticker).
+    """
+    @property
+    def ask_iv(self) -> float:
+        ...
+    @property
+    def bid_iv(self) -> float:
+        ...
+    @property
+    def delta(self) -> float:
+        ...
+    @property
+    def exch_ts_ns(self) -> int:
+        ...
+    @property
+    def gamma(self) -> float:
+        ...
+    @property
+    def index_price(self) -> float:
+        ...
+    @property
+    def index_price_raw(self) -> int:
+        ...
+    @property
+    def instrument(self) -> int:
+        ...
+    @property
+    def interest_rate(self) -> float:
+        ...
+    @property
+    def mark_iv(self) -> float:
+        ...
+    @property
+    def mark_price(self) -> float:
+        ...
+    @property
+    def mark_price_raw(self) -> int:
+        ...
+    @property
+    def recv_ts_ns(self) -> int:
+        ...
+    @property
+    def rho(self) -> float:
+        ...
+    @property
+    def theta(self) -> float:
+        ...
+    @property
+    def underlying_price(self) -> float:
+        ...
+    @property
+    def underlying_price_raw(self) -> int:
+        ...
+    @property
+    def vega(self) -> float:
+        ...
+class ConnectionView:
+    """
+    A venue connection state change (valid inside on_connection).
+    """
+    @property
+    def channel(self) -> int:
+        ...
+    @property
+    def live(self) -> bool:
+        ...
+    @property
+    def reason_code(self) -> int:
+        ...
+    @property
+    def recv_ts_ns(self) -> int:
+        ...
+    @property
+    def state(self) -> str:
+        ...
+    @property
+    def venue(self) -> int:
+        ...
+class BalanceView:
+    """
+    The venue's report of one asset of the account (valid inside on_balance). Amounts are absolute, in the asset.
+    """
+    @property
+    def account(self) -> bool:
+        ...
+    @property
+    def asset(self) -> str:
+        ...
+    @property
+    def equity(self) -> float:
+        ...
+    @property
+    def equity_raw(self) -> int:
+        ...
+    @property
+    def exch_ts_ns(self) -> int:
+        ...
+    @property
+    def free(self) -> float:
+        ...
+    @property
+    def free_raw(self) -> int:
+        ...
+    @property
+    def locked(self) -> float:
+        ...
+    @property
+    def locked_raw(self) -> int:
+        ...
+    @property
+    def maintenance(self) -> float:
+        ...
+    @property
+    def maintenance_raw(self) -> int:
+        ...
+    @property
+    def recv_ts_ns(self) -> int:
+        ...
+    @property
+    def snapshot(self) -> bool:
+        ...
+    @property
+    def snapshot_end(self) -> bool:
+        ...
+    @property
+    def total(self) -> float:
+        ...
+    @property
+    def total_raw(self) -> int:
+        ...
+    @property
+    def venue(self) -> int:
+        ...
+class PerpStateView:
+    """
+    A venue's mark, index and funding of one derivative (valid inside on_perp_state). has_mark, has_index, has_funding and has_open_interest name the fields this message carries.
+    """
+    @property
+    def exch_ts_ns(self) -> int:
+        ...
+    @property
+    def funding_interval_ns(self) -> int:
+        ...
+    @property
+    def funding_rate(self) -> float:
+        ...
+    @property
+    def has_funding(self) -> bool:
+        ...
+    @property
+    def has_index(self) -> bool:
+        ...
+    @property
+    def has_mark(self) -> bool:
+        ...
+    @property
+    def has_open_interest(self) -> bool:
+        ...
+    @property
+    def index_price(self) -> float:
+        ...
+    @property
+    def index_price_raw(self) -> int:
+        ...
+    @property
+    def instrument(self) -> int:
+        ...
+    @property
+    def mark_price(self) -> float:
+        ...
+    @property
+    def mark_price_raw(self) -> int:
+        ...
+    @property
+    def next_funding_ns(self) -> int:
+        ...
+    @property
+    def open_interest(self) -> float:
+        ...
+    @property
+    def open_interest_raw(self) -> int:
+        ...
+    @property
+    def recv_ts_ns(self) -> int:
+        ...
+    @property
+    def venue(self) -> int:
+        ...
 class OrderUpdateView:
     """
     An order state change (valid inside on_order_update, or inside on_fill as fill.update).
@@ -1395,143 +1196,45 @@ class OrderUpdateView:
     @property
     def venue_ack_ns(self) -> int:
         ...
-class PerpStateView:
+class FillView:
     """
-    A venue's mark, index and funding of one derivative (valid inside on_perp_state). has_mark, has_index, has_funding and has_open_interest name the fields this message carries.
+    One execution, after position and fees are updated (valid inside on_fill).
     """
     @property
     def exch_ts_ns(self) -> int:
         ...
     @property
-    def funding_interval_ns(self) -> int:
+    def fee(self) -> float:
         ...
     @property
-    def funding_rate(self) -> float:
+    def fee_converted(self) -> bool:
         ...
     @property
-    def has_funding(self) -> bool:
-        ...
-    @property
-    def has_index(self) -> bool:
-        ...
-    @property
-    def has_mark(self) -> bool:
-        ...
-    @property
-    def has_open_interest(self) -> bool:
-        ...
-    @property
-    def index_price(self) -> float:
-        ...
-    @property
-    def index_price_raw(self) -> int:
+    def fee_raw(self) -> int:
         ...
     @property
     def instrument(self) -> int:
         ...
     @property
-    def mark_price(self) -> float:
+    def known(self) -> bool:
         ...
     @property
-    def mark_price_raw(self) -> int:
+    def late(self) -> bool:
         ...
     @property
-    def next_funding_ns(self) -> int:
+    def liquidity(self) -> int:
         ...
     @property
-    def open_interest(self) -> float:
+    def order_done(self) -> bool:
         ...
     @property
-    def open_interest_raw(self) -> int:
+    def order_id(self) -> int:
         ...
     @property
-    def recv_ts_ns(self) -> int:
+    def position_delta(self) -> float:
         ...
     @property
-    def venue(self) -> int:
-        ...
-class Portfolio:
-    """
-    PnL totals over every instrument (a copy).
-    """
-    @property
-    def fees(self) -> float:
-        ...
-    @property
-    def fees_raw(self) -> int:
-        ...
-    @property
-    def net(self) -> float:
-        ...
-    @property
-    def net_raw(self) -> int:
-        ...
-    @property
-    def realized(self) -> float:
-        ...
-    @property
-    def realized_raw(self) -> int:
-        ...
-    @property
-    def unrealized(self) -> float:
-        ...
-    @property
-    def unrealized_raw(self) -> int:
-        ...
-class PositionView:
-    """
-    Position and PnL of one instrument (valid inside the hook).
-    """
-    @property
-    def avg_price(self) -> float:
-        ...
-    @property
-    def avg_price_raw(self) -> int:
-        ...
-    @property
-    def fees(self) -> float:
-        ...
-    @property
-    def fees_raw(self) -> int:
-        ...
-    @property
-    def fills(self) -> int:
-        ...
-    @property
-    def instrument(self) -> int:
-        ...
-    @property
-    def net_pnl(self) -> float:
-        ...
-    @property
-    def net_pnl_raw(self) -> int:
-        ...
-    @property
-    def qty(self) -> float:
-        ...
-    @property
-    def qty_raw(self) -> int:
-        ...
-    @property
-    def realized(self) -> float:
-        ...
-    @property
-    def realized_raw(self) -> int:
-        ...
-    @property
-    def unrealized(self) -> float:
-        ...
-    @property
-    def unrealized_raw(self) -> int:
-        ...
-class RefPrice:
-    """
-    A venue's mark or index price of a derivative now (a copy). stale: older than [accounting] stale_mark_ms, or never reported; usable: reported and not stale.
-    """
-    def __repr__(self) -> str:
-        ...
-    @property
-    def at_ns(self) -> int:
+    def position_delta_raw(self) -> int:
         ...
     @property
     def price(self) -> float:
@@ -1540,10 +1243,194 @@ class RefPrice:
     def price_raw(self) -> int:
         ...
     @property
-    def stale(self) -> bool:
+    def qty(self) -> float:
         ...
     @property
-    def usable(self) -> bool:
+    def qty_raw(self) -> int:
+        ...
+    @property
+    def side(self) -> int:
+        ...
+    @property
+    def update(self) -> typing.Any:
+        ...
+class Context:
+    """
+    What a Python strategy sees (mirrors the C++ StrategyContext). Usable only inside a hook.
+    """
+    def balance(self, venue: typing.SupportsInt | typing.SupportsIndex, asset: str) -> Balance:
+        """
+        One asset of a venue's account: the venue's last report (on_balance) moved by this engine's orders and fills since. known is False until the venue reports it.
+        """
+    def balance_room(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price: typing.Any) -> float | None:
+        """
+        Largest quantity of the instrument on `side` at `price` the balance covers, rounded down to the lot; None while the venue has not reported the balance that side draws on.
+        """
+    def balance_room_raw(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price_raw: typing.Any) -> int | None:
+        ...
+    def balances_live(self) -> bool:
+        """
+        A venue has reported balances (before that, balance() is unknown everywhere).
+        """
+    def best_ex_self(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex) -> tuple:
+        """
+        (price, qty) of the book's best level on one side after own_qty is taken out; a level that was only ours is skipped. (0.0, 0.0) when none is left.
+        """
+    def best_ex_self_raw(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex) -> tuple:
+        ...
+    def book(self, inst: typing.Any) -> typing.Any:
+        """
+        The instrument's book view (valid until the current hook returns).
+        """
+    def cancel(self, order_id: typing.SupportsInt | typing.SupportsIndex) -> bool:
+        """
+        Request a cancel; False when the order is unknown or cannot be cancelled.
+        """
+    def cancel_timer(self, timer_id: typing.SupportsInt | typing.SupportsIndex) -> bool:
+        ...
+    def contains(self, inst: typing.Any) -> bool:
+        ...
+    def every(self, period_ns: typing.SupportsInt | typing.SupportsIndex, tag: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
+        """
+        Repeating timer; on_timer(ctx, timer_id, tag) fires every period_ns. Returns the id.
+        """
+    def fees(self, inst: typing.Any) -> Fees:
+        """
+        Maker and taker rates of the instrument: the ones the simulated venue charges.
+        """
+    def funding(self, inst: typing.Any) -> Funding:
+        """
+        The venue's funding of a perpetual (on_perp_state), with its age.
+        """
+    def index(self, inst: typing.Any) -> RefPrice:
+        """
+        The venue's index price of a derivative (on_perp_state), with its age.
+        """
+    def instrument(self, inst: typing.Any) -> typing.Any:
+        ...
+    def margin(self, venue: typing.SupportsInt | typing.SupportsIndex = 0) -> Margin:
+        """
+        The venue's margin: its account-wide margin where it reports one, else the settlement asset of its first derivative.
+        """
+    def mark(self, inst: typing.Any) -> RefPrice:
+        """
+        The venue's mark price of a derivative (on_perp_state), with its age.
+        """
+    def once(self, delay_ns: typing.SupportsInt | typing.SupportsIndex, tag: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
+        """
+        One-shot timer after delay_ns. Returns the id.
+        """
+    def open_qty(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex) -> float:
+        ...
+    def open_qty_raw(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex) -> int:
+        ...
+    def order(self, order_id: typing.SupportsInt | typing.SupportsIndex) -> typing.Any:
+        """
+        Snapshot of an open order, or None once it is terminal.
+        """
+    def order_budget(self, venue: typing.SupportsInt | typing.SupportsIndex = 0) -> OrderBudget:
+        """
+        What the [risk] rate limit and the venue's own limits still admit now; a backtest knows only the local token bucket.
+        """
+    def own_qty(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price: typing.SupportsFloat | typing.SupportsIndex, at_ns: typing.Any = None) -> float:
+        """
+        Our resting quantity that the venue's feed shows at this price, as of the book's last update or of venue time at_ns. 0.0 where the feed does not show our orders (a backtest).
+        """
+    def own_qty_raw(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price_raw: typing.SupportsInt | typing.SupportsIndex, at_ns: typing.Any = None) -> int:
+        ...
+    def portfolio(self) -> Portfolio:
+        """
+        PnL totals over every instrument.
+        """
+    def position(self, inst: typing.Any) -> typing.Any:
+        ...
+    def pull_all_quotes(self) -> None:
+        ...
+    def pull_quotes(self, inst: typing.Any) -> None:
+        ...
+    def queue_ahead(self, order_id: typing.SupportsInt | typing.SupportsIndex) -> typing.Any:
+        """
+        Estimated quantity resting ahead of an open order at its price (the l2_queue model on the market data the strategy sees), or None before the ack and once it is terminal. Queues are tracked from the first call on; call it in on_start to cover every order from its ack.
+        """
+    def queue_ahead_raw(self, order_id: typing.SupportsInt | typing.SupportsIndex) -> typing.Any:
+        ...
+    def randint(self, lo: typing.SupportsInt | typing.SupportsIndex, hi: typing.SupportsInt | typing.SupportsIndex) -> int:
+        """
+        Integer in [lo, hi] inclusive from the engine's seeded RNG.
+        """
+    def random(self) -> float:
+        """
+        Float in [0, 1) from the engine's seeded RNG (deterministic).
+        """
+    def replace(self, order_id: typing.SupportsInt | typing.SupportsIndex, price: typing.Any, qty: typing.Any) -> None:
+        """
+        Cancel-replace (venues that support it). Raises OrderRejected.
+        """
+    def replace_raw(self, order_id: typing.SupportsInt | typing.SupportsIndex, price_raw: typing.Any, qty_raw: typing.Any) -> None:
+        ...
+    def request_stop(self) -> None:
+        """
+        End the backtest after the current event.
+        """
+    def risk_headroom(self, inst: typing.Any) -> RiskHeadroom:
+        """
+        What each [risk] limit still admits on the instrument now; an order of exactly a room passes that limit.
+        """
+    def send(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price: typing.Any, qty: typing.Any, *, post_only: bool = False, reduce_only: bool = False, ioc: bool = False, tag: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
+        """
+        Send a limit order (risk-checked, journaled); returns its client order id. The price is rounded passively to the tick and the quantity down to the lot. Raises OrderRejected.
+        """
+    def send_raw(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price_raw: typing.Any, qty_raw: typing.Any, *, post_only: bool = False, reduce_only: bool = False, ioc: bool = False, tag: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
+        ...
+    def set_quotes(self, inst: typing.Any, bids: typing.Any = None, asks: typing.Any = None) -> bool:
+        """
+        Desired ladder as sequences of (price, qty) floats, level 0 first (at most 8 per side). Prices are rounded to the tick passively (bids down, asks up), quantities down to the lot; a non-positive price or quantity drops the level. Returns False when quoting is disabled.
+        """
+    def set_quotes_raw(self, inst: typing.Any, bids: typing.Any = None, asks: typing.Any = None) -> bool:
+        """
+        Like set_quotes with raw int prices and quantities (1e-8 scale), used as given.
+        """
+    def venue_health(self, venue: typing.SupportsInt | typing.SupportsIndex = 0) -> VenueHealth:
+        """
+        Feed lag, order round trip and the feed-lag gate of a venue.
+        """
+    def working_quote(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, level: typing.SupportsInt | typing.SupportsIndex = 0) -> typing.Any:
+        """
+        The open order in a quote slot, or None.
+        """
+    @property
+    def instruments(self) -> tuple:
+        """
+        Every instrument of the table, as a tuple of Instrument (index == id).
+        """
+    @property
+    def killed(self) -> bool:
+        ...
+    @property
+    def now_ns(self) -> int:
+        """
+        Engine time of the event, timer, start or stop being processed (ns).
+        """
+    @property
+    def quoting_enabled(self) -> bool:
+        ...
+class Fees:
+    """
+    Maker and taker rates of one instrument (a copy).
+    """
+    def __repr__(self) -> str:
+        ...
+    @property
+    def maker_bps(self) -> float:
+        ...
+    @property
+    def maker_cbps(self) -> int:
+        ...
+    @property
+    def taker_bps(self) -> float:
+        ...
+    @property
+    def taker_cbps(self) -> int:
         ...
 class RiskHeadroom:
     """
@@ -1639,89 +1526,6 @@ class RiskHeadroom:
     @property
     def underlying_sell_qty_raw(self) -> int | None:
         ...
-class RiskReject:
-    """
-    A new order or replace the engine's own risk check refused (on_risk_reject): nothing was sent. A copy.
-    """
-    def __repr__(self) -> str:
-        ...
-    @property
-    def inst(self) -> int:
-        ...
-    @property
-    def side(self) -> int:
-        ...
-    @property
-    def reason(self) -> str:
-        ...
-    @property
-    def replace(self) -> bool:
-        ...
-    @property
-    def order_id(self) -> int:
-        ...
-    @property
-    def tag(self) -> int:
-        ...
-    @property
-    def post_only(self) -> bool:
-        ...
-    @property
-    def price(self) -> float:
-        ...
-    @property
-    def price_raw(self) -> int:
-        ...
-    @property
-    def qty(self) -> float:
-        ...
-    @property
-    def qty_raw(self) -> int:
-        ...
-    @property
-    def time_ns(self) -> int:
-        ...
-class StaleViewError(RuntimeError):
-    """
-    A view (book, fill, trade, ...) was read outside the hook that received it.
-    """
-class TradeView:
-    """
-    A public trade (valid inside on_trade).
-    """
-    @property
-    def aggressor(self) -> int:
-        ...
-    @property
-    def buyer(self) -> typing.Any:
-        ...
-    @property
-    def exch_ts_ns(self) -> int:
-        ...
-    @property
-    def instrument(self) -> int:
-        ...
-    @property
-    def price(self) -> float:
-        ...
-    @property
-    def price_raw(self) -> int:
-        ...
-    @property
-    def qty(self) -> float:
-        ...
-    @property
-    def qty_raw(self) -> int:
-        ...
-    @property
-    def recv_ts_ns(self) -> int:
-        ...
-    @property
-    def seller(self) -> typing.Any:
-        ...
-    @property
-    def trade_id(self) -> int:
-        ...
 class VenueHealth:
     """
     Feed lag and order round trip of one venue (a copy); durations in ns, 0 before the first sample.
@@ -1760,6 +1564,217 @@ class VenueHealth:
         ...
     @property
     def md_updated_ns(self) -> int:
+        ...
+class OrderBudget:
+    """
+    What the [risk] rate limit and a venue's own limits still admit (a copy). The venue's windows are (used, limit) or None where it declares none; a backtest knows no venue.
+    """
+    def __repr__(self) -> str:
+        ...
+    @property
+    def local_tokens(self) -> int | None:
+        ...
+    @property
+    def orders_10s(self) -> tuple[int, int] | None:
+        ...
+    @property
+    def orders_1d(self) -> tuple[int, int] | None:
+        ...
+    @property
+    def orders_1m(self) -> tuple[int, int] | None:
+        ...
+    @property
+    def orders_remaining(self) -> int | None:
+        ...
+    @property
+    def venue_known(self) -> bool:
+        ...
+    @property
+    def venue_paused(self) -> bool:
+        ...
+    @property
+    def weight(self) -> tuple[int, int] | None:
+        ...
+class RiskReject:
+    """
+    A new order or replace the engine's own risk check refused (on_risk_reject): nothing was sent. A copy.
+    """
+    def __repr__(self) -> str:
+        ...
+    @property
+    def inst(self) -> int:
+        ...
+    @property
+    def order_id(self) -> int:
+        ...
+    @property
+    def post_only(self) -> bool:
+        ...
+    @property
+    def price(self) -> float:
+        ...
+    @property
+    def price_raw(self) -> int:
+        ...
+    @property
+    def qty(self) -> float:
+        ...
+    @property
+    def qty_raw(self) -> int:
+        ...
+    @property
+    def reason(self) -> str:
+        ...
+    @property
+    def replace(self) -> bool:
+        ...
+    @property
+    def side(self) -> int:
+        ...
+    @property
+    def tag(self) -> int:
+        ...
+    @property
+    def time_ns(self) -> int:
+        ...
+class Balance:
+    """
+    One asset of a venue's account now (a copy): free, locked and total are the venue's last report moved by this engine's orders and fills since; equity and maintenance are the report's.
+    """
+    def __repr__(self) -> str:
+        ...
+    @property
+    def as_of_ns(self) -> int:
+        ...
+    @property
+    def equity(self) -> float:
+        ...
+    @property
+    def equity_raw(self) -> int:
+        ...
+    @property
+    def free(self) -> float:
+        ...
+    @property
+    def free_raw(self) -> int:
+        ...
+    @property
+    def known(self) -> bool:
+        ...
+    @property
+    def locked(self) -> float:
+        ...
+    @property
+    def locked_raw(self) -> int:
+        ...
+    @property
+    def maintenance(self) -> float:
+        ...
+    @property
+    def maintenance_raw(self) -> int:
+        ...
+    @property
+    def total(self) -> float:
+        ...
+    @property
+    def total_raw(self) -> int:
+        ...
+class Margin:
+    """
+    A venue's margin (a copy): its account-wide margin where it reports one, else the settlement asset of its first derivative.
+    """
+    def __repr__(self) -> str:
+        ...
+    @property
+    def account(self) -> bool:
+        ...
+    @property
+    def as_of_ns(self) -> int:
+        ...
+    @property
+    def asset(self) -> str:
+        ...
+    @property
+    def available(self) -> float:
+        ...
+    @property
+    def available_raw(self) -> int:
+        ...
+    @property
+    def equity(self) -> float:
+        ...
+    @property
+    def equity_raw(self) -> int:
+        ...
+    @property
+    def initial(self) -> float:
+        ...
+    @property
+    def initial_raw(self) -> int:
+        ...
+    @property
+    def known(self) -> bool:
+        ...
+    @property
+    def maintenance(self) -> float:
+        ...
+    @property
+    def maintenance_raw(self) -> int:
+        ...
+    @property
+    def wallet(self) -> float:
+        ...
+    @property
+    def wallet_raw(self) -> int:
+        ...
+class RefPrice:
+    """
+    A venue's mark or index price of a derivative now (a copy). stale: older than [accounting] stale_mark_ms, or never reported; usable: reported and not stale.
+    """
+    def __repr__(self) -> str:
+        ...
+    @property
+    def at_ns(self) -> int:
+        ...
+    @property
+    def price(self) -> float:
+        ...
+    @property
+    def price_raw(self) -> int:
+        ...
+    @property
+    def stale(self) -> bool:
+        ...
+    @property
+    def usable(self) -> bool:
+        ...
+class Funding:
+    """
+    A venue's funding of a perpetual now (a copy): the rate per interval it will apply at next_ns (0: continuous); positive: longs pay shorts. stale: older than [accounting] stale_funding_ms, or never reported.
+    """
+    def __repr__(self) -> str:
+        ...
+    def over(self, seconds: typing.SupportsFloat | typing.SupportsIndex) -> float:
+        """
+        The rate over a holding time of `seconds`: rate * seconds / interval.
+        """
+    @property
+    def at_ns(self) -> int:
+        ...
+    @property
+    def interval_ns(self) -> int:
+        ...
+    @property
+    def next_ns(self) -> int:
+        ...
+    @property
+    def rate(self) -> float:
+        ...
+    @property
+    def stale(self) -> bool:
+        ...
+    @property
+    def usable(self) -> bool:
         ...
 class _SlowChannel:
     """
@@ -1837,21 +1852,6 @@ class _SlowChannel:
         """
         Instrument symbols by id.
         """
-class _TimeSlice:
-    """
-    Internal: the data of one walk-forward fold, [start_ns, end_ns) of `data`, for the run functions of a Python strategy.
-    """
-    def __init__(self, data: typing.Any, start_ns: typing.SupportsInt | typing.SupportsIndex, end_ns: typing.SupportsInt | typing.SupportsIndex) -> None:
-        ...
-    @property
-    def data(self) -> typing.Any:
-        ...
-    @property
-    def end_ns(self) -> int:
-        ...
-    @property
-    def start_ns(self) -> int:
-        ...
 def _expand_grid(grid: dict) -> list:
     """
     Internal: the points of a sweep grid in fastmm.sweep's order, with the caller's values.
@@ -1891,6 +1891,10 @@ def _run_strategy(config: BacktestConfig, data: typing.Any, instance: typing.Any
 def _slow_abi() -> dict:
     """
     Internal: layout of the slow channel structs (include/fastmm/strategies/slow_channel.hpp).
+    """
+def _store_pnl(path: typing.Any, instrument: str = '', from_day: str = '', to_day: str = '') -> tuple[list[str], list[list[str]]]:
+    """
+    Internal: (columns, rows) of fastmm-pnl's pnl query; raw columns as exact decimals.
     """
 def _walk_forward_report(grid: dict, metric: str, folds: list) -> dict:
     """
@@ -1961,4 +1965,5 @@ def walk_forward(config: BacktestConfig, grid: dict, folds: typing.SupportsInt |
     """
     Walk-forward sweep: the grid runs on `folds` consecutive time slices of `data`, and the best point of fold i-1 by `metric` (net_pnl, realized_pnl, sharpe_bar, spread_captured_bps) is scored on fold i. Returns a dict: metric, folds (start_ts, end_ts, best, chosen, in_sample, out_of_sample, hindsight, scores, points), mean_in_sample, mean_out_of_sample, mean_hindsight, choice_changes and table (the printable report). folds=1 runs exactly fastmm.sweep. The synthetic market needs fill_model='l2_queue' for folds > 1. This entry point runs a registered C++ strategy; fastmm.walk_forward also takes a fastmm.Strategy class.
     """
-__version__: str = '0.3.0'
+__version__: str = '0.8.0'
+_store_schema_version: int = 12
