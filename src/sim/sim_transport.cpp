@@ -561,7 +561,35 @@ void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
     return;
   }
   const Side opp = opposite(n.side);
-  const Level best = opp == Side::Buy ? book.best_bid() : book.best_ask();
+  // The opposite side as the venue has it now. The book ticker gives the touch when it is newer
+  // than the depth, or when the depth has a level on the near side of it: the ticker follows
+  // every change of the top as it happens and the depth stream is throttled (and may miss the
+  // removal of a level), so such a level is stale. An order is checked and filled against the
+  // ticker's level and the depth's levels behind it, never against stale ones.
+  const QueueTouch& fresh = touch_[id.value];
+  const Level depth_best = opp == Side::Buy ? book.best_bid() : book.best_ask();
+  const bool use_touch =
+      fresh.valid() && fresh.px(opp).is_positive() &&
+      (fresh.newer_than(book.seq(), book.last_update()) ||
+       (depth_best.qty.is_positive() && better(opp, depth_best.price, fresh.px(opp)) &&
+        now - fresh.ts <= seconds(1)));
+  const auto for_each_opposite = [&](auto&& f) {
+    if (use_touch) {
+      const Price tp = fresh.px(opp);
+      if (fresh.qty(opp).is_positive() && !f(Level{tp, fresh.qty(opp)})) return;
+      book.for_each_level(opp, [&](const Level& l) {
+        if (at_or_better(opp, l.price, tp)) return true;  // stale, or the touch itself
+        return f(l);
+      });
+      return;
+    }
+    book.for_each_level(opp, f);
+  };
+  Level best{};
+  for_each_opposite([&](const Level& l) {
+    best = l;
+    return false;
+  });
   const bool crosses =
       best.qty.is_positive() &&
       (market || (n.side == Side::Buy ? n.price >= best.price : n.price <= best.price));
@@ -575,7 +603,7 @@ void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
   Qty cum{};
   if (n.tif == TimeInForce::Fok) {
     Qty avail{};
-    book.for_each_level(opp, [&](const Level& l) {
+    for_each_opposite([&](const Level& l) {
       if (!market && !at_or_better(opp, l.price, n.price)) return false;
       avail += l.qty;
       return avail < n.qty;
@@ -588,7 +616,7 @@ void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
   }
   if (crosses) {
     // Taker against displayed liquidity, best first, at each level's price.
-    book.for_each_level(opp, [&](const Level& l) {
+    for_each_opposite([&](const Level& l) {
       if (leaves.is_zero()) return false;
       if (!market && !at_or_better(opp, l.price, n.price)) return false;
       const Qty q = min(leaves, l.qty);
