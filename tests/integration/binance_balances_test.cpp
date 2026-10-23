@@ -84,6 +84,8 @@ TEST_CASE("sim_exchange: BinanceVenue reports the simulator's balances") {
   CHECK(stream_usdt.locked == h.instruments.get(InstrumentId{0}).notional(px, qty));
   CHECK(stream_usdt.free + stream_usdt.locked == Notional::from_int(150000));
   CHECK(stream_usdt.hdr.exch_ts.ns > 0);
+  // It names only the asset the order changed, as Binance's does: BTC did not move.
+  CHECK(last_row(rows, "BTC", false) == nullptr);
 
   // The simulator's own account, asked again (a reconciliation's balance leg): the same amounts.
   h.venue->request_open_orders();

@@ -138,14 +138,17 @@ void Impl::publish_user_event(AccountId account,
 
 void Impl::queue_balance_updates() {
   for (Account& a : accounts_) {
-    if (!a.balance_dirty) continue;
-    a.balance_dirty = false;
+    if (a.changed.empty()) continue;
     std::vector<BalanceView> views;
-    views.reserve(a.balances.size());
-    for (const auto& [asset, b] : a.balances) views.push_back(BalanceView{asset, b.free, b.locked});
+    views.reserve(a.changed.size());
+    for (const std::string& asset : a.changed) {
+      const Balance& b = a.balance(asset);
+      views.push_back(BalanceView{asset, b.free, b.locked});
+    }
     const std::int64_t ms = server_ms();
     std::string event;
     append_account_position(event, ms, ms, views);
+    a.changed.clear();
     emit_user_event(a.id, std::move(event));
   }
 }
@@ -251,7 +254,7 @@ void Impl::release_lock(OrderRecord& r) {
   b.locked -= r.locked;
   b.free += r.locked;
   r.locked = Qty{};
-  acct.balance_dirty = true;
+  acct.touched(r.locks_quote ? sym.cfg.quote_asset : sym.cfg.base_asset);
 }
 
 // ---- MatchingSink
@@ -368,7 +371,8 @@ void Impl::apply_fill(const SimOrder& o, Price px, Qty qty, bool maker, std::uin
     }
     quote.free += as_qty(notional) - as_qty(fee);
   }
-  acct.balance_dirty = true;
+  acct.touched(sym.cfg.base_asset);
+  acct.touched(sym.cfg.quote_asset);
   r->executed += qty;
   r->cum_quote += notional;
   r->update_ms = server_ms();
@@ -707,7 +711,7 @@ OpResult Impl::submit_new_order(Account& a, const NewOrderSpec& spec, bool test_
     Balance& b = locks_quote ? quote : base;
     b.free -= lock;
     b.locked += lock;
-    a.balance_dirty = true;
+    a.touched(locks_quote ? f.quote_asset : f.base_asset);
   }
 
   NewOrder n;
@@ -949,7 +953,7 @@ OpResult Impl::op_amend(Account& a, const ParamList& p) {
       b.locked -= release;
       b.free += release;
       r->locked = target;
-      a.balance_dirty = true;
+      a.touched(r->locks_quote ? f.quote_asset : f.base_asset);
     }
   }
   ++stats_.amends;

@@ -75,12 +75,20 @@ struct Account {
   std::map<std::string, Balance, std::less<>> balances;
   FixedWindowCounter orders_10s{10'000};
   FixedWindowCounter orders_1d{86'400'000};
-  bool balance_dirty = false;
+  // The assets an event changed since the last outboundAccountPosition, which names only those, as
+  // Binance's does.
+  std::vector<std::string> changed;
 
   Balance& balance(std::string_view asset) {
     auto it = balances.find(asset);
     if (it == balances.end()) it = balances.emplace(std::string(asset), Balance{}).first;
     return it->second;
+  }
+  void touched(std::string_view asset) {
+    for (const std::string& a : changed) {
+      if (a == asset) return;
+    }
+    changed.emplace_back(asset);
   }
 };
 
