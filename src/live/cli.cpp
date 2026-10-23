@@ -61,7 +61,7 @@ constexpr const char* kFooter =
     "  2  bad command line, or a venue has no API keys\n"
     "  3  bad config, strategy or parameters\n"
     "  4  venue reference data failed to load\n"
-    "  5  runtime failure: cancel_all failed, journal, ring overflow, forced exit, uncaught error\n"
+    "  5  runtime failure (cancel_all failed, journal, ring overflow, engine stall, forced exit)\n"
     "  6  kill switch tripped by the engine (on_kill = \"exit\"), or a latched max_loss trip\n"
     "  7  a Python strategy's slow tier failed (python -m fastmm run), cancel_all ok\n"
     "  8  another process holds the instance lock, or --takeover failed; nothing traded\n"

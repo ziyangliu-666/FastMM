@@ -37,6 +37,7 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `instance_lock` | boolean |  | fastmm-live: take an exclusive lock on lock_file before touching the account and refuse to start (exit code 8) while another process holds it; --standby and --takeover take it whatever this says (default false) |
 | `lock_file` | string |  | the instance lock's file (default "<journal_dir>/<name>.lock") |
 | `handoff_timeout_ms` | integer |  | fastmm-live --takeover: how long to wait for the running session to release the instance lock once it accepted the handoff, ms (default 75000) |
+| `stall_ms` | integer |  | fastmm-live: an engine thread that has not finished a turn of its loop for this long (a strategy hook that never returns) is given up: every venue cancels all its orders and the process exits with code 5, ms; 0 = never (default 10000) |
 | `ack_timeout_ms` | integer |  | force-cancel an order whose ack has not arrived within this long, ms; 0 = off (default 0) |
 | `queue_conservatism` | number |  | the queue position estimate ctx.queue_ahead, from 0 to 1: at 0 a level's shrink is shared between cancels ahead of and behind our order, at 1 cancels never move it up (default 1.0; a backtest uses [backtest] queue_conservatism when set) |
 | `flatten_interval_ms` | integer |  | how often an operator flatten looks at the position left and sends the next reduce-only slice, ms (default 500) |

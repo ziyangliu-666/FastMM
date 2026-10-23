@@ -64,6 +64,7 @@ updated_ns 1758600000000000000
 | Behind `fastmm-gateway`, an operator's `kill` on the gateway's control socket ([Run behind a gateway](run-behind-a-gateway.md#control)) | Every venue, so global | `venue <id> kill switch engaged (GatewayOperator, ...)`, then `kill switch engaged (AllVenuesKilled, ...)` | ERROR | `on_kill`, as for `GatewayMaxLoss` |
 | Every venue that has instruments is killed | Global | `kill switch engaged (AllVenuesKilled, ...)` | ERROR | `on_kill` |
 | A hot hook of a Python strategy raised, called `ctx.fail` or set a float level that is not finite; no hook runs again | Global | `kill switch engaged (StrategyError, ...)`; after the session, `fastmm: py:<Class>.<hook> ... kill switch tripped: StrategyError` on stderr | ERROR | `on_kill` |
+| The engine thread has not come round its loop for `[engine] stall_ms` (default 10000): a strategy hook that never returns, a deadlock | Global | `fastmm-live: the engine thread has not come round its loop for <n> ms ([engine] stall_ms): cancelling every order and exiting without it` | ERROR | [Engine stall](#engine-stall); exit code 5 |
 | A slow method of a Python strategy raised | Global, requested | `fastmm-live: slow tier failed (Exception): a slow method raised`, then `fastmm-live: shutting down (slow tier failed)`; the traceback on stderr | ERROR | Shutdown sequence; exit code 7 |
 | A slow method ran past its `timeout` | Global, requested | `fastmm-live: slow tier failed (Timeout): a slow method ran past its timeout`, then `fastmm-live: shutting down (slow tier failed)` | ERROR | Shutdown sequence; exit code 7 |
 | The engine found the slow methods' fills ring full | Global, requested | `fastmm-live: slow tier failed (FillsOverflow): the fills ring was full`, then `fastmm-live: shutting down (slow tier failed)` | ERROR | Shutdown sequence; exit code 7 |
@@ -124,6 +125,16 @@ At shutdown the venue's REST cancel-all still runs. After a fatal key error it u
 9. `fastmm-live: exit code <n>` is logged last.
 
 Two Binance Demo sessions (one venue, one symbol) shut down in 555 ms and 697 ms. The upper bound is about 5 s per REST request that times out, plus 300 ms.
+
+## Engine stall
+
+Every other stop goes through the engine: it takes the kill switch, pulls its quotes, writes its journal trailer and runs `on_stop`. An engine thread stuck inside one step does none of that, while the network threads stay connected and keep refreshing the venues' dead man's switches, so its orders would rest at the venue with nobody to move them. The control thread watches the engine's heartbeat, a counter the engine loop advances on every turn (an idle engine turns at least once a millisecond). When the counter has not moved for `[engine] stall_ms`:
+
+1. it closes the control socket and logs the ERROR line above;
+2. every venue cancels all over its own REST connection, as in step 3 of the [shutdown sequence](#shutdown-sequence); behind `fastmm-gateway` the gateway cancels when the process exits and the attachment closes;
+3. the kill file and the status file (`stopped`) are written, `fastmm-live: engine stalled; cancel_all ok, exit code 5` (or `FAILED`) is logged, and the process exits with code 5 without joining the engine thread.
+
+The journal has no trailer and the store misses what was still in its ring, as after a crash; the next start recovers from them the same way ([Run in production](running-in-production.md#restarts)). The time the whole process was stopped (a paused VM, SIGSTOP) is not counted against the engine. Before the engine's first turn (warm-up, `on_start`) nothing is counted. `stall_ms = 0` turns the watch off. A strategy whose hooks may legitimately take seconds needs a larger value; in `threading = "single"` a step includes the venue's network loop, so keep `stall_ms` above the connector's REST timeout (`http_timeout_ms`, 5000 by default).
 
 ## Reading the last lines
 

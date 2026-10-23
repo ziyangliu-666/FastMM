@@ -18,7 +18,9 @@
 //                itself (risk limit, full ring, every venue killed) runs the same shutdown and
 //                exits with kExitKilled when [engine] on_kill = "exit" (the default); with "stay"
 //                the session keeps running and logs an ERROR line every 10 s. Venue kills are
-//                logged once per venue.
+//                logged once per venue. An engine whose heartbeat stands still for [engine]
+//                stall_ms is given up: cancel_all on every venue, then the process exits
+//                (kExitRuntime) without it.
 //
 // [engine] threading = "single" (one venue): no fm-net-0; fm-engine runs the venue's reactor
 // iteration between engine steps (Engine::run_inline), takes each market-data event as the venue
@@ -123,7 +125,7 @@ inline constexpr int kExitOk = 0;       // --duration elapsed or SIGINT/SIGTERM,
 inline constexpr int kExitUsage = 2;    // bad command line, missing API keys
 inline constexpr int kExitConfig = 3;   // bad config, strategy or parameters
 inline constexpr int kExitVenue = 4;    // venue reference data failed
-inline constexpr int kExitRuntime = 5;  // cancel_all failed, journal, ring overflow, uncaught error
+inline constexpr int kExitRuntime = 5;  // cancel_all failed, journal, ring overflow, stalled engine
 inline constexpr int kExitKilled = 6;   // engine-tripped kill switch with [engine] on_kill = "exit"
 inline constexpr int kExitSlowTier = 7;  // LiveOptions::watchdog (a Python slow tier failed)
 // Another process holds the instance lock, or a takeover failed; nothing was traded.

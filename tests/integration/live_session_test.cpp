@@ -2,8 +2,9 @@
 // strategies, against the in-process simulator: a HotStrategy with a hook written in C, its
 // parameter ring and journal metadata, a failing hook (exit code 6), the watchdog (exit code 7), a
 // slow channel fed by the engine and watched by slow_tier_watchdog, the restored signal handlers,
-// confine_threads and net_cpu_shared.
+// confine_threads and net_cpu_shared, and an engine stuck in a hook ([engine] stall_ms, exit 5).
 #include "integration_util.hpp"
+#include "process_util.hpp"
 
 #include "fastmm/backtest/replay.hpp"
 #include "fastmm/core/engine_runner.hpp"
@@ -29,6 +30,8 @@
 #include <bit>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -45,10 +48,15 @@ using HotLiveEngine = Engine<HotStrategy, TscClock, LiveTransport, RingFeed>;
 
 std::atomic<std::int64_t> g_quotes{0};
 std::atomic<bool> g_fail{false};
+std::atomic<std::int64_t> g_hang_at{0};  // > 0: the hook never returns from this quote on
 
 // One level per side at mid -/+ half_spread_bps (the double parameter at offset 0), 0.001 each.
 std::int32_t quote_mid(std::uint8_t* self, fastmm_hot_ctx* c, fastmm_hot_book* b) {
   if (g_fail.load(std::memory_order_relaxed)) return FASTMM_HOT_EXCEPTION;
+  if (const std::int64_t at = g_hang_at.load(std::memory_order_relaxed);
+      at > 0 && g_quotes.load(std::memory_order_relaxed) >= at) {
+    for (;;) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
   if (b->valid == 0) return FASTMM_HOT_OK;
   double bps = 0.0;
   std::memcpy(&bps, self, sizeof bps);
@@ -153,8 +161,8 @@ live::LiveOptions options(HotSession& s, std::int64_t duration_ns, const std::st
   return o;
 }
 
-Config session_config(const ServerFixture& fx) {
-  Config cfg = sim_local_config(fx, false);
+Config session_config(std::uint16_t port, std::uint16_t tls_port) {
+  Config cfg = sim_local_config(port, tls_port, false);
   cfg.strategy.name = "hot_test";
   cfg.strategy.params.clear();
   cfg.engine.epoch_file = (fastmm::test::tmp_dir() / "live_session_epoch").string();
@@ -162,6 +170,10 @@ Config session_config(const ServerFixture& fx) {
   // would hold them already.
   cfg.storage.values["path"] = fresh_store("live_session.db");
   return cfg;
+}
+
+Config session_config(const ServerFixture& fx) {
+  return session_config(fx.server.port(), fx.server.tls_port());
 }
 
 bool quotes_at_least(std::int64_t n, int timeout_ms) {
@@ -430,4 +442,45 @@ TEST_CASE("live session: net_spin_dedicated keeps a network thread alone on its 
   CHECK(live::net_never_blocks(SpinMode::Adaptive, 2, false, true));
   CHECK_FALSE(live::net_never_blocks(SpinMode::Adaptive, 2, true, true));    // shared core
   CHECK_FALSE(live::net_never_blocks(SpinMode::Adaptive, -1, false, true));  // not pinned
+}
+
+// The child half of the case below, in a process of its own: a stalled engine ends its process.
+// Runs only when the parent names the simulator's ports in FASTMM_IT_STALL_PORTS.
+TEST_CASE("live session: stall child") {
+  const char* ports = std::getenv("FASTMM_IT_STALL_PORTS");
+  if (ports == nullptr) return;
+  const std::string p(ports);
+  const auto port = static_cast<std::uint16_t>(std::stoi(p.substr(0, p.find(','))));
+  const auto tls_port = static_cast<std::uint16_t>(std::stoi(p.substr(p.find(',') + 1)));
+  g_quotes = 0;
+  g_hang_at = 5;
+  HotSession s;
+  Config cfg = session_config(port, tls_port);
+  cfg.storage.values["path"] = fresh_store("live_session_stall.db");
+  cfg.engine.epoch_file = (fastmm::test::tmp_dir() / "live_session_stall_epoch").string();
+  cfg.engine.stall_ms = 500;
+  const live::LiveOptions opts = options(s, 60'000'000'000, "");
+  const int rc = live::run_live(cfg, opts);
+  std::fprintf(stderr, "stall child: run_live returned %d\n", rc);
+  std::_Exit(99);  // the stall exits the process from inside run_live; returning is the failure
+}
+
+TEST_CASE("live session: an engine stuck in a hook cancels every order and exits with code 5") {
+  ServerFixture fx;
+  const std::string ports =
+      std::to_string(fx.server.port()) + "," + std::to_string(fx.server.tls_port());
+  REQUIRE(::setenv("FASTMM_IT_STALL_PORTS", ports.c_str(), 1) == 0);
+  const auto start = std::chrono::steady_clock::now();
+  const pid_t child =
+      spawn_process("/proc/self/exe", {"--test-case=live session: stall child", "--no-intro"});
+  REQUIRE(::unsetenv("FASTMM_IT_STALL_PORTS") == 0);
+  // It quotes, its orders rest at the venue, and then its hook never returns.
+  CHECK(wait_until([&] { return fx.server.stats().open_orders > 0; }, 20000));
+  const int rc = reap(child);
+  const auto took = std::chrono::steady_clock::now() - start;
+  CHECK(rc == live::kExitRuntime);
+  CHECK(fx.server.stats().orders_accepted > 0);
+  CHECK(fx.server.stats().cancel_all_requests > 0);
+  CHECK(fx.server.stats().open_orders == 0);
+  CHECK(took < std::chrono::seconds(30));
 }

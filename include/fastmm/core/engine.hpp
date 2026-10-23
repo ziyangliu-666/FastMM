@@ -320,6 +320,7 @@ class Engine {
     warm_up();
     start();
     while (!stop_.load(std::memory_order_relaxed)) {
+      beat();
       if (step() != 0) {
         spin_.active();
       } else if (!spin_.spin()) {
@@ -337,6 +338,7 @@ class Engine {
     warm_up();
     start();
     while (!stop_.load(std::memory_order_relaxed)) {
+      beat();
       const std::size_t n = poll(ctx) + step();
       if (n == 0) {
         spin_.idle();
@@ -414,6 +416,10 @@ class Engine {
     unlatch_clock();
     in_engine_ = false;
   }
+  // The engine thread is the only writer: a plain increment, no read-modify-write.
+  FASTMM_FORCE_INLINE void beat() noexcept {
+    beat_.store(beat_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+  }
   void stop() noexcept {
     stop_.store(true, std::memory_order_release);
     if constexpr (kFeedWaits) feed_.notify();
@@ -472,6 +478,12 @@ class Engine {
     return latency_pub_;
   }
   [[nodiscard]] EngineLiveStats live_stats() const noexcept { return live_pub_->load(); }
+  // Turns of run() or run_inline() so far, 0 before the first (after on_start). Any thread reads it
+  // to tell an engine that is still running from one stuck inside a step (fastmm-live's [engine]
+  // stall_ms): an idle engine turns at least every kMaxIdleWait.
+  [[nodiscard]] std::uint64_t heartbeat() const noexcept {
+    return beat_.load(std::memory_order_relaxed);
+  }
   [[nodiscard]] bool quoting_enabled() const noexcept {
     return quoting_enabled_ && !reconciling() && !params_stale_ && !risk_.killed();
   }
@@ -3708,6 +3720,8 @@ class Engine {
   std::array<std::uint8_t, kMaxInstruments> ab_arm_{};
   Timestamp now_{};  // valid while latched_
 
+  // heartbeat(): on a line of its own, which the watching thread reads now and then.
+  alignas(kCacheLine) std::atomic<std::uint64_t> beat_{0};
   alignas(kCacheLine) std::byte out_storage_[kOutBatch * kOutSlotBytes] = {};
   StaticVector<const EventHeader*, kOutBatch> out_batch_;
 

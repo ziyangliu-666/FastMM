@@ -348,8 +348,8 @@ inline std::string fresh_store(const std::string& name) {
   return p;
 }
 
-// configs/sim-local.toml (or -tls) pointed at the in-process server.
-inline Config sim_local_config(const ServerFixture& fx, bool tls) {
+// configs/sim-local.toml (or -tls) pointed at a simulator listening on `port` (`tls_port`).
+inline Config sim_local_config(std::uint16_t port, std::uint16_t tls_port, bool tls) {
   std::string text = fastmm::test::read_file(repo_root() / "configs" /
                                              (tls ? "sim-local-tls.toml" : "sim-local.toml"));
   auto replace_all = [&text](std::string_view from, const std::string& to) {
@@ -357,8 +357,8 @@ inline Config sim_local_config(const ServerFixture& fx, bool tls) {
          p = text.find(from, p + to.size()))
       text.replace(p, from.size(), to);
   };
-  replace_all("127.0.0.1:9080", "127.0.0.1:" + std::to_string(fx.server.port()));
-  replace_all("127.0.0.1:9443", "127.0.0.1:" + std::to_string(fx.server.tls_port()));
+  replace_all("127.0.0.1:9080", "127.0.0.1:" + std::to_string(port));
+  replace_all("127.0.0.1:9443", "127.0.0.1:" + std::to_string(tls_port));
   replace_all("\"tests/fixtures/tls/cert.pem\"",
               "\"" + (fastmm::test::fixtures_dir() / "tls" / "cert.pem").string() + "\"");
   Config::LoadOptions opts;
@@ -369,6 +369,11 @@ inline Config sim_local_config(const ServerFixture& fx, bool tls) {
   cfg.venues[0].api_secret = kApiSecret;
   cfg.engine.journal = false;
   return cfg;
+}
+
+// The same pointed at the in-process server.
+inline Config sim_local_config(const ServerFixture& fx, bool tls) {
+  return sim_local_config(fx.server.port(), fx.server.tls_port(), tls);
 }
 
 struct LiveEngineOptions {

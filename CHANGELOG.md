@@ -10,6 +10,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: status file version 24 (`feed.book_recentres`); `fastmm-top` reads one build's files only.
 
 ### Added
+- live: `[engine] stall_ms` cancels every order and exits 5 when the engine thread is stuck in a step.
 - core: `[engine] checkpoint_s` journals the positions and open orders of any strategy.
 - core: an `AccountFlow` event records money moved in or out of an account outside its trades.
 - venues: Binance Spot `balanceUpdate` and USDⓈ-M transfers are `AccountFlow` events.

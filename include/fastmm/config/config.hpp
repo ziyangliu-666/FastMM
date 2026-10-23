@@ -82,6 +82,9 @@ struct EngineSection {
   // --takeover: how long the new process waits for the running one to release the lock after it
   // accepted `handoff`, ms.
   int handoff_timeout_ms = 75'000;
+  // fastmm-live: the engine thread stuck inside one turn of its loop this long (Engine::heartbeat
+  // has not moved) cancels every venue's orders and exits with kExitRuntime, ms; 0: never.
+  int stall_ms = 10'000;
   std::uint64_t rng_seed = 1;
   std::size_t md_ring_bytes = 4U << 20;
   std::size_t order_ring_bytes = 1U << 20;

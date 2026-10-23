@@ -202,6 +202,9 @@ class IEngineRunner {
   [[nodiscard]] virtual RunnerStats stats() const = 0;
   // Safe to call from any thread while run() is active (a seqlocked copy, up to a second old).
   [[nodiscard]] virtual EngineLiveStats live_stats() const { return {}; }
+  // Engine::heartbeat(): moves while run() turns; 0 before, and for a runner without one. Any
+  // thread.
+  [[nodiscard]] virtual std::uint64_t heartbeat() const noexcept { return 0; }
   [[nodiscard]] virtual std::string_view strategy_name() const = 0;
   // The strategy's state taken since the last call (every EngineConfig::state_interval and at the
   // end), to be written to EngineConfig::state_file; false: none, or the strategy keeps no state.
@@ -229,6 +232,7 @@ class EngineRunner final : public IEngineRunner {
   std::size_t drain() override { return engine_->drain(); }
   [[nodiscard]] RunnerStats stats() const override { return engine_->runner_stats(); }
   [[nodiscard]] EngineLiveStats live_stats() const override { return engine_->live_stats(); }
+  [[nodiscard]] std::uint64_t heartbeat() const noexcept override { return engine_->heartbeat(); }
   [[nodiscard]] std::string_view strategy_name() const override { return Strategy::name(); }
   bool take_strategy_state(std::string& out) override { return engine_->take_strategy_state(out); }
   void stage_strategy_state(std::string bytes) override {

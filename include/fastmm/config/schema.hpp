@@ -127,6 +127,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      "fastmm-live --takeover: how long to wait for the running session to release the instance "
      "lock once it accepted the handoff, ms (default 75000)"},
     {"engine",
+     "stall_ms",
+     KeyType::Int,
+     false,
+     "fastmm-live: an engine thread that has not finished a turn of its loop for this long (a "
+     "strategy hook that never returns) is given up: every venue cancels all its orders and the "
+     "process exits with code 5, ms; 0 = never (default 10000)"},
+    {"engine",
      "ack_timeout_ms",
      KeyType::Int,
      false,

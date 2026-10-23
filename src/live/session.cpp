@@ -68,6 +68,10 @@ namespace {
 
 // The shutdown's venue cancel-all waits this long at most for the engine to take the kill switch.
 constexpr std::int64_t kKillTakenWaitNs = 2'000'000'000;
+// [engine] stall_ms counts the control loop's turns while the engine's heartbeat stands still, each
+// for at most this long: a host that stopped the whole process (a VM paused, SIGSTOP) stopped the
+// engine and this thread alike, and the engine is not to blame for it.
+constexpr std::int64_t kStallTurnCapNs = 100'000'000;
 
 // Set by the signal handler, read by the thread that runs the session, which need not be the one
 // the signal lands on: an atomic, lock-free so the handler may store it.
@@ -2309,8 +2313,14 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   // 1 duration, 2 signal, 3 order ring overflow, 4 kill switch tripped by the engine, 5 watchdog,
   // 6 the runner cannot run inline (threading = "single"), 7 the journal cannot be written,
   // 8 the control socket's `stop`, 9 the gateway closed the attachment, 10 the control socket's
-  // `handoff`, 11 a warm standby that gave up or could not take over (standby_rc)
+  // `handoff`, 11 a warm standby that gave up or could not take over (standby_rc), 12 the engine
+  // thread stalled ([engine] stall_ms)
   int reason = 0;
+  // [engine] stall_ms: the engine's heartbeat as last seen, and how long it has stood still.
+  const std::int64_t stall_ns = std::int64_t{cfg.engine.stall_ms} * 1'000'000;
+  std::uint64_t last_beat = 0;
+  std::int64_t beat_still_ns = 0;
+  std::int64_t last_turn_ns = steady_now().ns;
   std::string watchdog_cause;
   std::int64_t next_status = start + 250'000'000;
   const bool exit_on_kill = cfg.engine.on_kill != "stay";
@@ -2702,6 +2712,22 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
       }
     }
     if (reason == 0 && inline_ctx.unsupported.load()) reason = 6;
+    // An engine that never came back from a step (a strategy hook in an endless loop, a deadlock)
+    // leaves its orders resting with nobody to move or cancel them, while the network threads keep
+    // the connections and the venues' dead man's switches alive. Before its first turn (warm-up,
+    // on_start) the heartbeat is 0 and nothing is counted.
+    if (stall_ns > 0) {
+      const std::uint64_t beat = runner->heartbeat();
+      const std::int64_t turn = std::min(now - last_turn_ns, kStallTurnCapNs);
+      last_turn_ns = now;
+      if (beat != last_beat || beat == 0) {
+        last_beat = beat;
+        beat_still_ns = 0;
+      } else {
+        beat_still_ns += turn;
+        if (beat_still_ns >= stall_ns && reason == 0) reason = 12;
+      }
+    }
     // The gateway exited or dropped this attachment: nothing reaches the venues any more.
     if (reason == 0 && gateway && !gateway->connected()) {
       FASTMM_LOG_ERROR("the gateway closed the attachment: no market data, no orders");
@@ -2788,6 +2814,35 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     }
   }
   shutdown_watchdog.stop_requested();  // --duration, a kill switch, fastmm-ctl stop, ...
+  if (reason == 12) {
+    // Nothing that waits for the engine can finish: no kill switch it would take, no join. Every
+    // venue cancels all over its own REST connection, the PnL ledger and the status file get their
+    // last word, and the process exits; the kernel closes the connections (an attached gateway
+    // cancels this strategy's orders then) and drops the instance lock. The journal and the store
+    // end as after a crash, which the next start recovers from.
+    FASTMM_LOG_ERROR(
+        "fastmm-live: the engine thread has not come round its loop for {} ms ([engine] "
+        "stall_ms): cancelling every order and exiting without it",
+        cfg.engine.stall_ms);
+    control_socket.close();
+    bool stall_cancel_ok = true;
+    if (owner && !opts.dry_run && !gateway) {
+      for (std::size_t i = 0; i < slots.size(); ++i) {
+        if (cfg.venues[i].public_only) continue;
+        stall_cancel_ok = slots[i]->venue->cancel_all() && stall_cancel_ok;
+      }
+    }
+    const EngineLiveStats stalled = runner->live_stats();
+    persist_kill(stalled);
+    publish_status(StatusRunState::Stopped, stalled);
+    FASTMM_LOG_ERROR("fastmm-live: engine stalled; cancel_all {}, exit code {}",
+                     stall_cancel_ok ? "ok" : "FAILED",
+                     kExitRuntime);
+    Logger::instance().flush();  // the lines above reach the log before the process ends
+    Logger::instance().stop();
+    std::fflush(nullptr);
+    ::_exit(kExitRuntime);
+  }
   if (auditor) auditor->stop();            // an audit waiting for a venue gives up
   if (treasury) treasury->request_stop();  // no new transfer; one under way finishes
   control_socket.close();                  // no command can reach a session that is shutting down

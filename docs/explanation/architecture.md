@@ -28,7 +28,7 @@ The live application (`fastmm-live`, `src/live/session.cpp`) runs a fixed set of
 | journal writer | `JournalFileWriter`: the journal ring into the `.fmj` file | spin, then waits of 50 µs to 1 ms |
 | `fm-store` | `StoreThread`: fill, order, position, kill and funding records into store rows | 2 ms sleeps when idle |
 | log sink | formats every thread's log records and writes them | spin, then waits of 50 µs to 10 ms |
-| main | config, reference data, thread start and stop, the control socket, the stats line, the status and kill files, TSC recalibration, signals | `poll` on the control socket and a signal eventfd, at most 50 ms |
+| main | config, reference data, thread start and stop, the control socket, the stats line, the status and kill files, TSC recalibration, signals, the engine's heartbeat | `poll` on the control socket and a signal eventfd, at most 50 ms |
 
 With `spin_mode = adaptive` a network thread polls while active and for 200 µs after, then waits with a 1 ms timeout; the engine writes the wake eventfd only while it waits. The engine spins, then blocks on a futex that the network threads signal after they push events, at most until the next timer (1 ms). The journal writer runs when journaling is on, and `fm-store` unless `[storage] backend = "none"`. The log sink is woken by `flush()` and `stop()`.
 
@@ -135,4 +135,5 @@ These histograms stay in cycles on the network thread and are converted to ns wi
 | Venue unusable | The venue's error map: `Fatal` (bad key, signature or permission, failed authentication) or `HardStop` (Binance HTTP 418 IP ban); a dead man's switch that could not be refreshed; a multicast feed that cannot rebuild its books | That venue's kill switch: its quotes are pulled, its orders cancelled and new orders to it refused. Every venue killed is a global kill |
 | Rate limit | Response headers and error codes | Cool down until the limit resets; after HTTP 418 REST stays stopped until restart |
 | Clock skew | Timestamp rejection codes | Re-measure the offset from the venue's time endpoint |
+| Engine thread stuck in a step | Its heartbeat has not moved for `[engine] stall_ms` | Cancel-all on every venue from the main thread, exit code 5 ([Engine stall](../how-to/operations/kill-switch-and-shutdown.md#engine-stall)) |
 | Ring overflow | Push fails | Market data: drop the delta and resync. Order events are never dropped; an overflow trips the kill switch |
