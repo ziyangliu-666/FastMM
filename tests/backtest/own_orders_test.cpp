@@ -8,6 +8,7 @@
 #include "fastmm/backtest/backtest_runner.hpp"
 #include "fastmm/backtest/journal_source.hpp"
 
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -168,4 +169,30 @@ TEST_CASE("backtest.own_orders: an order from before the journal, as a reconcili
   const EventHeader* h = js.next();
   REQUIRE(h != nullptr);
   CHECK(bids(h) == std::vector<Level>{{px("100.00"), qt("1.6")}});  // the snapshot, without ours
+}
+
+TEST_CASE("backtest.own_orders: an order from before the journal, as a checkpoint lists it") {
+  const std::string path = tmp_path("own_orders_checkpoint.fmj");
+  {
+    JournalBuilder j(path, true);
+    j.venue = kV0;
+    j.book(true, {{"100.00", "2"}}, {{"100.05", "1"}});
+    StateOrder o{
+        9, 0, 0, static_cast<std::uint8_t>(Side::Buy), 2, 0, px("100.00").raw, qt("0.4").raw};
+    std::string bytes(sizeof o, '\0');
+    std::memcpy(bytes.data(), &o, sizeof o);
+    j.venue = kV0 + 2 * kMs;
+    j.strategy_state(StrategyStateMsg::Kind::Snapshot, 1, StrategyStateMsg::kStatePart, "");
+    j.strategy_state(StrategyStateMsg::Kind::Snapshot, 1, StrategyStateMsg::kPositionsPart, "");
+    j.strategy_state(StrategyStateMsg::Kind::Snapshot, 1, StrategyStateMsg::kOrdersPart, bytes);
+    j.venue = kV0 + 5 * kMs;
+    j.cancel_ack(9);
+    j.venue = kV0 + 6 * kMs;
+    j.book(false, {{"100.00", "1.6"}}, {});
+  }
+  JournalReader r;
+  REQUIRE(r.open(path));
+  const OwnOrderStripper s(r);
+  CHECK(s.own_at(InstrumentId{0}, Side::Buy, px("100.00"), Timestamp{kV0}) == qt("0.4"));
+  CHECK(s.own_at(InstrumentId{0}, Side::Buy, px("100.00"), Timestamp{kV0 + 6 * kMs}).is_zero());
 }

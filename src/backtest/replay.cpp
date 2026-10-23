@@ -140,7 +140,7 @@ BacktestConfig journal_config(const std::string& path) {
     // handed to restore() are in the journal when there were any (journal_state.hpp), and its
     // state snapshots come back as the journal's timers.
     cfg.engine.state_file.clear();
-    cfg.engine.state_snapshot_interval = Duration{};
+    cfg.engine.checkpoint_interval = Duration{};
     if (std::optional<std::string> restored = restored_state(reader))
       cfg.engine.initial_state = *restored;
     return cfg;
@@ -175,6 +175,7 @@ ReplayResult replay_impl(const std::string& path,
   // Expected stream first: load_outbound() walks the reader, JournalFeed then rewinds it.
   std::vector<sim::ReplayTransport::Bytes> expected = sim::ReplayTransport::load_outbound(reader);
   std::vector<std::uint64_t> dropped = sim::ReplayTransport::load_dropped(reader);
+  std::vector<std::string> take_over_bytes = take_over_states(reader);
   sim::OutboundHasher recorded;
   {
     std::size_t d = 0;
@@ -255,7 +256,26 @@ ReplayResult replay_impl(const std::string& path,
       throw std::invalid_argument("replay: strategy '" + res.strategy + "' has no replay factory");
   }
 
+  // A warm standby's take-over restores the state staged for it, which the journal holds as the
+  // checkpoint written right after the TakeOver record: each is staged as its record comes up.
+  struct TakeOvers {
+    IEngineRunner* runner;
+    std::vector<std::string> states;
+    std::size_t next = 0;
+  } take_overs{runner.get(), std::move(take_over_bytes), 0};
   sim::ReplayDriver driver(backend.clock, backend.feed, backend.hooks);
+  if (!take_overs.states.empty()) {
+    driver.set_before_step(
+        [](void* c, const EventHeader& h) {
+          auto& t = *static_cast<TakeOvers*>(c);
+          if (h.type != EventType::Control || (h.flags & EventHeader::kOutbound) != 0 ||
+              msg_cast<ControlMsg>(&h).command != ControlCommand::TakeOver ||
+              t.next >= t.states.size())
+            return;
+          t.runner->stage_strategy_state(t.states[t.next++]);
+        },
+        &take_overs);
+  }
   res.events = driver.run_all();
   driver.finish();
 

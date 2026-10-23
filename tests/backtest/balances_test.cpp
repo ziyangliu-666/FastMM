@@ -364,7 +364,7 @@ TEST_CASE("backtest.balances: a run with balances replays to the identical outbo
     BacktestConfig next = spot_config(9, seconds(20));
     next.balances_from_journal = true;
     JournalSource src(path.string());
-    REQUIRE(src.balance_snapshots()->size() == 1);
+    REQUIRE(src.recorded()->balances_at().size() == 1);
     BacktestSession session(next, &src, &BasicMM::schema());
     const sim::SimAccounts* a = session.backend().transport.accounts();
     REQUIRE(a != nullptr);
@@ -399,7 +399,7 @@ TEST_CASE("backtest.balances: a journal's snapshot restores the accounts of a po
   next.engine.pools = next.transport.pools;
   next.balances_from_journal = true;
   JournalSource src(path.string());
-  REQUIRE(src.balance_snapshots()->size() == 2);
+  REQUIRE(src.recorded()->balances_at().size() == 2);
   BacktestSession session(next, &src, &BasicMM::schema());
   const sim::SimAccounts* a = session.backend().transport.accounts();
   REQUIRE(a != nullptr);

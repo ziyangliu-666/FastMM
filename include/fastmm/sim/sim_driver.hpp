@@ -279,6 +279,13 @@ class ReplayDriver {
  public:
   ReplayDriver(SimClock& clock, JournalFeed& feed, const EngineHooks& hooks) noexcept
       : clock_(clock), feed_(feed), hooks_(hooks) {}
+  // Called with each event before the engine takes it (a replay stages the state a take-over
+  // restores, Engine::stage_strategy_state).
+  using BeforeStep = void (*)(void* ctx, const EventHeader& next);
+  void set_before_step(BeforeStep fn, void* ctx) noexcept {
+    before_ = fn;
+    before_ctx_ = ctx;
+  }
 
   void start() {
     if (feed_.has_start_ts()) clock_.jump(feed_.start_ts());
@@ -298,6 +305,7 @@ class ReplayDriver {
       } else if (ts > clock_.now()) {
         clock_.set(ts);
       }
+      if (before_ != nullptr) before_(before_ctx_, *feed_.peek());
       feed_.arm();
       hooks_.step(hooks_.ctx);
       hooks_.cancel_timers(hooks_.ctx);
@@ -316,6 +324,8 @@ class ReplayDriver {
   SimClock& clock_;
   JournalFeed& feed_;
   EngineHooks hooks_;
+  BeforeStep before_ = nullptr;
+  void* before_ctx_ = nullptr;
   bool started_ = false;
   bool finished_ = false;
 };

@@ -609,15 +609,18 @@ static_assert(sizeof(LatencySampleMsg) == 128);
 
 // Journal only: what a replay or a backtest over the journal can start from. The bytes the strategy
 // was handed to restore() at the start (Kind::Restored, flagged kAccepted when it took them), and
-// every [strategy] state_snapshot_interval_s its state() with the engine's positions
-// (Kind::Snapshot). One state is written as records of at most kChunkBytes each: `id` numbers the
+// the checkpoints (Kind::Snapshot): every [engine] checkpoint_s, and at a warm standby's take-over,
+// the strategy's state() (no bytes for a strategy that keeps none), the engine's positions and its
+// open orders. One state is written as records of at most kChunkBytes each: `id` numbers the
 // states of the session, `part` says what the bytes are (kStatePart: the strategy's state;
-// kPositionsPart: StatePosition entries), and `offset` / `total` place them in it. A record is
-// the 128-byte head and its bytes padded to 64. Never dispatched.
+// kPositionsPart: StatePosition entries; kOrdersPart: StateOrder entries, format v4), and
+// `offset` / `total` place them in it. A record is the 128-byte head and its bytes padded to 64.
+// Never dispatched.
 struct StrategyStateMsg {
   enum class Kind : std::uint8_t { Restored = 0, Snapshot = 1 };
   static constexpr std::uint8_t kStatePart = 0;
   static constexpr std::uint8_t kPositionsPart = 1;
+  static constexpr std::uint8_t kOrdersPart = 2;
   static constexpr std::uint8_t kAccepted = 1U << 0;
   static constexpr std::uint32_t kChunkBytes = 16384;
   EventHeader hdr;
@@ -648,6 +651,20 @@ struct StatePosition {
   std::int64_t avg_px_raw;
 };
 static_assert(sizeof(StatePosition) == 24 && std::is_trivially_copyable_v<StatePosition>);
+
+// One open order in a StrategyStateMsg's kOrdersPart: on the account (venue) it went to, its
+// OrderState and Order::flags, its price and what it has left.
+struct StateOrder {
+  std::uint64_t cl_ord_id;
+  std::uint32_t instrument;
+  std::uint8_t venue;
+  std::uint8_t side;   // Side
+  std::uint8_t state;  // OrderState
+  std::uint8_t flags;  // Order::flags
+  std::int64_t price_raw;
+  std::int64_t leaves_raw;
+};
+static_assert(sizeof(StateOrder) == 32 && std::is_trivially_copyable_v<StateOrder>);
 
 // Journal only (format v2): the engine clock as an absolute value. Written when the engine starts
 // and finishes, and before a consumed event whose clock delta does not fit kEngineTime's int32 ns.

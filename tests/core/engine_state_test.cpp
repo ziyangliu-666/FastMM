@@ -55,6 +55,19 @@ struct Stateless {
 };
 static_assert(!KeepsState<Stateless>);
 
+// Keeps no state; one bid at the first book.
+struct OneBid {
+  static std::string_view name() noexcept { return "one_bid"; }
+  bool sent = false;
+  void on_book(auto& ctx, InstrumentId id, const auto&) noexcept {
+    if (sent) return;
+    sent = true;
+    static_cast<void>(
+        ctx.send(NewOrderRequest::limit(id, Side::Buy, px("99.50"), qt("0.25")).post_only()));
+  }
+};
+static_assert(!KeepsState<OneBid>);
+
 struct Outbox {
   bool send(const EventHeader&) noexcept { return true; }
   std::size_t send(std::span<const EventHeader* const> batch) noexcept { return batch.size(); }
@@ -86,7 +99,7 @@ struct Fixture {
     cfg.state_file = state_file;
     cfg.state_interval = seconds(10);
     cfg.initial_state = std::move(initial);
-    cfg.state_snapshot_interval = snapshot;
+    cfg.checkpoint_interval = snapshot;
     engine = std::make_unique<EngineType>(cfg, table, clock, transport, feed, strategy, journal);
     engine->warm_up();
   }
@@ -254,7 +267,7 @@ std::string bytes_of(const StrategyStateMsg& m) {
 
 }  // namespace
 
-TEST_CASE("core.engine: the journal gets the restored state and the state snapshots") {
+TEST_CASE("core.engine: the journal gets the restored state and the checkpoints") {
   MsgRing ring(1 << 20);
   Fixture<Counting> f("books=7", "", &ring, seconds(5));
   f.engine->start();
@@ -272,7 +285,7 @@ TEST_CASE("core.engine: the journal gets the restored state and the state snapsh
   f.book();
   f.advance(seconds(5));
   recs = state_records(ring);
-  REQUIRE(recs.size() == 2);
+  REQUIRE(recs.size() == 3);  // the state, the positions and the (no) open orders
   const StrategyStateMsg& state = as_state(recs[0]);
   CHECK(state.kind == StrategyStateMsg::Kind::Snapshot);
   CHECK(state.id == 2);
@@ -286,7 +299,11 @@ TEST_CASE("core.engine: the journal gets the restored state and the state snapsh
   CHECK(p.instrument == 0);
   CHECK(p.qty_raw == qt("2").raw);
   CHECK(p.avg_px_raw == px("100.00").raw);
-  // Without a state_file nothing is captured for a file; the journal's snapshots go on.
+  const StrategyStateMsg& orders = as_state(recs[2]);
+  CHECK(orders.id == 2);
+  CHECK(orders.part == StrategyStateMsg::kOrdersPart);
+  CHECK(orders.bytes == 0);
+  // Without a state_file nothing is captured for a file; the journal's checkpoints go on.
   std::string out;
   CHECK_FALSE(f.engine->take_strategy_state(out));
 }
@@ -311,4 +328,34 @@ TEST_CASE("core.engine: no snapshots without an interval or a journal, a refused
   f.engine->start();
   f.advance(seconds(20));  // no journal: nothing to write to
   CHECK(f.strategy.books == 1);
+}
+
+TEST_CASE(
+    "core.engine: a strategy that keeps no state gets checkpoints of the positions and orders") {
+  MsgRing ring(1 << 20);
+  Fixture<OneBid> f({}, "", &ring, seconds(5));
+  f.engine->start();
+  CHECK(state_records(ring).empty());
+  f.position("-1.5", "101.00");
+  f.book();
+  REQUIRE(f.strategy.sent);
+  f.advance(seconds(5));
+  const std::vector<std::vector<std::byte>> recs = state_records(ring);
+  REQUIRE(recs.size() == 3);
+  CHECK(as_state(recs[0]).kind == StrategyStateMsg::Kind::Snapshot);
+  CHECK(as_state(recs[0]).part == StrategyStateMsg::kStatePart);
+  CHECK(as_state(recs[0]).bytes == 0);
+  CHECK(as_state(recs[1]).bytes == sizeof(StatePosition));
+  const StrategyStateMsg& orders = as_state(recs[2]);
+  CHECK(orders.part == StrategyStateMsg::kOrdersPart);
+  REQUIRE(orders.bytes == sizeof(StateOrder));
+  StateOrder o{};
+  std::memcpy(&o, orders.data(), sizeof o);
+  CHECK(o.cl_ord_id != 0);
+  CHECK(o.instrument == 0);
+  CHECK(o.venue == 0);
+  CHECK(o.side == static_cast<std::uint8_t>(Side::Buy));
+  CHECK(o.price_raw == px("99.50").raw);
+  CHECK(o.leaves_raw == qt("0.25").raw);
+  CHECK((o.flags & Order::kPostOnly) != 0);
 }

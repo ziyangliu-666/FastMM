@@ -100,54 +100,55 @@ JournalSource::JournalSource(const std::string& path,
     orders_ = log.orders.size();
     stripper_ = std::make_unique<OwnOrderStripper>(parts_);
   }
-  // Per venue: no snapshot seen yet, in the first one, done.
-  constexpr std::uint8_t kNotYet = 0;
-  constexpr std::uint8_t kIn = 1;
-  constexpr std::uint8_t kDone = 2;
-  std::uint8_t state[kMaxVenues] = {};
-  std::size_t index[kMaxVenues] = {};
   for (JournalReader& r : parts_) {
     r.for_each([&](const EventHeader* h) {
-      if (h->type == EventType::Balance && h->venue.value < kMaxVenues &&
-          state[h->venue.value] != kDone) {
+      if ((h->flags & EventHeader::kOutbound) != 0) return;
+      if (h->type == EventType::Balance && h->len >= sizeof(BalanceMsg)) {
         const auto& m = msg_cast<BalanceMsg>(h);
-        if ((m.flags & (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd)) == 0) return;
-        std::uint8_t& st = state[h->venue.value];
-        if (st == kNotYet) {
-          st = kIn;
-          index[h->venue.value] = balances_.size();
-          balances_.push_back(sim::SimAccountConfig{h->venue, {}});
-        }
-        sim::SimAccountConfig& a = balances_[index[h->venue.value]];
-        if ((m.flags & BalanceMsg::kAccount) == 0 && !m.asset.empty())
-          a.balances.push_back(sim::SimBalance{m.asset, m.total});
-        if ((m.flags & BalanceMsg::kSnapshotEnd) != 0) st = kDone;
+        if ((m.flags & BalanceMsg::kAccount) == 0) session_.balances.push_back(m);
         return;
       }
-      if (h->type == EventType::ParamUpdate && (h->flags & EventHeader::kOutbound) == 0 &&
-          h->len >= sizeof(ParamUpdateMsg)) {
-        params_.updates.push_back(msg_cast<ParamUpdateMsg>(h));
+      if (h->type == EventType::AccountFlow && h->len >= sizeof(AccountFlowMsg)) {
+        session_.flows.push_back(msg_cast<AccountFlowMsg>(h));
         return;
       }
-      if (!is_market_data(h->type) || (h->flags & EventHeader::kOutbound) != 0) return;
+      if (h->type == EventType::ParamUpdate && h->len >= sizeof(ParamUpdateMsg)) {
+        session_.params.updates.push_back(msg_cast<ParamUpdateMsg>(h));
+        return;
+      }
+      if (!is_market_data(h->type)) return;
       if (md_events_ == 0) first_ts_ = h->exch_ts.valid() ? h->exch_ts : h->recv_ts;
       ++md_events_;
     });
     r.reset();
   }
   for (const JournalParam& p : parts_.front().params())
-    params_.table.emplace_back(std::string(p.name), p.type);
-  start_ = journal_start_state(parts_);
+    session_.params.table.emplace_back(std::string(p.name), p.type);
+  read_states(parts_, session_);
   if (remap_) {
-    std::vector<ReconcileMsg> kept;
-    for (ReconcileMsg m : start_.positions) {
-      const std::uint32_t j = m.hdr.instrument.value;
-      if (j >= map_.size() || map_[j] == kUnmapped) continue;
-      m.hdr.instrument = InstrumentId{map_[j]};
-      m.hdr.venue = map_venue_[j];
-      kept.push_back(m);
+    const auto remapped = [&](std::vector<ReconcileMsg>& v) {
+      std::vector<ReconcileMsg> kept;
+      for (ReconcileMsg m : v) {
+        const std::uint32_t j = m.hdr.instrument.value;
+        if (j >= map_.size() || map_[j] == kUnmapped) continue;
+        m.hdr.instrument = InstrumentId{map_[j]};
+        m.hdr.venue = map_venue_[j];
+        kept.push_back(m);
+      }
+      v = std::move(kept);
+    };
+    remapped(session_.reconciled);
+    if (session_.restored) remapped(session_.restored->positions);
+    for (sim::Checkpoint& k : session_.checkpoints) {
+      remapped(k.positions);
+      std::vector<StateOrder> kept;
+      for (StateOrder o : k.orders) {
+        if (o.instrument >= map_.size() || map_[o.instrument] == kUnmapped) continue;
+        o.instrument = map_[o.instrument];
+        kept.push_back(o);
+      }
+      k.orders = std::move(kept);
     }
-    start_.positions = std::move(kept);
   }
 }
 

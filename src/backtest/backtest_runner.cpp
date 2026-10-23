@@ -8,6 +8,7 @@
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/session_state.hpp"
+#include "fastmm/sim/recorded_session.hpp"
 #include "fastmm/sim/sim_treasury.hpp"
 #include "fastmm/sim/venue_order.hpp"
 #include "fastmm/strategies/ab_test.hpp"
@@ -247,15 +248,16 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
     if (!loaded) throw std::invalid_argument("backtest: " + loaded.error());
   }
   if (cfg_.initial_state == InitialState::None) cfg_.engine.initial_state.clear();
+  const sim::RecordedSession* recorded = source != nullptr ? source->recorded() : nullptr;
   if (cfg_.initial_state == InitialState::Journal) {
-    const sim::SessionStart* s = source != nullptr ? source->session_start() : nullptr;
-    if (s == nullptr) {
+    if (recorded == nullptr) {
       throw std::invalid_argument(
           "backtest: initial_state = \"journal\" needs a journal as the data source");
     }
-    cfg_.engine.initial_state = s->strategy;
-    start_positions_ = s->positions;
-    start_note_ = s->note;
+    const sim::SessionStart s = recorded->start();
+    cfg_.engine.initial_state = s.strategy;
+    start_positions_ = s.positions;
+    start_note_ = s.note;
     FASTMM_LOG_INFO("backtest: {}", start_note_);
   }
   for (const StartPosition& p : cfg_.positions) {
@@ -273,11 +275,11 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
     FASTMM_LOG_INFO("backtest: {} positions from [backtest.positions]", cfg_.positions.size());
   }
   if (cfg_.params_from_journal) {
-    const sim::RecordedParams* rp = source != nullptr ? source->recorded_params() : nullptr;
-    if (rp == nullptr) {
+    if (recorded == nullptr) {
       throw std::invalid_argument(
           "backtest: params_from_journal needs a journal as the data source");
     }
+    const sim::RecordedParams* rp = &recorded->params;
     // Recorded field index -> this schema's, by name and type (as a replay maps them).
     std::vector<int> map(rp->table.size(), -1);
     for (std::size_t i = 0; i < rp->table.size(); ++i) {
@@ -317,14 +319,12 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
     }
   }
   if (cfg_.balances_from_journal) {
-    const std::vector<sim::SimAccountConfig>* snapshots =
-        source_ != nullptr ? source_->balance_snapshots() : nullptr;
-    if (snapshots == nullptr) {
+    if (recorded == nullptr) {
       throw std::invalid_argument(
           "backtest: balances_from_journal needs one journal as the data source");
     }
     std::vector<sim::SimAccountConfig>& accounts = cfg_.transport.accounts;
-    for (const sim::SimAccountConfig& a : *snapshots) {
+    for (const sim::SimAccountConfig& a : recorded->balances_at()) {
       const bool traded =
           std::any_of(cfg_.instruments.begin(), cfg_.instruments.end(), [&](const Instrument& i) {
             return i.venue == cfg_.transport.pools.primary(a.venue);

@@ -335,24 +335,8 @@ void OwnQuantity::on_reconcile(const EventHeader& h, const ReconcileMsg& m) noex
     case ReconcileMsg::Kind::OpenOrder:
       if (Life* s = find(m.cl_ord_id)) {
         s->seen = true;
-      } else if (m.cl_ord_id.valid() && h.instrument.valid() && m.price.is_positive() &&
-                 m.orig_qty > m.cum_qty) {
-        // An order the venue lists that went out before anything seen here (a journal part from
-        // the middle of a session, an order left from before a restart): it has rested since
-        // before then, with what the snapshot says is left, until it ends.
-        Life l{};
-        l.id = m.cl_ord_id;
-        l.inst = h.instrument;
-        l.venue = h.venue;
-        l.side = m.side;
-        l.resting = true;
-        l.acked = true;
-        l.seen = true;
-        l.px = m.price;
-        l.qty = m.orig_qty - m.cum_qty;
-        l.ack.ts = Timestamp{1};
-        l.ack.from_recv = false;
-        if (Life* added = add(l)) rebuild(*added);
+      } else if (m.orig_qty > m.cum_qty) {
+        on_resting(m.cl_ord_id, h.instrument, h.venue, m.side, m.price, m.orig_qty - m.cum_qty);
       }
       break;
     case ReconcileMsg::Kind::End: {
@@ -371,6 +355,25 @@ void OwnQuantity::on_reconcile(const EventHeader& h, const ReconcileMsg& m) noex
     default:
       break;
   }
+}
+
+void OwnQuantity::on_resting(
+    ClientOrderId id, InstrumentId inst, VenueId venue, Side side, Price px, Qty leaves) noexcept {
+  if (!id.valid() || !inst.valid() || !px.is_positive() || !leaves.is_positive()) return;
+  if (find(id) != nullptr) return;
+  Life l{};
+  l.id = id;
+  l.inst = inst;
+  l.venue = venue;
+  l.side = side;
+  l.resting = true;
+  l.acked = true;
+  l.seen = true;
+  l.px = px;
+  l.qty = leaves;
+  l.ack.ts = Timestamp{1};
+  l.ack.from_recv = false;
+  if (Life* added = add(l)) rebuild(*added);
 }
 
 void OwnQuantity::on_gone(ClientOrderId id, Timestamp t) noexcept {

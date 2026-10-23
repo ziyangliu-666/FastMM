@@ -1,5 +1,6 @@
 #include "fastmm/backtest/own_orders.hpp"
 
+#include "fastmm/backtest/journal_state.hpp"
 #include "fastmm/core/queue_model.hpp"
 
 #include <algorithm>
@@ -279,8 +280,23 @@ OwnOrderLog collect_own_orders(std::span<JournalReader> parts) {
 }
 
 OwnOrderStripper::OwnOrderStripper(std::span<JournalReader> parts) {
+  // A checkpoint lists the orders resting then: those this has not seen go out (a part from the
+  // middle of a session) rest from the start.
+  StateAssembler states;
+  const auto rest = [&](const RecordedState* s) {
+    if (s == nullptr) return;
+    for (const StateOrder& o : s->orders) {
+      own_.on_resting(ClientOrderId{o.cl_ord_id},
+                      InstrumentId{o.instrument},
+                      VenueId{o.venue},
+                      static_cast<Side>(o.side),
+                      Price::from_raw(o.price_raw),
+                      Qty::from_raw(o.leaves_raw));
+    }
+  };
   for (JournalReader& reader : parts) {
     reader.for_each([&](const EventHeader* h) {
+      rest(states.add(*h));
       if ((h->flags & EventHeader::kOutbound) != 0) {
         if ((h->flags & EventHeader::kDropped) == 0) own_.on_outbound(*h);
       } else {
@@ -289,6 +305,7 @@ OwnOrderStripper::OwnOrderStripper(std::span<JournalReader> parts) {
     });
     reader.reset();
   }
+  rest(states.finish());
   own_.index();
 }
 

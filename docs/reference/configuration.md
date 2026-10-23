@@ -31,6 +31,7 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `journal_sync` | string |  | how far a journal write is pushed: async (msync every 100 ms; survives the process dying) \| fdatasync (msync + fdatasync on the same tick; survives power loss) (default async) |
 | `journal_max_bytes` | integer |  | roll the journal over to the next part at this size, bytes; each part is a complete journal ("x.fmj", "x.1.fmj", ...); 0 = one file per session (default 0) |
 | `journal_retention_days` | integer |  | delete .fmj files in journal_dir last written more than this many days ago, at start; 0 = keep everything (default 0) |
+| `checkpoint_s` | integer |  | with a journal, how often the engine writes a checkpoint to it: the strategy's state() (a strategy that keeps state), the positions and the open orders, seconds of engine time; a backtest can start from any of them (default 0: never) |
 | `epoch_file` | string |  | session epoch file, keeps client order ids unique across restarts (default "runs/session_epoch") |
 | `kill_file` | string |  | latched kill switch and cumulative PnL, so [risk] max_loss is a budget across restarts (default "<journal_dir>/<name>.kill") |
 | `instance_lock` | boolean |  | fastmm-live: take an exclusive lock on lock_file before touching the account and refuse to start (exit code 8) while another process holds it; --standby and --takeover take it whatever this says (default false) |
@@ -590,7 +591,6 @@ Live connectors replace `tick`, `lot` and the size bounds with the venue's refer
 | `max_param_age_ms` | integer |  | disable quoting before the first parameter update and while none was applied for this long, ms of engine time (default 0: off) |
 | `state_file` | string |  | file the strategy's state() is written to every state_interval_s and at the end, and restore() reads at the start (a strategy that keeps state; default: none) |
 | `state_interval_s` | integer |  | how often the state is written, seconds of engine time (default 300) |
-| `state_snapshot_interval_s` | integer |  | with a journal, how often the strategy's state() and the positions are written to it, seconds of engine time, for a backtest to start from (default 0: never) |
 | `params` | table |  | [strategy.params] table: the strategy's parameters |
 <!-- END config-keys -->
 

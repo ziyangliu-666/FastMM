@@ -160,11 +160,11 @@ A `StrategyState` message (type 30, 128 bytes followed by its bytes, padded to 6
 | 72 | 4 | `total` | bytes of the part |
 | 76 | 4 | `offset` | where this record's bytes go in the part |
 | 80 | 4 | `bytes` | bytes after the 128-byte head, at most 16384 |
-| 84 | 1 | `kind` | 0 `Restored`: the bytes the strategy was handed to `restore()` at the start; 1 `Snapshot`: its `state()` |
-| 85 | 1 | `part` | 0 the strategy's bytes; 1 positions, 24 bytes each: instrument id (u32), venue (u8), 3 pad, quantity and average price (fixed point, i64) |
+| 84 | 1 | `kind` | 0 `Restored`: the bytes the strategy was handed to `restore()` at the start; 1 `Snapshot`: a checkpoint |
+| 85 | 1 | `part` | 0 the strategy's bytes; 1 positions, 24 bytes each: instrument id (u32), venue (u8), 3 pad, quantity and average price (fixed point, i64); 2 (v4) open orders, 32 bytes each: client order id (u64), instrument id (u32), the account's venue id (u8), side, `OrderState` and order flags (u8 each), price and quantity left (fixed point, i64) |
 | 86 | 1 | `flags` | bit 0 (`Restored`): the strategy took the bytes |
 
-The engine writes the `Restored` state (its strategy part only) once, after `on_start`, when `[strategy] state_file` held something, and with `[strategy] state_snapshot_interval_s` a `Snapshot` of both parts that often ([Configuration](configuration.md#strategy)). `recv_ts` is the engine time it was taken at.
+The engine writes the `Restored` state (its strategy part only) once, after `on_start`, when `[strategy] state_file` held something. A checkpoint is a `Snapshot` of all three parts: every `[engine] checkpoint_s` ([Configuration](configuration.md#engine)), and at a warm standby's take-over, right after the `TakeOver` control record, with the state it restored. A strategy that keeps no state writes no bytes in part 0. A checkpoint of format v3 has no part 2. `recv_ts` is the engine time it was taken at; the records of one state are written back to back. `fastmm-replay` stages the strategy bytes of the checkpoint after each `TakeOver` for the take-over to restore.
 
 ## Parameter updates
 

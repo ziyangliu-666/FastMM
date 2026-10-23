@@ -252,6 +252,14 @@ class JournalBuilder {
     put(m.hdr);
   }
 
+  // A control command the engine consumed (ControlCommand::TakeOver, ...).
+  void control(ControlCommand c, std::uint64_t arg = 0) {
+    ControlMsg m{};
+    init_header(m, EventType::Control);
+    m.command = c;
+    m.arg = arg;
+    put(m.hdr);
+  }
   // Money in (positive) or out of venue `venue_id`'s account, as the venue reported it.
   void flow(const char* asset, const char* amount, std::uint8_t venue_id = 0) {
     AccountFlowMsg m{};

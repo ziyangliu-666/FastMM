@@ -29,7 +29,7 @@
 #include "fastmm/backtest/own_orders.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/journal.hpp"
-#include "fastmm/sim/sim_account.hpp"
+#include "fastmm/sim/recorded_session.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -63,16 +63,11 @@ class JournalSource final : public MdSource {
   // remap: events dropped so far because the configuration lacks their symbol.
   [[nodiscard]] std::size_t dropped() const noexcept { return dropped_; }
   [[nodiscard]] std::string note() const override;
-  // The first balance snapshot the journal recorded for each venue (the BalanceMsg rows from its
-  // first kSnapshot message to the kSnapshotEnd), each asset at its total; account rows
-  // (kAccount) are left out. Empty when the journal has none.
-  [[nodiscard]] const std::vector<sim::SimAccountConfig>* balance_snapshots() const override {
-    return &balances_;
-  }
-  // journal_start_state() of the parts read (journal_state.hpp).
-  [[nodiscard]] const sim::SessionStart* session_start() const override { return &start_; }
-  // Its ParamUpdate records and the first part's parameter table.
-  [[nodiscard]] const sim::RecordedParams* recorded_params() const override { return &params_; }
+  // What the parts say about the session (sim/recorded_session.hpp): its states and checkpoints
+  // (journal_state.hpp), the positions reconciled before its first order, its ParamUpdate records
+  // with the first part's parameter table, its balance rows (account rows, kAccount, left out) and
+  // its flows. With remap, their instruments are the configuration's.
+  [[nodiscard]] const sim::RecordedSession* recorded() const override { return &session_; }
 
   [[nodiscard]] static bool is_market_data(EventType t) noexcept {
     return t == EventType::BookDelta || t == EventType::BookSnapshot || t == EventType::Trade ||
@@ -90,9 +85,7 @@ class JournalSource final : public MdSource {
   std::unique_ptr<OwnOrderStripper> stripper_;
   std::size_t orders_ = 0;
   EventBuf buf_;
-  std::vector<sim::SimAccountConfig> balances_;
-  sim::SessionStart start_;
-  sim::RecordedParams params_;
+  sim::RecordedSession session_;
   // remap: per journal instrument id, the configured id (kUnmapped: dropped) and its venue.
   static constexpr std::uint32_t kUnmapped = 0xFFFF'FFFF;
   bool remap_ = false;

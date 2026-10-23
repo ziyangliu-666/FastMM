@@ -613,6 +613,9 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "journal_retention_days", e.journal_retention_days);
     if (e.journal_retention_days < 0)
       fail_at(*t->get("journal_retention_days"), "journal_retention_days must be >= 0 (0 keeps)");
+    get(*t, "checkpoint_s", e.checkpoint_s);
+    if (e.checkpoint_s < 0)
+      fail_at(*t->get("checkpoint_s"), "checkpoint_s must be >= 0 (0 disables)");
     get(*t, "epoch_file", e.epoch_file);
     get(*t, "kill_file", e.kill_file);
     get(*t, "instance_lock", e.instance_lock);
@@ -894,10 +897,6 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "state_interval_s", cfg.strategy.state_interval_s);
     if (cfg.strategy.state_interval_s <= 0)
       fail_at(*t->get("state_interval_s"), "state_interval_s must be > 0");
-    get(*t, "state_snapshot_interval_s", cfg.strategy.state_snapshot_interval_s);
-    if (cfg.strategy.state_snapshot_interval_s < 0)
-      fail_at(*t->get("state_snapshot_interval_s"),
-              "state_snapshot_interval_s must be >= 0 (0 disables)");
     if (const auto* p = t->get_as<toml::table>("params")) {
       for (const auto& [k, v] : *p) {
         if (v.is_table() || v.is_array())
@@ -1183,6 +1182,7 @@ std::string Config::redacted() const {
   kq("threading", engine.threading);
   kv("journal", engine.journal);
   kq("journal_dir", engine.journal_dir);
+  if (engine.checkpoint_s != 0) kv("checkpoint_s", engine.checkpoint_s);
   kq("epoch_file", engine.epoch_file);
   kq("kill_file", engine.kill_file);
   kv("instance_lock", engine.instance_lock);
@@ -1264,8 +1264,6 @@ std::string Config::redacted() const {
   if (strategy.max_param_age_ms != 0) kv("max_param_age_ms", strategy.max_param_age_ms);
   if (!strategy.state_file.empty()) kq("state_file", strategy.state_file);
   if (strategy.state_interval_s != 300) kv("state_interval_s", strategy.state_interval_s);
-  if (strategy.state_snapshot_interval_s != 0)
-    kv("state_snapshot_interval_s", strategy.state_snapshot_interval_s);
   if (!strategy.params.empty()) {
     out += "\n[strategy.params]\n";
     for (const auto& [k, v] : strategy.params) kq(k, v);
@@ -1445,6 +1443,7 @@ std::string Config::effective_toml() const {
   e.insert("journal_sync", engine.journal_sync);
   e.insert("journal_max_bytes", static_cast<std::int64_t>(engine.journal_max_bytes));
   e.insert("journal_retention_days", static_cast<std::int64_t>(engine.journal_retention_days));
+  if (engine.checkpoint_s != 0) e.insert("checkpoint_s", engine.checkpoint_s);
   e.insert("epoch_file", engine.epoch_file);
   e.insert("kill_file", engine.kill_file);
   e.insert("instance_lock", engine.instance_lock);
@@ -1552,8 +1551,6 @@ std::string Config::effective_toml() const {
   if (strategy.max_param_age_ms != 0) st.insert("max_param_age_ms", strategy.max_param_age_ms);
   if (!strategy.state_file.empty()) st.insert("state_file", strategy.state_file);
   if (strategy.state_interval_s != 300) st.insert("state_interval_s", strategy.state_interval_s);
-  if (strategy.state_snapshot_interval_s != 0)
-    st.insert("state_snapshot_interval_s", strategy.state_snapshot_interval_s);
   toml::table params;
   for (const auto& [k, v] : strategy.params) params.insert_or_assign(k, v);
   st.insert("params", std::move(params));

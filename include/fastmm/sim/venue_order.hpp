@@ -33,9 +33,7 @@ class VenueOrderSource final : public MdSource {
 
   const EventHeader* next() override;
   void reset() override;
-  [[nodiscard]] const std::vector<SimAccountConfig>* balance_snapshots() const override {
-    return src_->balance_snapshots();
-  }
+  [[nodiscard]] const RecordedSession* recorded() const override { return src_->recorded(); }
   [[nodiscard]] Timestamp start_ts() const override { return src_->start_ts(); }
   [[nodiscard]] std::string note() const override;
 

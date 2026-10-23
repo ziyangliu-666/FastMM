@@ -153,7 +153,7 @@ With several venues (a pool's accounts are venues of their own) the latency keys
 A strategy that adapts as it trades (fitted parameters, inventory targets, hedge state) carries that state across sessions through `state()` and `restore()` and `[strategy] state_file`. A backtest that starts it fresh over a live session's journal is not the same strategy: it quotes elsewhere and in other sizes until it has learnt again, and the gap to live says little about the fill model. With a journal the engine records what a session starts from (`StrategyState`, [Journal format](../reference/journal-format.md#strategy-state)):
 
 * the bytes it handed to `restore()` at the start, flagged with whether the strategy took them;
-* with `[strategy] state_snapshot_interval_s`, the strategy's `state()` and the engine's positions that often, written by the engine thread from a buffer made once, so a part of a session cut by `journal_max_bytes` has a state of its own.
+* with `[engine] checkpoint_s`, a checkpoint that often: the strategy's `state()`, the engine's positions and its open orders, written by the engine thread from buffers made at the start, so a part of a session cut by `journal_max_bytes` has a state of its own.
 
 The positions a session restores from its store and the venues report at the start are in every journal already, as the reconciliation records before its first order.
 

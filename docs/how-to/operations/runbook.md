@@ -116,7 +116,7 @@ With the defaults the epoch file, the kill file and the store all live under `ru
 2. Repoint the symlink: `ln -sfn /opt/fastmm-<previous version>-x86_64 /opt/fastmm`.
 3. Check the config loads with the older binary: `fastmm-live --config <your.toml> --dry-run --duration 10s`. A key the older build does not know is ignored with a warning naming the key and line, so a config written for a newer build usually starts, without that feature.
 4. Use the matching `fastmm-top`. The status file layout is versioned, and a mismatched reader refuses the file.
-5. Use the matching `fastmm-replay` for journals from the rolled-back build. Journal format v3 tools read v1 and v2; a replay with a different binary is not expected to match ([Determinism](../../explanation/determinism.md)).
+5. Use the matching `fastmm-replay` for journals from the rolled-back build. Journal format v4 tools read v1 to v3; a replay with a different binary is not expected to match ([Determinism](../../explanation/determinism.md)).
 6. Keep the journals of the rolled-back session. They are the only execution record.
 
 ## Compatibility

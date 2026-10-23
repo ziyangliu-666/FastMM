@@ -70,6 +70,7 @@ struct EngineSection {
   std::string journal_sync = "async";  // "async" | "fdatasync" (core/journal.hpp)
   std::size_t journal_max_bytes = 0;   // roll over to the next part at this size (0: never)
   int journal_retention_days = 0;      // delete .fmj files older than this at start (0: keep)
+  std::int64_t checkpoint_s = 0;       // journal checkpoints this often (0: none)
   std::string epoch_file = "runs/session_epoch";
   // Latched kill switch and cumulative PnL; empty = "<journal_dir>/<name>.kill".
   std::string kill_file;
@@ -228,7 +229,6 @@ struct StrategySection {
   std::int64_t max_param_age_ms = 0;  // 0 = off
   std::string state_file;             // the strategy's state across sessions; empty: none
   std::int64_t state_interval_s = 300;
-  std::int64_t state_snapshot_interval_s = 0;  // journal snapshots of state(); 0: none
 };
 
 // [ab]: an A/B test of strategy parameters (strategies/ab_test.hpp). No arms: no test.

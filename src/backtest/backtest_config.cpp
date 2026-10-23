@@ -402,7 +402,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   b.engine.max_param_age = milliseconds(cfg.strategy.max_param_age_ms);
   b.engine.state_file = cfg.strategy.state_file;
   b.engine.state_interval = seconds(cfg.strategy.state_interval_s);
-  b.engine.state_snapshot_interval = seconds(cfg.strategy.state_snapshot_interval_s);
+  b.engine.checkpoint_interval = seconds(cfg.engine.checkpoint_s);
   // A replay reruns the engine's own timers from the journal; they must find the settings the
   // recorded session ran with (the ack sweep's timeout, the flatten's period and deadline).
   b.engine.ack_timeout = milliseconds(cfg.engine.ack_timeout_ms);

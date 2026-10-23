@@ -90,6 +90,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      "delete .fmj files in journal_dir last written more than this many days ago, at start; "
      "0 = keep everything (default 0)"},
     {"engine",
+     "checkpoint_s",
+     KeyType::Int,
+     false,
+     "with a journal, how often the engine writes a checkpoint to it: the strategy's state() (a "
+     "strategy that keeps state), the positions and the open orders, seconds of engine time; a "
+     "backtest can start from any of them (default 0: never)"},
+    {"engine",
      "epoch_file",
      KeyType::String,
      false,
@@ -566,12 +573,6 @@ inline constexpr KeySpec kConfigSchema[] = {
      KeyType::Int,
      false,
      "how often the state is written, seconds of engine time (default 300)"},
-    {"strategy",
-     "state_snapshot_interval_s",
-     KeyType::Int,
-     false,
-     "with a journal, how often the strategy's state() and the positions are written to it, "
-     "seconds of engine time, for a backtest to start from (default 0: never)"},
     {"strategy",
      "params",
      KeyType::Table,

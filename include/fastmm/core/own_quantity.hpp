@@ -71,6 +71,12 @@ class OwnQuantity {
   void on_outbound(const EventHeader& h) noexcept;
   // Order events from the venue; other types are ignored.
   void on_inbound(const EventHeader& h) noexcept;
+  // An order a checkpoint or a reconciliation lists that went out before anything seen here (a
+  // journal part from the middle of a session, an order left from before a restart): it has rested
+  // since before the first record, with `leaves` at `px`, until it ends. Nothing for an order
+  // already known.
+  void on_resting(
+      ClientOrderId id, InstrumentId inst, VenueId venue, Side side, Price px, Qty leaves) noexcept;
   // The OMS ended the order in a way on_inbound does not see (a cancel the venue rejected because
   // it no longer knows the order): it stops resting at venue time t, or is forgotten if it never
   // rested.

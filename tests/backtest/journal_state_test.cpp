@@ -31,7 +31,9 @@ std::string positions_bytes(std::vector<StatePosition> ps) {
 sim::SessionStart start_of(const std::string& path) {
   JournalReader r;
   REQUIRE(r.open(path));
-  return journal_start_state(std::span<JournalReader>{&r, 1});
+  sim::RecordedSession s;
+  read_states(std::span<JournalReader>{&r, 1}, s);
+  return s.start();
 }
 
 // A session: a book, positions restored, the restored state, a first order, later positions and a
@@ -207,4 +209,59 @@ TEST_CASE("backtest.journal_state: params_from_journal replays the session's par
   CHECK_THROWS_WITH_AS(static_cast<void>(run_backtest<Remembers>(cfg, nullptr)),
                        doctest::Contains("params_from_journal needs a journal"),
                        std::invalid_argument);
+}
+
+TEST_CASE("backtest.journal_state: checkpoints by time, their open orders, and the take-overs") {
+  const std::string path = tmp_path("journal_state_checkpoints.fmj");
+  const auto orders_bytes = [](std::vector<StateOrder> os) {
+    std::string s(os.size() * sizeof(StateOrder), '\0');
+    std::memcpy(s.data(), os.data(), s.size());
+    return s;
+  };
+  {
+    JournalBuilder j(path, true);
+    j.now = 1'000;
+    j.book(true, {{"100.00", "5"}}, {{"100.02", "5"}});
+    for (std::uint64_t k = 1; k <= 3; ++k) {
+      j.now = static_cast<std::int64_t>(k) * 10'000;
+      j.strategy_state(StrategyStateMsg::Kind::Snapshot,
+                       k,
+                       StrategyStateMsg::kStatePart,
+                       "s" + std::to_string(k));
+      j.strategy_state(
+          StrategyStateMsg::Kind::Snapshot,
+          k,
+          StrategyStateMsg::kPositionsPart,
+          positions_bytes({StatePosition{
+              0, 0, {}, qt("0.1").raw * static_cast<std::int64_t>(k), px("100").raw}}));
+      j.strategy_state(
+          StrategyStateMsg::Kind::Snapshot,
+          k,
+          StrategyStateMsg::kOrdersPart,
+          orders_bytes({StateOrder{40 + k, 0, 0, 0, 2, 1, px("99.90").raw, qt("0.2").raw}}));
+      j.book(false, {{"100.00", "4"}}, {});
+    }
+    j.now = 40'000;
+    j.control(ControlCommand::TakeOver);
+    j.strategy_state(StrategyStateMsg::Kind::Snapshot, 4, StrategyStateMsg::kStatePart, "handed");
+    j.strategy_state(StrategyStateMsg::Kind::Snapshot, 4, StrategyStateMsg::kPositionsPart, "");
+  }
+  JournalReader r;
+  REQUIRE(r.open(path));
+  sim::RecordedSession s;
+  read_states(std::span<JournalReader>{&r, 1}, s);
+  REQUIRE(s.checkpoints.size() == 4);
+  CHECK(s.checkpoints[1].at == Timestamp{20'000});
+  REQUIRE(s.checkpoints[1].orders.size() == 1);
+  CHECK(s.checkpoints[1].orders[0].cl_ord_id == 42);
+  CHECK(s.checkpoints[3].orders.empty());  // written without the orders part (format v3)
+  const sim::SessionStart at = s.start(Timestamp{25'000});
+  CHECK(at.has_state);
+  CHECK(at.strategy == "s2");
+  CHECK(at.at == Timestamp{20'000});
+  REQUIRE(at.positions.size() == 1);
+  CHECK(at.positions[0].position_qty == qt("0.2"));
+  CHECK_FALSE(s.start(Timestamp{5'000}).has_state);  // before the first checkpoint
+  CHECK(s.start().strategy == "s1");                 // no time: the first one
+  CHECK(take_over_states(r) == std::vector<std::string>{"handed"});
 }

@@ -634,3 +634,59 @@ TEST_CASE("hotpath.noalloc: engine step with venue marks and funding") {
   CHECK(strategy.seen == 21);
   CHECK(engine->live_stats().perp_count == 1);
 }
+
+// [engine] checkpoint_s: the timer writes the strategy's state, the positions and the open orders
+// into the journal from the buffers start() made.
+TEST_CASE("hotpath.noalloc: engine writes a checkpoint") {
+  InstrumentTable table;
+  REQUIRE(table.add(make_inst()));
+  SimClock clock{Timestamp{seconds(1000).ns}};
+  NullTransport transport;
+  InlineFeed feed{1 << 20};
+  MsgRing journal_ring{1 << 22};
+  BasicMM strategy;
+  REQUIRE_FALSE(strategy.configure(
+      {{"half_spread_bps", "10"}, {"quote_qty", "0.01"}, {"max_inventory", "0.05"}}));
+  EngineConfig cfg;
+  cfg.risk.max_order_qty = qt("1");
+  cfg.risk.max_position = qt("1");
+  cfg.risk.max_open_orders = 8;
+  cfg.quotes.min_requote_interval = Duration{};
+  cfg.checkpoint_interval = seconds(1);
+  using E = Engine<BasicMM, SimClock, NullTransport, InlineFeed>;
+  auto engine = std::make_unique<E>(cfg, table, clock, transport, feed, strategy, &journal_ring);
+  engine->warm_up();
+  engine->start();
+  std::byte* p = feed.reserve(BookDeltaMsg::size_for(1, 1));
+  REQUIRE(p != nullptr);
+  auto* d = reinterpret_cast<BookDeltaMsg*>(p);
+  init_header(
+      *d, EventType::BookSnapshot, InstrumentId{0}, VenueId{0}, BookDeltaMsg::size_for(1, 1));
+  d->hdr.flags |= EventHeader::kSnapshot;
+  d->hdr.recv_ts = clock.now();
+  d->bid_count = d->ask_count = 1;
+  d->levels()[0] = Level{px("100.00"), qt("5")};
+  d->levels()[1] = Level{px("100.02"), qt("5")};
+  feed.commit();
+  while (engine->step() > 0) {
+  }
+  REQUIRE(transport.sent >= 2);  // quotes open: the checkpoint lists them
+  std::size_t states = 0;
+  {
+    NoAllocScope guard(true);
+    for (int i = 0; i < 3; ++i) {
+      clock.advance(seconds(1));
+      engine->step();
+    }
+  }
+  while (const std::byte* r = journal_ring.try_peek()) {
+    const auto* h = reinterpret_cast<const EventHeader*>(r);
+    if (h->type == EventType::StrategyState &&
+        reinterpret_cast<const StrategyStateMsg*>(h)->part == StrategyStateMsg::kOrdersPart) {
+      ++states;
+      CHECK(reinterpret_cast<const StrategyStateMsg*>(h)->bytes >= 2 * sizeof(StateOrder));
+    }
+    journal_ring.release();
+  }
+  CHECK(states == 3);
+}
