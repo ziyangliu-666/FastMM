@@ -1032,6 +1032,10 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     const bool kill_missing = !std::filesystem::exists(kill_path, missing_ec) && !missing_ec;
     if (auto loaded = KillStateStore::load(kill_path)) {
       kill_state = *loaded;
+      // A daily budget: what an earlier day spent is not this day's (the latch stays).
+      if (cfg.risk.max_loss_period == "utc_day" &&
+          start_loss_period(kill_state, utc_day_start(wall_now().ns)))
+        FASTMM_LOG_INFO("[risk] max_loss: a new UTC day; the kill file's count starts from zero");
     } else {
       std::fprintf(stderr, "%s: %s\n", prog, loaded.error().c_str());
       return kExitConfig;
@@ -2327,7 +2331,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     if (opts.dry_run) return;  // never the keyed sessions' ledger
     // Nothing traded since the last write: no rewrite, and no fsync of the journal directory.
     if (kill_written && st.realized == kill_last.realized && st.fees == kill_last.fees &&
-        st.latched == kill_last.latched) {
+        st.latched == kill_last.latched && st.period_start_ns == kill_last.period_start_ns) {
       return;
     }
     st.updated_ns = wall_now().ns;
@@ -2337,6 +2341,23 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
       kill_write_failed = true;
       FASTMM_LOG_ERROR("cannot persist the kill state: {}", std::string_view(r.error()));
     }
+  };
+  // [risk] max_loss_period = "utc_day": at 00:00 UTC the engine measures net PnL from zero again
+  // (ControlCommand::ResetLossBudget, journaled with the rest of its input) and the kill file
+  // starts the day's count. A full control ring: tried again on the next status turn.
+  const auto roll_loss_period = [&](const EngineLiveStats& live) {
+    if (cfg.risk.max_loss_period != "utc_day" || !owner) return;
+    const std::int64_t day = utc_day_start(wall_now().ns);
+    if (day == kill_state.period_start_ns) return;
+    ControlMsg m{};
+    init_header(m, EventType::Control, InstrumentId{}, VenueId::invalid());
+    m.command = ControlCommand::ResetLossBudget;
+    m.hdr.recv_ts = wall_now();
+    if (!control_ring.try_push(&m, m.hdr.len)) return;
+    feed.notify();
+    kill_state.realized = Notional::from_raw(-live.stats.realized_pnl_raw);
+    kill_state.fees = Notional::from_raw(-live.stats.fees_raw);
+    kill_state.period_start_ns = day;
   };
   persist_kill(runner->live_stats());
   publish_status(StatusRunState::Running, runner->live_stats());
@@ -2846,6 +2867,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     if (now >= next_status) {
       next_status = now + 250'000'000;
       check_store(live);
+      roll_loss_period(live);
       persist_kill(live);
       publish_status(StatusRunState::Running, live);
       save_strategy_state();

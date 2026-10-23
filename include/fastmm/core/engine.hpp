@@ -2416,7 +2416,18 @@ class Engine {
       case ControlCommand::Transfer:
         ++stats_.treasury_records;  // a treasury's record for the journal (ControlTransferMsg)
         break;
+      case ControlCommand::ResetLossBudget:
+        reset_loss_budget();
+        break;
     }
+  }
+
+  // ControlCommand::ResetLossBudget: net_pnl() is zero again from here.
+  FASTMM_NOINLINE void reset_loss_budget() noexcept {
+    const Notional before = net_pnl();
+    cfg_.pnl_carry = cfg_.pnl_carry - before;
+    FASTMM_LOG_INFO("[risk] max_loss: a new period starts; net PnL {} measured from zero again",
+                    before);
   }
 
   // ControlCommand::TakeOver: the loss budget the session before this one left, and its strategy

@@ -677,6 +677,7 @@ Every limit is off when it is `0` or omitted. A `fastmm-live` session that trade
 | `fat_finger_bps` | integer |  | refuse limit prices further than this from the last trade, bps |
 | `stale_md_ms` | integer |  | refuse orders when the instrument's book is older than this, ms |
 | `max_loss` | any |  | trip the kill switch when net PnL falls to -max_loss, settlement currency (the [accounting] reporting_currency when set), decimal; latched across restarts in kill_file |
+| `max_loss_period` | string |  | what max_loss is a budget for: total (every session since kill_file was cleared) \| utc_day (net PnL from 00:00 UTC; a trip stays latched across the day) (default total) |
 | `max_gross_notional` | any |  | refuse an order that would take the portfolio's summed \|position\| at the last marks past this, settlement currency (or reporting_currency), decimal |
 | `max_net_notional` | any |  | refuse an order that would take the portfolio's signed position sum further past this, settlement currency (or reporting_currency), decimal |
 | `orders_per_sec` | integer |  | token-bucket order rate, orders/s |

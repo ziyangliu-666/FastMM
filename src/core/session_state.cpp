@@ -149,6 +149,8 @@ Result<KillState, std::string> KillStateStore::load(const std::string& path) {
         s.sessions = std::stoull(value);
       } else if (key == "updated_ns") {
         s.updated_ns = std::stoll(value);
+      } else if (key == "period_start_ns") {
+        s.period_start_ns = std::stoll(value);
       } else {
         return fail(
             std::string("kill state file ").append(path).append(": unknown key '").append(key) +
@@ -170,6 +172,8 @@ Result<void, std::string> KillStateStore::store(const std::string& path, const K
   t += "fees_raw " + std::to_string(s.fees.raw) + "\n";
   t += "sessions " + std::to_string(s.sessions) + "\n";
   t += "updated_ns " + std::to_string(s.updated_ns) + "\n";
+  // Only for a daily budget, so a "total" file reads in a build that predates the key.
+  if (s.period_start_ns != 0) t += "period_start_ns " + std::to_string(s.period_start_ns) + "\n";
   return write_file_atomic(path, t);
 }
 

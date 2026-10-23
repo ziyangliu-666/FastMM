@@ -686,6 +686,12 @@ inline constexpr KeySpec kConfigSchema[] = {
      "trip the kill switch when net PnL falls to -max_loss, settlement currency (the "
      "[accounting] reporting_currency when set), decimal; latched across restarts in kill_file"},
     {"risk",
+     "max_loss_period",
+     KeyType::String,
+     false,
+     "what max_loss is a budget for: total (every session since kill_file was cleared) | utc_day "
+     "(net PnL from 00:00 UTC; a trip stays latched across the day) (default total)"},
+    {"risk",
      "max_gross_notional",
      KeyType::Any,
      false,

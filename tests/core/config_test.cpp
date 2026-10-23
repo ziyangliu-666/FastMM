@@ -920,3 +920,16 @@ TEST_CASE("core.config: source_ip and source_interface are checked as written") 
                        doctest::Contains("longer than an interface name"),
                        ConfigError);
 }
+
+TEST_CASE("core.config: [risk] max_loss_period is total or utc_day") {
+  const Config none = Config::parse(kMinimal);
+  CHECK(none.risk.max_loss_period == "total");
+  CHECK(none.effective_toml().find("max_loss_period") == std::string::npos);
+  const Config daily = Config::parse("[risk]\nmax_loss = \"100\"\nmax_loss_period = \"utc_day\"\n");
+  CHECK(daily.risk.max_loss_period == "utc_day");
+  CHECK(daily.effective_toml().find("max_loss_period") != std::string::npos);
+  CHECK(Config::parse(daily.effective_toml()).risk.max_loss_period == "utc_day");
+  CHECK_THROWS_WITH_AS(Config::parse("[risk]\nmax_loss_period = \"week\"\n"),
+                       doctest::Contains("max_loss_period must be"),
+                       ConfigError);
+}

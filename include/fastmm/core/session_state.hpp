@@ -46,10 +46,29 @@ struct KillState {
   Notional fees{};
   std::uint64_t sessions = 0;
   std::int64_t updated_ns = 0;  // wall clock of the last write
+  // [risk] max_loss_period = "utc_day": the 00:00 UTC (wall ns) `realized` and `fees` count from;
+  // 0 for "total".
+  std::int64_t period_start_ns = 0;
 
   // The carry [risk] max_loss is measured against, on top of the running session's PnL.
   [[nodiscard]] Notional carry() const noexcept { return realized - fees; }
 };
+
+// 00:00 UTC of the day `wall_ns` falls in.
+[[nodiscard]] constexpr std::int64_t utc_day_start(std::int64_t wall_ns) noexcept {
+  constexpr std::int64_t kDay = 86'400'000'000'000;
+  return wall_ns - ((wall_ns % kDay) + kDay) % kDay;
+}
+
+// Starts the loss budget's period that holds `wall_ns` when the state counts an earlier one:
+// `realized` and `fees` go back to zero, the latch stays. False: already that period.
+inline bool start_loss_period(KillState& s, std::int64_t period_start_ns) noexcept {
+  if (s.period_start_ns == period_start_ns) return false;
+  s.realized = Notional{};
+  s.fees = Notional{};
+  s.period_start_ns = period_start_ns;
+  return true;
+}
 
 class KillStateStore {
  public:

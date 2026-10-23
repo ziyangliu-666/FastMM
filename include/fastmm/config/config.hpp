@@ -262,6 +262,9 @@ struct RiskSection {
   int fat_finger_bps = 0;
   int stale_md_ms = 0;
   std::string max_loss;
+  // The span max_loss is a budget for: "total" (every session since the kill file was cleared) or
+  // "utc_day" (from 00:00 UTC; a new day measures net PnL from zero again).
+  std::string max_loss_period = "total";
   std::string max_gross_notional;
   std::string max_net_notional;
   int orders_per_sec = 0;

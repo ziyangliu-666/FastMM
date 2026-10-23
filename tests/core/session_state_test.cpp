@@ -129,6 +129,39 @@ TEST_CASE("core.session_state: the kill state round-trips and a corrupt file fai
   CHECK(!KillStateStore::load(path).has_value());
 }
 
+TEST_CASE("core.session_state: a daily loss budget starts each UTC day from zero, latch kept") {
+  constexpr std::int64_t kDay = 86'400'000'000'000;
+  const std::int64_t day = 20'384 * kDay;  // 2025-10-23 00:00 UTC
+  CHECK(utc_day_start(day) == day);
+  CHECK(utc_day_start(day + kDay - 1) == day);
+  CHECK(utc_day_start(day - 1) == day - kDay);
+
+  KillState s;
+  s.latched = true;
+  s.reason = KillReason::MaxLoss;
+  s.realized = Notional::from_decimal("-80").value();
+  s.fees = Notional::from_decimal("2").value();
+  s.period_start_ns = day - kDay;
+  CHECK(start_loss_period(s, day));
+  CHECK(s.carry() == Notional{});
+  CHECK(s.latched);
+  CHECK(s.period_start_ns == day);
+  CHECK_FALSE(start_loss_period(s, day));
+
+  const auto path = (tmp_dir() / "daily.kill").string();
+  std::filesystem::remove(path);
+  s.realized = Notional::from_decimal("-5").value();
+  REQUIRE(KillStateStore::store(path, s).has_value());
+  const auto back = KillStateStore::load(path);
+  REQUIRE(back.has_value());
+  CHECK(back->period_start_ns == day);
+  CHECK(back->realized == s.realized);
+  // A "total" budget writes no period: the file reads in a build that predates the key.
+  s.period_start_ns = 0;
+  REQUIRE(KillStateStore::store(path, s).has_value());
+  CHECK(read_all(path).find("period_start_ns") == std::string::npos);
+}
+
 TEST_CASE("core.session_state: write_file_atomic replaces the file or leaves the old one") {
   const auto path = (tmp_dir() / "atomic.txt").string();
   REQUIRE(write_file_atomic(path, "first").has_value());

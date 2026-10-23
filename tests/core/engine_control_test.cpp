@@ -496,3 +496,33 @@ TEST_CASE("core.engine.control: a flatten order is exempt from max_position") {
   CHECK(r.transport.news().back().qty == qt("0.500"));
   CHECK(r.engine->stats().flatten_orders == 1);
 }
+
+TEST_CASE("core.engine.control: ResetLossBudget measures net PnL from zero again") {
+  Rig r;
+  ControlLimitsMsg m{};
+  init_header(m, EventType::Control);
+  m.command = ControlCommand::SetLimits;
+  m.limits = r.engine->risk().limits();
+  m.limits.max_loss = Notional::from_decimal("60").value();
+  r.push(m);
+  r.book(kA, "50.00", "50.02");
+  // A round trip that loses 40: inside the budget.
+  r.fill(kA, Side::Buy, "100.00", "1.000");
+  r.fill(kA, Side::Sell, "60.00", "1.000");
+  CHECK(r.engine->net_pnl() == Notional::from_decimal("-40").value());
+  CHECK(r.engine->kill_reason() == KillReason::None);
+
+  r.control(ControlCommand::ResetLossBudget);
+  CHECK(r.engine->net_pnl() == Notional{});
+  // Another 40: without the reset the budget would be spent.
+  r.fill(kA, Side::Buy, "100.00", "1.000");
+  r.fill(kA, Side::Sell, "60.00", "1.000");
+  CHECK(r.engine->net_pnl() == Notional::from_decimal("-40").value());
+  CHECK(r.engine->kill_reason() == KillReason::None);
+  r.fill(kA, Side::Buy, "100.00", "1.000");
+  r.fill(kA, Side::Sell, "60.00", "1.000");
+  CHECK(r.engine->kill_reason() == KillReason::MaxLoss);
+  // A tripped switch stays tripped across a new period.
+  r.control(ControlCommand::ResetLossBudget);
+  CHECK(r.engine->kill_reason() == KillReason::MaxLoss);
+}

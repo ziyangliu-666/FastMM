@@ -11,6 +11,7 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ### Added
 - live: `[engine] stall_ms` cancels every order and exits 5 when the engine thread is stuck in a step.
+- core: `[risk] max_loss_period = "utc_day"` makes `max_loss` a budget for each UTC day.
 - live: `SIGUSR1` and `fastmm-ctl log-reopen` open the log file again, for logrotate without copytruncate.
 - live: `fastmm-live` and `fastmm-gateway` speak sd_notify; the systemd units are `Type=notify` with a watchdog.
 - core: `[engine] checkpoint_s` journals the positions and open orders of any strategy.

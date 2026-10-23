@@ -934,6 +934,9 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "fat_finger_bps", r.fat_finger_bps);
     get(*t, "stale_md_ms", r.stale_md_ms);
     get_decimal(*t, "max_loss", r.max_loss);
+    get(*t, "max_loss_period", r.max_loss_period);
+    if (r.max_loss_period != "total" && r.max_loss_period != "utc_day")
+      throw ConfigError("risk.max_loss_period must be \"total\" or \"utc_day\"");
     get_decimal(*t, "max_gross_notional", r.max_gross_notional);
     get_decimal(*t, "max_net_notional", r.max_net_notional);
     get(*t, "orders_per_sec", r.orders_per_sec);
@@ -1305,6 +1308,7 @@ std::string Config::redacted() const {
   kv("fat_finger_bps", risk.fat_finger_bps);
   kv("stale_md_ms", risk.stale_md_ms);
   if (!risk.max_loss.empty()) kq("max_loss", risk.max_loss);
+  if (risk.max_loss_period != "total") kq("max_loss_period", risk.max_loss_period);
   if (!risk.max_gross_notional.empty()) kq("max_gross_notional", risk.max_gross_notional);
   if (!risk.max_net_notional.empty()) kq("max_net_notional", risk.max_net_notional);
   kv("orders_per_sec", risk.orders_per_sec);
@@ -1603,6 +1607,7 @@ std::string Config::effective_toml() const {
   r.insert("fat_finger_bps", static_cast<std::int64_t>(risk.fat_finger_bps));
   r.insert("stale_md_ms", static_cast<std::int64_t>(risk.stale_md_ms));
   r.insert("max_loss", risk.max_loss);
+  if (risk.max_loss_period != "total") r.insert("max_loss_period", risk.max_loss_period);
   // Only when set, so a configuration without them keeps its effective text and hash; a replay
   // needs them to refuse what the recorded session refused.
   if (!risk.max_gross_notional.empty()) r.insert("max_gross_notional", risk.max_gross_notional);

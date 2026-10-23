@@ -40,6 +40,10 @@ updated_ns 1758600000000000000
 
 `fastmm-top` shows `LATCHED` next to the state and `carried=` / `budget_used=` on the `pnl` line.
 
+### A daily budget
+
+With `[risk] max_loss_period = "utc_day"`, `max_loss` is a budget for one UTC day instead. At 00:00 UTC the engine measures net PnL from zero again, unrealized PnL included, and the kill file counts the new day from zero; the file gains a `period_start_ns` line with the day it counts. A start on a later day than the file's begins the day at zero. A trip stays latched across the day boundary: it still needs `--clear-kill`.
+
 ## What trips it
 
 | Cause | Scope | Log line | Level | What happens next |

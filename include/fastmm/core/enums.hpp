@@ -482,6 +482,9 @@ enum class ControlCommand : std::uint8_t {
   // message is a ControlTransferMsg; the engine counts it and changes nothing, so the journal holds
   // every transfer next to the balances it moved.
   Transfer = 14,
+  // A new [risk] max_loss period began (max_loss_period = "utc_day"): the engine measures net PnL
+  // from zero again, unrealized PnL included; a tripped kill switch stays tripped.
+  ResetLossBudget = 15,
 };
 [[nodiscard]] constexpr std::string_view to_string(ControlCommand c) noexcept {
   switch (c) {
@@ -515,6 +518,8 @@ enum class ControlCommand : std::uint8_t {
       return "TakeOver";
     case ControlCommand::Transfer:
       return "Transfer";
+    case ControlCommand::ResetLossBudget:
+      return "ResetLossBudget";
   }
   return "?";
 }
