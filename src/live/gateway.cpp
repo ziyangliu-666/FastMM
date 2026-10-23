@@ -20,6 +20,7 @@
 #include "fastmm/core/underlying.hpp"
 #include "fastmm/live/control_socket.hpp"
 #include "fastmm/live/session.hpp"
+#include "fastmm/live/shutdown_guard.hpp"
 #include "fastmm/live/venue_slot.hpp"
 #include "fastmm/venues/registry.hpp"
 #include "fastmm/venues/symbology.hpp"
@@ -58,6 +59,7 @@ namespace {
 volatile std::sig_atomic_t g_gw_signal = 0;
 extern "C" void on_gw_signal(int sig) {
   g_gw_signal = sig;
+  signal_wake();
 }
 
 struct GatewaySignals {
@@ -65,6 +67,8 @@ struct GatewaySignals {
   struct sigaction old_term {};
   GatewaySignals() {
     g_gw_signal = 0;
+    static_cast<void>(signal_wake_fd());  // made before the handler can write it
+    signal_wake_drain();
     struct sigaction sa {};
     sa.sa_handler = &on_gw_signal;
     sigemptyset(&sa.sa_mask);
@@ -3611,12 +3615,16 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
     fds.clear();
     fds.push_back(pollfd{listen_fd, POLLIN, 0});
     gateway.poll_fds(fds);
-    // Wakes at once when a strategy's connection closes; otherwise at least every 50 ms for the
-    // signals, the overflow check and the once-a-second housekeeping.
+    const std::size_t attachments = fds.size() - 1;
+    fds.push_back(pollfd{signal_wake_fd(), POLLIN, 0});
+    control.add_poll_fds(fds);
+    // Wakes at once for a strategy's connection, a control command or a signal; otherwise at
+    // least every 50 ms for the overflow check and the once-a-second housekeeping.
     const int pr = ::poll(fds.data(), fds.size(), 50);
     if (pr > 0) {
+      if ((fds[attachments + 1].revents & POLLIN) != 0) signal_wake_drain();
       // Back to front: a detach removes its attachment, and the others keep their index.
-      for (std::size_t k = fds.size() - 1; k >= 1; --k) {
+      for (std::size_t k = attachments; k >= 1; --k) {
         if (fds[k].revents != 0) gateway.on_readable(k - 1);
       }
       if ((fds[0].revents & POLLIN) != 0) {

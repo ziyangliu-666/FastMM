@@ -26,6 +26,16 @@ inline constexpr std::int64_t kShutdownBoundNs = 60'000'000'000;
   return first_ns != 0 && now_ns - first_ns >= kSecondSignalAfterNs;
 }
 
+// The control loops (fastmm-live's main thread, fastmm-gateway's) wait in ::poll(2) on this eventfd
+// besides their sockets, and the signal handlers write it: a SIGINT, SIGTERM or SIGHUP is acted on
+// at once, not at the end of the loop's period. Made on the first call, which comes before a
+// handler is installed; -1 when eventfd() failed (the loops then wait out their period).
+[[nodiscard]] int signal_wake_fd() noexcept;
+// Wakes a loop waiting on signal_wake_fd(); async-signal-safe.
+void signal_wake() noexcept;
+// Takes the wake-up, once the loop is awake.
+void signal_wake_drain() noexcept;
+
 // Writes `why` and a newline to stderr and _exit()s with kExitRuntime; async-signal-safe.
 [[noreturn]] void force_exit(const char* why) noexcept;
 

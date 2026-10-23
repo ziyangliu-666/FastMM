@@ -27,6 +27,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - backtest: `balances_from_journal` replays the session's flows of money and account refreshes.
 - backtest: `params_from_journal` works with `[ab]`; the arms keep their parameters.
 - replay: `fastmm-replay` restores the state of a warm standby's take-over.
+- live: the control loops wait on their sockets and signals; a `fastmm-ctl` command is answered in about 0.1 ms, not up to 50.
 
 ### Fixed
 - core: an L3 book recentre no longer moves its whole price window (about 850x faster at 2^16 ticks).

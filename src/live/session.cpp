@@ -37,6 +37,7 @@
 #include <fmt/format.h>
 
 #include <limits.h>
+#include <poll.h>
 #include <sched.h>
 #include <unistd.h>
 
@@ -79,6 +80,7 @@ static_assert(std::atomic<std::int64_t>::is_always_lock_free);
 extern "C" void on_signal(int sig) {
   if (sig == SIGHUP) {
     g_hup = 1;
+    signal_wake();
     return;
   }
   const std::int64_t now = monotonic_ns();
@@ -88,6 +90,7 @@ extern "C" void on_signal(int sig) {
   if (first == 0) g_first_signal_ns.store(now, std::memory_order_relaxed);
   if (ShutdownWatchdog* w = g_watchdog.load(std::memory_order_acquire)) w->stop_requested(now);
   g_signal = sig;
+  signal_wake();
 }
 
 struct sigaction g_old_int {};
@@ -100,6 +103,8 @@ void install_signal_handlers() {
   g_signal = 0;
   g_hup = 0;
   g_first_signal_ns.store(0);
+  static_cast<void>(signal_wake_fd());  // made before the handler can write it
+  signal_wake_drain();                  // a wake-up an earlier session left behind
   struct sigaction sa {};
   sa.sa_handler = &on_signal;
   sigemptyset(&sa.sa_mask);
@@ -2634,8 +2639,17 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
                       : std::string_view(" (fastmm-ctl handoff to the running session)"));
   int standby_rc = 0;  // why a warm standby gave up before taking over
 
+  // The loop's period bounds how late it notices what nobody announces (a kill switch the engine
+  // tripped, a failed journal, the standby's lock); a command on the control socket and a signal
+  // wake it at once.
+  std::vector<pollfd> wait_fds;
   while (reason == 0) {
-    sleep_for(milliseconds(owner ? 50 : 10));
+    wait_fds.clear();
+    wait_fds.push_back(pollfd{signal_wake_fd(), POLLIN, 0});
+    control_socket.add_poll_fds(wait_fds);
+    if (::poll(wait_fds.data(), wait_fds.size(), owner ? 50 : 10) > 0 &&
+        (wait_fds[0].revents & POLLIN) != 0)
+      signal_wake_drain();
     if (!owner && g_signal == 0) {
       const std::int64_t t = steady_now().ns;
       if (opts.takeover && !handoff_sent && (books_synced() || t - warm_start >= 30'000'000'000)) {
@@ -2773,7 +2787,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
       if (paper && ticks % kPaperReportTicks == 0) log_paper_quotes(slots, instruments);
     }
   }
-  shutdown_watchdog.stop_requested();      // --duration, a kill switch, fastmm-ctl stop, ...
+  shutdown_watchdog.stop_requested();  // --duration, a kill switch, fastmm-ctl stop, ...
   if (auditor) auditor->stop();            // an audit waiting for a venue gives up
   if (treasury) treasury->request_stop();  // no new transfer; one under way finishes
   control_socket.close();                  // no command can reach a session that is shutting down

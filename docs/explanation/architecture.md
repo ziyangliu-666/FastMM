@@ -28,7 +28,7 @@ The live application (`fastmm-live`, `src/live/session.cpp`) runs a fixed set of
 | journal writer | `JournalFileWriter`: the journal ring into the `.fmj` file | spin, then waits of 50 µs to 1 ms |
 | `fm-store` | `StoreThread`: fill, order, position, kill and funding records into store rows | 2 ms sleeps when idle |
 | log sink | formats every thread's log records and writes them | spin, then waits of 50 µs to 10 ms |
-| main | config, reference data, thread start and stop, the control socket, the stats line, the status and kill files, TSC recalibration, signals | 50 ms sleeps |
+| main | config, reference data, thread start and stop, the control socket, the stats line, the status and kill files, TSC recalibration, signals | `poll` on the control socket and a signal eventfd, at most 50 ms |
 
 With `spin_mode = adaptive` a network thread polls while active and for 200 µs after, then waits with a 1 ms timeout; the engine writes the wake eventfd only while it waits. The engine spins, then blocks on a futex that the network threads signal after they push events, at most until the next timer (1 ms). The journal writer runs when journaling is on, and `fm-store` unless `[storage] backend = "none"`. The log sink is woken by `flush()` and `stop()`.
 

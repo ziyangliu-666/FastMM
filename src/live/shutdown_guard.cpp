@@ -2,6 +2,7 @@
 
 #include "fastmm/live/session.hpp"
 
+#include <sys/eventfd.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -9,10 +10,40 @@
 
 namespace fastmm::live {
 
+namespace {
+// Stored once, before a handler that reads it is installed.
+std::atomic<int> g_wake_fd{-1};
+static_assert(std::atomic<int>::is_always_lock_free);
+}  // namespace
+
 std::int64_t monotonic_ns() noexcept {
   timespec ts{};
   ::clock_gettime(CLOCK_MONOTONIC, &ts);
   return static_cast<std::int64_t>(ts.tv_sec) * 1'000'000'000 + ts.tv_nsec;
+}
+
+int signal_wake_fd() noexcept {
+  static const int fd = [] {
+    const int f = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    g_wake_fd.store(f, std::memory_order_release);
+    return f;
+  }();
+  return fd;
+}
+
+void signal_wake() noexcept {
+  const int fd = g_wake_fd.load(std::memory_order_acquire);
+  if (fd < 0) return;
+  const std::uint64_t one = 1;
+  // EAGAIN only with the counter at its maximum, which wakes the loop all the same.
+  static_cast<void>(!::write(fd, &one, sizeof one));
+}
+
+void signal_wake_drain() noexcept {
+  const int fd = g_wake_fd.load(std::memory_order_acquire);
+  if (fd < 0) return;
+  std::uint64_t n = 0;
+  static_cast<void>(!::read(fd, &n, sizeof n));
 }
 
 void force_exit(const char* why) noexcept {

@@ -515,6 +515,12 @@ void ControlSocket::drop(std::size_t i) noexcept {
   conns_.erase(conns_.begin() + static_cast<std::ptrdiff_t>(i));
 }
 
+void ControlSocket::add_poll_fds(std::vector<pollfd>& fds) const {
+  if (listen_fd_ < 0) return;
+  fds.push_back(pollfd{listen_fd_, POLLIN, 0});
+  for (const Conn& c : conns_) fds.push_back(pollfd{c.fd, POLLIN, 0});
+}
+
 void ControlSocket::poll(ControlPlane& plane) {
   poll(Handler([&plane](std::string_view request) { return control_command(request, plane); }));
 }

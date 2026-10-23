@@ -335,4 +335,36 @@ TEST_CASE("handoff: a warm standby reads market data before the handoff and quot
   CHECK(store_position(f, "handoff-warm") == fx.server.stats().position);
 }
 
+// The control thread waits on the socket: a command is answered as it arrives, not on the loop's
+// next turn (it used to sleep 50 ms between turns, 25 ms on average per command).
+TEST_CASE("control: a running session answers a command as it arrives") {
+  ServerFixture fx;
+  const SessionFiles f = locked_config(fx, "control-latency");
+  const std::string log = f.config + ".a.log";
+  const pid_t pid = start(f, log, {});
+  REQUIRE_MESSAGE(wait_until([&] { return fx.server.stats().orders_accepted > 0; }, 60000),
+                  "the session never traded: " << fastmm::test::read_file(log));
+  std::vector<std::int64_t> us;
+  for (int i = 0; i < 40; ++i) {
+    std::string reply;
+    const auto t0 = std::chrono::steady_clock::now();
+    REQUIRE(live::control_request(ctl_of(f), "help", 2000, reply) == live::ControlReply::Answered);
+    us.push_back(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0)
+            .count());
+    std::this_thread::sleep_for(std::chrono::milliseconds(7));  // out of step with any period
+  }
+  std::sort(us.begin(), us.end());
+  MESSAGE("control round trip: p50 " << us[us.size() / 2] << " us, max " << us.back() << " us");
+  CHECK(us[us.size() / 2] < 10'000);
+  // A signal is acted on at once too: SIGTERM to the shutdown line well inside a loop period.
+  const auto t0 = std::chrono::steady_clock::now();
+  REQUIRE(::kill(pid, SIGTERM) == 0);
+  CHECK(reap(pid) == live::kExitOk);
+  MESSAGE("SIGTERM to exit: " << std::chrono::duration_cast<std::chrono::milliseconds>(
+                                     std::chrono::steady_clock::now() - t0)
+                                     .count()
+                              << " ms");
+}
+
 #endif  // FASTMM_LIVE_EXE

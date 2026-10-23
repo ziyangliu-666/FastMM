@@ -24,7 +24,7 @@ echo status | socat - UNIX-CONNECT:runs/mm.ctl,socktype=5
 
 (`socktype=5` is `SOCK_SEQPACKET`; `nc -U` speaks stream and datagram sockets only.)
 
-The control thread reads the socket every 50 ms. A command reaches the engine at its next step; the reply means the command is queued, not that the engine has run it. `fastmm-ctl status` or `fastmm-top` shows the effect.
+The control thread waits on the socket and answers a command as it arrives. A command reaches the engine at its next step; the reply means the command is queued, not that the engine has run it. `fastmm-ctl status` or `fastmm-top` shows the effect.
 
 ## The commands
 

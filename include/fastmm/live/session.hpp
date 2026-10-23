@@ -9,7 +9,8 @@
 //                [engine] cpu / spin_mode)
 //   fm-journal   JournalFileWriter drain thread (when journaling)
 //   log sink     Logger::start(): formats and writes log records from every thread's ring
-//   main thread  control: posts Venue::on_timer every second, prints stats, recalibrates the
+//   main thread  control: waits on the control socket and a signal eventfd (50 ms at most),
+//                posts Venue::on_timer every second, prints stats, recalibrates the
 //                TSC every [engine] tsc_recalibrate_s and publishes it (the engine and the
 //                venues pick it up), handles SIGINT/SIGTERM and --duration: kill switch ->
 //                cancel_all on every venue over an independent REST connection -> stop, all

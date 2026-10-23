@@ -25,6 +25,8 @@
 #include "fastmm/core/risk_limits.hpp"
 #include "fastmm/core/strong_id.hpp"
 
+#include <poll.h>
+
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -127,6 +129,10 @@ class ControlSocket {
   // Binds `path` with mode 0600, replacing a socket left behind by a crashed session. False with
   // the reason in `error` (a path that is not a socket is never removed).
   [[nodiscard]] bool open(const std::string& path, std::string* error);
+  // Appends the descriptors poll() reads (the listener and every open connection) for the caller's
+  // ::poll(2), so that a command is answered as soon as it arrives rather than on the caller's next
+  // period. Nothing when the socket is closed.
+  void add_poll_fds(std::vector<pollfd>& fds) const;
   // Accepts what is waiting, answers every complete request and drops connections that went quiet.
   // Bounded work per call; never blocks.
   void poll(ControlPlane& plane);
