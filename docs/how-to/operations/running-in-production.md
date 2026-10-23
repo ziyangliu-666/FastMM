@@ -132,6 +132,8 @@ Use one key per engine, trading permission only, no withdrawal rights, IP-allowl
 
 The latency profile also needs host settings: `isolcpus`, `nohz_full` and `rcu_nocbs` on the engine and network cores, the `performance` governor, NIC interrupts elsewhere, transparent huge pages at `madvise` or `always`, and a raised `ulimit -l`. `scripts/host-setup.sh tune` sets the hugepages, IRQ affinity and governor as root.
 
+On the VM of [Idle states](#idle-states) a thread spinning on a core without `nohz_full` was stopped for 5 to 10 µs by every timer tick, a thousand times a second; with `nohz_full` on its core, by none. Isolation does not stop a TLB shootdown: when any thread of the process unmaps or write-protects memory, every CPU the process runs on takes an interrupt, 1 to 2 µs each. The journal writer uses `pwrite` for that reason, not a mapping of the file.
+
 ## Host tuning
 
 The `[engine]` keys below are off by default. One the process lacks the permission for logs a warning and the session runs without it, as `lock_memory` does.
