@@ -4,6 +4,34 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+### Breaking changes
+- core: `[strategy] state_snapshot_interval_s` is now `[engine] checkpoint_s`; rename the key.
+- core: journal format 4; a journal written by this version does not open in 0.8.
+
+### Added
+- core: `[engine] checkpoint_s` journals the positions and open orders of any strategy.
+- core: an `AccountFlow` event records money moved in or out of an account outside its trades.
+- venues: Binance Spot `balanceUpdate` and USDⓈ-M transfers are `AccountFlow` events.
+- backtest: `[backtest] start_at` warms up on the data and trades from a checkpoint.
+- backtest: `[ab] assignment = "branch"` runs each arm over the same data and seed.
+- backtest: `latency_from_journal` takes the session's own latencies where longer than the model.
+- backtest: `latency_*_sigma` set the shape of each latency path's jitter.
+- backtest: `latency_fill_us`, `_jitter_us` and `_sigma` give fills a path apart from the acks.
+- backtest: `[backtest.positions]` sets the engine's positions at the start.
+- backtest: `fastmm-data events` writes a session's own traffic as CSV.
+
+### Changed
+- backtest: `balances_from_journal` replays the session's flows of money and account refreshes.
+- backtest: `params_from_journal` works with `[ab]`; the arms keep their parameters.
+- replay: `fastmm-replay` restores the state of a warm standby's take-over.
+
+### Fixed
+- backtest: `strip_own` takes out orders that rested before the journal's first record.
+- sim: `l2_queue` checks post-only orders against a book ticker newer than the depth.
+
+### Documentation
+- docs: a how-to replays a live session from a checkpoint and compares configurations from it.
+
 ## [0.8.0] - 2026-10-22
 
 A/B tests of strategy parameters: an `[ab]` section runs arms side by side in `fastmm-live` and in

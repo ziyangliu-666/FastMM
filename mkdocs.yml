@@ -181,6 +181,7 @@ nav:
               - how-to/operations/troubleshooting.md
           - Records:
               - how-to/operations/journals-replay-pnl.md
+              - how-to/operations/replay-live-session.md
               - how-to/operations/query-trading-records.md
           - Low latency:
               - how-to/operations/multicast-feeds.md
