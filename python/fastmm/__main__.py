@@ -59,8 +59,9 @@ def _parser() -> argparse.ArgumentParser:
                     "shipped in fastmm-engine-live, on 127.0.0.1:9080 until interrupted. The "
                     "arguments go to it as they are (fastmm sim --help-sim lists them); without "
                     "--config or --tls-port it trades the built-in BTCUSDT over plain WebSocket.")
+    # main() passes everything after `sim` through before argparse sees it; these are for --help.
     sim.add_argument("--help-sim", action="store_true", help="print fastmm-sim-exchange's options")
-    sim.add_argument("sim_args", nargs=argparse.REMAINDER, metavar="...",
+    sim.add_argument("sim_args", nargs="*", metavar="option",
                      help="fastmm-sim-exchange options, e.g. --port 9081 --seed 3")
     run = commands.add_parser(
         "run", help="run a strategy with hot hooks against live venues",
@@ -114,9 +115,12 @@ def _init(directory: str, force: bool, profile: str = "starter",
 def _sim(sim_args: List[str], help_sim: bool) -> int:
     try:
         import fastmm_live
-    except ImportError:
-        print("fastmm sim: needs the live runtime: pip install 'fastmm-engine[live]'",
-              file=sys.stderr)
+    except ImportError as e:
+        if e.name == "fastmm_live":
+            print("fastmm sim: needs the live runtime: pip install 'fastmm-engine[live]'",
+                  file=sys.stderr)
+        else:  # installed, but it does not load (another fastmm version, a missing dependency)
+            print(f"fastmm sim: {e}", file=sys.stderr)
         return 2
     exe = fastmm_live.sim_exchange_path()
     if not exe.exists():
@@ -143,6 +147,10 @@ def _load_class(target: str) -> type:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args_list = sys.argv[1:] if argv is None else argv
+    if args_list[:1] == ["sim"] and not {"-h", "--help"} & set(args_list[1:2]):
+        # Options of fastmm-sim-exchange, which argparse would take for its own.
+        rest = args_list[1:]
+        return _sim([a for a in rest if a != "--help-sim"], "--help-sim" in rest)
     parser = _parser()
     args = parser.parse_args(args_list)
     if args.command == "init":
@@ -151,8 +159,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         from .report import run_command
 
         return run_command(args)
-    if args.command == "sim":
-        return _sim(args.sim_args, args.help_sim)
     params = {}
     for item in args.param:
         key, sep, value = item.partition("=")

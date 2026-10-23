@@ -146,3 +146,17 @@ def test_the_config_names_a_strategy_that_resolves(tmp_path):
                          capture_output=True, text=True, check=False)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "py:Mm"
+
+
+def test_sim_passes_its_options_through(monkeypatch):
+    """Everything after `fastmm sim` goes to fastmm-sim-exchange, options included."""
+    from fastmm import __main__ as cli
+
+    seen = []
+    monkeypatch.setattr(cli, "_sim", lambda args, help_sim: seen.append((args, help_sim)) or 0)
+    assert cli.main(["sim", "--port", "9081", "--seed", "3"]) == 0
+    assert cli.main(["sim", "--config", "x.toml"]) == 0
+    assert cli.main(["sim", "--help-sim"]) == 0
+    assert cli.main(["sim"]) == 0
+    assert seen == [(["--port", "9081", "--seed", "3"], False), (["--config", "x.toml"], False),
+                    ([], True), ([], False)]

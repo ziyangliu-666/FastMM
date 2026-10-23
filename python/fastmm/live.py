@@ -164,6 +164,8 @@ def _run_live(strategy: Any, config: Union[str, "os.PathLike[str]"],
     try:
         import fastmm_live
     except ImportError as e:
+        if e.name != "fastmm_live":
+            raise  # installed, but it does not load: its own message says why
         raise ImportError(LIVE_MISSING) from e
     from .strategy import _instance
 
