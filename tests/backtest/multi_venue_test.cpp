@@ -564,6 +564,19 @@ TEST_CASE("backtest.multi_venue: cancel latency and order service time per venue
   CHECK(ob.cancel_latency);
   CHECK(ob.cancel_out.fixed == microseconds(2500));
   CHECK(ob.cancel_out.jitter == microseconds(30));
+  // The jitter's lognormal shape: per venue, the cancel and ack paths their own or the order's.
+  const BacktestConfig sh = two_venue_config(
+      "", "latency_sigma = 0.8\nlatency_cancel_sigma = 1.2\nlatency_ack_sigma = 0.3");
+  CHECK(sh.transport.venue_config(VenueId{0}).order_out.sigma == doctest::Approx(0.5));
+  CHECK_FALSE(sh.transport.venue_config(VenueId{0}).cancel_latency);
+  const sim::SimVenueConfig sb = sh.transport.venue_config(VenueId{1});
+  CHECK(sb.order_out.sigma == doctest::Approx(0.8));
+  CHECK(sb.cancel_latency);
+  CHECK(sb.cancel_out.sigma == doctest::Approx(1.2));
+  CHECK(sb.ack_in.sigma == doctest::Approx(0.3));
+  CHECK_THROWS_WITH_AS(static_cast<void>(two_venue_config("", "latency_sigma = 0")),
+                       doctest::Contains("latency_sigma must be in (0, 4]"),
+                       ConfigError);
   CHECK_THROWS_WITH_AS(
       static_cast<void>(two_venue_config("", "latency_fixed_us = 2500\norder_service_us = -1")),
       doctest::Contains("order_service_us must be >= 0"),

@@ -814,6 +814,9 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `queue_conservatism` | number | `[engine] queue_conservatism`, else `1.0` | For `l2_queue`, from 0 to 1: at `0` cancellations ahead of us always move our order up the queue, at `1` they never do. The strategy's `ctx.queue_ahead` uses the same value in a backtest. `fastmm-data fill-check` compares values against a live session ([Check the fill model](../how-to/operations/journals-replay-pnl.md#check-the-fill-model-against-live-fills)), `fastmm-data calibrate` fits it ([Calibrating](../explanation/backtesting.md#calibrating-against-live-sessions)) |
 | `latency_fixed_us` | int | `200` | Fixed latency for orders to the venue, and for acknowledgements back unless `latency_ack_us` is set, µs |
 | `latency_jitter_us` | int | `50` | Random jitter added to that latency, µs, seeded |
+| `latency_sigma` | number | `0.5` | Shape of that jitter: the excess over the fixed latency is the jitter times a lognormal of mean 1 and this sigma, so a larger value keeps the mean and gives a heavier tail; in (0, 4] |
+| `latency_ack_sigma` | number | `latency_sigma` | The same for acknowledgements and fills back from the venue |
+| `latency_cancel_sigma` | number | `latency_sigma` | The same for cancels to the venue; setting it gives cancels their own path, as the cancel keys do |
 | `latency_ack_us` | int | `latency_fixed_us` | Fixed latency for acknowledgements and fills back from the venue, µs |
 | `latency_ack_jitter_us` | int | `latency_jitter_us` | Random jitter added to that latency, µs, seeded |
 | `latency_md_us` | int | `0` | Fixed market-data latency, µs |
@@ -847,6 +850,9 @@ One venue's own settings; `<name>` is a `[venues.<name>]` that an instrument tra
 |---|---|---|---|
 | `latency_fixed_us` | int | `[backtest]` | Fixed latency for orders to this venue and acknowledgements back, µs |
 | `latency_jitter_us` | int | `[backtest]` | Jitter added to that latency, µs |
+| `latency_sigma` | number | `[backtest]` | Lognormal shape of that jitter |
+| `latency_ack_sigma` | number | `[backtest] latency_ack_sigma`, else this venue's `latency_sigma` | Shape of the acknowledgement jitter |
+| `latency_cancel_sigma` | number | `[backtest]`, else this venue's order shape | Shape of the cancel jitter |
 | `latency_ack_us` | int | `[backtest] latency_ack_us`, else this venue's `latency_fixed_us` | Fixed latency for acknowledgements and fills back from this venue, µs |
 | `latency_ack_jitter_us` | int | `[backtest] latency_ack_jitter_us`, else this venue's `latency_jitter_us` | Jitter added to that latency, µs |
 | `latency_md_us` | int | `[backtest]` | Fixed market-data latency, µs |

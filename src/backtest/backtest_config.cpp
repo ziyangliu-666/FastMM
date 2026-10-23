@@ -21,6 +21,13 @@ std::int64_t non_negative(const GenericSection& s, std::string_view key, std::in
   if (v < 0) throw ConfigError("backtest." + std::string(key) + " must be >= 0");
   return v;
 }
+// The lognormal shape of a latency's excess (its mean stays the jitter): larger, a heavier tail.
+double shape(const GenericSection& s, std::string_view key, double def) {
+  const double v = s.get_double(key, def);
+  if (!(v > 0.0 && v <= 4.0))
+    throw ConfigError("backtest." + std::string(key) + " must be in (0, 4]");
+  return v;
+}
 double drop_probability(const GenericSection& s, std::string_view key, double def) {
   const double p = s.get_double(key, def);
   if (!(p >= 0.0 && p < 1.0))
@@ -39,15 +46,22 @@ void read_latency(const GenericSection& bt, const std::string& prefix, sim::SimV
   const Duration fixed = microseconds(non_negative(bt, prefix + "latency_fixed_us", fixed_def));
   const Duration jitter = microseconds(non_negative(bt, prefix + "latency_jitter_us", jitter_def));
   const double p_drop = drop_probability(bt, prefix + "p_drop", v.order_out.p_drop);
-  v.order_out = sim::LatencyParams{fixed, jitter, p_drop};
+  const double sigma = shape(bt, prefix + "latency_sigma", v.order_out.sigma);
+  v.order_out = sim::LatencyParams{fixed, jitter, p_drop, sigma};
   const auto ack = [&](std::string_view key, Duration order_path) {
     const std::string own = prefix + std::string(key);
     if (bt.has(own)) return microseconds(non_negative(bt, own, 0));
     if (!prefix.empty() && bt.has(key)) return microseconds(non_negative(bt, key, 0));
     return order_path;
   };
-  v.ack_in =
-      sim::LatencyParams{ack("latency_ack_us", fixed), ack("latency_ack_jitter_us", jitter), 0.0};
+  // The ack path's shape: its own key, here or in [backtest], else the order path's.
+  double ack_shape = sigma;
+  if (bt.has(prefix + "latency_ack_sigma"))
+    ack_shape = shape(bt, prefix + "latency_ack_sigma", sigma);
+  else if (!prefix.empty() && bt.has("latency_ack_sigma"))
+    ack_shape = shape(bt, "latency_ack_sigma", sigma);
+  v.ack_in = sim::LatencyParams{
+      ack("latency_ack_us", fixed), ack("latency_ack_jitter_us", jitter), 0.0, ack_shape};
   v.md_in = sim::LatencyParams{
       microseconds(non_negative(bt, prefix + "latency_md_us", v.md_in.fixed.ns / 1000)),
       microseconds(non_negative(bt, prefix + "latency_md_jitter_us", v.md_in.jitter.ns / 1000)),
@@ -56,12 +70,14 @@ void read_latency(const GenericSection& bt, const std::string& prefix, sim::SimV
   // the order path.
   const std::string cancel_fixed = prefix + "latency_cancel_us";
   const std::string cancel_jitter = prefix + "latency_cancel_jitter_us";
-  if (bt.has(cancel_fixed) || bt.has(cancel_jitter)) {
+  const std::string cancel_sigma = prefix + "latency_cancel_sigma";
+  if (bt.has(cancel_fixed) || bt.has(cancel_jitter) || bt.has(cancel_sigma)) {
     const sim::LatencyParams base = v.cancel_latency ? v.cancel_out : v.order_out;
     v.cancel_out =
         sim::LatencyParams{microseconds(non_negative(bt, cancel_fixed, base.fixed.ns / 1000)),
                            microseconds(non_negative(bt, cancel_jitter, base.jitter.ns / 1000)),
-                           0.0};
+                           0.0,
+                           shape(bt, cancel_sigma, base.sigma)};
     v.cancel_latency = true;
   }
   v.order_service =
@@ -76,8 +92,11 @@ void read_latency(const GenericSection& bt, const std::string& prefix, sim::SimV
 }
 
 // Keys of [backtest.venues.<name>] (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 15> kVenueKeys = {"latency_fixed_us",
+constexpr std::array<std::string_view, 18> kVenueKeys = {"latency_fixed_us",
                                                          "latency_jitter_us",
+                                                         "latency_sigma",
+                                                         "latency_ack_sigma",
+                                                         "latency_cancel_sigma",
                                                          "latency_ack_us",
                                                          "latency_ack_jitter_us",
                                                          "latency_md_us",
@@ -167,7 +186,8 @@ std::vector<sim::SimVenueConfig> read_venues(const Config& cfg,
     } else if (std::find(kVenueKeys.begin(), kVenueKeys.end(), field) == kVenueKeys.end()) {
       throw ConfigError(
           fmt::format("backtest.{}: unknown key (latency_fixed_us, latency_jitter_us, "
-                      "latency_ack_us, latency_ack_jitter_us, latency_md_us, "
+                      "latency_sigma, latency_ack_sigma, latency_cancel_sigma, latency_ack_us, "
+                      "latency_ack_jitter_us, latency_md_us, "
                       "latency_md_jitter_us, latency_cancel_us, latency_cancel_jitter_us, "
                       "order_service_us, md_arrival, p_drop, supports_replace, stp, "
                       "orders_10s, orders_1d, balances.<ASSET>){}",
@@ -268,7 +288,10 @@ std::vector<Duration> parse_horizons(const std::string& text) {
 }
 
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 30> kBacktestKeys = {"markout_horizons_s",
+constexpr std::array<std::string_view, 33> kBacktestKeys = {"latency_sigma",
+                                                            "latency_ack_sigma",
+                                                            "latency_cancel_sigma",
+                                                            "markout_horizons_s",
                                                             "initial_state",
                                                             "params_from_journal",
                                                             "orders_10s",
