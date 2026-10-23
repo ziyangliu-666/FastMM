@@ -3,12 +3,29 @@
 // U(0, cap_n * jitter) where cap_n = min(max_ms, base_ms * 2^n). jitter = 1.0 is the
 // "full jitter" scheme (recommended: spreads a thundering herd of reconnects after a venue
 // outage), jitter = 0 is deterministic (useful in tests).
+//
+// Without a seed every object draws its own: connections that all lost the same venue spread out
+// only when their jitter differs, and a shared seed made them retry in step.
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <random>
 
 namespace fastmm::net {
+
+// A seed no other backoff of this process, nor of another started at another time, draws.
+inline std::uint64_t backoff_seed() noexcept {
+  static std::atomic<std::uint64_t> counter{0};
+  const auto now =
+      static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+  // splitmix64 of the time and a per-process sequence number.
+  std::uint64_t z = now + 0x9E3779B97F4A7C15ULL * (counter.fetch_add(1) + 1);
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+  return z ^ (z >> 31);
+}
 
 struct BackoffConfig {
   std::uint32_t base_ms = 250;
@@ -18,8 +35,9 @@ struct BackoffConfig {
 
 class ExponentialBackoff {
  public:
-  explicit ExponentialBackoff(BackoffConfig cfg = {}, std::uint64_t seed = 0x5eed) noexcept
-      : cfg_(cfg), rng_(seed) {
+  explicit ExponentialBackoff(BackoffConfig cfg = {}) noexcept
+      : ExponentialBackoff(cfg, backoff_seed()) {}
+  ExponentialBackoff(BackoffConfig cfg, std::uint64_t seed) noexcept : cfg_(cfg), rng_(seed) {
     cfg_.jitter = std::clamp(cfg_.jitter, 0.0, 1.0);
     if (cfg_.max_ms < cfg_.base_ms) cfg_.max_ms = cfg_.base_ms;
   }

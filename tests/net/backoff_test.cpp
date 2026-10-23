@@ -46,6 +46,16 @@ TEST_CASE("backoff: full jitter stays within [0, cap] and is seeded") {
   CHECK(a.capped_delay(4) == 1000);
 }
 
+TEST_CASE("backoff: connections without a seed do not retry in step") {
+  // Every connection of a process lost the venue at once; each draws its own delays.
+  const BackoffConfig cfg{.base_ms = 1000, .max_ms = 30'000, .jitter = 1.0};
+  ExponentialBackoff a(cfg);
+  ExponentialBackoff b(cfg);
+  int same = 0;
+  for (int i = 0; i < 8; ++i) same += a.next_ms() == b.next_ms() ? 1 : 0;
+  CHECK(same < 2);
+}
+
 TEST_CASE("backoff: partial jitter keeps a floor") {
   ExponentialBackoff b(BackoffConfig{.base_ms = 1000, .max_ms = 1000, .jitter = 0.5}, 7);
   for (int i = 0; i < 50; ++i) {
