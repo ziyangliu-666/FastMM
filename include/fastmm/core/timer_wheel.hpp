@@ -23,6 +23,7 @@ namespace fastmm {
 template <std::size_t kMaxTimers = 1024>
 class TimerWheel {
  public:
+  static constexpr std::size_t kCapacity = kMaxTimers;
   static constexpr std::size_t kSlots = 4096;
   static constexpr std::int64_t kSlotNs = 1'000'000;  // 1 ms
   static constexpr unsigned kIndexBits = std::bit_width(kMaxTimers - 1);

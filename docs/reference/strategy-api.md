@@ -204,7 +204,7 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().rng()), Xoshiro256ss&>);
 | `order(id)` | an open order, or `nullptr` once it is terminal; valid until the next context call |
 | `open_qty(id, side)` | unfilled quantity of our open orders on one side, quotes included |
 | `oms()` | read-only order management state |
-| `every(period, tag)`, `once(delay, tag)` | timers; `on_timer` receives the id and tag. They fire in engine time and are journaled |
+| `every(period, tag)`, `once(delay, tag)` | timers; `on_timer` receives the id and tag. They fire in engine time and are journaled. An invalid id once the wheel holds 1016 timers: its last 8 slots are for the engine's own |
 | `cancel_timer(id)` | false when the timer no longer exists |
 | `quoting_enabled()`, `killed()`, `venue_killed(venue)` | quoting state, the global kill switch and one venue's kill switch (new orders to that venue are refused and `set_quotes` ignores its instruments) |
 | `note_quote(id, side, reason, budget = {})` | why the strategy asks what it asks on a side (`"inventory_cap"`, `"model_off"`; empty: none, up to 23 bytes) and the budget it gave the side, for the quote table of `fastmm-top` ([Monitoring](../how-to/operations/monitor-with-fastmm-top.md)); kept until the next note on the side |

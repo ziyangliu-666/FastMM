@@ -866,9 +866,14 @@ class Engine {
     for (Handle<Order> h : handles) static_cast<void>(submit_cancel(h));
     flush_out();
   }
+  // The strategy's timers (ctx.every, ctx.once). The last kEngineTimerSlots of the wheel are the
+  // engine's own (ack sweep, flatten, state file, checkpoint, max_param_age): a strategy that fills
+  // the wheel gets an invalid id rather than leaving a flatten without its timer.
+  static constexpr std::size_t kEngineTimerSlots = 8;
   [[nodiscard]] TimerId add_timer(Duration period,
                                   bool repeat,
                                   std::uint64_t user_data = 0) noexcept {
+    if (timers_.size() + kEngineTimerSlots >= TimerWheel<>::kCapacity) return TimerId{};
     return timers_.add(now(), period, repeat, user_data);
   }
   bool cancel_timer(TimerId id) noexcept { return timers_.cancel(id); }

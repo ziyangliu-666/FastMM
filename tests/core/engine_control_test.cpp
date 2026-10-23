@@ -337,6 +337,20 @@ TEST_CASE("core.engine.control: flatten gives up at flatten_timeout and keeps qu
   CHECK(r.transport.news().size() == sent);  // it stopped trying
 }
 
+TEST_CASE("core.engine.control: a strategy that fills the timer wheel leaves a flatten its timer") {
+  Rig r(milliseconds(300));
+  std::size_t added = 0;
+  while (r.engine->add_timer(seconds(60), false).valid()) ++added;
+  CHECK(added > 1000);
+  r.book(kA, "100.00", "100.02");
+  r.fill(kA, Side::Buy, "100.00", "0.500");
+  r.control(ControlCommand::Flatten, kA);
+  CHECK(r.engine->flatten_state() == FlattenState::Working);
+  // The flatten's sweep still runs: it gives up at flatten_timeout.
+  r.tick(milliseconds(500));
+  CHECK(r.engine->flatten_state() == FlattenState::TimedOut);
+}
+
 TEST_CASE("core.engine.control: a resume stops a running flatten") {
   Rig r;
   r.book(kA, "100.00", "100.02");
