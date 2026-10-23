@@ -6,7 +6,7 @@
 #   scripts/host-setup.sh tune [--hugepages N] [--cstate-max-latency US [--cstate-cpus LIST]]
 #                                              hugepages (N x 2 MiB, default 512), irqbalance off,
 #                                              NIC interrupts to CPU 0, performance governor where
-#                                              there is one, THP and NUMA balancing off; with
+#                                              there is one, THP madvise, NUMA balancing off; with
 #                                              --cstate-max-latency also cstates limit US
 #   scripts/host-setup.sh cstates [show] [--cpus LIST]
 #                                              each CPU's idle states: exit latency (us), disabled
@@ -115,7 +115,9 @@ cmd_tune() {
     echo performance > "$g" 2>/dev/null && gov=performance
   done
   echo "governor: $gov (a VM usually has no cpufreq)"
-  echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
+  # madvise: the engine's book and order tables ask for 2 MiB pages (MADV_HUGEPAGE), nothing else
+  # gets them. never would leave those tables on 4 KiB pages.
+  echo madvise > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
   sysctl -qw kernel.numa_balancing=0 2>/dev/null || true
   sysctl -qw vm.stat_interval=10 kernel.watchdog=0 2>/dev/null || true
   echo "THP: $(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo n/a)"
