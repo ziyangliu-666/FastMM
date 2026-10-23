@@ -19,9 +19,6 @@ namespace fastmm::py_bind {
 
 namespace {
 
-// Largest magnitude representable in 1e-8 fixed point (with headroom for rounding).
-constexpr double kMaxFixed = 9.2e10;
-
 using Book = L2Book<256>;
 
 struct OrderBook {

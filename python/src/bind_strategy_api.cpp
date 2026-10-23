@@ -46,7 +46,6 @@ using Book = L2Book<256>;
 
 constexpr std::size_t kHookCount = static_cast<std::size_t>(Hook::Count);
 constexpr std::uint64_t kHooksPerCheck = 1024;  // signal check + GIL release interval
-constexpr double kMaxFixed = 9.2e10;            // largest magnitude a 1e-8 fixed value holds
 
 // Exception types created at import (module attributes of fastmm._core).
 PyObject* g_stale_view_error = nullptr;

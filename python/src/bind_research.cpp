@@ -27,36 +27,26 @@ namespace {
 
 using TablePtr = std::shared_ptr<rs::FeatureTable>;
 
-template <class T>
-py::array column_view(const TablePtr& owner, const std::vector<T>& v) {
-  auto holder = std::make_unique<TablePtr>(owner);
-  py::capsule base(holder.get(), [](void* p) { delete static_cast<TablePtr*>(p); });
-  static_cast<void>(holder.release());
-  py::array_t<T> a(static_cast<py::ssize_t>(v.size()), v.data(), base);
-  a.attr("setflags")(py::arg("write") = false);
-  return a;
-}
-
 py::dict columns_dict(const TablePtr& t) {
   const rs::FeatureRows& r = t->rows;
   py::dict d;
-  d["ts"] = column_view(t, r.ts);
-  d["inst"] = column_view(t, r.instrument);
-  d["mid"] = column_view(t, r.mid);
-  d["microprice"] = column_view(t, r.microprice);
-  d["best_bid"] = column_view(t, r.best_bid);
-  d["best_ask"] = column_view(t, r.best_ask);
-  d["bid_qty"] = column_view(t, r.bid_qty);
-  d["ask_qty"] = column_view(t, r.ask_qty);
-  d["imbalance"] = column_view(t, r.imbalance);
-  d["spread"] = column_view(t, r.spread);
+  d["ts"] = readonly_column(t, r.ts);
+  d["inst"] = readonly_column(t, r.instrument);
+  d["mid"] = readonly_column(t, r.mid);
+  d["microprice"] = readonly_column(t, r.microprice);
+  d["best_bid"] = readonly_column(t, r.best_bid);
+  d["best_ask"] = readonly_column(t, r.best_ask);
+  d["bid_qty"] = readonly_column(t, r.bid_qty);
+  d["ask_qty"] = readonly_column(t, r.ask_qty);
+  d["imbalance"] = readonly_column(t, r.imbalance);
+  d["spread"] = readonly_column(t, r.spread);
   return d;
 }
 
 py::dict forward_mid_dict(const TablePtr& t) {
   py::dict d;
   for (std::size_t j = 0; j < t->coverage.size() && j < t->rows.forward_mid.size(); ++j)
-    d[py::str(t->coverage[j].label())] = column_view(t, t->rows.forward_mid[j]);
+    d[py::str(t->coverage[j].label())] = readonly_column(t, t->rows.forward_mid[j]);
   return d;
 }
 

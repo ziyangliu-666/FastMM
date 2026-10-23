@@ -21,6 +21,22 @@ namespace fastmm::py_bind {
 
 namespace py = pybind11;
 
+// Largest magnitude a 1e-8 fixed-point value holds, with margin: the bound float prices and
+// quantities from Python are checked against.
+inline constexpr double kMaxFixed = 9.2e10;
+
+// A read-only numpy view of `v`, whose memory `owner` keeps alive for as long as the array lives.
+template <class Owner, class T>
+py::array readonly_column(const std::shared_ptr<Owner>& owner, const std::vector<T>& v) {
+  auto holder = std::make_unique<std::shared_ptr<Owner>>(owner);
+  py::capsule base(holder.get(), [](void* p) { delete static_cast<std::shared_ptr<Owner>*>(p); });
+  static_cast<void>(holder.release());
+  py::array_t<T> a(static_cast<py::ssize_t>(v.size()), v.data(), base);
+  // PyArray_CLEARFLAGS, as pybind11's Eigen casters do: no Python call per column.
+  py::detail::array_proxy(a.ptr())->flags &= ~py::detail::npy_api::NPY_ARRAY_WRITEABLE_;
+  return a;
+}
+
 void bind_config(py::module_& m);
 void bind_backtest(py::module_& m);
 void bind_book(py::module_& m);

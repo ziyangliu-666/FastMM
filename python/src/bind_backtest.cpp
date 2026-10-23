@@ -45,34 +45,24 @@ constexpr double kScale = 1e8;
 
 // ---- result views --------------------------------------------------------------------------
 
-template <class T>
-py::array column_view(const ResultPtr& owner, const std::vector<T>& v) {
-  auto holder = std::make_unique<ResultPtr>(owner);
-  py::capsule base(holder.get(), [](void* p) { delete static_cast<ResultPtr*>(p); });
-  static_cast<void>(holder.release());
-  py::array_t<T> a(static_cast<py::ssize_t>(v.size()), v.data(), base);
-  a.attr("setflags")(py::arg("write") = false);
-  return a;
-}
-
 py::dict fills_dict(const ResultPtr& r) {
   const bt::FillRows& f = r->fills;
   py::dict d;
-  d["ts"] = column_view(r, f.ts);
-  d["instrument"] = column_view(r, f.instrument);
-  d["side"] = column_view(r, f.side);
-  d["price"] = column_view(r, f.price);
-  d["qty"] = column_view(r, f.qty);
-  d["fee"] = column_view(r, f.fee);
-  d["cl_ord_id"] = column_view(r, f.cl_ord_id);
-  d["liquidity"] = column_view(r, f.liquidity);
-  d["mid"] = column_view(r, f.mid);
-  d["best_bid"] = column_view(r, f.best_bid);
-  d["best_ask"] = column_view(r, f.best_ask);
-  d["queue_ahead"] = column_view(r, f.queue_ahead);
+  d["ts"] = readonly_column(r, f.ts);
+  d["instrument"] = readonly_column(r, f.instrument);
+  d["side"] = readonly_column(r, f.side);
+  d["price"] = readonly_column(r, f.price);
+  d["qty"] = readonly_column(r, f.qty);
+  d["fee"] = readonly_column(r, f.fee);
+  d["cl_ord_id"] = readonly_column(r, f.cl_ord_id);
+  d["liquidity"] = readonly_column(r, f.liquidity);
+  d["mid"] = readonly_column(r, f.mid);
+  d["best_bid"] = readonly_column(r, f.best_bid);
+  d["best_ask"] = readonly_column(r, f.best_ask);
+  d["queue_ahead"] = readonly_column(r, f.queue_ahead);
   for (std::size_t j = 0; j < f.markout_horizon_ns.size() && j < f.markout_mid.size(); ++j)
     d[py::str("markout_mid_" + std::to_string(f.markout_horizon_ns[j]) + "ns")] =
-        column_view(r, f.markout_mid[j]);
+        readonly_column(r, f.markout_mid[j]);
   return d;
 }
 
@@ -114,13 +104,13 @@ py::list markouts_list(const bt::Metrics& m) {
 py::dict equity_dict(const ResultPtr& r) {
   const bt::EquityRows& e = r->equity;
   py::dict d;
-  d["ts"] = column_view(r, e.ts);
-  d["realized"] = column_view(r, e.realized);
-  d["unrealized"] = column_view(r, e.unrealized);
-  d["fees"] = column_view(r, e.fees);
-  d["position"] = column_view(r, e.position);
-  d["mid"] = column_view(r, e.mid);
-  d["quoted"] = column_view(r, e.quoted);
+  d["ts"] = readonly_column(r, e.ts);
+  d["realized"] = readonly_column(r, e.realized);
+  d["unrealized"] = readonly_column(r, e.unrealized);
+  d["fees"] = readonly_column(r, e.fees);
+  d["position"] = readonly_column(r, e.position);
+  d["mid"] = readonly_column(r, e.mid);
+  d["quoted"] = readonly_column(r, e.quoted);
   return d;
 }
 
@@ -128,10 +118,10 @@ py::list equity_by_instrument(const ResultPtr& r) {
   py::list out;
   for (const bt::InstrumentEquityRows& e : r->equity.by_instrument) {
     py::dict d;
-    d["pnl"] = column_view(r, e.pnl);
-    d["position"] = column_view(r, e.position);
-    d["mid"] = column_view(r, e.mid);
-    d["quoted"] = column_view(r, e.quoted);
+    d["pnl"] = readonly_column(r, e.pnl);
+    d["position"] = readonly_column(r, e.position);
+    d["mid"] = readonly_column(r, e.mid);
+    d["quoted"] = readonly_column(r, e.quoted);
     out.append(d);
   }
   return out;
@@ -140,16 +130,16 @@ py::list equity_by_instrument(const ResultPtr& r) {
 py::dict orders_dict(const ResultPtr& r) {
   const bt::OrderRows& o = r->orders;
   py::dict d;
-  d["ts"] = column_view(r, o.ts);
-  d["venue_ts"] = column_view(r, o.venue_ts);
-  d["trigger_ts"] = column_view(r, o.trigger_ts);
-  d["cl_ord_id"] = column_view(r, o.cl_ord_id);
-  d["instrument"] = column_view(r, o.instrument);
-  d["side"] = column_view(r, o.side);
-  d["price"] = column_view(r, o.price);
-  d["qty"] = column_view(r, o.qty);
-  d["kind"] = column_view(r, o.kind);
-  d["type"] = column_view(r, o.type);
+  d["ts"] = readonly_column(r, o.ts);
+  d["venue_ts"] = readonly_column(r, o.venue_ts);
+  d["trigger_ts"] = readonly_column(r, o.trigger_ts);
+  d["cl_ord_id"] = readonly_column(r, o.cl_ord_id);
+  d["instrument"] = readonly_column(r, o.instrument);
+  d["side"] = readonly_column(r, o.side);
+  d["price"] = readonly_column(r, o.price);
+  d["qty"] = readonly_column(r, o.qty);
+  d["kind"] = readonly_column(r, o.kind);
+  d["type"] = readonly_column(r, o.type);
   return d;
 }
 

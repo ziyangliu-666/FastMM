@@ -52,7 +52,7 @@ Price price_from_py(py::handle v, const char* what) {
     return *p;
   }
   const double d = py::float_(py::reinterpret_borrow<py::object>(v)).cast<double>();
-  if (!std::isfinite(d) || d <= 0.0 || d > 9.2e10)
+  if (!std::isfinite(d) || d <= 0.0 || d > kMaxFixed)
     throw py::value_error(std::string(what) + " must be a positive finite price");
   return Price::from_double(d);
 }
