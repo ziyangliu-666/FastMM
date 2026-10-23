@@ -343,8 +343,10 @@ class SlowChannel {
         const Guard guard(copy_lock_);
 #endif
         for (std::uint64_t i = lo; i < w1; ++i) out[i - lo] = base[i & (ring - 1)];
+        // The copy completes before w2 is read (an acquire load would let it sink below).
+        std::atomic_thread_fence(std::memory_order_acquire);
       }
-      const std::uint64_t w2 = w.load(std::memory_order_acquire);
+      const std::uint64_t w2 = w.load(std::memory_order_relaxed);
       // Row i is being or has been overwritten once the writer has reached row i + ring.
       const std::uint64_t valid_from = w2 >= ring ? w2 - ring + 1 : 0;
       if (w1 > 0 && valid_from >= w1) continue;  // every copied row was overwritten: copy again
