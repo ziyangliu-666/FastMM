@@ -437,7 +437,7 @@ Before any venue is contacted, `run_live` applies the parameters, compiles the h
 | `run_live` while a session runs in the process | `RuntimeError`, before `on_start` runs |
 | `run_live` in a child forked while a session runs | `RuntimeError`; start children with the `spawn` or `forkserver` method |
 
-- SIGINT and SIGTERM stop the session. The session replaces the process's handlers while it runs and restores them when it returns, so `KeyboardInterrupt` is not raised.
+- SIGINT and SIGTERM stop the session. The session replaces the process's handlers while it runs and restores them when it returns, so `KeyboardInterrupt` is not raised. While the session starts (venue reference data, account fees), SIGINT ends the process at once, as it does `fastmm-live`.
 - Before the engine starts, every thread of the process, including numpy's BLAS threads, is limited to the CPUs not listed in `[engine] cpu` and `net_cpus`; threads started later inherit that. Without pinned CPUs nothing changes. Thread-count variables such as `OPENBLAS_NUM_THREADS` act only when set before numpy loads.
 - The journal's parameter table lists the class's parameters. `inspect_journal(path)["strategy_meta"]` returns `class` (`module:qualname`), `hot_source_sha256` (the source of the hot hooks and the `numba.njit` functions they call), the `fastmm`, `numba`, `llvmlite` and `python` versions, `max_param_age_ms` and `param.<name>` for each starting parameter ([Journal format](journal-format.md)). `fastmm.replay` replays it ([Replay](#replay)).
 - `strategy.publish` works from `on_start` until the session stops; after that it returns `False`.

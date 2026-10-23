@@ -35,6 +35,7 @@
 #include <pybind11/stl.h>
 
 #include <atomic>
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -78,6 +79,26 @@ struct ActiveSession {
   ActiveSession(ActiveSession&&) = delete;
   ActiveSession& operator=(ActiveSession&&) = delete;
   ~ActiveSession() { g_active.store(false); }
+};
+
+// SIGINT takes its default action while the session runs, as it does in fastmm-live, until
+// run_live installs its own handler for the trading part (and restores this one after). Python's
+// handler only sets a flag that the interpreter reads with the GIL held, which run() releases: a
+// Ctrl-C while the session starts (venue reference data, account fees) would do nothing
+// and come back as a KeyboardInterrupt once the whole session had run.
+struct DefaultSigint {
+  DefaultSigint() {
+    struct sigaction sa {};
+    sa.sa_handler = SIG_DFL;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, &previous);
+  }
+  DefaultSigint(const DefaultSigint&) = delete;
+  DefaultSigint& operator=(const DefaultSigint&) = delete;
+  DefaultSigint(DefaultSigint&&) = delete;
+  DefaultSigint& operator=(DefaultSigint&&) = delete;
+  ~DefaultSigint() { sigaction(SIGINT, &previous, nullptr); }
+  struct sigaction previous {};
 };
 
 Config load(const std::string& path, bool allow_inline_secrets) {
@@ -182,6 +203,7 @@ py::tuple run(const std::string& path,
   std::uint64_t calls = 0;
   int rc = live::kExitRuntime;
   {
+    const DefaultSigint sigint;
     const py::gil_scoped_release release;
     Config cfg;
     InstrumentTable instruments;

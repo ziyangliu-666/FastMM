@@ -494,3 +494,38 @@ def test_python_m_fastmm_run_exits_when_the_slow_thread_does_not_return(sim, tmp
     assert "did not return within 1500 ms after the session stopped" in r.stderr
     assert "exiting with code 0 without waiting for the slow thread" in r.stderr
     assert elapsed < 60
+
+
+def test_sigint_while_the_session_starts_stops_the_process(tmp_path):
+    """A venue that accepts connections and never answers holds the session in its start-up
+    requests; Ctrl-C then ends the process at once, as it does fastmm-live, instead of waiting for
+    the request to time out."""
+    with socket.socket() as hole:
+        hole.bind(("127.0.0.1", 0))
+        hole.listen(16)
+        hole.settimeout(60)
+        cfg = _config(tmp_path, hole.getsockname()[1])
+        code = f"""
+            import fastmm, live_strategies
+            raise SystemExit(fastmm.run_live(live_strategies.BasicMMHot, {str(cfg)!r},
+                                             log={str(tmp_path / 'start.log')!r}))
+        """
+        proc = subprocess.Popen([sys.executable, "-c", textwrap.dedent(code)], env=_env(),
+                                cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True)
+        try:
+            conn, _ = hole.accept()  # the session is in its first request
+            time.sleep(0.5)
+            assert proc.poll() is None
+            proc.send_signal(signal.SIGINT)
+            t0 = time.monotonic()
+            proc.communicate(timeout=30)
+            waited = time.monotonic() - t0
+            conn.close()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+    assert proc.returncode == -signal.SIGINT
+    # Not after the request timed out and the start failed (a KeyboardInterrupt then exits
+    # through SIGINT too): at the signal.
+    assert waited < 2.0, waited
