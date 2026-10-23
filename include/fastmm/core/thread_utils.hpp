@@ -26,6 +26,13 @@ bool set_timer_slack(Duration slack) noexcept;
 // allocations are faulted in by the allocating call. Returns errno (0 on success); ENOMEM or
 // EPERM usually mean RLIMIT_MEMLOCK (ulimit -l) is too small.
 int lock_all_memory() noexcept;
+// For a helper thread started from a pinned thread: moves the calling thread onto the CPUs the
+// process's main thread may use and back to SCHED_OTHER. A thread inherits its creator's affinity
+// and, with glibc's default PTHREAD_INHERIT_SCHED, its SCHED_FIFO priority, so a helper a network
+// thread starts would otherwise share that thread's isolated core: preempting it, or starved by
+// it when the network thread polls at a real-time priority. Returns false when either change was
+// refused.
+bool leave_pinned_cpus() noexcept;
 // SCHED_FIFO at `priority` (1..99) for `thread`; priority 0 changes nothing. Returns 0 or the error
 // of pthread_setschedparam: EPERM without CAP_SYS_NICE when RLIMIT_RTPRIO (ulimit -r) is below
 // `priority`, EINVAL outside 1..99.

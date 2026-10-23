@@ -65,3 +65,25 @@ TEST_CASE("core.thread_utils: set_fifo_priority without RLIMIT_RTPRIO or CAP_SYS
   p.stop();
   REQUIRE(setrlimit(RLIMIT_RTPRIO, &saved) == 0);
 }
+
+TEST_CASE("core.thread_utils: leave_pinned_cpus takes the main thread's CPUs and SCHED_OTHER") {
+  cpu_set_t main_set;
+  CPU_ZERO(&main_set);
+  REQUIRE(sched_getaffinity(0, sizeof main_set, &main_set) == 0);
+  if (CPU_COUNT(&main_set) < 2) return;  // nothing to tell apart on one CPU
+  int first = 0;
+  while (!CPU_ISSET(static_cast<unsigned>(first), &main_set)) ++first;
+  cpu_set_t after;
+  CPU_ZERO(&after);
+  bool pinned = false;
+  bool left = false;
+  std::thread([&] {
+    pinned = pin_to_cpu(first);  // the network thread a helper is started from
+    left = leave_pinned_cpus();
+    sched_getaffinity(0, sizeof after, &after);
+  }).join();
+  REQUIRE(pinned);
+  CHECK(left);
+  CHECK(CPU_EQUAL(&after, &main_set));
+  CHECK(CPU_COUNT(&after) > 1);
+}

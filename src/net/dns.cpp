@@ -1,8 +1,16 @@
 #include "fastmm/net/dns.hpp"
 
+#include "fastmm/core/thread_utils.hpp"
+
 #include <netdb.h>
 
+#include <condition_variable>
 #include <cstring>
+#include <deque>
+#include <mutex>
+#include <stop_token>
+#include <thread>
+#include <utility>
 
 namespace fastmm::net {
 
@@ -38,36 +46,122 @@ ResolveResult resolve_sync(std::string_view host, std::uint16_t port) {
   return result;
 }
 
+namespace detail {
+
+struct ResolveTarget {
+  std::mutex mutex;
+  Reactor* reactor = nullptr;  // null once the AsyncResolver is gone
+
+  bool alive() {
+    const std::lock_guard lock(mutex);
+    return reactor != nullptr;
+  }
+
+  // Posts cb(result) unless the resolver is gone. The task asks again: the resolver may be
+  // destroyed between the post and the task, both on the reactor thread.
+  static void deliver(const std::shared_ptr<ResolveTarget>& t,
+                      AsyncResolver::Callback cb,
+                      ResolveResult result) {
+    const std::lock_guard lock(t->mutex);
+    if (t->reactor == nullptr) return;
+    t->reactor->post([t, cb = std::move(cb), r = std::move(result)]() mutable {
+      if (t->alive()) cb(std::move(r));
+    });
+  }
+};
+
+}  // namespace detail
+
+namespace {
+
+// The process's lookup helpers: started on first use, stopped and joined at exit (a helper inside
+// getaddrinfo() finishes that lookup first).
+class ResolverPool {
+ public:
+  static ResolverPool& instance() {
+    static ResolverPool pool;
+    return pool;
+  }
+
+  ResolverPool(const ResolverPool&) = delete;
+  ResolverPool& operator=(const ResolverPool&) = delete;
+  ~ResolverPool() {
+    for (std::jthread& t : threads_) t.request_stop();
+    cv_.notify_all();
+  }
+
+  void submit(std::shared_ptr<detail::ResolveTarget> target,
+              std::string host,
+              std::uint16_t port,
+              AsyncResolver::Callback cb) {
+    {
+      const std::lock_guard lock(mutex_);
+      queue_.push_back(Job{std::move(target), std::move(host), port, std::move(cb)});
+      if (idle_ < queue_.size() && threads_.size() < kMaxResolverThreads)
+        threads_.emplace_back([this](const std::stop_token& st) { work(st); });
+    }
+    cv_.notify_one();
+  }
+
+ private:
+  ResolverPool() = default;
+
+  struct Job {
+    std::shared_ptr<detail::ResolveTarget> target;
+    std::string host;
+    std::uint16_t port = 0;
+    AsyncResolver::Callback cb;
+  };
+
+  void work(const std::stop_token& st) {
+    set_thread_name("fm-resolve");
+    static_cast<void>(leave_pinned_cpus());
+    for (;;) {
+      Job job;
+      {
+        std::unique_lock lock(mutex_);
+        ++idle_;
+        const bool got = cv_.wait(lock, st, [this] { return !queue_.empty(); });
+        --idle_;
+        if (!got) return;  // stop requested
+        job = std::move(queue_.front());
+        queue_.pop_front();
+      }
+      // A resolver destroyed while its lookup waited needs no lookup.
+      if (!job.target->alive()) continue;
+      ResolveResult result = resolve_sync(job.host, job.port);
+      if (st.stop_requested()) return;
+      detail::ResolveTarget::deliver(job.target, std::move(job.cb), std::move(result));
+    }
+  }
+
+  std::mutex mutex_;
+  std::condition_variable_any cv_;
+  std::deque<Job> queue_;
+  std::size_t idle_ = 0;  // helpers waiting for a job
+  std::vector<std::jthread> threads_;
+};
+
+}  // namespace
+
 AsyncResolver::AsyncResolver(Reactor& reactor)
-    : reactor_(reactor), thread_([this](const std::stop_token& st) { worker(st); }) {}
+    : target_(std::make_shared<detail::ResolveTarget>()) {
+  target_->reactor = &reactor;
+}
 
 AsyncResolver::~AsyncResolver() {
-  thread_.request_stop();
-  cv_.notify_all();
-  // jthread joins in its destructor.
+  const std::lock_guard lock(target_->mutex);
+  target_->reactor = nullptr;
 }
 
 void AsyncResolver::resolve(std::string host, std::uint16_t port, Callback cb) {
-  {
-    std::lock_guard lock(mutex_);
-    queue_.push_back(Request{std::move(host), port, std::move(cb)});
+  if (auto numeric = SockAddr::from_ip(host, port)) {
+    ResolveResult r;
+    r.addrs.push_back(*numeric);
+    detail::ResolveTarget::deliver(target_, std::move(cb), std::move(r));
+    return;
   }
-  cv_.notify_one();
-}
-
-void AsyncResolver::worker(const std::stop_token& st) {
-  for (;;) {
-    Request req;
-    {
-      std::unique_lock lock(mutex_);
-      if (!cv_.wait(lock, st, [this] { return !queue_.empty(); })) return;  // stop requested
-      req = std::move(queue_.front());
-      queue_.pop_front();
-    }
-    ResolveResult result = resolve_sync(req.host, req.port);
-    if (st.stop_requested()) return;
-    reactor_.post([cb = std::move(req.cb), r = std::move(result)]() mutable { cb(std::move(r)); });
-  }
+  ResolverPool::instance().submit(target_, std::move(host), port, std::move(cb));
 }
 
 }  // namespace fastmm::net

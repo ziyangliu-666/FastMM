@@ -1,17 +1,20 @@
 #pragma once
 // DNS resolution. getaddrinfo() blocks, so the async variant runs it on a helper thread and
 // delivers the result to the reactor thread through Reactor::post().
+//
+// The helpers are a pool shared by the whole process, at most kMaxResolverThreads, started when a
+// lookup finds every one of them busy. They run where the main thread may run, on the default
+// scheduler (leave_pinned_cpus): the connections that ask live on pinned, possibly SCHED_FIFO
+// network threads, and a thread started from one inherits its core and its priority.
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/net/tcp_socket.hpp"
 
-#include <condition_variable>
+#include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <functional>
-#include <mutex>
+#include <memory>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 namespace fastmm::net {
@@ -26,31 +29,28 @@ struct ResolveResult {
 // Blocking resolve (startup path). Numeric hosts resolve without a lookup.
 ResolveResult resolve_sync(std::string_view host, std::uint16_t port);
 
+inline constexpr std::size_t kMaxResolverThreads = 4;
+
+namespace detail {
+struct ResolveTarget;  // the reactor results go to, until the AsyncResolver is destroyed
+}
+
 class AsyncResolver {
  public:
   using Callback = std::function<void(ResolveResult)>;
 
   explicit AsyncResolver(Reactor& reactor);
-  ~AsyncResolver();  // stops the worker; results not yet posted are dropped
+  // Results not yet delivered are dropped, posted ones included. Destroy it before the reactor.
+  ~AsyncResolver();
   AsyncResolver(const AsyncResolver&) = delete;
   AsyncResolver& operator=(const AsyncResolver&) = delete;
 
-  // Thread-safe. `cb` runs on the reactor thread (via post) once the lookup completes.
+  // Thread-safe. `cb` runs on the reactor thread (via post) once the lookup completes. A numeric
+  // host is answered through the same post, without a helper.
   void resolve(std::string host, std::uint16_t port, Callback cb);
 
  private:
-  struct Request {
-    std::string host;
-    std::uint16_t port;
-    Callback cb;
-  };
-  void worker(const std::stop_token& st);
-
-  Reactor& reactor_;
-  std::mutex mutex_;
-  std::condition_variable_any cv_;
-  std::deque<Request> queue_;
-  std::jthread thread_;
+  std::shared_ptr<detail::ResolveTarget> target_;
 };
 
 }  // namespace fastmm::net

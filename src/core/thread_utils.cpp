@@ -63,6 +63,17 @@ int set_fifo_priority(pthread_t thread, int priority) noexcept {
   return ::pthread_setschedparam(thread, SCHED_FIFO, &param);
 }
 
+bool leave_pinned_cpus() noexcept {
+  cpu_set_t set;
+  CPU_ZERO(&set);
+  bool ok = ::sched_getaffinity(::getpid(), sizeof(set), &set) == 0 &&
+            ::sched_setaffinity(0, sizeof(set), &set) == 0;
+  sched_param param{};
+  param.sched_priority = 0;
+  ok = ::pthread_setschedparam(::pthread_self(), SCHED_OTHER, &param) == 0 && ok;
+  return ok;
+}
+
 int lock_all_memory() noexcept {
   return ::mlockall(MCL_CURRENT | MCL_FUTURE) == 0 ? 0 : errno;
 }

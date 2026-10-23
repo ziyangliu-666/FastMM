@@ -44,6 +44,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: the OMS looks up an unknown order id in one probe, not a scan of 4096 terminal orders.
 - core: a full balance-move buffer drops its oldest move in O(1).
 - venues: OKX's checksum book moves only the levels next to a change near the touch.
+- net: DNS lookups run on at most four shared threads, off the pinned network cores.
 - backtest: `strip_own` takes out orders that rested before the journal's first record.
 - sim: `l2_queue` checks post-only orders against a book ticker newer than the depth.
 - sim: a reduce-only order is refused on a flat or growing position and fills only down to flat.

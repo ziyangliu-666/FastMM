@@ -3,6 +3,14 @@
 #include "net_test_util.hpp"
 
 #include <algorithm>
+#include <cstddef>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <vector>
 
 using namespace fastmm::net;
 using namespace fastmm::net::test;
@@ -67,4 +75,46 @@ FASTMM_BACKEND_TEST("dns: AsyncResolver destructor with a queued request does no
   }
   // Whatever was posted before the stop is still safe to run.
   reactor.run_once(0);
+}
+
+namespace {
+
+// Threads of this process whose name is `name` (/proc/self/task/<tid>/comm).
+std::size_t threads_named(std::string_view name) {
+  std::size_t n = 0;
+  for (const auto& task : std::filesystem::directory_iterator("/proc/self/task")) {
+    std::ifstream comm(task.path() / "comm");
+    std::string line;
+    if (std::getline(comm, line) && line == name) ++n;
+  }
+  return n;
+}
+
+}  // namespace
+
+FASTMM_BACKEND_TEST("dns: resolvers share a few helper threads, not one each", test_dns_3) {
+  Reactor reactor(backend);
+  std::vector<std::unique_ptr<AsyncResolver>> resolvers;
+  int done = 0;
+  for (int i = 0; i < 24; ++i) {
+    resolvers.push_back(std::make_unique<AsyncResolver>(reactor));
+    resolvers.back()->resolve("localhost", 80, [&](ResolveResult r) {
+      CHECK(r.ok());
+      ++done;
+    });
+  }
+  REQUIRE(run_until(reactor, [&] { return done == 24; }, 10000));
+  CHECK(threads_named("fm-resolve") >= 1);
+  CHECK(threads_named("fm-resolve") <= kMaxResolverThreads);
+}
+
+FASTMM_BACKEND_TEST("dns: a result posted for a destroyed resolver is dropped", test_dns_4) {
+  Reactor reactor(backend);
+  bool called = false;
+  {
+    AsyncResolver resolver(reactor);
+    resolver.resolve("127.0.0.1", 80, [&](ResolveResult) { called = true; });  // posted at once
+  }
+  reactor.run_once(0);
+  CHECK_FALSE(called);
 }
