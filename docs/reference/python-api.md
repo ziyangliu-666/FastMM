@@ -289,7 +289,7 @@ Numba keeps neither the type nor the message of the exception.
 
 ### Numba cache
 
-With `hot_cache=True` compiled hooks are stored under `$FASTMM_CACHE_DIR/numba/` (default `$XDG_CACHE_HOME/fastmm` or `~/.cache/fastmm`) in a directory whose name holds the fastmm version, the hot ABI, a hash of FastMM's compiler sources, the numba and llvmlite versions and the CPU. Numba checks only the source file of each hook: after changing a helper in another file, pass `hot_cache=False` or delete the directory.
+With `hot_cache=True` compiled hooks are stored under `$FASTMM_CACHE_DIR/numba/` (default `$XDG_CACHE_HOME/fastmm` or `~/.cache/fastmm`) in a directory whose name holds the fastmm version, the hot ABI, a hash of FastMM's compiler sources, the numba and llvmlite versions and the CPU, and below it one directory per strategy source: a hash of the hooks, the `numba.njit` helpers they reach and the global constants they read, wherever those are defined, and the bounds-check setting. A changed helper in another file compiles again.
 
 ### Performance
 

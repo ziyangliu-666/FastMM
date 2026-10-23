@@ -14,7 +14,7 @@ import pytest
 numba = pytest.importorskip("numba")
 
 import fastmm  # noqa: E402
-from conftest import FIXTURE_FMJ, FIXTURE_SHA, REPO  # noqa: E402
+from conftest import EXAMPLE_TOML, FIXTURE_FMJ, FIXTURE_SHA, REPO  # noqa: E402
 from fastmm import Param, State, Strategy, fx  # noqa: E402
 from fastmm._hot import abi, compiler  # noqa: E402
 
@@ -241,6 +241,25 @@ def test_the_ir_check_names_the_hook_the_line_and_the_symbol(example_config, cls
                        match=rf"{cls.__name__}\.{hook} is rejected by the IR check: it {what} at "
                              rf"\S*test_hot\.py:{line}\. .*{symbol}"):
         _fixture_run(example_config, cls)
+
+
+def test_the_ir_check_rejects_a_call_through_a_function_pointer(example_config):
+    import ctypes
+
+    malloc = ctypes.CDLL(None).malloc
+    malloc.restype = ctypes.c_void_p
+    malloc.argtypes = [ctypes.c_size_t]
+
+    class CallsMalloc(Strategy):
+        @fastmm.hot
+        def on_book(self, ctx, book):
+            if malloc(64) == 0:
+                ctx.pull()
+
+    cfg = example_config.copy()
+    cfg.clear_params()
+    with pytest.raises(fastmm.HotCompileError, match=r"function pointer"):
+        fastmm.run_backtest(cfg, data=FIXTURE_FMJ, strategy=CallsMalloc, hot_cache=False)
 
 
 def test_the_ir_check_finds_the_line_in_a_helper(example_config):
@@ -518,6 +537,62 @@ def test_backtests_use_a_keyed_numba_cache_and_cache_false_writes_nothing(tmp_pa
     assert any((tmp_path / "a").rglob("*.nbi"))
     assert probe(False, tmp_path / "b")[0] == 0
     assert not (tmp_path / "b").exists()
+
+
+_HELPER = """
+import numba
+CODE = {code}
+
+
+@numba.njit
+def code():
+    return {value}
+"""
+
+_STRATEGY = """
+import fastmm
+import helper_lib
+
+
+class Probe(fastmm.Strategy):
+    @fastmm.hot
+    def on_book(self, ctx, book):
+        ctx.fail(helper_lib.code() * 1000 + helper_lib.CODE)
+"""
+
+_HELPER_PROBE = """
+import sys
+sys.path.insert(0, {where!r})
+import fastmm
+from probe_strategy import Probe
+cfg = fastmm.BacktestConfig.from_toml({toml!r})
+cfg.clear_params()
+cfg.duration_s = 1
+try:
+    fastmm.run_backtest(cfg, data="synthetic", strategy=Probe)
+except fastmm.StrategyError as e:
+    print(e.fail_code)
+"""
+
+
+def test_the_numba_cache_compiles_again_when_a_helper_in_another_file_changes(tmp_path):
+    """Numba keys its cache on the hook's own file; the helper and the constant live in another
+    one, and the machine code of the hook holds both."""
+    (tmp_path / "probe_strategy.py").write_text(_STRATEGY)
+    # No .pyc: a rewrite within the same second and of the same size would load the old helper.
+    env = dict(os.environ, FASTMM_CACHE_DIR=str(tmp_path / "cache"), PYTHONDONTWRITEBYTECODE="1")
+    code = _HELPER_PROBE.format(where=str(tmp_path), toml=str(EXAMPLE_TOML))
+
+    def run(value, constant):
+        (tmp_path / "helper_lib.py").write_text(_HELPER.format(value=value, code=constant))
+        out = subprocess.run([sys.executable, "-c", code], env=env, check=True,
+                             capture_output=True, text=True, cwd=tmp_path)
+        return int(out.stdout.split()[-1])
+
+    assert run(1, 2) == 1002
+    assert run(1, 2) == 1002
+    assert run(7, 2) == 7002
+    assert run(7, 5) == 7005
 
 
 @numba.njit

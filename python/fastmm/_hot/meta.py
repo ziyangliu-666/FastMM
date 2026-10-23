@@ -45,31 +45,60 @@ def _source(fn: Any) -> bytes:
         return marshal.dumps(fn.__code__)
 
 
-def _helpers(fn: Any) -> List[Any]:
-    """The Python functions of the numba.njit functions `fn` names in its globals or closure."""
+_PLAIN = (bool, int, float, complex, str, bytes, type(None))
+
+
+def _reachable(fn: Any) -> tuple:
+    """(helpers, constants) of `fn`: the Python functions of the numba.njit functions it names in
+    its globals or closure, directly or as an attribute of a module global (``lib.helper``), and the
+    plain values (numbers, strings, tuples of them) of the globals it reads, which Numba freezes
+    into the machine code."""
     names = set()
     codes = [fn.__code__]
     while codes:
         code = codes.pop()
         names.update(code.co_names)
         codes.extend(c for c in code.co_consts if isinstance(c, pytypes.CodeType))
-    values = [fn.__globals__[n] for n in names if n in fn.__globals__]
+    values = []
+    constants: Dict[str, str] = {}
+    for n in sorted(names):
+        if n not in fn.__globals__:
+            continue
+        v = fn.__globals__[n]
+        values.append(v)
+        if isinstance(v, pytypes.ModuleType):
+            for attr in sorted(names):
+                w = getattr(v, attr, None)
+                if w is not None:
+                    values.append(w)
+                    if isinstance(w, _PLAIN):
+                        constants[f"{n}.{attr}"] = repr(w)
+        elif isinstance(v, _PLAIN) or (
+                isinstance(v, tuple) and all(isinstance(x, _PLAIN) for x in v)):
+            constants[n] = repr(v)
     for cell in fn.__closure__ or ():
         try:
             values.append(cell.cell_contents)
         except ValueError:  # an empty cell
             continue
-    return [v.py_func for v in values
-            if isinstance(getattr(v, "py_func", None), pytypes.FunctionType)]
+    helpers = [v.py_func for v in values
+               if isinstance(getattr(v, "py_func", None), pytypes.FunctionType)]
+    return helpers, constants
 
 
 def hot_source_sha256(spec: HotSpec) -> str:
-    """SHA-256 of the source of every hot hook and of every numba.njit function they reach."""
+    """SHA-256 of the source of every hot hook and of every numba.njit function they reach, and of
+    the plain global values they read (compile-time constants in Numba)."""
     hooks = {**spec.hooks, **spec.timers}
     helpers: Dict[str, Any] = {}
+    constants: Dict[str, str] = {}
     pending = [h.fn for h in hooks.values()]
     while pending:
-        for helper in _helpers(pending.pop()):
+        fn = pending.pop()
+        found, values = _reachable(fn)
+        for name, value in values.items():
+            constants[f"{fn.__module__}:{name}"] = value
+        for helper in found:
             key = f"{helper.__module__}:{helper.__qualname__}"
             if key not in helpers:
                 helpers[key] = helper
@@ -81,6 +110,8 @@ def hot_source_sha256(spec: HotSpec) -> str:
     for key in sorted(helpers):
         digest.update(f"helper {key}\n".encode())
         digest.update(_source(helpers[key]))
+    for key in sorted(constants):
+        digest.update(f"constant {key}={constants[key]}\n".encode())
     return digest.hexdigest()
 
 

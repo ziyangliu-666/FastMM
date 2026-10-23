@@ -255,11 +255,16 @@ _LIBM = frozenset(
 _ALLOWED = frozenset({"NRT_MemInfo_call_dtor"})
 _DEFINE_RE = re.compile(r'^define\b[^\n@]*@"?([^"\s(]+)"?\(', re.M)
 _CALL_RE = re.compile(r'\b(?:call|invoke)\b[^\n@]*@"?([^"\s(]+)"?\(')
+# A call whose target is a value (a function pointer from ctypes or cffi, a first-class function)
+# or inline assembly: what it runs cannot be checked.
+_INDIRECT_RE = re.compile(r'\b(?:call|invoke)\b[^\n@%]*(?:%"?[^"\s(]+"?\(|\basm\b)')
+INDIRECT = "<indirect call>"
 
 
 def disallowed_calls(ir: str) -> List[str]:
     """External functions called by any function in `ir` other than Numba's C wrappers (`cfunc.*`)
-    that are not LLVM intrinsics, libm or NRT_MemInfo_call_dtor."""
+    that are not LLVM intrinsics, libm or NRT_MemInfo_call_dtor; INDIRECT when one calls through a
+    pointer or inline assembly."""
     defined = set(_DEFINE_RE.findall(ir))
     bad = set()
     for chunk in re.split(r"^(?=define\b)", ir, flags=re.M):
@@ -267,6 +272,8 @@ def disallowed_calls(ir: str) -> List[str]:
         if m is None or m.group(1).startswith("cfunc."):
             continue
         body = chunk.split("\n}\n", 1)[0]
+        if _INDIRECT_RE.search(body):
+            bad.add(INDIRECT)
         for callee in _CALL_RE.findall(body):
             if callee in defined or callee.startswith("llvm.") or callee in _LIBM:
                 continue
@@ -339,6 +346,8 @@ def allocation_sites(dispatcher: Any, limit: int = 3) -> List[str]:
 
 
 def _explain(symbol: str) -> str:
+    if symbol == INDIRECT:
+        return "a function pointer (ctypes, cffi or a function passed as a value)"
     if symbol.startswith("NRT_"):
         return "memory allocation (arrays, lists, dicts, strings)"
     if symbol.startswith(("Py", "_Py", "numba_gil")):
@@ -367,14 +376,23 @@ def cache_dir() -> Path:
     return Path(base) / "numba" / key
 
 
+def class_cache_dir(spec: HotSpec, boundscheck: bool) -> Path:
+    """cache_dir() / one directory per hot source and bounds-check setting. Numba checks only the
+    source file of each hook, while the machine code it caches also holds the njit helpers the hook
+    calls and the global constants it reads, from whatever file they live in: the directory is
+    keyed on all of them (meta.hot_source_sha256), so a changed helper compiles again."""
+    key = meta.hot_source_sha256(spec)[:16]
+    return cache_dir() / f"{key}-bc{int(boundscheck)}"
+
+
 @contextlib.contextmanager
-def _compile_settings(cache: bool, boundscheck: bool) -> Iterator[None]:
+def _compile_settings(spec: HotSpec, cache: bool, boundscheck: bool) -> Iterator[None]:
     """Numba reads CACHE_DIR when a dispatcher is created and BOUNDSCHECK when a function is lowered,
     so helpers compiled on demand by a hook get bounds checks too."""
     old_dir, old_bc = numba_config.CACHE_DIR, numba_config.BOUNDSCHECK
     try:
         if cache:
-            numba_config.CACHE_DIR = str(cache_dir())
+            numba_config.CACHE_DIR = str(class_cache_dir(spec, boundscheck))
         numba_config.BOUNDSCHECK = 1 if boundscheck else 0
         yield
     finally:
@@ -474,7 +492,7 @@ class CompiledHot:
         record_t = numba.from_dtype(self.dtype)
         sig = types.int32(types.CPointer(record_t), types.CPointer(CTX_TYPE),
                           types.CPointer(BOOK_TYPE))
-        with _compile_settings(cache, boundscheck):
+        with _compile_settings(spec, cache, boundscheck):
             for name, hook in {**spec.hooks, **spec.timers}.items():
                 self._compile(name, hook.fn, sig, cache)
         self.book_depth = uses_book_depth([h.fn for h in {**spec.hooks, **spec.timers}.values()])
