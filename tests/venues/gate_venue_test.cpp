@@ -383,23 +383,26 @@ TEST_CASE("gate.venue: scripted fake exchange end to end") {
       return h.open_orders_calls.load() >= 1 && h.positions_calls.load() >= 1 &&
              h.trades_calls.load() >= 1 && h.accounts_calls.load() >= 2;
     }));
-    reactor.run_once(20);
     REQUIRE(h.srv.frames("open_orders").size() >= 1);
     CHECK(h.srv.frames("open_orders")[0] == "status=open&contract=NVDA_USDT&limit=100");
     {
+      // The answers that arrived at the fake are still on their way back: wait for them.
       bool begin = false;
       bool position = false;
       bool end = false;
       bool balance = false;
-      for (const auto& m : orders.drain()) {
-        if (RecordingSink::type_of(m) == EventType::Reconcile) {
-          const auto& r = RecordingSink::as<ReconcileMsg>(m);
-          if (r.kind == ReconcileMsg::Kind::Begin) begin = true;
-          if (r.kind == ReconcileMsg::Kind::Position) position = true;
-          if (r.kind == ReconcileMsg::Kind::End) end = true;
+      run_until([&] {
+        for (const auto& m : orders.drain()) {
+          if (RecordingSink::type_of(m) == EventType::Reconcile) {
+            const auto& r = RecordingSink::as<ReconcileMsg>(m);
+            if (r.kind == ReconcileMsg::Kind::Begin) begin = true;
+            if (r.kind == ReconcileMsg::Kind::Position) position = true;
+            if (r.kind == ReconcileMsg::Kind::End) end = true;
+          }
+          if (RecordingSink::type_of(m) == EventType::Balance) balance = true;
         }
-        if (RecordingSink::type_of(m) == EventType::Balance) balance = true;
-      }
+        return begin && position && end && balance;
+      });
       CHECK(begin);
       CHECK(position);
       CHECK(end);

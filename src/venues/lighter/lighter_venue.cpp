@@ -1174,7 +1174,8 @@ bool LighterVenue::send_tx(std::uint8_t tx_type, std::string_view tx_info, const
           return;
         }
         handle_reply(*pending, r);
-      });
+      },
+      RestLane::Orders);
   if (queued && e.kind != OrderCommandKind::Cancel) sent_.sent_over_rest(e.cl_ord_id);
   return queued;
 }
@@ -1373,7 +1374,8 @@ void LighterVenue::cancel_all_async() {
         TxReply tr;
         if (r.error != net::NetError::None || !decode_send_tx(r.body, tr).empty() || tr.refused)
           FASTMM_LOG_ERROR("{}: cancel-all failed: {}", cfg_.name, r.body.substr(0, 160));
-      }));
+      },
+      RestLane::Orders));
 }
 
 bool LighterVenue::cancel_all() {
@@ -1439,21 +1441,21 @@ void LighterVenue::send_schedule_cancel(std::int64_t time_ms) {
   }
   if (rest_ == nullptr) return;
   std::weak_ptr<int> alive = alive_;
-  const bool queued =
-      rest_->request("POST",
-                     "/api/v1/sendTx",
-                     kFormHeaders,
-                     send_tx_form(kTxCancelAll, info),
-                     [this, alive, round](const net::HttpResponse& r) {
-                       if (alive.expired() || r.error == net::NetError::Canceled) return;
-                       TxReply tr;
-                       if (r.error != net::NetError::None || !decode_send_tx(r.body, tr).empty())
-                         return;
-                       Pending p;
-                       p.control = true;
-                       p.round = round;
-                       handle_control_reply(p, tr);
-                     });
+  const bool queued = rest_->request(
+      "POST",
+      "/api/v1/sendTx",
+      kFormHeaders,
+      send_tx_form(kTxCancelAll, info),
+      [this, alive, round](const net::HttpResponse& r) {
+        if (alive.expired() || r.error == net::NetError::Canceled) return;
+        TxReply tr;
+        if (r.error != net::NetError::None || !decode_send_tx(r.body, tr).empty()) return;
+        Pending p;
+        p.control = true;
+        p.round = round;
+        handle_control_reply(p, tr);
+      },
+      RestLane::Orders);
   if (queued) dms_.went_out();
 }
 

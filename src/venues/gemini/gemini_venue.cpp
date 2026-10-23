@@ -434,6 +434,9 @@ void GeminiVenue::disconnect() {
   publish_status();
 }
 
+// Every request takes the control lane, cancels and heartbeats too: the nonce is in the signed
+// payload, made now, and Gemini refuses one that does not exceed the key's last. Two connections
+// could deliver them out of order; one delivers them as made.
 bool GeminiVenue::rest_post(const RestRequest& rr,
                             std::function<void(const net::HttpResponse&)> done) {
   if (rest_ == nullptr || !signer_.usable()) return false;

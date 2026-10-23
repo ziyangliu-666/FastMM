@@ -768,14 +768,16 @@ void CoinbaseAdvancedVenue::send_command(const OrderCommand& cmd) {
   std::weak_ptr<int> alive = alive_;
   const std::uint64_t gen = generation_;
   const ClientOrderId cl = cmd.cl_ord_id;
-  const bool queued = rest_->request("POST",
-                                     rq.target(),
-                                     headers,
-                                     rq.payload(),
-                                     [this, alive, gen, cl](const net::HttpResponse& r) {
-                                       if (alive.expired() || gen != generation_) return;
-                                       handle_new_reply(cl, r);
-                                     });
+  const bool queued = rest_->request(
+      "POST",
+      rq.target(),
+      headers,
+      rq.payload(),
+      [this, alive, gen, cl](const net::HttpResponse& r) {
+        if (alive.expired() || gen != generation_) return;
+        handle_new_reply(cl, r);
+      },
+      RestLane::Orders);
   if (!queued) {
     ++stats_.order_send_failures;
     shadows_.erase(cl);
@@ -793,14 +795,16 @@ void CoinbaseAdvancedVenue::send_cancel(ClientOrderId id, Shadow& s) {
   const std::string body = AdvancedOrderEncoder::cancel_body(ids);
   std::weak_ptr<int> alive = alive_;
   const std::uint64_t gen = generation_;
-  const bool queued = rest_->request("POST",
-                                     target,
-                                     rest_headers("POST", target, true),
-                                     body,
-                                     [this, alive, gen, id](const net::HttpResponse& r) {
-                                       if (alive.expired() || gen != generation_) return;
-                                       handle_cancel_reply(id, r);
-                                     });
+  const bool queued = rest_->request(
+      "POST",
+      target,
+      rest_headers("POST", target, true),
+      body,
+      [this, alive, gen, id](const net::HttpResponse& r) {
+        if (alive.expired() || gen != generation_) return;
+        handle_cancel_reply(id, r);
+      },
+      RestLane::Orders);
   if (!queued) {
     const Shadow* sh = shadows_.find(id);
     emit_cancel_reject(*order_sink_,
@@ -1318,10 +1322,12 @@ void CoinbaseAdvancedVenue::cancel_all_async() {
                   FASTMM_LOG_ERROR(
                       "{}: cancel-all: batch_cancel failed: status={}", cfg_.name, c.status);
                 }
-              }));
+              },
+              RestLane::Orders));
         }
         FASTMM_LOG_INFO("{}: cancel-all: {} open orders", cfg_.name, ids.size());
-      }));
+      },
+      RestLane::Orders));
 }
 
 bool CoinbaseAdvancedVenue::cancel_all() {

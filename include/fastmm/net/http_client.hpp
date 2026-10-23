@@ -191,6 +191,8 @@ class HttpClient final : public IoHandler {
 
   HttpClientState state() const noexcept { return state_; }
   bool is_ready() const noexcept { return state_ == HttpClientState::Ready; }
+  // The connection came up (TCP, and TLS when there is TLS), whether or not it has closed since.
+  bool established() const noexcept { return established_; }
   bool in_flight() const noexcept { return in_flight_; }
   std::size_t queued() const noexcept { return queue_.size(); }
   // Requests queued already stay queued when this is lowered below their number.
@@ -264,6 +266,7 @@ class HttpClient final : public IoHandler {
     if (r.would_block()) return;
     cancel_timer();
     state_ = HttpClientState::Ready;
+    established_ = true;
     send_next();
   }
 
@@ -388,13 +391,13 @@ class HttpClient final : public IoHandler {
     resp.rx_ts = Reactor::now_ns();
     Pending done = std::move(queue_.front());
     queue_.pop_front();
+    // A server that closes after this answer: the client is closed before the callback runs, so a
+    // request the callback makes is refused instead of written to a connection on its way out.
     const bool close_after = parser_.connection_close();
+    if (close_after) fail_all(NetError::Closed, "server closed the connection");
     done.cb(resp);
+    if (close_after) return;
     rx_.consume(consume);
-    if (close_after) {
-      fail_all(NetError::Closed, "server closed the connection");
-      return;
-    }
     if (state_ == HttpClientState::Ready) send_next();
   }
 
@@ -449,6 +452,7 @@ class HttpClient final : public IoHandler {
   TimerId timer_ = kInvalidTimer;
   bool registered_ = false;
   bool in_flight_ = false;
+  bool established_ = false;
 };
 
 }  // namespace fastmm::net

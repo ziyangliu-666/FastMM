@@ -1484,10 +1484,15 @@ void BinanceUsdmVenue::send_command_rest(const OrderCommand& cmd, const OrderSha
   copy.header = nullptr;
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
-      rr.method, target, headers, {}, [this, alive, copy](const net::HttpResponse& r) {
+      rr.method,
+      target,
+      headers,
+      {},
+      [this, alive, copy](const net::HttpResponse& r) {
         if (alive.expired()) return;
         handle_rest_order_response(copy, r);
-      });
+      },
+      RestLane::Orders);
   if (!queued) {
     refuse(cmd, RejectReason::TransportFull, "rest queue full");
     if (cmd.kind != OrderCommandKind::Cancel) shadows_.erase(cmd.cl_ord_id);
@@ -2249,7 +2254,11 @@ void BinanceUsdmVenue::send_countdown_cancel_all(std::int64_t countdown_ms) {
     const auto target = signed_target(rr);  // made when sent
     std::weak_ptr<int> alive = alive_;
     const bool queued = rest_->request(
-        rr.method, target, api_headers(), {}, [this, alive, id, round](const net::HttpResponse& r) {
+        rr.method,
+        target,
+        api_headers(),
+        {},
+        [this, alive, id, round](const net::HttpResponse& r) {
           if (alive.expired() || r.error == net::NetError::Canceled) return;
           ++stats_.rest_requests;
           note_rate_headers(r);
@@ -2267,7 +2276,8 @@ void BinanceUsdmVenue::send_countdown_cancel_all(std::int64_t countdown_ms) {
                            r.status,
                            net::to_string(r.error),
                            r.body.substr(0, 160));
-        });
+        },
+        RestLane::Orders);
     if (!queued) continue;
     any = true;
     rate_.on_sent(rr.weight, now_ns());
@@ -2285,7 +2295,11 @@ void BinanceUsdmVenue::cancel_all_async() {
     const auto target = signed_target(rr);  // made when sent
     std::weak_ptr<int> alive = alive_;
     rest_->request(
-        "DELETE", target, api_headers(), {}, [this, alive, id](const net::HttpResponse& r) {
+        "DELETE",
+        target,
+        api_headers(),
+        {},
+        [this, alive, id](const net::HttpResponse& r) {
           if (alive.expired() || r.error == net::NetError::Canceled) return;
           ++stats_.rest_requests;
           note_rate_headers(r);
@@ -2297,7 +2311,8 @@ void BinanceUsdmVenue::cancel_all_async() {
                              r.status,
                              net::to_string(r.error));
           }
-        });
+        },
+        RestLane::Orders);
   }
 }
 

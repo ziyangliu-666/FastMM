@@ -311,22 +311,26 @@ TEST_CASE("hyperliquid.venue: scripted fake exchange end to end") {
       return h.open_order_calls.load() >= 1 && h.position_calls.load() >= 1 &&
              h.fill_calls.load() >= 1 && h.spot_calls.load() >= 1;
     }));
-    reactor.run_once(20);
     {
+      // The answers that arrived at the fake are still on their way back (the order connection's
+      // traffic can take the next reactor turn): wait for them.
       bool position = false;
       bool end = false;
       bool balance = false;
-      for (const auto& m : orders.drain()) {
-        if (RecordingSink::type_of(m) == EventType::Reconcile) {
-          const auto& r = RecordingSink::as<ReconcileMsg>(m);
-          if (r.kind == ReconcileMsg::Kind::Position) {
-            position = true;
-            CHECK(r.position_qty == Qty::from_decimal("0.05").value());
+      run_until([&] {
+        for (const auto& m : orders.drain()) {
+          if (RecordingSink::type_of(m) == EventType::Reconcile) {
+            const auto& r = RecordingSink::as<ReconcileMsg>(m);
+            if (r.kind == ReconcileMsg::Kind::Position) {
+              position = true;
+              CHECK(r.position_qty == Qty::from_decimal("0.05").value());
+            }
+            if (r.kind == ReconcileMsg::Kind::End) end = true;
           }
-          if (r.kind == ReconcileMsg::Kind::End) end = true;
+          if (RecordingSink::type_of(m) == EventType::Balance) balance = true;
         }
-        if (RecordingSink::type_of(m) == EventType::Balance) balance = true;
-      }
+        return position && end && balance;
+      });
       CHECK(position);
       CHECK(end);
       CHECK(balance);

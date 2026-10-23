@@ -1223,15 +1223,16 @@ void BinanceVenue::send_command_rest(const OrderCommand& cmd,
   copy.venue_order_id = nullptr;
   copy.header = nullptr;
   std::weak_ptr<int> alive = alive_;
-  const bool queued =
-      rest_->request(rr.method,
-                     target,
-                     headers,
-                     {},
-                     [this, alive, copy, amend_in_place](const net::HttpResponse& r) {
-                       if (alive.expired()) return;
-                       handle_rest_order_response(copy, r, amend_in_place);
-                     });
+  const bool queued = rest_->request(
+      rr.method,
+      target,
+      headers,
+      {},
+      [this, alive, copy, amend_in_place](const net::HttpResponse& r) {
+        if (alive.expired()) return;
+        handle_rest_order_response(copy, r, amend_in_place);
+      },
+      RestLane::Orders);
   if (!queued) {
     emit_reject(cmd.instrument, cmd.cl_ord_id, RejectReason::TransportFull, 0, "rest queue full");
     ++stats_.order_send_failures;
@@ -1880,7 +1881,11 @@ void BinanceVenue::cancel_all_async() {
     const auto target = signed_target(rr);  // made when sent
     std::weak_ptr<int> alive = alive_;
     rest_->request(
-        "DELETE", target, api_headers(), {}, [this, alive, id](const net::HttpResponse& r) {
+        "DELETE",
+        target,
+        api_headers(),
+        {},
+        [this, alive, id](const net::HttpResponse& r) {
           if (alive.expired() || r.error == net::NetError::Canceled) return;
           ++stats_.rest_requests;
           note_rate_headers(r);
@@ -1896,7 +1901,8 @@ void BinanceVenue::cancel_all_async() {
                              r.status,
                              net::to_string(r.error));
           }
-        });
+        },
+        RestLane::Orders);
   }
 }
 

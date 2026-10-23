@@ -1046,10 +1046,15 @@ void GateUsdtVenue::send_command_rest(const OrderCommand& cmd, const OrderShadow
   copy.header = nullptr;
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
-      rr.method, rr.target(), headers, rr.body, [this, alive, copy](const net::HttpResponse& r) {
+      rr.method,
+      rr.target(),
+      headers,
+      rr.body,
+      [this, alive, copy](const net::HttpResponse& r) {
         if (alive.expired()) return;
         handle_rest_order_response(copy, r);
-      });
+      },
+      RestLane::Orders);
   if (!queued) {
     if (is_cancel) {
       emit_cancel_reject(*order_sink_,
@@ -1531,7 +1536,11 @@ void GateUsdtVenue::cancel_all_async() {
     const std::string headers = encoder_->rest_headers(rr, venue_time_s());
     std::weak_ptr<int> alive = alive_;
     static_cast<void>(rest_->request(
-        rr.method, rr.target(), headers, {}, [this, alive, id](const net::HttpResponse& r) {
+        rr.method,
+        rr.target(),
+        headers,
+        {},
+        [this, alive, id](const net::HttpResponse& r) {
           if (alive.expired() || r.error == net::NetError::Canceled) return;
           ++stats_.rest_requests;
           note_rate_headers(r);
@@ -1543,7 +1552,8 @@ void GateUsdtVenue::cancel_all_async() {
                              r.status,
                              r.body.substr(0, 120));
           }
-        }));
+        },
+        RestLane::Orders));
   }
 }
 
@@ -1584,7 +1594,11 @@ void GateUsdtVenue::send_countdown(std::int64_t timeout_s) {
   const std::string headers = encoder_->rest_headers(rr, venue_time_s());
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
-      "POST", rr.target(), headers, rr.body, [this, alive, round](const net::HttpResponse& r) {
+      "POST",
+      rr.target(),
+      headers,
+      rr.body,
+      [this, alive, round](const net::HttpResponse& r) {
         if (alive.expired() || r.error == net::NetError::Canceled) return;
         ++stats_.rest_requests;
         note_rate_headers(r);
@@ -1598,7 +1612,8 @@ void GateUsdtVenue::send_countdown(std::int64_t timeout_s) {
                          r.status,
                          net::to_string(r.error),
                          r.body.substr(0, 120));
-      });
+      },
+      RestLane::Orders);
   if (queued) dms_.went_out();
 }
 

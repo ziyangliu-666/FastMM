@@ -44,6 +44,9 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: the OMS looks up an unknown order id in one probe, not a scan of 4096 terminal orders.
 - core: a full balance-move buffer drops its oldest move in O(1).
 - venues: OKX's checksum book moves only the levels next to a change near the touch.
+- venues: REST orders, cancels and dead man's switch refreshes no longer wait behind snapshots.
+- venues: a REST connection that dies fails only its request in flight; the rest go on a new one.
+- venues: a REST host is looked up off the network thread, and again after a failed connect.
 - venues: the kill switch's cancel-all reuses one connection instead of one per symbol.
 - net: TLS client connections share a context per CA bundle instead of loading it each time.
 - net: DNS lookups run on at most four shared threads, off the pinned network cores.

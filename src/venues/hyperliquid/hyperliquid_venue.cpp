@@ -1158,32 +1158,33 @@ void HyperliquidVenue::send_action(ActionKind kind, std::span<const Entry> entri
   pending->id = post_id;
   fill_pending(*pending);
   std::weak_ptr<int> alive = alive_;
-  const bool queued =
-      rest_->request("POST",
-                     "/exchange",
-                     kJsonHeaders,
-                     std::string_view(request_buf_.get(), n),
-                     [this, alive, pending](const net::HttpResponse& resp) {
-                       if (alive.expired()) return;
-                       ++stats_.rest_requests;
-                       PostReply r;
-                       if (resp.error != net::NetError::None) {
-                         ++stats_.rest_errors;
-                         r.kind = PostReply::Kind::Error;
-                         r.error = "transport error";
-                         handle_reply(*pending, r);
-                         reconcile_.request();
-                         return;
-                       }
-                       const PaddedJson padded(resp.body);
-                       if (decoder_->decode_exchange(padded.view(), r) != ParseStatus::Ok) {
-                         ++stats_.rest_errors;
-                         r = PostReply{};
-                         r.kind = PostReply::Kind::Error;
-                         r.error = "unreadable reply";
-                       }
-                       handle_reply(*pending, r);
-                     });
+  const bool queued = rest_->request(
+      "POST",
+      "/exchange",
+      kJsonHeaders,
+      std::string_view(request_buf_.get(), n),
+      [this, alive, pending](const net::HttpResponse& resp) {
+        if (alive.expired()) return;
+        ++stats_.rest_requests;
+        PostReply r;
+        if (resp.error != net::NetError::None) {
+          ++stats_.rest_errors;
+          r.kind = PostReply::Kind::Error;
+          r.error = "transport error";
+          handle_reply(*pending, r);
+          reconcile_.request();
+          return;
+        }
+        const PaddedJson padded(resp.body);
+        if (decoder_->decode_exchange(padded.view(), r) != ParseStatus::Ok) {
+          ++stats_.rest_errors;
+          r = PostReply{};
+          r.kind = PostReply::Kind::Error;
+          r.error = "unreadable reply";
+        }
+        handle_reply(*pending, r);
+      },
+      RestLane::Orders);
   if (!queued) {
     ++stats_.order_send_failures;
     return reject_entries(entries, RejectReason::TransportFull, "rest queue full");
@@ -1231,23 +1232,26 @@ void HyperliquidVenue::apply_action(VenueAction action, std::string_view why) {
 // ---- control path -----------------------------------------------------------------------------
 
 bool HyperliquidVenue::info(const std::string& body,
-                            std::function<void(bool, std::string_view)> done) {
+                            std::function<void(bool, std::string_view)> done,
+                            RestLane lane) {
   if (rest_ == nullptr) return false;
   std::weak_ptr<int> alive = alive_;
-  return rest_->request("POST",
-                        "/info",
-                        kJsonHeaders,
-                        body,
-                        [this, alive, done = std::move(done)](const net::HttpResponse& r) {
-                          if (alive.expired()) return;
-                          ++stats_.rest_requests;
-                          if (!r.ok()) {
-                            ++stats_.rest_errors;
-                            done(false, r.body);
-                            return;
-                          }
-                          done(true, r.body);
-                        });
+  return rest_->request(
+      "POST",
+      "/info",
+      kJsonHeaders,
+      body,
+      [this, alive, done = std::move(done)](const net::HttpResponse& r) {
+        if (alive.expired()) return;
+        ++stats_.rest_requests;
+        if (!r.ok()) {
+          ++stats_.rest_errors;
+          done(false, r.body);
+          return;
+        }
+        done(true, r.body);
+      },
+      lane);
 }
 
 void HyperliquidVenue::refresh_rate_limit() {
@@ -1466,33 +1470,39 @@ bool HyperliquidVenue::emit_fill_row(const FillRow& f) {
 void HyperliquidVenue::cancel_all_async() {
   if (rest_ == nullptr || !signer_.usable()) return;
   for (const std::string& dex : dexes_) {
-    static_cast<void>(
-        info(info_body("frontendOpenOrders", cfg_.account_address, dex),
-             [this](bool ok, std::string_view body) {
-               std::vector<OpenOrderRow> rows;
-               if (!ok || !decode_open_orders(body, rows).empty()) {
-                 FASTMM_LOG_ERROR("{}: cancel-all could not read the open orders", cfg_.name);
-                 return;
-               }
-               std::vector<CancelWire> cancels;
-               for (const OpenOrderRow& o : rows) {
-                 const InstrumentId inst = instrument_of(o.coin);
-                 if (!inst.valid() || !assets_[inst.value].known) continue;
-                 cancels.push_back({assets_[inst.value].asset, o.oid});
-               }
-               for (std::size_t off = 0; off < cancels.size(); off += kMaxBatch) {
-                 ActionBuilder a;
-                 if (!a.cancel({cancels.data() + off, std::min(kMaxBatch, cancels.size() - off)}))
-                   continue;
-                 std::string payload(kMaxRequestBytes, '\0');
-                 const std::size_t n =
-                     action_signer_.write_payload(a, action_signer_.next_nonce(wall_ms()), payload);
-                 if (n == 0) continue;
-                 payload.resize(n);
-                 static_cast<void>(rest_->request(
-                     "POST", "/exchange", kJsonHeaders, payload, [](const net::HttpResponse&) {}));
-               }
-             }));
+    static_cast<void>(info(
+        info_body("frontendOpenOrders", cfg_.account_address, dex),
+        [this](bool ok, std::string_view body) {
+          std::vector<OpenOrderRow> rows;
+          if (!ok || !decode_open_orders(body, rows).empty()) {
+            FASTMM_LOG_ERROR("{}: cancel-all could not read the open orders", cfg_.name);
+            return;
+          }
+          std::vector<CancelWire> cancels;
+          for (const OpenOrderRow& o : rows) {
+            const InstrumentId inst = instrument_of(o.coin);
+            if (!inst.valid() || !assets_[inst.value].known) continue;
+            cancels.push_back({assets_[inst.value].asset, o.oid});
+          }
+          for (std::size_t off = 0; off < cancels.size(); off += kMaxBatch) {
+            ActionBuilder a;
+            if (!a.cancel({cancels.data() + off, std::min(kMaxBatch, cancels.size() - off)}))
+              continue;
+            std::string payload(kMaxRequestBytes, '\0');
+            const std::size_t n =
+                action_signer_.write_payload(a, action_signer_.next_nonce(wall_ms()), payload);
+            if (n == 0) continue;
+            payload.resize(n);
+            static_cast<void>(rest_->request(
+                "POST",
+                "/exchange",
+                kJsonHeaders,
+                payload,
+                [](const net::HttpResponse&) {},
+                RestLane::Orders));
+          }
+        },
+        RestLane::Orders));
   }
 }
 
@@ -1568,7 +1578,11 @@ void HyperliquidVenue::send_schedule_cancel(std::int64_t time_ms) {
   const std::uint32_t round = dms_.begin_round(now_ns(), 1);
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
-      "POST", "/exchange", kJsonHeaders, payload, [this, alive, round](const net::HttpResponse& r) {
+      "POST",
+      "/exchange",
+      kJsonHeaders,
+      payload,
+      [this, alive, round](const net::HttpResponse& r) {
         if (alive.expired() || r.error == net::NetError::Canceled) return;
         ++stats_.rest_requests;
         if (r.ok() && r.body.find(R"("status":"ok")") != std::string::npos) {
@@ -1588,7 +1602,8 @@ void HyperliquidVenue::send_schedule_cancel(std::int64_t time_ms) {
         }
         FASTMM_LOG_ERROR(
             "{}: scheduleCancel failed: HTTP {} {}", cfg_.name, r.status, r.body.substr(0, 160));
-      });
+      },
+      RestLane::Orders);
   if (queued) {
     dms_.went_out();
     if (budget_.known) ++budget_.used;

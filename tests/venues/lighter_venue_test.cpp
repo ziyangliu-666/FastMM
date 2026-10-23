@@ -348,18 +348,21 @@ TEST_CASE("lighter.venue: scripted fake exchange end to end") {
     CHECK(h.auth_seen.load());
     // The start-up sweep: open orders (authenticated), then the account's positions.
     REQUIRE(run_until([&] { return h.active_calls.load() >= 1 && h.account_calls.load() >= 1; }));
-    reactor.run_once(20);
     {
+      // The answer that arrived at the fake is still on its way back: wait for it.
       bool position = false;
-      for (const auto& m : orders.drain()) {
-        if (RecordingSink::type_of(m) != EventType::Reconcile) continue;
-        const auto& r = RecordingSink::as<ReconcileMsg>(m);
-        if (r.kind == ReconcileMsg::Kind::Position) {
-          position = true;
-          CHECK(r.position_qty == Qty::from_decimal("-0.05").value());
-          CHECK(r.avg_px == Price::from_decimal("226.1").value());
+      run_until([&] {
+        for (const auto& m : orders.drain()) {
+          if (RecordingSink::type_of(m) != EventType::Reconcile) continue;
+          const auto& r = RecordingSink::as<ReconcileMsg>(m);
+          if (r.kind == ReconcileMsg::Kind::Position) {
+            position = true;
+            CHECK(r.position_qty == Qty::from_decimal("-0.05").value());
+            CHECK(r.avg_px == Price::from_decimal("226.1").value());
+          }
         }
-      }
+        return position;
+      });
       CHECK(position);
     }
     // The dead man's switch: a scheduled CancelAll on the trade connection.

@@ -1174,10 +1174,15 @@ void OkxVenue::send_command_rest(const OrderCommand& cmd, const OrderShadow* sha
   std::weak_ptr<int> alive = alive_;
   const std::uint64_t gen = generation_;
   const bool queued = rest_->request(
-      rr.method, rr.path, headers, rr.body, [this, alive, gen, copy](const net::HttpResponse& r) {
+      rr.method,
+      rr.path,
+      headers,
+      rr.body,
+      [this, alive, gen, copy](const net::HttpResponse& r) {
         if (alive.expired() || gen != generation_) return;
         handle_rest_order_response(copy, r);
-      });
+      },
+      RestLane::Orders);
   if (!queued) return refuse(RejectReason::TransportFull, "rest queue full");
   wire_.record(cmd.t0_cycles(), before_encode, after_encode, rdtscp());
   // Its reply comes over REST: losing the WebSocket order connection does not settle it.
@@ -1712,7 +1717,8 @@ void OkxVenue::send_cancel_all_after(int timeout_s) {
                          code,
                          msg.empty() ? r.body.substr(0, 160) : msg);
         if (code == 50011) apply_action(VenueAction::RateLimit, code, msg);
-      });
+      },
+      RestLane::Orders);
   if (queued) dms_.went_out();
 }
 
@@ -1752,7 +1758,11 @@ void OkxVenue::cancel_pending_async(const std::string& after, std::size_t pages)
   std::weak_ptr<int> alive = alive_;
   const std::uint64_t gen = generation_;
   static_cast<void>(rest_->request(
-      "GET", rr.path, rest_headers(rr), {}, [this, alive, gen, pages](const net::HttpResponse& r) {
+      "GET",
+      rr.path,
+      rest_headers(rr),
+      {},
+      [this, alive, gen, pages](const net::HttpResponse& r) {
         if (alive.expired() || gen != generation_) return;
         ++stats_.rest_requests;
         std::vector<PendingOrder> rows;
@@ -1786,7 +1796,8 @@ void OkxVenue::cancel_pending_async(const std::string& after, std::size_t pages)
                                    e2,
                                    failed.empty() ? std::string() : failed.front());
                 }
-              }));
+              },
+              RestLane::Orders));
         };
         for (const PendingOrder& o : rows) {
           if (!subscribed_instrument(o.inst_id).valid()) continue;
@@ -1796,7 +1807,8 @@ void OkxVenue::cancel_pending_async(const std::string& after, std::size_t pages)
         flush();
         if (rows.size() >= kPageLimit && pages + 1 < kMaxReconcilePages)
           cancel_pending_async(rows.back().ord_id, pages + 1);
-      }));
+      },
+      RestLane::Orders));
 }
 
 bool OkxVenue::cancel_all() {

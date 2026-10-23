@@ -281,7 +281,9 @@ class HyperliquidVenue final : public Venue, private ReconcileHooks {
 
   // ---- control path ----------------------------------------------------------------------------
   // POST /info with `body`; the callback gets the reply (or an empty body and false on error).
-  bool info(const std::string& body, std::function<void(bool ok, std::string_view body)> done);
+  bool info(const std::string& body,
+            std::function<void(bool ok, std::string_view body)> done,
+            RestLane lane = RestLane::Control);
   void refresh_rate_limit();
   bool fetch_snapshot(std::uint64_t generation) override;
   bool fetch_orders(std::uint64_t generation, std::size_t dex_index);

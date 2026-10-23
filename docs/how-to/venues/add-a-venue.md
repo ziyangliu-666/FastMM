@@ -185,7 +185,7 @@ Subclass `Venue` and implement:
 - `resync_books()`: start every book over from a fresh snapshot; `fastmm-gateway` calls it when its own copies are lost. The default does nothing.
 - `refused_account_settings()`: true after `load_reference_data()` refused an account setting a retry does not fix (hedge position mode), so `fastmm-live` exits 3 instead of 4.
 - `status()`: fill `VenueStatus`; `fastmm-live` logs it every second and `fastmm-top` shows it.
-- Control-path REST on the reactor thread goes through `RestChannel` (`include/fastmm/venues/rest_channel.hpp`). Honour `--record-raw` with `RawRecorder` (`include/fastmm/venues/raw_recorder.hpp`).
+- REST on the reactor thread goes through `RestChannel` (`include/fastmm/venues/rest_channel.hpp`). Orders, cancels, cancel-all and dead man's switch refreshes take `RestLane::Orders`, a connection of their own, so they never wait behind a snapshot or a replay; a venue that wants its signed requests to arrive in the order they were signed (Gemini's nonce) keeps them all on one lane. Honour `--record-raw` with `RawRecorder` (`include/fastmm/venues/raw_recorder.hpp`).
 - In a dry run, open market data only and refuse orders (`VenueCaps::user_stream = false`).
 
 ## 10. Registration

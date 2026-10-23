@@ -655,18 +655,20 @@ void CoinbaseExchangeVenue::send_command(const OrderCommand& cmd) {
   std::weak_ptr<int> alive = alive_;
   const std::uint64_t gen = generation_;
   const ClientOrderId cl = cmd.cl_ord_id;
-  const bool queued = rest_->request(rq.method,
-                                     rq.target(),
-                                     headers,
-                                     rq.payload(),
-                                     [this, alive, gen, cl, is_cancel](const net::HttpResponse& r) {
-                                       if (alive.expired() || gen != generation_) return;
-                                       if (is_cancel) {
-                                         handle_cancel_reply(cl, r);
-                                       } else {
-                                         handle_new_reply(cl, r);
-                                       }
-                                     });
+  const bool queued = rest_->request(
+      rq.method,
+      rq.target(),
+      headers,
+      rq.payload(),
+      [this, alive, gen, cl, is_cancel](const net::HttpResponse& r) {
+        if (alive.expired() || gen != generation_) return;
+        if (is_cancel) {
+          handle_cancel_reply(cl, r);
+        } else {
+          handle_new_reply(cl, r);
+        }
+      },
+      RestLane::Orders);
   if (!queued) {
     ++stats_.order_send_failures;
     if (!is_cancel) shadows_.erase(cl);
@@ -1172,7 +1174,8 @@ void CoinbaseExchangeVenue::cancel_all_async() {
             return;
           }
           FASTMM_LOG_INFO("{}: cancel-all {}: {} orders", cfg_.name, product, ids.size());
-        }));
+        },
+        RestLane::Orders));
   }
 }
 

@@ -1435,7 +1435,8 @@ void DeribitVenue::cancel_all_async() {
                              env.error_code,
                              env.message);
           }
-        });
+        },
+        RestLane::Orders);
     if (!queued)
       FASTMM_LOG_ERROR("{}: could not queue cancel_all_by_instrument {}", cfg_.name, symbol);
   }
