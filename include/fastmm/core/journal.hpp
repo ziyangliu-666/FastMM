@@ -299,11 +299,11 @@ struct JournalSessionInfo {
 };
 
 // How far a write is pushed before the writer moves on ([engine] journal_sync).
-//   Async     msync(MS_ASYNC) every 100 ms. A record survives the process dying as soon as the
-//             block is copied into the map; a host that loses power loses whatever the page cache
-//             had not written back.
-//   Fdatasync msync(MS_SYNC) + fdatasync() on the same 100 ms tick and before the trailer. A
-//             record older than one tick survives power loss.
+//   Async     no sync: the kernel writes the page cache back. A record survives the process dying
+//             as soon as its block is written; a host that loses power loses whatever the page
+//             cache had not written back.
+//   Fdatasync fdatasync() every 100 ms and before the trailer. A record older than one tick
+//             survives power loss.
 // Neither makes one record durable at the instant the engine writes it: the journal batches into
 // 1 MiB blocks. docs/reference/journal-format.md states the guarantee.
 enum class JournalSync : std::uint8_t { Async = 0, Fdatasync = 1 };
@@ -336,12 +336,14 @@ struct JournalOptions {
 // named in `error` (the first one only).
 std::size_t prune_journals(const std::string& dir, int days, std::string* error = nullptr);
 
-// Background side: drains the ring into 1 MiB blocks appended to an mmap'd file grown in
-// 64 MiB extents; msync every 100 ms; stop() writes the trailer and truncates.
+// Background side: drains the ring into 1 MiB blocks written (pwrite) to a file reserved in
+// 64 MiB extents; syncs every 100 ms (JournalSync); stop() writes the trailer and truncates.
+// The file is never mapped: write-back of a shared mapping's dirty pages, and remapping it as it
+// grows, interrupt every CPU the process runs on, the engine's included, to flush its TLB.
 //
-// Extents are reserved with posix_fallocate, so a full filesystem fails here rather than with
-// SIGBUS on the first store into a sparse page. failed() latches that and every other write
-// error; fastmm-live polls it and trips the kill switch.
+// Extents are reserved with posix_fallocate, so a full filesystem fails a whole extent ahead.
+// failed() latches that and every other write error; fastmm-live polls it and trips the kill
+// switch.
 class JournalFileWriter {
  public:
   JournalFileWriter(MsgRing& ring,
@@ -385,7 +387,7 @@ class JournalFileWriter {
 
  private:
   void run();
-  bool ensure_mapped(std::size_t bytes) noexcept;
+  bool reserve(std::size_t bytes) noexcept;
   void append(const void* data, std::size_t len) noexcept;
   void write_trailer() noexcept;
   void close() noexcept;
@@ -405,8 +407,7 @@ class JournalFileWriter {
   std::atomic<std::uint8_t> error_code_{static_cast<std::uint8_t>(JournalError::Disabled)};
   std::string path_;
   int fd_ = -1;
-  std::byte* map_ = nullptr;
-  std::size_t map_len_ = 0;
+  std::size_t reserved_ = 0;                     // bytes posix_fallocate reserved
   std::size_t file_size_ = 0;                    // logical bytes written
   JournalError error_ = JournalError::Disabled;  // Disabled == no error
 

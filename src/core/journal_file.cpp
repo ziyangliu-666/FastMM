@@ -153,8 +153,7 @@ bool JournalFileWriter::open_part() noexcept {
     return false;
   }
   closed_ = false;
-  map_ = nullptr;
-  map_len_ = 0;
+  reserved_ = 0;
   file_size_ = 0;
   {
     const std::lock_guard<std::mutex> lock(parts_mutex_);
@@ -179,38 +178,45 @@ JournalFileWriter::~JournalFileWriter() {
   close();
 }
 
-bool JournalFileWriter::ensure_mapped(std::size_t bytes) noexcept {
+namespace {
+[[nodiscard]] JournalError write_error(int err) noexcept {
+  return err == ENOSPC || err == EDQUOT ? JournalError::NoSpace : JournalError::IoError;
+}
+}  // namespace
+
+// The next extents, once `bytes` more would pass the reserved end. posix_fallocate reserves the
+// blocks, so a full filesystem is reported a whole extent ahead of the writes that would fill it.
+// It returns the error rather than setting errno.
+bool JournalFileWriter::reserve(std::size_t bytes) noexcept {
   if (fd_ < 0) return false;
-  if (file_size_ + bytes <= map_len_) return true;
-  std::size_t new_len = map_len_;
+  if (file_size_ + bytes <= reserved_) return true;
+  std::size_t new_len = reserved_;
   while (file_size_ + bytes > new_len) new_len += kJournalExtentBytes;
-  if (map_ != nullptr) {
-    ::munmap(map_, map_len_);
-    map_ = nullptr;
-  }
-  // posix_fallocate reserves blocks, so a full filesystem is reported here. ftruncate would
-  // succeed on a sparse file and the store into the mapped page would raise SIGBUS instead.
-  // It returns the error rather than setting errno.
   if (const int err = ::posix_fallocate(fd_, 0, static_cast<off_t>(new_len)); err != 0) {
-    set_failed(err == ENOSPC || err == EDQUOT ? JournalError::NoSpace : JournalError::IoError);
-    map_len_ = 0;
+    set_failed(write_error(err));
     return false;
   }
-  void* p = ::mmap(nullptr, new_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
-  if (p == MAP_FAILED) {
-    set_failed(JournalError::MapFailed);
-    map_len_ = 0;
-    return false;
-  }
-  map_ = static_cast<std::byte*>(p);
-  map_len_ = new_len;
+  reserved_ = new_len;
   return true;
 }
 
+// Written with pwrite, not stored into a shared mapping of the file: the kernel's write-back of
+// mapped dirty pages, and every remap as the file grows, flush the TLB of each CPU this process
+// runs on, the engine's included.
 void JournalFileWriter::append(const void* data, std::size_t len) noexcept {
-  if (!ensure_mapped(len)) return;
-  std::memcpy(map_ + file_size_, data, len);
-  file_size_ += len;
+  if (failed() || !reserve(len)) return;
+  const auto* p = static_cast<const std::byte*>(data);
+  while (len > 0) {
+    const ssize_t n = ::pwrite(fd_, p, len, static_cast<off_t>(file_size_));
+    if (n <= 0) {
+      if (n < 0 && errno == EINTR) continue;
+      set_failed(n < 0 ? write_error(errno) : JournalError::IoError);
+      return;
+    }
+    p += n;
+    len -= static_cast<std::size_t>(n);
+    file_size_ += static_cast<std::size_t>(n);
+  }
 }
 
 void JournalFileWriter::flush_block() {
@@ -251,16 +257,10 @@ std::size_t JournalFileWriter::drain_once() {
   return n;
 }
 
+// Async leaves the written pages to the kernel's write-back.
 void JournalFileWriter::sync() noexcept {
-  if (map_ != nullptr) {
-    const int flags = opts_.sync == JournalSync::Fdatasync ? MS_SYNC : MS_ASYNC;
-    if (::msync(map_, file_size_, flags) != 0) set_failed(JournalError::IoError);
-  }
   if (opts_.sync == JournalSync::Fdatasync && fd_ >= 0) {
-    if (::fdatasync(fd_) != 0) {
-      set_failed(errno == ENOSPC || errno == EDQUOT ? JournalError::NoSpace
-                                                    : JournalError::IoError);
-    }
+    if (::fdatasync(fd_) != 0) set_failed(write_error(errno));
   }
   last_sync_ = steady_now();
 }
@@ -332,11 +332,6 @@ void JournalFileWriter::write_trailer() noexcept {
 void JournalFileWriter::close() noexcept {
   if (closed_) return;
   closed_ = true;
-  if (map_ != nullptr) {
-    if (::msync(map_, file_size_, MS_SYNC) != 0) set_failed(JournalError::IoError);
-    ::munmap(map_, map_len_);
-    map_ = nullptr;
-  }
   if (fd_ >= 0) {
     // Releases the blocks posix_fallocate reserved past the logical end.
     if (::ftruncate(fd_, static_cast<off_t>(file_size_)) != 0) set_failed(JournalError::IoError);

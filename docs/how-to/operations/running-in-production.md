@@ -71,12 +71,12 @@ Put `journal_dir` on its own filesystem, set `journal_retention_days` or archive
 
 ### Durability
 
-With `[engine] journal_sync = "async"` (the default) the writer copies into an mmap and calls `msync(MS_ASYNC)` every 100 ms (`kSyncInterval`, `src/core/journal_file.cpp`).
+With `[engine] journal_sync = "async"` (the default) the writer writes each block into the page cache as it fills, and at the latest every 100 ms (`kSyncInterval`, `src/core/journal_file.cpp`); the kernel writes it back.
 
 - A process crash loses nothing: the page cache outlives the process.
 - A power loss or kernel panic loses up to the last 100 ms of events plus anything the kernel had not written back. The file then has no trailer block: `tools/journal_dump.py` reports `trailer MISSING` and `fastmm-replay` refuses it without `--allow-incomplete`.
 
-`journal_sync = "fdatasync"` adds `msync(MS_SYNC)` and `fdatasync()` on the same tick, one write-back per 100 ms, so a record older than one tick survives power loss ([Journal format](../../reference/journal-format.md#durability)).
+`journal_sync = "fdatasync"` calls `fdatasync()` every 100 ms, one write-back per tick, so a record older than one tick survives power loss ([Journal format](../../reference/journal-format.md#durability)).
 
 The [store](../../reference/storage.md) next to the journal behaves the same way (a batch, not a block, is lost). After an unclean stop, reconcile against the venue rather than either file.
 

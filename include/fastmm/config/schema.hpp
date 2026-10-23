@@ -75,8 +75,8 @@ inline constexpr KeySpec kConfigSchema[] = {
      "journal_sync",
      KeyType::String,
      false,
-     "how far a journal write is pushed: async (msync every 100 ms; survives the process dying) | "
-     "fdatasync (msync + fdatasync on the same tick; survives power loss) (default async)"},
+     "how far a journal write is pushed: async (the kernel writes it back; survives the process "
+     "dying) | fdatasync (fdatasync every 100 ms; survives power loss) (default async)"},
     {"engine",
      "journal_max_bytes",
      KeyType::Int,

@@ -27,12 +27,14 @@ block  := block header (64 B) | message* (byte_len bytes)
 
 | `journal_sync` | Every 100 ms | A record survives | Costs |
 |---|---|---|---|
-| `async` (default) | `msync(MS_ASYNC)` | this process dying, as soon as its block is copied into the map | nothing measurable |
-| `fdatasync` | `msync(MS_SYNC)` and `fdatasync()` | power loss, once it is more than one tick old | one write-back of the dirty pages per tick |
+| `async` (default) | nothing: the kernel writes the page cache back | this process dying, as soon as its block is written | nothing measurable |
+| `fdatasync` | `fdatasync()` | power loss, once it is more than one tick old | one write-back of the dirty pages per tick |
 
-A clean `stop()` always writes the trailer, `msync(MS_SYNC)`s, truncates the preallocated tail away and `fdatasync()`s, in both modes.
+A clean `stop()` always writes the trailer, truncates the preallocated tail away and `fdatasync()`s, in both modes.
 
-Extents are reserved with `posix_fallocate`, not `ftruncate`: a full filesystem fails when the next 64 MiB extent is reserved rather than with `SIGBUS` on the first store into a sparse page. `JournalFileWriter::failed()` latches that and every other write error, and `fastmm-live` polls it: a journal that cannot be written trips the kill switch, cancels everything and exits with code 5. `sessions.journal_complete` in the [store](storage.md) records whether the file was closed cleanly.
+The writer thread `pwrite`s each block; the file is never mapped into the process. The kernel's write-back of a shared mapping's dirty pages, and every remap as the file grows, would send a TLB-flush interrupt to each CPU the process runs on, the engine's included.
+
+Extents are reserved with `posix_fallocate`: a full filesystem fails when the next 64 MiB extent is reserved, ahead of the writes that would fill it. `JournalFileWriter::failed()` latches that and every other write error, and `fastmm-live` polls it: a journal that cannot be written trips the kill switch, cancels everything and exits with code 5. `sessions.journal_complete` in the [store](storage.md) records whether the file was closed cleanly.
 
 ## Rotation and retention
 

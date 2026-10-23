@@ -28,7 +28,7 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `threading` | string |  | fastmm-live: split (engine and network threads, rings between them) \| single (one venue; its network loop, the engine and order sending run on the engine thread, cpu; net_cpus is ignored) (default split) |
 | `journal` | boolean |  | record every consumed event to a .fmj journal (default true) |
 | `journal_dir` | string |  | directory for journals (default "runs") |
-| `journal_sync` | string |  | how far a journal write is pushed: async (msync every 100 ms; survives the process dying) \| fdatasync (msync + fdatasync on the same tick; survives power loss) (default async) |
+| `journal_sync` | string |  | how far a journal write is pushed: async (the kernel writes it back; survives the process dying) \| fdatasync (fdatasync every 100 ms; survives power loss) (default async) |
 | `journal_max_bytes` | integer |  | roll the journal over to the next part at this size, bytes; each part is a complete journal ("x.fmj", "x.1.fmj", ...); 0 = one file per session (default 0) |
 | `journal_retention_days` | integer |  | delete .fmj files in journal_dir last written more than this many days ago, at start; 0 = keep everything (default 0) |
 | `checkpoint_s` | integer |  | with a journal, how often the engine writes a checkpoint to it: the strategy's state() (a strategy that keeps state), the positions and the open orders, seconds of engine time; a backtest can start from any of them (default 0: never) |
