@@ -4,76 +4,113 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-24
+
+A live session can now be replayed from any point: the journal records every outside input,
+checkpoints included, and a backtest starts from a checkpoint to compare configurations from the
+same moment. Backtests also fill resting orders the way a venue does when the book trades through.
+
+Highlights:
+- `[backtest] start_at` replays a live session from a checkpoint (Added, backtest)
+- `[ab] assignment = "branch"` compares configurations from the same moment (Added, backtest)
+- `l2_queue` fills a resting order when the book comes to or through it (Changed, sim)
+- `[engine] stall_ms` cancels every order when the engine thread stops (Added, live)
+- REST orders and cancels no longer wait behind snapshots (Fixed, venues)
+- L3 and L2 books and the OMS no longer do work in proportion to their capacity (Fixed, core)
+
 ### Breaking changes
 - core: `[strategy] state_snapshot_interval_s` is now `[engine] checkpoint_s`; rename the key.
-- core: journal format 4; a journal written by this version does not open in 0.8.
-- core: status file version 24 (`feed.book_recentres`); `fastmm-top` reads one build's files only.
+- core: journal format 4; a journal written by 0.9 does not open in 0.8.
+- core: status file version 24; use the `fastmm-top` of the same build.
+- deploy: the systemd units are `Type=notify`; a copied unit needs the new binaries.
 
 ### Added
-- live: `[engine] stall_ms` cancels every order and exits 5 when the engine thread is stuck in a step.
-- core: `[risk] max_loss_period = "utc_day"` makes `max_loss` a budget for each UTC day.
-- live: `SIGUSR1` and `fastmm-ctl log-reopen` open the log file again, for logrotate without copytruncate.
-- live: `fastmm-live` and `fastmm-gateway` speak sd_notify; the systemd units are `Type=notify` with a watchdog.
 - core: `[engine] checkpoint_s` journals the positions and open orders of any strategy.
 - core: an `AccountFlow` event records money moved in or out of an account outside its trades.
+- core: `[risk] max_loss_period = "utc_day"` makes `max_loss` a budget for each UTC day.
 - venues: Binance Spot `balanceUpdate` and USDⓈ-M transfers are `AccountFlow` events.
-- backtest: `[backtest] start_at` warms up on the data and trades from a checkpoint.
+- venues: `nasdaq_itch` reports L3 window moves as `fastmm_feed_book_recentres_total`.
+- live: `[engine] stall_ms` cancels every order and exits 5 when the engine thread is stuck.
+- live: `fastmm-live` and `fastmm-gateway` speak sd_notify: ready, watchdog and stopping.
+- live: `SIGUSR1` and `fastmm-ctl log-reopen` reopen the log file for logrotate.
+- live: `fastmm-live` warns about deep CPU idle states a blocked thread would wake from.
+- live: `log_irq_affinity` warns about a network interface that coalesces receive interrupts.
+- backtest: `[backtest] start_at` warms up on the data and starts trading at a checkpoint.
 - backtest: `[ab] assignment = "branch"` runs each arm over the same data and seed.
 - backtest: `latency_from_journal` takes the session's own latencies where longer than the model.
 - backtest: `latency_*_sigma` set the shape of each latency path's jitter.
 - backtest: `latency_fill_us`, `_jitter_us` and `_sigma` give fills a path apart from the acks.
 - backtest: `[backtest.positions]` sets the engine's positions at the start.
 - backtest: `fastmm-data events` writes a session's own traffic as CSV.
-- venues: `nasdaq_itch` reports its L3 books' window moves as `fastmm_feed_book_recentres_total`.
 - bench: `fastmm-bench-l3-itch` replays an ITCH file into L3 books with latency percentiles.
 
 ### Changed
+- core: the timer wheel keeps eight slots for the engine; a strategy gets 1016.
+- core: the journal writer uses `pwrite`; a spinning core no longer takes TLB shootdowns from it.
+- live: venues pinned to one core share one network thread that polls them in turn.
+- live: a `fastmm-ctl` command is answered in about 0.1 ms; the control loops no longer sleep.
+- live: a shutdown waits for the venues to confirm its cancels; a warm handoff takes about 35 ms.
 - sim: under `l2_queue` an opposite level that comes in at or through a resting order fills it.
 - sim: under `matching` over recorded data a recorded trade takes the book in price-time order.
+- sim: `fastmm-sim-exchange` reports only the assets an order event changed.
 - backtest: `strip_own` keeps a book ticker one side of which was only ours, that side empty.
 - backtest: `balances_from_journal` replays the session's flows of money and account refreshes.
 - backtest: `params_from_journal` works with `[ab]`; the arms keep their parameters.
+- backtest: `calibrate` prints the latency shape it fitted with.
 - replay: `fastmm-replay` restores the state of a warm standby's take-over.
-- live: the control loops wait on their sockets and signals; a `fastmm-ctl` command is answered in about 0.1 ms, not up to 50.
-- live: a shutdown waits for the venues to confirm its cancels instead of a fixed 300 ms; a warm handoff takes about 35 ms, not 300.
-- backtest: `calibrate` prints the latency shape it fitted with (`latency_*_sigma`).
+- python: `open_store` reads the store the engine writes, through the same reader as `fastmm-pnl`.
+- python: reading a `Param` in a hook takes about 22 ns.
+- scripts: `host-setup.sh tune` sets transparent huge pages to `madvise`.
 
 ### Fixed
-- venues: a Binance Spot `PERCENT_PRICE` or `PERCENT_PRICE_BY_SIDE` refusal is `PriceCollar`, not `InvalidTick` with a config error.
-- core: an L3 book recentre no longer moves its whole price window (about 850x faster at 2^16 ticks).
-- core: an L3 book's `clear()` on a resync costs the resting orders, not its capacity.
+- core: a `TimerId` of a fired timer no longer cancels the timer that reused its slot.
+- core: a timer callback that cancels the next timer no longer crashes the wheel.
+- core: a replay fires the journal's timers and gives them the ids they had live.
+- core: an L3 book recentre moves only the levels that change sides.
+- core: an L3 book's `clear()` costs the resting orders, not its capacity.
 - core: an L2 book loads a deep snapshot in linear time.
-- core: the OMS looks up an unknown order id in one probe, not a scan of 4096 terminal orders.
-- core: a full balance-move buffer drops its oldest move in O(1).
-- venues: OKX's checksum book moves only the levels next to a change near the touch.
+- core: the OMS finds an unknown order id and an instrument's best own price in its own orders.
+- core: a full balance-move buffer drops its oldest move in constant time.
+- core: a journal part after the first carries the engine clock its records continue from.
 - venues: REST orders, cancels and dead man's switch refreshes no longer wait behind snapshots.
-- venues: a REST connection that dies fails only its request in flight; the rest go on a new one.
+- venues: a REST connection that dies fails only its request in flight.
 - venues: a REST host is looked up off the network thread, and again after a failed connect.
-- venues: the kill switch's cancel-all reuses one connection instead of one per symbol.
-- net: TLS client connections share a context per CA bundle instead of loading it each time.
+- venues: the kill switch's cancel-all reuses one connection for every symbol.
+- venues: a Binance Spot `PERCENT_PRICE` refusal is `PriceCollar`, not `InvalidTick`.
+- venues: OKX's checksum book moves only the levels next to a change near the touch.
+- net: TLS client connections share one context per CA bundle.
 - net: DNS lookups run on at most four shared threads, off the pinned network cores.
-- net: reconnect backoff jitter differs per connection, so they no longer retry in step.
-- backtest: `strip_own` takes out orders that rested before the journal's first record.
+- net: reconnect backoff jitter differs per connection.
 - sim: `l2_queue` checks post-only orders against a book ticker newer than the depth.
 - sim: a reduce-only order is refused on a flat or growing position and fills only down to flat.
 - sim: an order under a duplicate id no longer leaves a balance held for good.
-- sim: a spot market buy is held at the levels it would take, not at the touch.
+- sim: a spot market buy is held at the levels it would take.
 - sim: a FOK order under self-trade prevention fills whole or not at all.
 - sim: an inverse contract's entry price is the harmonic mean of its fills.
-- backtest: `tardis` with `start=` begins from the book of that time, not from its deltas alone.
+- backtest: `tardis` with `start=` begins from the book of that time.
+- backtest: `strip_own` takes out orders that rested before the journal's first record.
 - backtest: `strip_own` strips snapshots deeper than 256 levels a side.
 - backtest: `remap=true` renumbers a journal's recorded latencies, balances and flows too.
 - backtest: a CSV book-ticker row fills its own side; a delta past 256 rows a side is split.
-- backtest: a CSV file streams instead of being read into memory.
-- core: a journal part after the first carries the engine clock its records continue from.
+- backtest: a CSV file streams from disk.
 - backtest: sweep points, folds and branch arms start from one strategy state and write none.
 - backtest: an A/B arm's per-hour figures weigh each pair by its time.
-- backtest: `calibrate --backtest` counts live fees in another asset apart, and drift needs a mid.
+- backtest: `calibrate --backtest` counts live fees in another asset apart.
 - backtest: fills after a replace count for the quote that began it.
-- backtest: converting to an .fmj journal no longer stops with "ring full" at a run of deep snapshots.
+- backtest: converting deep snapshots to an `.fmj` journal no longer stops with "ring full".
+- python: a session report values each instrument at its own mark.
+- python: the hot-hook cache is rebuilt when a helper or constant the hook reaches changes.
+- python: the IR check refuses calls through function pointers and inline assembly.
+- python: a hot hook failure names its instrument.
+- python: Ctrl-C while a live session starts ends the process.
+- python: `fastmm sim` passes its options on to `fastmm-sim-exchange`.
+- python: balances or perp states merged into a synthetic backtest keep its market data.
+- python: slow-method timings keep a bounded sample.
 
 ### Documentation
 - docs: a how-to replays a live session from a checkpoint and compares configurations from it.
+- docs: the production guide gives the measured cost of C-states, timer ticks and TLB shootdowns.
+- docs: rotating the log of a running session.
 
 ## [0.8.0] - 2026-10-22
 
