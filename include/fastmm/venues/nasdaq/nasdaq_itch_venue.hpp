@@ -353,7 +353,9 @@ class NasdaqItchVenue final : public Venue {
   // timers (poll())
   std::int64_t next_service_ns_ = 0;
   std::int64_t next_session_timer_ns_ = 0;
-  std::int64_t midnight_ns_ = 0;  // US/Eastern midnight the ITCH and OUCH timestamps count from
+  std::int64_t midnight_ns_ = 0;
+  std::uint64_t capacity_errors_seen_ =
+      0;  // US/Eastern midnight the ITCH and OUCH timestamps count from
   std::int64_t next_xdp_stats_ns_ = 0;
 
   bool venue_kill_sent_ = false;

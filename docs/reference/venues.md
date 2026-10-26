@@ -664,8 +664,10 @@ The same procedure, after a `ConnectionStateMsg{Resyncing}` that clears the engi
 | Trigger | Why |
 |---|---|
 | a gap the receiver gives up (no `rerequest`, or `max_request_attempts` unanswered requests) | the book misses messages |
-| any L3 book error (an unknown or duplicate order reference, a book at `max_orders`) | later messages cannot repair it |
+| any L3 book error (an unknown or duplicate order reference) | later messages cannot repair it |
 | the recovery buffer filling during a snapshot | the snapshot is taken again |
+
+A book whose capacity (`max_orders`, `max_overflow_levels`) refuses an order is not resynchronised: a new snapshot would refuse it again. That book alone leaves service with a `ConnectionStateMsg{Resyncing}` for its instrument (`reason_code` 1), which clears it in the engine; its messages are skipped and the venue logs an error. The other books stay live, and the full one comes back with the next resync.
 
 The buffer filling during two snapshots in a row stops the feed: the venue's kill switch trips with `KillReason::FeedLost`, and the feed state is `lost`. A GLIMPSE connection that fails or closes before End of Snapshot is retried after 1 s. Without `glimpse_url` the books are complete (empty) before sequence 1 and the receiver starts there; a gap given up stops the feed the same way.
 

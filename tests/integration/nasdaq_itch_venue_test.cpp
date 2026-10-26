@@ -98,7 +98,7 @@ class Harness {
     cfg.max_request_attempts = 50;
     cfg.reorder_packets = 4096;
     cfg.recovery_buffer_packets = 1U << 14;
-    cfg.max_orders = 1U << 16;
+    if (cfg.max_orders == NasdaqItchVenueConfig{}.max_orders) cfg.max_orders = 1U << 16;
     cfg.price_window_ticks = 1U << 16;
     if (cfg.order_entry == OrderEntry::SimOuch) cfg.ouch_url = ip_port(sim.ouch_port());
     venue_ = std::make_unique<NasdaqItchVenue>(VenueId{0}, cfg_);
@@ -343,6 +343,31 @@ TEST_CASE("nasdaq_itch venue: joins mid-stream from GLIMPSE and its books equal 
   CHECK(st.feed.book_errors == 0);
   CHECK(st.feed.snapshot_recoveries == 0);
   CHECK(st.feed.kernel_to_t0.count > 0);
+}
+
+// Books too small for the market: every order beyond 16 is refused. The venue still goes live
+// from one snapshot and stays live; the books leave service on their own. Before, the refusal was
+// a book error: the snapshot was "inconsistent" and retaken every second, never going live.
+TEST_CASE("nasdaq_itch venue: a book too small for its orders leaves service without a resync") {
+  if (!net::test::in_multicast_netns()) return;
+  SimItchServer sim(sim_config());
+  REQUIRE_MESSAGE(sim.open(), sim.last_error());
+  const std::int64_t until = net::Reactor::now_ns() + 400'000'000;
+  while (net::Reactor::now_ns() < until) sim.poll(0);
+
+  NasdaqItchVenueConfig vc = venue_config(sim, true);
+  vc.max_orders = 16;
+  Harness h(sim, vc);
+  REQUIRE(h.pump(5000, [&] { return h.live(); }));
+  h.run_for(1500);
+  CHECK(h.live());
+  CHECK(sim.stats().snapshots == 1);
+  h.run_for(200);  // the venue publishes its status every 100 ms
+  const venues::VenueStatus st = h.venue().status();
+  CHECK(st.resyncs == 0);
+  CHECK(st.feed.book_errors == 0);
+  CHECK(st.books_synced == 0);
+  CHECK(st.feed.state == FeedState::Live);
 }
 
 TEST_CASE("nasdaq_itch venue: drops on both lines are recovered through re-requests") {

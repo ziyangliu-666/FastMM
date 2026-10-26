@@ -500,6 +500,14 @@ void NasdaqItchVenue::after_packet() noexcept {
     book_errors_seen_ = bridge_->stats().book_errors;
     start_recovery("L3 book inconsistency");
   }
+  if (FASTMM_UNLIKELY(bridge_->stats().capacity_errors != capacity_errors_seen_)) {
+    capacity_errors_seen_ = bridge_->stats().capacity_errors;
+    FASTMM_LOG_ERROR(
+        "{}: a book refused an order for lack of room and left service until the next resync; "
+        "raise max_orders or max_overflow_levels ({} so far)",
+        cfg_.name,
+        capacity_errors_seen_);
+  }
 }
 
 void NasdaqItchVenue::on_message(std::uint64_t seq,

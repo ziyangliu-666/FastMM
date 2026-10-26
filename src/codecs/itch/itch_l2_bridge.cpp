@@ -41,6 +41,10 @@ struct ItchL2Bridge::Slot {
   Timestamp last_exch_ts{};
   bool pending = false;  // messages applied since the last emission
   bool complete = false;
+  // A capacity of the book refused an order: it stays empty and out of service, its messages
+  // skipped, until mark_incomplete(). `notice` is its ConnectionStateMsg, until the sink takes it.
+  bool full = false;
+  bool notice = false;
   bool dirty = false;  // in dirty_: the top may have changed
 };
 
@@ -87,10 +91,8 @@ struct ItchL2Bridge::Consumer {
   void on_add(
       InstrumentId, Timestamp ts, std::uint64_t ref, Side side, Price price, Qty qty) noexcept {
     Qty aggregate;
-    if (FASTMM_UNLIKELY(slot->book.add(ref, side, price, qty, &aggregate) != L3Error::None)) {
-      ++owner.stats_.book_errors;
-      return;
-    }
+    const L3Error e = slot->book.add(ref, side, price, qty, &aggregate);
+    if (FASTMM_UNLIKELY(e != L3Error::None)) return owner.refused(*slot, e);
     owner.touch(*slot, side, price, aggregate, seq, ts);
   }
   void on_execute(InstrumentId,
@@ -144,10 +146,8 @@ struct ItchL2Bridge::Consumer {
     Qty aggregate;
     book.cancel(h, Qty{}, &aggregate);
     owner.touch(*slot, side, before, aggregate, seq, ts);
-    if (FASTMM_UNLIKELY(book.add(new_ref, side, price, qty, &aggregate) != L3Error::None)) {
-      ++owner.stats_.book_errors;
-      return;
-    }
+    const L3Error e = book.add(new_ref, side, price, qty, &aggregate);
+    if (FASTMM_UNLIKELY(e != L3Error::None)) return owner.refused(*slot, e);
     owner.touch(*slot, side, price, aggregate, seq, ts);
   }
   void on_trade(
@@ -244,7 +244,7 @@ venues::ParseStatus ItchL2Bridge::on_itch_message(std::uint64_t seq,
     const auto locate = static_cast<std::uint16_t>((static_cast<unsigned>(msg[1]) << 8U) |
                                                    static_cast<unsigned>(msg[2]));
     slot_idx = locate_slot_[locate];
-    if (slot_idx == kNoSlot) {
+    if (slot_idx == kNoSlot || FASTMM_UNLIKELY(slots_[slot_idx]->full)) {
       ++stats_.skipped;
       return venues::ParseStatus::Ignored;
     }
@@ -355,7 +355,44 @@ void ItchL2Bridge::emit_trade(const Slot& s,
   ++stats_.trades;
 }
 
+// A capacity refusal is not an inconsistency of the feed: the order exists, this book has no room
+// for it. Its later messages would find no order, so the book goes out of service on its own,
+// and the others carry on. A full resync would rebuild it into the same refusal.
+void ItchL2Bridge::refused(Slot& s, L3Error e) noexcept {
+  if (e != L3Error::PoolExhausted && e != L3Error::OutOfWindow) {
+    ++stats_.book_errors;
+    return;
+  }
+  ++stats_.capacity_errors;
+  s.full = true;
+  s.book.clear();
+  s.pending = false;
+  s.dirty = false;  // end_datagram() skips it
+  s.changed[0] = {};
+  s.changed[1] = {};
+  s.pub_n[0] = s.pub_n[1] = 0;
+  s.current_n[0] = s.current_n[1] = 0;
+  if (s.complete) {
+    s.complete = false;
+    s.notice = true;
+    ++notices_;
+    send_notices();
+  } else {
+    --incomplete_;  // mark_complete() no longer waits for it
+  }
+}
+
+void ItchL2Bridge::send_notices() noexcept {
+  for (const auto& s : slots_) {
+    if (!s->notice) continue;
+    if (!emit_state(ConnState::Resyncing, kCapacityReason, s->id)) return;
+    s->notice = false;
+    --notices_;
+  }
+}
+
 void ItchL2Bridge::end_datagram() noexcept {
+  if (FASTMM_UNLIKELY(notices_ != 0)) send_notices();
   std::size_t keep = 0;
   for (const std::uint16_t idx : dirty_) {
     Slot& s = *slots_[idx];
@@ -492,25 +529,26 @@ bool ItchL2Bridge::emit_snapshot(Slot& s) noexcept {
   return true;
 }
 
-void ItchL2Bridge::emit_state(ConnState state, std::int32_t reason) noexcept {
+bool ItchL2Bridge::emit_state(ConnState state, std::int32_t reason, InstrumentId id) noexcept {
   auto* m = sink_.reserve<ConnectionStateMsg>();
   if (FASTMM_UNLIKELY(m == nullptr)) {
     ++stats_.overflow;
-    return;
+    return false;
   }
   *m = ConnectionStateMsg{};
-  init_header(*m, EventType::ConnectionState, InstrumentId{}, venue_);
+  init_header(*m, EventType::ConnectionState, id, venue_);
   m->state = state;
   m->channel = 0;
   m->reason_code = reason;
   stamp_header(m->hdr);
   sink_.commit();
+  return true;
 }
 
 bool ItchL2Bridge::mark_complete(InstrumentId id) noexcept {
   Slot* s = slot_of(id);
   if (s == nullptr) return false;
-  if (s->complete) return true;
+  if (s->complete || s->full) return true;
   if (!emit_snapshot(*s)) return false;
   s->complete = true;
   if (--incomplete_ == 0) emit_state(ConnState::Live, 0);
@@ -536,8 +574,11 @@ void ItchL2Bridge::mark_incomplete(std::int32_t reason_code) noexcept {
     s->pub_n[0] = s->pub_n[1] = 0;
     s->current_n[0] = s->current_n[1] = 0;
     s->prev_u = 0;
+    s->full = false;
+    s->notice = false;
   }
   dirty_.clear();
+  notices_ = 0;
   incomplete_ = slots_.size();
   emit_state(ConnState::Resyncing, reason_code);
 }

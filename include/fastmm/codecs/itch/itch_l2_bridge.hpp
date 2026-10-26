@@ -19,6 +19,13 @@
 // complete. mark_incomplete() clears every book and emits ConnectionStateMsg{Resyncing,
 // channel 0}; the engine then clears all books of the venue.
 //
+// A book whose capacity (L3BookConfig max_orders, max_overflow_levels) refuses an order is not
+// inconsistent, only too small: it is cleared and goes out of service by itself, with
+// ConnectionStateMsg{Resyncing, channel 0, reason kCapacityReason} for its instrument (the engine
+// clears that book), and its messages are skipped until mark_incomplete(). It counts in
+// stats().capacity_errors, not book_errors, and is neither complete nor waited for by the Live
+// that mark_complete() emits.
+//
 // A complete book emits at most one BookDeltaMsg per datagram, from end_datagram(): the levels
 // of the top `depth` per side that differ from the last emitted top, with absolute quantities
 // (0 deletes). A level that enters the top because another emptied is included, and a level
@@ -65,9 +72,10 @@ struct ItchL2BridgeConfig {
 };
 
 struct ItchL2BridgeStats {
-  std::uint64_t messages = 0;     // on_itch_message() calls
-  std::uint64_t skipped = 0;      // unconfigured locate
-  std::uint64_t book_errors = 0;  // unknown or duplicate reference, full book, bad quantity
+  std::uint64_t messages = 0;         // on_itch_message() calls
+  std::uint64_t skipped = 0;          // unconfigured locate
+  std::uint64_t book_errors = 0;      // unknown or duplicate reference, bad quantity or price
+  std::uint64_t capacity_errors = 0;  // orders a full book refused; the book left service
   std::uint64_t deltas = 0;
   std::uint64_t delta_levels = 0;
   std::uint64_t snapshots = 0;
@@ -86,6 +94,8 @@ struct ItchL2BridgeBookCounters {
 class ItchL2Bridge {
  public:
   static constexpr std::uint32_t kMaxDepth = 256;
+  // ConnectionStateMsg::reason_code of a book that a capacity took out of service.
+  static constexpr std::int32_t kCapacityReason = 1;
 
   ItchL2Bridge(venues::EventSink& sink, const ItchL2BridgeConfig& cfg);
   ~ItchL2Bridge();
@@ -150,7 +160,9 @@ class ItchL2Bridge {
                   Side aggressor) noexcept;
   bool flush(Slot& s) noexcept;
   bool emit_snapshot(Slot& s) noexcept;
-  void emit_state(ConnState state, std::int32_t reason) noexcept;
+  bool emit_state(ConnState state, std::int32_t reason, InstrumentId id = {}) noexcept;
+  void refused(Slot& s, L3Error e) noexcept;
+  void send_notices() noexcept;
   void stamp_header(EventHeader& h) const noexcept;
 
   venues::EventSink& sink_;
@@ -164,7 +176,8 @@ class ItchL2Bridge {
   std::vector<std::unique_ptr<Slot>> slots_;
   std::vector<std::uint16_t> dirty_;  // capacity = slots_.size()
   std::unique_ptr<Level[]> changes_;  // 4 x depth
-  std::size_t incomplete_ = 0;
+  std::size_t incomplete_ = 0;        // books neither complete nor out of service
+  std::size_t notices_ = 0;           // out-of-service notices the sink did not take yet
   ItchL2BridgeStats stats_{};
   char system_event_ = 0;
 };

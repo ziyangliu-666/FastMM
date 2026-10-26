@@ -59,7 +59,7 @@ Register symbols with `add_symbol()` before the directory spin (or `map_locate()
 |---|---|
 | R, S (any locate) | R maps the locate of a symbol registered with `add_instrument()`; S is kept in `last_system_event()` |
 | other types, unconfigured locate | skipped after the 11-byte header (`stats().skipped`) |
-| A F E C X D U | applied to the instrument's `L3Book`; unknown or duplicate references count in `stats().book_errors` |
+| A F E C X D U | applied to the instrument's `L3Book`; unknown or duplicate references count in `stats().book_errors`, an order a full book refuses in `stats().capacity_errors` (the book leaves service) |
 | E, C with Printable `Y` | `TradeMsg`: resting order price (E) or Execution Price (C), aggressor opposite to the resting side, `trade_id` = Match Number |
 | P, Q | `TradeMsg` from `ItchDecoder` |
 
@@ -75,7 +75,7 @@ Every emitted message carries the stamp's `t0_cycles` and `recv_ts`; `t1_delta` 
 
 The overflow store keeps its levels sorted in blocks of 64 behind a sorted directory, so finding a level is two short binary searches and creating or removing one moves at most one block. A deep book stays cheap this way: at a large-cap stock's open several thousand levels per side sit outside a 65536-tick window ($6.55 at ITCH's tick), and new ones land all through the store.
 
-The `nasdaq_itch` venue sets the store's capacity with `max_overflow_levels` (default 8192 per side; 0 disables overflow). It is allocated at start, about 192 bytes per level of capacity per book. Size it for the occupied prices outside the window, stub quotes included: a full store refuses an order with `OutOfWindow` even when the order pool has room, and the venue treats the book error as a reason to resynchronise. A day of the most active Nasdaq stocks needs up to about 3000 levels per side; 1024 is not enough at the open.
+The `nasdaq_itch` venue sets the store's capacity with `max_overflow_levels` (default 8192 per side; 0 disables overflow). It is allocated at start, about 192 bytes per level of capacity per book. Size it for the occupied prices outside the window, stub quotes included: a full store refuses an order with `OutOfWindow` even when the order pool has room, and the book leaves service until the next resync (see [venues](../venues.md#startup-and-recovery)). A day of the most active Nasdaq stocks needs up to about 3000 levels per side; 1024 is not enough at the open.
 
 The window is a ring, so moving it (a recentre) moves only the levels that leave or enter it, never the window itself. It moves when a touch has left it and the overflow store has since taken about as many operations at that touch as the move costs: to the midpoint of the touches when they are less than a window apart; when they are further apart, the window stays on the touch it holds (moves to the bid when it holds neither). A touch that steps out of the window and straight back, such as an order beyond the touch cancelled at once, moves nothing. Each operation costs O(1) amortised, whatever the window; `clear()`, which a resync runs on every book, costs the orders the book holds, not its capacity. `recentre_count()`, `recentre_failures()` (moves skipped because the overflow store was full) and `recentre_levels_moved()` count the moves, and the venue reports them summed over the books in the [status file](../status-file.md#multicast-feed) and as `fastmm_feed_book_recentres_total`.
 

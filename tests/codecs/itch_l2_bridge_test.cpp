@@ -683,3 +683,92 @@ TEST_CASE("codecs.itch_l2_bridge: sparse top updates cross bitmap words and repl
     h.complete();
   }
 }
+
+// A book whose order pool is full refuses an order: that book leaves service by itself (a
+// ConnectionStateMsg for its instrument, its messages skipped) and nothing counts as a book
+// error, so the venue does not resync every book only to refuse the same order again. The other
+// book carries on, and a resync brings the full one back.
+TEST_CASE("codecs.itch_l2_bridge: a full book leaves service alone, without a book error") {
+  RecordingSink rec(1U << 20);
+  ItchL2BridgeConfig cfg;
+  cfg.depth = 4;
+  cfg.book = L3BookConfig{.price_window_ticks = 1U << 12, .max_orders = 4};
+  ItchL2Bridge bridge(rec.sink, cfg);
+  REQUIRE(bridge.add_instrument("", InstrumentId{1}));
+  REQUIRE(bridge.add_instrument("", InstrumentId{2}));
+  REQUIRE(bridge.map_locate(11, InstrumentId{1}));
+  REQUIRE(bridge.map_locate(12, InstrumentId{2}));
+  REQUIRE(bridge.mark_all_complete());
+  rec.drain();
+
+  ItchEncoder enc;
+  std::array<std::byte, 64> buf{};
+  std::uint64_t seq = 0;
+  const DatagramStamp stamp{Cycles{0}, Timestamp{42}};
+  auto send = [&](std::size_t n) {
+    REQUIRE(n != 0);
+    return bridge.on_itch_message(++seq, {buf.data(), n}, stamp);
+  };
+  for (std::uint64_t ref = 1; ref <= 5; ++ref)  // the fifth does not fit in book 1
+    send(enc.add_order(buf, 11, 2, ref, Side::Buy, qt(100), "A", px("10.00")));
+  send(enc.order_executed(buf, 11, 3, 5, qt(10), 77));  // names the refused order
+  send(enc.order_delete(buf, 11, 3, 1));
+  send(enc.add_order(buf, 12, 4, 100, Side::Sell, qt(7), "B", px("20.00")));
+  bridge.end_datagram();
+  CHECK(bridge.stats().book_errors == 0);
+  CHECK(bridge.stats().capacity_errors == 1);
+  CHECK_FALSE(bridge.complete(InstrumentId{1}));
+  CHECK(bridge.complete(InstrumentId{2}));
+  CHECK(bridge.book(InstrumentId{1})->order_count() == 0);
+  {
+    const std::vector<Bytes> out = rec.drain();
+    REQUIRE(out.size() == 2);
+    const auto st = RecordingSink::as<ConnectionStateMsg>(out[0]);
+    CHECK(st.hdr.type == EventType::ConnectionState);
+    CHECK(st.hdr.instrument == InstrumentId{1});
+    CHECK(st.state == ConnState::Resyncing);
+    CHECK(st.channel == 0);
+    CHECK(st.reason_code == ItchL2Bridge::kCapacityReason);
+    const auto* d = reinterpret_cast<const BookDeltaMsg*>(out[1].data());
+    CHECK(d->hdr.type == EventType::BookDelta);
+    CHECK(d->hdr.instrument == InstrumentId{2});
+  }
+  // Out of service: book 1's messages are skipped, book 2's still apply.
+  send(enc.add_order(buf, 11, 5, 6, Side::Buy, qt(100), "A", px("10.00")));
+  send(enc.order_delete(buf, 12, 5, 100));
+  bridge.end_datagram();
+  CHECK(bridge.stats().book_errors == 0);
+  CHECK(bridge.book(InstrumentId{1})->order_count() == 0);
+  CHECK(bridge.book(InstrumentId{2})->order_count() == 0);
+  REQUIRE(bridge.mark_all_complete());  // book 1 stays out until a resync
+  CHECK_FALSE(bridge.complete(InstrumentId{1}));
+  rec.drain();
+
+  // A resync brings it back, and a book that fits completes as usual.
+  bridge.mark_incomplete();
+  send(enc.add_order(buf, 11, 6, 7, Side::Buy, qt(100), "A", px("10.00")));
+  REQUIRE(bridge.mark_all_complete());
+  CHECK(bridge.complete(InstrumentId{1}));
+  CHECK(bridge.complete(InstrumentId{2}));
+  {
+    const std::vector<Bytes> out = rec.drain();
+    REQUIRE(out.size() == 4);  // Resyncing, two snapshots, Live
+    CHECK(RecordingSink::as<ConnectionStateMsg>(out[3]).state == ConnState::Live);
+  }
+
+  // While the venue rebuilds the books (incomplete), a refusal takes the book out of the Live
+  // wait: the other book completes alone and the venue goes live.
+  bridge.mark_incomplete();
+  for (std::uint64_t ref = 20; ref <= 24; ++ref)
+    send(enc.add_order(buf, 12, 7, ref, Side::Sell, qt(1), "B", px("20.00")));
+  CHECK(bridge.stats().book_errors == 0);
+  CHECK(bridge.stats().capacity_errors == 2);
+  REQUIRE(bridge.mark_all_complete());
+  CHECK(bridge.complete(InstrumentId{1}));
+  CHECK_FALSE(bridge.complete(InstrumentId{2}));
+  {
+    const std::vector<Bytes> out = rec.drain();
+    REQUIRE(out.size() == 3);  // Resyncing, book 1's snapshot, Live
+    CHECK(RecordingSink::as<ConnectionStateMsg>(out[2]).state == ConnState::Live);
+  }
+}
