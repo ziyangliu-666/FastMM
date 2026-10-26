@@ -13,6 +13,9 @@ All notable changes are recorded here (Keep a Changelog format).
 - sim: the market-data wire starts at 256 KiB and grows when a burst fills it, and the next inbound message is looked for only in the wires that hold one.
 
 ### Added
+- backtest: a population runs thousands of `basic_mm` variants over one pass of `l3_queue` data, each with the fills its own backtest gives (`bt::run_population`, `backtest/population.hpp`).
+- backtest: `bt::compile_tape` writes a population's shared market once, and `backtest/lane_kernel.hpp` runs each (variant, instrument) over it alone.
+- bench: `fastmm-bench-population` times a population against backtests of its variants and checks them fill by fill.
 - backtest: the `itch` data source runs a backtest over a day of Nasdaq TotalView-ITCH, every order of the followed stocks; the engine trades on each book's L2 view and the simulated venue gets the orders themselves.
 - sim: `fill_model = "l3_queue"` takes each order's queue position from order-by-order data: it waits behind the recorded orders that came before it and fills from the executions that reach it.
 - bench: `fastmm-bench-queue-truth` scores `l2_queue` and `l3_queue` against a day of ITCH, where every order's outcome is known.

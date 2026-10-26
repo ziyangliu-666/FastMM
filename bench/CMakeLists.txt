@@ -71,3 +71,10 @@ add_executable(fastmm-bench-queue-truth queue_truth.cpp)
 fastmm_target_defaults(fastmm-bench-queue-truth)
 target_link_libraries(fastmm-bench-queue-truth PRIVATE fastmm::core)
 set_target_properties(fastmm-bench-queue-truth PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin/bench)
+
+# A population of basic_mm variants over one pass of order-by-order data, against the engine run
+# once per variant (--check compares them exactly). Needs an ITCH file, so it has no smoke test.
+add_executable(fastmm-bench-population population.cpp)
+fastmm_target_defaults(fastmm-bench-population)
+target_link_libraries(fastmm-bench-population PRIVATE fastmm::backtest)
+set_target_properties(fastmm-bench-population PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin/bench)
