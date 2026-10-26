@@ -110,6 +110,9 @@ class ItchL2Bridge {
   bool map_locate(std::uint16_t locate, InstrumentId id) noexcept;
   // Start of a trading day: locates are reassigned by the next directory spin.
   void clear_locates() noexcept;
+  // Whether on_itch_message() needs `msg`: R and S, a message of a configured instrument's
+  // locate, and every message while an instrument has no locate yet (it may be one of them).
+  [[nodiscard]] bool wanted(std::span<const std::byte> msg) const noexcept;
   void set_midnight(Timestamp midnight) noexcept { decoder_.set_midnight(midnight); }
   // Receive stamp of the events the next mark_*() call emits (they otherwise carry the stamp of
   // the last message applied, which after a replay of buffered messages is an old datagram's).
@@ -145,6 +148,7 @@ class ItchL2Bridge {
   static constexpr std::uint16_t kNoSlot = 0xFFFF;
 
   [[nodiscard]] Slot* slot_of(InstrumentId id) const noexcept;
+  void set_locate(std::uint16_t locate, std::uint16_t idx) noexcept;
   void touch(Slot& s,
              Side side,
              Price price,
@@ -178,6 +182,7 @@ class ItchL2Bridge {
   std::unique_ptr<Level[]> changes_;  // 4 x depth
   std::size_t incomplete_ = 0;        // books neither complete nor out of service
   std::size_t notices_ = 0;           // out-of-service notices the sink did not take yet
+  std::size_t unmapped_ = 0;          // instruments with no locate
   ItchL2BridgeStats stats_{};
   char system_event_ = 0;
 };

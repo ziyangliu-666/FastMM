@@ -345,6 +345,35 @@ TEST_CASE("nasdaq_itch venue: joins mid-stream from GLIMPSE and its books equal 
   CHECK(st.feed.kernel_to_t0.count > 0);
 }
 
+// A third stock the venue does not subscribe to: once GLIMPSE's directory names the venue's
+// locates, the recovery buffer leaves that stock's messages out, and the gaps they leave in its
+// sequence numbers are not taken for lost messages.
+TEST_CASE("nasdaq_itch venue: joins mid-stream buffering only the stocks it subscribes to") {
+  if (!net::test::in_multicast_netns()) return;
+  SimItchConfig sc = sim_config();
+  sim::itch::SimItchSymbol other;
+  other.symbol = "FMCC";
+  sc.symbols.push_back(other);
+  SimItchServer sim(sc);
+  REQUIRE_MESSAGE(sim.open(), sim.last_error());
+  const std::int64_t until = net::Reactor::now_ns() + 400'000'000;
+  while (net::Reactor::now_ns() < until) sim.poll(0);
+
+  Harness h(sim, venue_config(sim, true));
+  REQUIRE(h.pump(5000, [&] { return h.live(); }));
+  CHECK(sim.stats().snapshots == 1);
+  h.run_for(500);
+  sim.set_generator_enabled(false);
+  REQUIRE(h.pump(5000, [&] { return h.caught_up(); }));
+  h.run_for(50);
+  h.check_books();
+  h.run_for(200);
+  const venues::VenueStatus st = h.venue().status();
+  CHECK(st.resyncs == 0);
+  CHECK(st.feed.book_errors == 0);
+  CHECK(st.books_synced == 2);
+}
+
 // Books too small for the market: every order beyond 16 is refused. The venue still goes live
 // from one snapshot and stays live; the books leave service on their own. Before, the refusal was
 // a book error: the snapshot was "inconsistent" and retaken every second, never going live.

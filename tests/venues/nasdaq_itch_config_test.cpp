@@ -219,6 +219,39 @@ TEST_CASE("venues.nasdaq_itch: the recovery buffer groups messages by datagram a
   CHECK(b.append(20, bytes("z"), m3));
 }
 
+// The venue keeps only its books' messages and skips the rest: a skipped message is no gap, a
+// sequence number never seen is.
+TEST_CASE("venues.nasdaq_itch: the recovery buffer tells skipped messages from lost ones") {
+  RecoveryBuffer b;
+  b.allocate(4, 64);
+  ItchRxMeta m;
+  m.datagram = 1;
+  REQUIRE(b.append(10, bytes("a"), m));
+  b.skip(11);
+  REQUIRE(b.append(12, bytes("b"), m));  // same datagram: one record
+  b.skip(13);
+  CHECK(b.packets() == 1);
+  CHECK(b.messages() == 2);
+  CHECK(b.last_seen() == 13);
+  CHECK_FALSE(b.gap_after(10));
+  CHECK(b.gap_after(9));  // 9 was never seen
+  std::vector<std::uint64_t> seqs;
+  b.for_each(
+      [&](std::uint64_t seq, std::span<const std::byte>, const ItchRxMeta&) {
+        seqs.push_back(seq);
+      },
+      [] {});
+  CHECK(seqs == std::vector<std::uint64_t>{10, 12});
+  m.datagram = 2;
+  REQUIRE(b.append(20, bytes("c"), m));  // 14 to 19 lost
+  CHECK_FALSE(b.gap_after(20));
+  CHECK(b.gap_after(19));
+  CHECK(b.gap_after(12));
+  b.clear();
+  CHECK(b.last_seen() == 0);
+  CHECK_FALSE(b.gap_after(1));
+}
+
 TEST_CASE("venues.nasdaq_itch: order_entry none rejects every order with VenueReject") {
   NasdaqItchVenueConfig cfg;
   cfg.lines[0] = ItchLine{"lo", "239.1.1.1", 31001, ""};

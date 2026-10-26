@@ -772,3 +772,36 @@ TEST_CASE("codecs.itch_l2_bridge: a full book leaves service alone, without a bo
     CHECK(RecordingSink::as<ConnectionStateMsg>(out[2]).state == ConnState::Live);
   }
 }
+
+// What a venue buffers during a snapshot: R and S always, every message while an instrument's
+// locate is unknown, then only the configured instruments' locates.
+TEST_CASE("codecs.itch_l2_bridge: wanted() keeps the configured locates once they are known") {
+  RecordingSink rec(1U << 16);
+  ItchL2Bridge bridge(rec.sink, ItchL2BridgeConfig{});
+  REQUIRE(bridge.add_instrument("FMA", InstrumentId{1}));
+  REQUIRE(bridge.add_instrument("FMB", InstrumentId{2}));
+  ItchEncoder enc;
+  std::array<std::byte, 64> buf{};
+  auto msg = [&](std::size_t n) {
+    REQUIRE(n != 0);
+    return std::span<const std::byte>(buf.data(), n);
+  };
+  const DatagramStamp stamp{};
+  CHECK(bridge.wanted(msg(enc.add_order(buf, 9, 1, 1, Side::Buy, qt(1), "X", px("1.00")))));
+  bridge.on_itch_message(1, msg(enc.stock_directory(buf, 21, 1, "FMA")), stamp);
+  CHECK(bridge.wanted(msg(enc.add_order(buf, 9, 1, 1, Side::Buy, qt(1), "X", px("1.00")))));
+  bridge.on_itch_message(2, msg(enc.stock_directory(buf, 22, 1, "FMB")), stamp);
+  CHECK_FALSE(bridge.wanted(msg(enc.add_order(buf, 9, 1, 1, Side::Buy, qt(1), "X", px("1.00")))));
+  CHECK(bridge.wanted(msg(enc.add_order(buf, 21, 1, 1, Side::Buy, qt(1), "FMA", px("1.00")))));
+  CHECK(bridge.wanted(msg(enc.order_delete(buf, 22, 1, 1))));
+  CHECK(bridge.wanted(msg(enc.stock_directory(buf, 9, 1, "X"))));
+  CHECK(bridge.wanted(msg(enc.system_event(buf, 1, 'O'))));
+  // A locate given to another stock: FMA has none until its next directory message.
+  bridge.on_itch_message(3, msg(enc.stock_directory(buf, 21, 1, "OTHER")), stamp);
+  CHECK(bridge.wanted(msg(enc.add_order(buf, 9, 1, 1, Side::Buy, qt(1), "X", px("1.00")))));
+  bridge.on_itch_message(4, msg(enc.stock_directory(buf, 23, 1, "FMA")), stamp);
+  CHECK_FALSE(bridge.wanted(msg(enc.add_order(buf, 21, 1, 1, Side::Buy, qt(1), "X", px("1.00")))));
+  CHECK(bridge.wanted(msg(enc.add_order(buf, 23, 1, 1, Side::Buy, qt(1), "FMA", px("1.00")))));
+  bridge.clear_locates();
+  CHECK(bridge.wanted(msg(enc.add_order(buf, 9, 1, 1, Side::Buy, qt(1), "X", px("1.00")))));
+}

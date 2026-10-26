@@ -654,7 +654,7 @@ KernelDatagramSource | XdpDatagramSource      rx_backend, lines A and B
 
 ### Startup and recovery
 
-1. `connect()` joins both lines and buffers every message (up to `recovery_buffer_packets` datagrams) while it logs in to GLIMPSE.
+1. `connect()` joins both lines and buffers the messages (up to `recovery_buffer_packets` datagrams) while it logs in to GLIMPSE. Once the Stock Directory has named every subscribed stock's locate, only those stocks' messages and R and S are kept; the rest of the market is left out, and the gaps it leaves in the sequence numbers are not taken for lost messages.
 2. The snapshot's Stock Directory, Trading Action and Add Order messages build the L3 books; End of Snapshot gives the sequence number to continue from.
 3. The buffered messages from that number on are applied. When the buffer starts after it, the receiver is moved back to it and the missing messages are re-requested; without `rerequest` another snapshot is taken.
 4. Each book emits a `BookSnapshotMsg` (top `depth` levels per side) and the venue a `ConnectionStateMsg{Live}`.

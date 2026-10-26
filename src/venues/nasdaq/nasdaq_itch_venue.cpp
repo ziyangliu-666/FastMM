@@ -529,6 +529,11 @@ void NasdaqItchVenue::on_message(std::uint64_t seq,
       }
       // Waiting to retry GLIMPSE: the next snapshot starts later than these messages.
       if (snapshot_retry_ns_ != 0) return;
+      // Only what the books need: the rest of the market would fill the buffer at the open.
+      if (!bridge_->wanted(msg)) {
+        recovery_.skip(seq);
+        return;
+      }
       if (recovery_.append(seq, msg, meta)) return;
       ++stats_.feed.recovery_overflows;
       if (++overflow_streak_ >= 2) {
@@ -633,22 +638,19 @@ void NasdaqItchVenue::finish_snapshot(std::uint64_t next_seq) noexcept {
   if (lost_end_ > next_seq) return retry("messages after End of Snapshot were lost", false);
   if (bridge_->stats().book_errors != book_errors_seen_)
     return retry("the snapshot is inconsistent", true);
-  std::uint64_t expected = next_seq;
-  bool hole = false;
+  if (recovery_.gap_after(next_seq)) {
+    recovery_.clear();
+    return retry("the buffered messages have a hole", false);
+  }
   recovery_.for_each(
       [&](std::uint64_t seq, std::span<const std::byte> msg, const ItchRxMeta& meta) {
-        if (hole || seq < next_seq) return;
-        if (seq != expected) {
-          hole = true;
-          return;
-        }
-        static_cast<void>(bridge_->on_itch_message(seq, msg, stamp_of(meta)));
-        ++expected;
+        if (seq >= next_seq) static_cast<void>(bridge_->on_itch_message(seq, msg, stamp_of(meta)));
       },
       [&] { bridge_->end_datagram(); });
+  // The buffer saw every message from next_seq on up to its last one, kept or not.
+  const std::uint64_t expected = std::max(next_seq, recovery_.last_seen() + 1);
   const std::uint32_t buffered = recovery_.packets();
   recovery_.clear();
-  if (hole) return retry("the buffered messages have a hole", false);
   if (bridge_->stats().book_errors != book_errors_seen_)
     return retry("buffered messages do not apply to it", true);
   const std::uint64_t rxn = rx_->next_sequence();

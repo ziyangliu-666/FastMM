@@ -45,7 +45,8 @@ struct ItchL2Bridge::Slot {
   // skipped, until mark_incomplete(). `notice` is its ConnectionStateMsg, until the sink takes it.
   bool full = false;
   bool notice = false;
-  bool dirty = false;  // in dirty_: the top may have changed
+  std::uint16_t locates = 0;  // stock locates mapped to it
+  bool dirty = false;         // in dirty_: the top may have changed
 };
 
 namespace {
@@ -182,14 +183,32 @@ bool ItchL2Bridge::add_instrument(std::string_view symbol, InstrumentId id) {
       id, static_cast<std::uint16_t>(slots_.size()), tick_, book_cfg_, depth_));
   dirty_.reserve(slots_.size());
   ++incomplete_;
+  ++unmapped_;
   return true;
+}
+
+void ItchL2Bridge::set_locate(std::uint16_t locate, std::uint16_t idx) noexcept {
+  const std::uint16_t old = locate_slot_[locate];
+  if (old == idx) return;
+  if (old != kNoSlot && --slots_[old]->locates == 0) ++unmapped_;
+  if (idx != kNoSlot && slots_[idx]->locates++ == 0) --unmapped_;
+  locate_slot_[locate] = idx;
+}
+
+bool ItchL2Bridge::wanted(std::span<const std::byte> msg) const noexcept {
+  if (msg.size() < 3) return true;
+  const char type = static_cast<char>(msg[0]);
+  if (type == 'R' || type == 'S' || unmapped_ != 0) return true;
+  const auto locate = static_cast<std::uint16_t>((static_cast<unsigned>(msg[1]) << 8U) |
+                                                 static_cast<unsigned>(msg[2]));
+  return locate_slot_[locate] != kNoSlot;
 }
 
 bool ItchL2Bridge::map_locate(std::uint16_t locate, InstrumentId id) noexcept {
   for (std::size_t i = 0; i < slots_.size(); ++i) {
     if (slots_[i]->id != id) continue;
     decoder_.map_locate(locate, id);
-    locate_slot_[locate] = static_cast<std::uint16_t>(i);
+    set_locate(locate, static_cast<std::uint16_t>(i));
     return true;
   }
   return false;
@@ -198,6 +217,8 @@ bool ItchL2Bridge::map_locate(std::uint16_t locate, InstrumentId id) noexcept {
 void ItchL2Bridge::clear_locates() noexcept {
   decoder_.clear_locates();
   std::fill_n(locate_slot_.get(), ItchDecoder::kLocateSlots, kNoSlot);
+  for (const auto& s : slots_) s->locates = 0;
+  unmapped_ = slots_.size();
 }
 
 ItchL2Bridge::Slot* ItchL2Bridge::slot_of(InstrumentId id) const noexcept {
@@ -266,13 +287,14 @@ venues::ParseStatus ItchL2Bridge::on_itch_message(std::uint64_t seq,
       return st;
     }
     const std::uint16_t locate = view_as<StockDirectory>(msg.data()).hdr.stock_locate.get();
-    locate_slot_[locate] = kNoSlot;
+    std::uint16_t idx = kNoSlot;
     if (decoder_.stats().directory_mapped != mapped_before) {
       const InstrumentId id = decoder_.instrument(locate);
       for (std::size_t i = 0; i < slots_.size(); ++i) {
-        if (slots_[i]->id == id) locate_slot_[locate] = static_cast<std::uint16_t>(i);
+        if (slots_[i]->id == id) idx = static_cast<std::uint16_t>(i);
       }
     }
+    set_locate(locate, idx);
     return st;
   }
   return st;
