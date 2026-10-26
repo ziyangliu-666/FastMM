@@ -953,7 +953,9 @@ void bind_backtest(py::module_& m) {
       "Cartesian parameter sweep of a registered C++ strategy on a thread pool (GIL released). "
       "grid: {param: [values]}. Returns [(params, BacktestResult)] in grid order, first "
       "parameter varying slowest. Every worker opens its own cursor over `data` (same forms as "
-      "run_backtest). threads <= 0 uses every hardware thread. fastmm.sweep also takes a "
+      "run_backtest). threads <= 0 uses every hardware thread. Under fill_model l2_queue the "
+      "points share their passes over the data, with the results each gives alone (backtest/"
+      "multiverse.hpp). fastmm.sweep also takes a "
       "fastmm.Strategy class and runs its points in worker processes.");
 
   m.def(

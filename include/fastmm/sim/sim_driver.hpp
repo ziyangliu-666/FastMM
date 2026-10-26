@@ -145,7 +145,7 @@ class SimDriver {
         source_done_ = pending_ == nullptr;  // never poll an exhausted source again
       }
       const Timestamp t_gen = generator_ != nullptr ? generator_->next_ts() : Timestamp::max();
-      const Timestamp t_src = pending_ != nullptr ? source_time(*pending_) : Timestamp::max();
+      const Timestamp t_src = pending_ != nullptr ? source_time(*pending_) : world_ts_;
       const Timestamp t_ord = transport_.next_order_arrival();
       const Timestamp t_flush = transport_.next_flush_ts();
       const Timestamp t_in = transport_.next_inbound_ts();
@@ -170,6 +170,7 @@ class SimDriver {
         generator_->step(transport_.matching_engine());
         ++stats_.generator_actions;
       } else if (t == t_src) {
+        if (pending_ == nullptr) return true;  // the multiverse's next event: world_event()
         transport_.on_source_event(*pending_);
         pending_ = nullptr;
         ++stats_.source_events;
@@ -209,6 +210,19 @@ class SimDriver {
     }
   }
   void run_all() { static_cast<void>(run_until(Timestamp::max())); }
+
+  // A multiverse (backtest/multiverse.hpp) reads the recorded events once for all its runs, so a
+  // run's driver has no source of its own. set_world_next() gives it the time of the next one,
+  // which it treats as a source event's: run_until() stops before it and an idle run is not over.
+  // world_event() then takes the event as the source branch of run_until() would, after the
+  // shared SimWorld took its half (SimWorld::before()). Timestamp::max(): no more events.
+  void set_world_next(Timestamp t) noexcept { world_ts_ = t; }
+  void world_event(const EventHeader& md) noexcept {
+    const Timestamp t = source_time(md);
+    if (t > clock_.now()) clock_.set(t);
+    transport_.on_source_event_run(md);
+    ++stats_.source_events;
+  }
 
   void finish() {
     if (!started_ || finished_) return;
@@ -255,6 +269,7 @@ class SimDriver {
   MdSource* source_ = nullptr;
   const EventHeader* pending_ = nullptr;
   bool source_done_ = false;
+  Timestamp world_ts_ = Timestamp::max();
   MarketGenerator* generator_ = nullptr;
   JournalFileWriter* journal_ = nullptr;
   ParamSchedule* params_ = nullptr;

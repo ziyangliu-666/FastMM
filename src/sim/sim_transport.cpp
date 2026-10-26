@@ -1,6 +1,7 @@
 #include "fastmm/sim/sim_transport.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <charconv>
 #include <cstring>
 #include <stdexcept>
@@ -40,10 +41,12 @@ SimTransport::SimTransport(const SimClock& clock,
       instruments_(instruments),
       cfg_(cfg),
       me_(instruments.size(), this),
-      mirror_(new L2Book<256>[instruments.size() == 0 ? 1 : instruments.size()]),
+      own_world_(std::make_unique<SimWorld>(instruments.size())),
+      world_(own_world_.get()),
+      mirror_(world_->books()),
       queue_(cfg.queue_conservatism_bps),
-      touch_(new QueueTouch[instruments.size() == 0 ? 1 : instruments.size()]),
-      tape_(new TradeTape[instruments.size() == 0 ? 1 : instruments.size()]) {
+      touch_(world_->touches()),
+      tape_(world_->tapes()) {
   if (!cfg.venue.valid() || cfg.venue.value >= kMaxVenues)
     throw std::invalid_argument("sim: default venue id out of range");
   const auto venue_of = [&](const Instrument& i) { return i.venue.valid() ? i.venue : cfg.venue; };
@@ -78,7 +81,8 @@ SimTransport::SimTransport(const SimClock& clock,
     if (!used[v]) continue;
     const std::uint64_t seed = n_links_ == 0 ? cfg.seed : venue_seed(cfg.seed, VenueId{v});
     index_of[v] = static_cast<std::uint8_t>(n_links_);
-    links_[n_links_++].emplace(VenueId{v}, vc, seed, cfg);
+    links_[n_links_].emplace(VenueId{v}, vc, seed, cfg).index = static_cast<std::uint8_t>(n_links_);
+    ++n_links_;
   }
   if (!cfg.accounts.empty())
     accounts_ =
@@ -104,6 +108,7 @@ SimTransport::SimTransport(const SimClock& clock,
     me_.set_stp(kStrategyAccount, i.id, cfg.venue_config(v).stp);
   }
   if (cfg.fill_model == FillModel::L3Queue) {
+    own_world_->set_tape_trades(false);
     l3_orders_.resize(instruments.size());
     l3_levels_[0].resize(instruments.size());
     l3_levels_[1].resize(instruments.size());
@@ -382,7 +387,7 @@ void SimTransport::publish_positions(Timestamp now,
     m.hdr.recv_ts = arrival;
     m.hdr.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
     m.hdr.seq = 0;
-    if (!l->order_wire.try_push(&m.hdr, m.hdr.len)) ++stats_.wire_full;
+    if (!wire_push(*l, kOrderWire, m.hdr)) ++stats_.wire_full;
   }
 }
 
@@ -401,7 +406,7 @@ void SimTransport::publish_reconcile(Timestamp ts,
       m.hdr.recv_ts = arrival;
       m.hdr.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
       m.hdr.seq = 0;
-      if (!l->order_wire.try_push(&m.hdr, m.hdr.len)) ++stats_.wire_full;
+      if (!wire_push(*l, kOrderWire, m.hdr)) ++stats_.wire_full;
     };
     ReconcileMsg begin{};
     init_header(begin, EventType::Reconcile, InstrumentId{}, l->id);
@@ -418,7 +423,90 @@ void SimTransport::publish_reconcile(Timestamp ts,
   }
 }
 
+SimWorld::SimWorld(std::size_t instruments)
+    : n_(instruments),
+      mirror_(new L2Book<256>[instruments == 0 ? 1 : instruments]),
+      touch_(new QueueTouch[instruments == 0 ? 1 : instruments]),
+      tape_(new TradeTape[instruments == 0 ? 1 : instruments]) {
+  changes_.reserve(std::size_t{2} * 256);
+}
+
+// The book half of queue_apply_book() and queue_apply_touch() (core/queue_model.hpp); the runs
+// take the queue half.
+void SimWorld::before(const EventHeader& md, Timestamp now) noexcept {
+  const std::size_t i = md.instrument.value;
+  if (i >= n_) return;
+  switch (md.type) {
+    case EventType::BookDelta:
+    case EventType::BookSnapshot: {
+      const auto& d = msg_cast<BookDeltaMsg>(&md);
+      L2Book<256>& book = mirror_[i];
+      TradeTape& tape = tape_[i];
+      changes_.clear();
+      snapshot_ = d.is_snapshot();
+      if (snapshot_) {
+        book.apply_delta(d);
+      } else {
+        const Timestamp since = book.last_update();
+        for (Side s : {Side::Buy, Side::Sell}) {
+          for (const Level& l : (s == Side::Buy ? d.bids() : d.asks())) {
+            Qty old;
+            book.apply_level(s, l.price, l.qty, old);
+            if (tape.size() != 0) old = tape.after(s, l.price, old, since);
+            changes_.push_back(LevelChange{s, l.price, old, l.qty});
+          }
+        }
+        book.set_seq(d.last_update_id);
+        book.set_last_update(now);
+      }
+      tape.forget_through(now);
+      break;
+    }
+    case EventType::BookTicker: {
+      QueueTouch& t = touch_[i];
+      // the replayed feed has none of ours
+      t = queue_touch(msg_cast<BookTickerMsg>(&md), [](Side, Price) { return Qty{}; });
+      const L2Book<256>& book = mirror_[i];
+      touch_newer_ = t.newer_than(book.seq(), book.last_update());
+      touch_seen_ = t;
+      if (touch_newer_ && tape_[i].size() != 0) {
+        touch_seen_.bid_qty = tape_[i].after(Side::Buy, t.bid_px, t.bid_qty, t.ts);
+        touch_seen_.ask_qty = tape_[i].after(Side::Sell, t.ask_px, t.ask_qty, t.ts);
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+void SimWorld::after(const EventHeader& md, Timestamp now) noexcept {
+  const std::size_t i = md.instrument.value;
+  if (i >= n_ || md.type != EventType::Trade || !tape_trades_) return;
+  // A print without an aggressor took from no resting side (queue_on_trade).
+  if (const auto& t = msg_cast<TradeMsg>(&md); t.has_aggressor()) tape_[i].add(t, now);
+}
+
+void SimTransport::attach_world(SimWorld& world) noexcept {
+  world_ = &world;
+  mirror_ = world.books();
+  touch_ = world.touches();
+  tape_ = world.tapes();
+  own_world_.reset();
+}
+
 void SimTransport::on_source_event(const EventHeader& md) noexcept {
+  if (queue_mode()) {
+    const Timestamp now = venue_time(md);
+    world_->before(md, now);
+    on_source_event_run(md);
+    world_->after(md, now);
+  } else {
+    on_source_event_run(md);
+  }
+}
+
+void SimTransport::on_source_event_run(const EventHeader& md) noexcept {
   const Timestamp now = venue_time(md);
   const InstrumentId id = md.instrument;
   if (id.value < instruments_.size()) {
@@ -575,7 +663,7 @@ void SimTransport::forward_in_order(const EventHeader* md,
 void SimTransport::forward(const EventHeader& md, Timestamp recorded, Timestamp now) noexcept {
   // Forward a copy with the arrival stamp, on the wire of the instrument's venue.
   Link& l = link(md.instrument);
-  std::byte* p = l.md_wire.try_reserve(md.len);
+  std::byte* p = reserve_md(l, md.len);
   if (p == nullptr) {
     ++stats_.wire_full;
     return;
@@ -591,7 +679,8 @@ void SimTransport::forward(const EventHeader& md, Timestamp recorded, Timestamp 
   h->t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
   h->t1_delta = h->t2_delta = 0;
   h->seq = 0;
-  l.md_wire.commit();
+  l.md_wire->commit();
+  busy_ |= wire_bit(l, kMdWire);
   ++stats_.md_forwarded;
 }
 
@@ -879,28 +968,34 @@ void SimTransport::queue_replace(const OutReplaceMsg& m, Timestamp now) noexcept
   queue_new(n, now);
 }
 
+// The queue half of a recorded message: the book half is SimWorld::before(), already applied.
 void SimTransport::queue_on_delta(const BookDeltaMsg& d, Timestamp now) noexcept {
-  QueuePositionModel* const models[] = {&queue_};
-  const std::size_t i = d.hdr.instrument.value;
+  const InstrumentId id = d.hdr.instrument;
   // Under l3_queue the order-by-order events have moved the queues already: the view only updates
-  // the venue's book (and what it crosses, below).
-  const std::span<QueuePositionModel* const> moved =
-      cfg_.fill_model == FillModel::L3Queue ? std::span<QueuePositionModel* const>{} : models;
-  queue_apply_book(mirror_[i], d, now, &tape_[i], moved);
-  queue_cross(d.hdr.instrument, now);
+  // the venue's book (SimWorld::before()) and what it crosses, below.
+  if (queue_.size() != 0 && cfg_.fill_model != FillModel::L3Queue) {
+    if (world_->snapshot()) {
+      const L2Book<256>& book = mirror_[id.value];
+      queue_.for_each(id, [&](QueuePositionModel::Handle32 h, const QueuedOrder& o) {
+        const Qty shown = level_qty(book, o.side, o.price);
+        if (shown < o.ahead) queue_.get(h).ahead = shown;
+      });
+    } else {
+      for (const SimWorld::LevelChange& c : world_->changes())
+        queue_.on_level_change(id, c.side, c.px, c.old_qty, c.new_qty);
+    }
+  }
+  queue_cross(id, now);
 }
 
 void SimTransport::queue_on_ticker(const BookTickerMsg& m, Timestamp now) noexcept {
   const InstrumentId id = m.hdr.instrument;
-  QueueTouch& t = touch_[id.value];
-  t = queue_touch(m, [](Side, Price) { return Qty{}; });  // the replayed feed has none of ours
-  QueuePositionModel* const models[] = {&queue_};
-  const std::span<QueuePositionModel* const> moved =
-      cfg_.fill_model == FillModel::L3Queue ? std::span<QueuePositionModel* const>{} : models;
-  static_cast<void>(queue_apply_touch(mirror_[id.value], id, t, &tape_[id.value], moved));
+  if (world_->touch_newer() && cfg_.fill_model != FillModel::L3Queue)
+    queue_.on_touch(id, world_->touch_seen());
   queue_cross(id, now);
 }
 
+// The tape gets the trade after the runs took it (SimWorld::after()).
 void SimTransport::queue_on_trade(const TradeMsg& t, Timestamp now) noexcept {
   // A print without an aggressor names no resting side to take from; under l3_queue the executions
   // themselves fill (queue_on_l3), and the print is the same execution again.
@@ -914,7 +1009,6 @@ void SimTransport::queue_on_trade(const TradeMsg& t, Timestamp now) noexcept {
                   [&](QueuePositionModel::Handle32 h, QueuedOrder& o, Qty fill, Qty ahead) {
                     queue_fill(h, o, fill, ahead, now);
                   });
-  tape_[id.value].add(t, now);
 }
 
 void SimTransport::l3_level_add(InstrumentId id, Side side, Price px, Qty q, bool add) noexcept {
@@ -1264,7 +1358,7 @@ void SimTransport::push_order_wire(Link& l, EventHeader& h, Timestamp venue_ts) 
     h.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
     h.t1_delta = h.t2_delta = 0;
     h.seq = 0;
-    if (!l.user_wire.try_push(&h, h.len)) ++stats_.wire_full;
+    if (!wire_push(l, kUserWire, h)) ++stats_.wire_full;
     return;
   }
   Duration d = l.lat.ack_in();
@@ -1284,7 +1378,7 @@ void SimTransport::push_order_wire(Link& l, EventHeader& h, Timestamp venue_ts) 
   h.seq = 0;
   if (observer_ != nullptr && h.type != EventType::OrderFill)
     observer_->on_order_event(h, venue_ts);
-  if (!l.order_wire.try_push(&h, h.len)) ++stats_.wire_full;
+  if (!wire_push(l, kOrderWire, h)) ++stats_.wire_full;
 }
 
 TransferState SimTransport::transfer(
@@ -1326,14 +1420,14 @@ void SimTransport::push_balance(Link& l, BalanceMsg& m) noexcept {
     l.last_user_arrival = arrival;
     m.hdr.recv_ts = arrival;
     m.hdr.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
-    if (!l.user_wire.try_push(&m.hdr, m.hdr.len)) ++stats_.wire_full;
+    if (!wire_push(l, kUserWire, m.hdr)) ++stats_.wire_full;
     return;
   }
   const Timestamp arrival = std::max(l.last_order_arrival, m.hdr.exch_ts);
   l.last_order_arrival = arrival;
   m.hdr.recv_ts = arrival;
   m.hdr.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
-  if (!l.order_wire.try_push(&m.hdr, m.hdr.len)) ++stats_.wire_full;
+  if (!wire_push(l, kOrderWire, m.hdr)) ++stats_.wire_full;
 }
 
 void SimTransport::push_md_wire(EventHeader& h, Timestamp venue_ts) noexcept {
@@ -1346,11 +1440,42 @@ void SimTransport::push_md_wire(EventHeader& h, Timestamp venue_ts) noexcept {
   h.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
   h.t1_delta = h.t2_delta = 0;
   h.seq = 0;
-  if (!l.md_wire.try_push(&h, h.len)) {
+  std::byte* p = reserve_md(l, h.len);
+  if (p == nullptr) {
     ++stats_.wire_full;
     return;
   }
+  std::memcpy(p, &h, h.len);
+  l.md_wire->commit();
+  busy_ |= wire_bit(l, kMdWire);
   ++stats_.md_forwarded;
+}
+
+std::byte* SimTransport::reserve_md(Link& l, std::uint32_t len) noexcept {
+  std::byte* p = l.md_wire->try_reserve(len);
+  while (p == nullptr && l.md_wire->capacity() < kMaxMdWireBytes) {
+    if (!grow_md_wire(l)) return nullptr;
+    p = l.md_wire->try_reserve(len);
+  }
+  return p;
+}
+
+// The market data in flight lives in a ring small enough to stay in cache; a burst that fills it
+// (recorded arrival times seconds late, say) moves it to one twice the size, in order.
+bool SimTransport::grow_md_wire(Link& l) noexcept {
+  std::unique_ptr<MsgRing> bigger;
+  try {
+    bigger = std::make_unique<MsgRing>(l.md_wire->capacity() * 2);
+  } catch (...) {
+    return false;
+  }
+  while (const std::byte* m = l.md_wire->try_peek()) {
+    const auto* h = reinterpret_cast<const EventHeader*>(m);
+    static_cast<void>(bigger->try_push(h, h->len));
+    l.md_wire->release();
+  }
+  l.md_wire = std::move(bigger);
+  return true;
 }
 
 // ---- our orders in the recorded feed -----------------------------------------------------------
@@ -1451,6 +1576,12 @@ const EventHeader& SimTransport::with_own(const EventHeader& md) noexcept {
       f.recorded_bid = Level{m.bid_px, m.bid_qty};
       f.recorded_ask = Level{m.ask_px, m.ask_qty};
       refresh_own(id, f);
+      if (f.levels[0].empty() && f.levels[1].empty()) {
+        // None of ours on the book: the venue shows the recorded top.
+        f.sent_bid = f.recorded_bid;
+        f.sent_ask = f.recorded_ask;
+        return md;
+      }
       auto& out = own_buf_->as<BookTickerMsg>();
       std::memcpy(&out, &m, sizeof m);
       const Level bid = shown_top(id, Side::Buy);
@@ -1560,8 +1691,10 @@ Timestamp SimTransport::head_ts(MsgRing& ring) noexcept {
 
 Timestamp SimTransport::next_inbound_ts() noexcept {
   Timestamp t = Timestamp::max();
-  for (std::size_t k = 0; k < n_links_; ++k)
-    t = std::min({t, head_ts(at(k).order_wire), head_ts(at(k).user_wire), head_ts(at(k).md_wire)});
+  for (std::uint32_t m = busy_; m != 0; m &= m - 1) {
+    const auto b = static_cast<unsigned>(std::countr_zero(m));
+    t = std::min(t, head_ts(wire(at(b / 3), b % 3)));
+  }
   return t;
 }
 
@@ -1581,31 +1714,38 @@ bool SimTransport::move_head(MsgRing& ring, InlineFeed& feed, EventType& type) n
 EventType SimTransport::deliver_next_inbound(InlineFeed& feed) noexcept {
   // Earliest head among the order wires (and private streams) and among the md wires; a tie keeps
   // the lower venue, and an order connection's message before its private stream's.
-  MsgRing* ord = nullptr;
-  Link* md = nullptr;
+  // The busy wires in bit order are the venues in order, each one's order wire before its private
+  // stream before its md wire, so the strict comparisons keep the ties as listed.
+  unsigned ord = 32;
+  unsigned md = 32;
   Timestamp a = Timestamp::max();
   Timestamp b = Timestamp::max();
-  for (std::size_t k = 0; k < n_links_; ++k) {
-    Link& l = at(k);
-    if (const Timestamp ts = head_ts(l.order_wire); ts < a) {
+  for (std::uint32_t m = busy_; m != 0; m &= m - 1) {
+    const auto bit = static_cast<unsigned>(std::countr_zero(m));
+    const Timestamp ts = head_ts(wire(at(bit / 3), bit % 3));
+    if (bit % 3 == kMdWire) {
+      if (ts < b) {
+        b = ts;
+        md = bit;
+      }
+    } else if (ts < a) {
       a = ts;
-      ord = &l.order_wire;
-    }
-    if (const Timestamp ts = head_ts(l.user_wire); ts < a) {
-      a = ts;
-      ord = &l.user_wire;
-    }
-    if (const Timestamp ts = head_ts(l.md_wire); ts < b) {
-      b = ts;
-      md = &l;
+      ord = bit;
     }
   }
   EventType t = EventType::Padding;
-  if (ord != nullptr && a <= b) {
-    if (move_head(*ord, feed, t)) ++stats_.order_events_delivered;
-  } else if (md != nullptr) {
-    if (move_head(md->md_wire, feed, t)) ++stats_.md_delivered;
+  const unsigned take = ord != 32 && a <= b ? ord : md;
+  if (take == 32) return t;
+  Link& l = at(take / 3);
+  MsgRing& ring = wire(l, take % 3);
+  if (move_head(ring, feed, t)) {
+    if (take == ord) {
+      ++stats_.order_events_delivered;
+    } else {
+      ++stats_.md_delivered;
+    }
   }
+  if (ring.try_peek() == nullptr) busy_ &= ~(std::uint32_t{1} << take);
   return t;
 }
 

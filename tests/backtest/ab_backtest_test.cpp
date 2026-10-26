@@ -6,6 +6,7 @@
 #include "fastmm/backtest/ab_report.hpp"
 #include "fastmm/backtest/array_source.hpp"
 #include "fastmm/backtest/backtest_runner.hpp"
+#include "fastmm/backtest/multiverse.hpp"
 #include "fastmm/backtest/replay.hpp"
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/rng.hpp"
@@ -382,4 +383,30 @@ TEST_CASE("backtest.ab: branches run each arm over the same data and read out pa
   CHECK_THROWS_WITH_AS(static_cast<void>(run_backtest(unset, "basic_mm", &source)),
                        doctest::Contains("runs one arm per backtest"),
                        std::invalid_argument);
+}
+
+TEST_CASE("backtest.ab: the branches of one multiverse are the branches run one by one") {
+  const Tape tape;
+  std::vector<BacktestConfig> cfgs;
+  std::vector<BacktestResult> alone;
+  for (int arm = 0; arm < 2; ++arm) {
+    BacktestConfig cfg =
+        branch_config(kArms, arm, tmp_journal(arm == 0 ? "ab_alone_0.fmj" : "ab_alone_1.fmj"));
+    ArraySource source(tape.columns());
+    alone.push_back(run_backtest(cfg, "basic_mm", &source));
+    cfg.journal_out = tmp_journal(arm == 0 ? "ab_together_0.fmj" : "ab_together_1.fmj");
+    cfgs.push_back(cfg);
+  }
+  ArraySource source(tape.columns());
+  const std::vector<BacktestResult> together = run_multiverse(cfgs, "basic_mm", source);
+  REQUIRE(together.size() == 2);
+  for (std::size_t arm = 0; arm < 2; ++arm) {
+    CAPTURE(arm);
+    CHECK(together[arm].outbound_sha256 == alone[arm].outbound_sha256);
+    CHECK(together[arm].fills.size() == alone[arm].fills.size());
+    CHECK(together[arm].metrics.net_pnl == alone[arm].metrics.net_pnl);
+    // Each arm's journal replays to its own run.
+    CHECK(replay_journal(cfgs[arm].journal_out, cfgs[arm]).ok());
+  }
+  CHECK(together[0].outbound_sha256 != together[1].outbound_sha256);
 }

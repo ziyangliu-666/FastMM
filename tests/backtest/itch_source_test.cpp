@@ -6,6 +6,7 @@
 #include "journal_builder.hpp"
 
 #include "fastmm/backtest/backtest_runner.hpp"
+#include "fastmm/backtest/multiverse.hpp"
 #include "fastmm/codecs/itch/itch_encoder.hpp"
 
 #include <array>
@@ -211,4 +212,33 @@ TEST_CASE("itch: l3_queue runs only over a source that carries every order") {
   BacktestConfig c = testutil::synthetic_config(1, seconds(1));
   c.transport.fill_model = sim::FillModel::L3Queue;
   CHECK_THROWS_AS(run_backtest(c, "basic_mm"), std::invalid_argument);  // the synthetic market
+}
+
+TEST_CASE("itch: the runs of a multiverse over the file are their backtests alone") {
+  // l2_queue: the order-by-order events pass the runs by, the L2 view fills them.
+  const std::string path = day_file("itch_source_multiverse.itch");
+  BacktestConfig base = BacktestConfig::single_instrument("AAPL", px("0.01"), qt("1"));
+  base.transport.fill_model = sim::FillModel::L2Queue;
+  base.measure_wall_clock = false;
+  std::vector<BacktestConfig> cfgs;
+  for (const char* half : {"0.5", "1", "2"}) {
+    BacktestConfig c = base;
+    c.params = {{"half_spread_bps", half}, {"quote_qty", "10"}, {"max_inventory", "100"}};
+    cfgs.push_back(c);
+  }
+  const SourceFactory factory = [&]() -> std::unique_ptr<MdSource> {
+    return std::make_unique<ItchSource>(config(path));
+  };
+  const std::vector<BacktestResult> together = run_multiverse(cfgs, "basic_mm", factory, 1);
+  REQUIRE(together.size() == cfgs.size());
+  for (std::size_t i = 0; i < cfgs.size(); ++i) {
+    CAPTURE(i);
+    ItchSource alone_source(config(path));
+    const BacktestResult alone = run_backtest(cfgs[i], "basic_mm", &alone_source);
+    CHECK(alone.md_events > 0);
+    CHECK(together[i].outbound_sha256 == alone.outbound_sha256);
+    CHECK(together[i].md_events == alone.md_events);
+    CHECK(together[i].fills.size() == alone.fills.size());
+    CHECK(together[i].metrics.net_pnl == alone.metrics.net_pnl);
+  }
 }

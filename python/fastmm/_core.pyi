@@ -1963,7 +1963,7 @@ def strategies() -> dict:
     """
 def sweep(config: BacktestConfig, grid: dict, data: typing.Any = None, strategy: str | None = None, threads: typing.SupportsInt | typing.SupportsIndex = 0) -> list:
     """
-    Cartesian parameter sweep of a registered C++ strategy on a thread pool (GIL released). grid: {param: [values]}. Returns [(params, BacktestResult)] in grid order, first parameter varying slowest. Every worker opens its own cursor over `data` (same forms as run_backtest). threads <= 0 uses every hardware thread. fastmm.sweep also takes a fastmm.Strategy class and runs its points in worker processes.
+    Cartesian parameter sweep of a registered C++ strategy on a thread pool (GIL released). grid: {param: [values]}. Returns [(params, BacktestResult)] in grid order, first parameter varying slowest. Every worker opens its own cursor over `data` (same forms as run_backtest). threads <= 0 uses every hardware thread. Under fill_model l2_queue the points share their passes over the data, with the results each gives alone (backtest/multiverse.hpp). fastmm.sweep also takes a fastmm.Strategy class and runs its points in worker processes.
     """
 def walk_forward(config: BacktestConfig, grid: dict, folds: typing.SupportsInt | typing.SupportsIndex, data: typing.Any = None, metric: str = 'net_pnl', strategy: str | None = None, threads: typing.SupportsInt | typing.SupportsIndex = 0) -> dict:
     """

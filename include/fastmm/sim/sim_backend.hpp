@@ -32,7 +32,7 @@ struct SimBackend {
   SimBackend(const InstrumentTable& instruments,
              const SimTransportConfig& cfg,
              Timestamp start,
-             std::size_t feed_bytes = 1U << 22)
+             std::size_t feed_bytes = 1U << 18)
       : clock(start), transport(clock, instruments, cfg), feed(feed_bytes) {}
 
   template <StrategyLike S>

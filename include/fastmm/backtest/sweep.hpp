@@ -52,20 +52,15 @@ std::vector<SweepPoint> sweep(const BacktestConfig& base,
       threads);
 }
 
-inline std::vector<SweepPoint> sweep_by_name(const BacktestConfig& base,
-                                             std::string strategy,
-                                             const ParamGrid& grid,
-                                             const SourceFactory& source_factory = {},
-                                             int threads = 0) {
-  return sweep(
-      base,
-      grid,
-      source_factory,
-      [strategy = std::move(strategy)](const BacktestConfig& c, MdSource* s) {
-        return run_backtest(c, strategy, s);
-      },
-      threads);
-}
+// A registered strategy's sweep. Under fill_model l2_queue the points share their passes over the
+// data (sweep_multiverse(), multiverse.hpp) with the results each gives alone; otherwise, or with
+// `separately`, every point is a backtest of its own.
+std::vector<SweepPoint> sweep_by_name(const BacktestConfig& base,
+                                      std::string strategy,
+                                      const ParamGrid& grid,
+                                      const SourceFactory& source_factory = {},
+                                      int threads = 0,
+                                      bool separately = false);
 
 // ---- walk-forward ------------------------------------------------------------------------------
 
@@ -141,23 +136,14 @@ WalkForwardReport walk_forward(const BacktestConfig& base,
                                std::string_view metric = "net_pnl",
                                int threads = 0);
 
-inline WalkForwardReport walk_forward_by_name(const BacktestConfig& base,
-                                              std::string strategy,
-                                              const ParamGrid& grid,
-                                              const SourceFactory& source_factory,
-                                              int folds,
-                                              std::string_view metric = "net_pnl",
-                                              int threads = 0) {
-  return walk_forward(
-      base,
-      grid,
-      source_factory,
-      [strategy = std::move(strategy)](const BacktestConfig& c, MdSource* s) {
-        return run_backtest(c, strategy, s);
-      },
-      folds,
-      metric,
-      threads);
-}
+// walk_forward() of a registered strategy. Under fill_model l2_queue the points of each fold share
+// their passes over the fold's data (sweep_multiverse(), multiverse.hpp), with the same report.
+WalkForwardReport walk_forward_by_name(const BacktestConfig& base,
+                                       std::string strategy,
+                                       const ParamGrid& grid,
+                                       const SourceFactory& source_factory,
+                                       int folds,
+                                       std::string_view metric = "net_pnl",
+                                       int threads = 0);
 
 }  // namespace fastmm::bt

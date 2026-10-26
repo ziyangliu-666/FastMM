@@ -9,11 +9,15 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: `L3BookConfig::max_overflow_levels` defaults to 8192 levels per side.
 - codecs: `ItchL2Bridge` keeps each book's top up to date as it applies messages instead of reading it from the L3 book for every delta.
 - core: the timer wheel keeps its next expiry instead of scanning every timer for it each time the simulator asks.
+- backtest: under `l2_queue` the points of a sweep or a walk-forward's fold and the arms of an `[ab]` branch test share their passes over the data, each with the result it gives alone.
+- sim: the market-data wire starts at 256 KiB and grows when a burst fills it, and the next inbound message is looked for only in the wires that hold one.
 
 ### Added
 - backtest: the `itch` data source runs a backtest over a day of Nasdaq TotalView-ITCH, every order of the followed stocks; the engine trades on each book's L2 view and the simulated venue gets the orders themselves.
 - sim: `fill_model = "l3_queue"` takes each order's queue position from order-by-order data: it waits behind the recorded orders that came before it and fills from the executions that reach it.
 - bench: `fastmm-bench-queue-truth` scores `l2_queue` and `l3_queue` against a day of ITCH, where every order's outcome is known.
+- backtest: `bt::run_multiverse` runs many configurations of one strategy in one pass over recorded data (`backtest/multiverse.hpp`).
+- backtest: `fastmm-backtest --sweep key=v1,v2` runs a parameter grid; `--solo` runs its points as separate backtests, `--threads` sets the workers.
 - venues: `nasdaq_itch` `max_overflow_levels` sets the L3 overflow store's capacity, 8192 levels per side by default.
 - bench: `fastmm-bench-l3-itch` takes `--max-overflow` and `--from`, reports book errors by kind and the peak overflow levels, and reads files over 4 GiB.
 

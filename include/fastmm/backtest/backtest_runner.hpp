@@ -52,7 +52,20 @@ class BacktestSession {
                      IEngineRunner* runner,
                      std::string_view strategy_name);
 
+  // run() in steps, for a multiverse (multiverse.hpp), whose runs share the recorded events:
+  // begin(hooks, runner, true) leaves the source to the caller, which for each recorded event calls
+  // advance_before(event time) (false: this run is over), then world_event(event) after the shared
+  // SimWorld took its half; end() runs what is left and returns what run() would have.
+  // begin(.., false) + end() is run().
+  void begin(const sim::EngineHooks& hooks, IEngineRunner* runner, bool world);
+  bool advance_before(Timestamp t);
+  void world_event(const EventHeader& md) noexcept;
+  BacktestResult end(std::string_view strategy_name);
+
  private:
+  struct Loop;
+  bool advance(Timestamp limit);
+  std::unique_ptr<Loop> loop_;
   struct Impl;
   BacktestConfig cfg_;
   MdSource* source_;

@@ -181,6 +181,11 @@ OPTIONS:
   --seed <n>                  synthetic market / latency model seed
   --duration <seconds>        synthetic horizon
   --journal-out <file>        record the session for fastmm-replay
+  --sweep <key=v1,v2,...>     a parameter's values, every combination with the other --sweep
+                              keys run (repeatable); the points share each pass over
+                              recorded data (l2_queue)
+  --threads <n>               --sweep: worker threads (default: every core)
+  --solo                      --sweep: run every point as a backtest of its own
   --list-strategies           print registered strategies and their parameters
   --format <text|json>        output format of --list-strategies (default text)
 ```

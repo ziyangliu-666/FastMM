@@ -12,6 +12,8 @@
 
 #include "fastmm/backtest/ab_report.hpp"
 #include "fastmm/backtest/backtest_runner.hpp"
+#include "fastmm/backtest/multiverse.hpp"
+#include "fastmm/backtest/sweep.hpp"
 #include "fastmm/cli/backtest.hpp"
 #include "fastmm/cli/modules.hpp"
 #include "fastmm/config/config.hpp"
@@ -19,6 +21,7 @@
 #include "fastmm/strategies/listing.hpp"
 #include "fastmm/strategies/registry.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -54,8 +57,7 @@ int run_branches(const char* prog, const bt::BacktestConfig& cfg, bt::MdSource* 
     std::fprintf(stderr, "%s: %s\n", prog, e.what());
     return kExitConfig;
   }
-  std::vector<std::string> journals;
-  Logger::instance().start(stderr, LogLevel::Warn);
+  std::vector<bt::BacktestConfig> cfgs;
   for (std::size_t k = 0; k < cfg.ab.arms.size(); ++k) {
     const std::string& arm = cfg.ab.arms[k].name;
     bt::BacktestConfig c = start;
@@ -68,10 +70,25 @@ int run_branches(const char* prog, const bt::BacktestConfig& cfg, bt::MdSource* 
     } else {
       c.journal_out = c.output_dir + "/session.fmj";
     }
-    if (source != nullptr) source->reset();
-    bt::BacktestResult result;
+    cfgs.push_back(std::move(c));
+  }
+  // Recorded data under l2_queue: the arms share one pass over it (bt::run_multiverse), with the
+  // results each would have alone.
+  const bool together = source != nullptr && cfg.transport.fill_model == sim::FillModel::L2Queue;
+  std::vector<std::string> journals;
+  Logger::instance().start(stderr, LogLevel::Warn);
+  std::vector<bt::BacktestResult> results;
+  for (std::size_t k = 0; k < cfgs.size(); ++k) {
+    const bt::BacktestConfig& c = cfgs[k];
+    const std::string& arm = cfg.ab.arms[k].name;
     try {
-      result = bt::run_backtest(c, c.strategy, source);
+      if (together && k == 0) {
+        source->reset();
+        results = bt::run_multiverse(cfgs, cfg.strategy, *source);
+      } else if (!together) {
+        if (source != nullptr) source->reset();
+        results.push_back(bt::run_backtest(c, c.strategy, source));
+      }
     } catch (const std::invalid_argument& e) {
       Logger::instance().stop();
       std::fprintf(stderr, "%s: %s\n", prog, e.what());
@@ -81,6 +98,7 @@ int run_branches(const char* prog, const bt::BacktestConfig& cfg, bt::MdSource* 
       std::fprintf(stderr, "%s: run failed: %s\n", prog, e.what());
       return kExitRun;
     }
+    const bt::BacktestResult& result = results[k];
     std::printf("arm %s\n%s", arm.c_str(), result.summary_table().c_str());
     if (!c.output_dir.empty() && !result.write_all(c.output_dir)) {
       Logger::instance().stop();
@@ -101,6 +119,73 @@ int run_branches(const char* prog, const bt::BacktestConfig& cfg, bt::MdSource* 
   return 0;
 }
 
+// --sweep: the grid's points, by default in multiverses (one pass over the data for a group of
+// points, bt::sweep_multiverse), with --solo as separate backtests. One line
+// per point.
+int run_sweep(const char* prog,
+              const bt::BacktestConfig& cfg,
+              const std::vector<std::string>& sweeps,
+              const std::string& data,
+              int threads,
+              bool solo) {
+  bt::ParamGrid grid;
+  for (const std::string& s : sweeps) {
+    const std::size_t eq = s.find('=');
+    std::vector<std::string> values;
+    std::size_t pos = eq + 1;
+    for (;;) {
+      const std::size_t comma = s.find(',', pos);
+      values.push_back(s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos));
+      if (comma == std::string::npos) break;
+      pos = comma + 1;
+    }
+    grid.emplace_back(s.substr(0, eq), std::move(values));
+  }
+  const bt::SourceFactory factory = [&]() -> std::unique_ptr<bt::MdSource> {
+    return data.empty() ? bt::open_source(cfg) : bt::open_data(data, &cfg.instruments);
+  };
+  Logger::instance().start(stderr, LogLevel::Warn);
+  std::vector<bt::SweepPoint> points;
+  const auto t0 = std::chrono::steady_clock::now();
+  try {
+    points = solo ? bt::sweep_by_name(cfg, cfg.strategy, grid, factory, threads, true)
+                  : bt::sweep_multiverse(cfg, cfg.strategy, grid, factory, threads);
+  } catch (const std::invalid_argument& e) {
+    Logger::instance().stop();
+    std::fprintf(stderr, "%s: %s\n", prog, e.what());
+    return kExitConfig;
+  } catch (const std::exception& e) {
+    Logger::instance().stop();
+    std::fprintf(stderr, "%s: run failed: %s\n", prog, e.what());
+    return kExitRun;
+  }
+  const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  Logger::instance().stop();
+  std::uint64_t events = 0;
+  for (const bt::SweepPoint& p : points) {
+    std::string label;
+    for (const auto& kv : grid)
+      label.append(label.empty() ? "" : " ")
+          .append(kv.first)
+          .append("=")
+          .append(p.params.at(kv.first));
+    const bt::Metrics& m = p.result.metrics;
+    std::printf("%-40s net %14.4f  fills %8llu  orders %8llu  outbound %s\n",
+                label.c_str(),
+                m.net_pnl,
+                static_cast<unsigned long long>(m.fills),
+                static_cast<unsigned long long>(m.orders),
+                p.result.outbound_sha256.substr(0, 16).c_str());
+    events += p.result.md_events;
+  }
+  std::printf("%zu points %s in %.2f s, %.1f M market-data events a second over the runs\n",
+              points.size(),
+              solo ? "as separate backtests" : "in multiverses",
+              wall,
+              wall > 0 ? static_cast<double>(events) / wall / 1e6 : 0.0);
+  return 0;
+}
+
 }  // namespace
 
 int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
@@ -116,6 +201,9 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
   std::uint64_t seed = 0;
   std::uint64_t duration_s = 0;
   bool list = false;
+  std::vector<std::string> sweeps;
+  int threads = 0;
+  bool solo = false;
 
   CLI::App app("Backtests a registered strategy.", program);
   setup(app);
@@ -146,6 +234,16 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
       ->check(CLI::Range(std::uint64_t{1}, std::uint64_t{10'000'000}));
   app.add_option("--journal-out", journal_out, "record the session for fastmm-replay")
       ->option_text("<file>");
+  app.add_option("--sweep",
+                 sweeps,
+                 "a parameter's values, every combination with the other --sweep keys run "
+                 "(repeatable); the points share each pass over recorded data (l2_queue)")
+      ->option_text("<key=v1,v2,...>")
+      ->allow_extra_args(false)
+      ->check(key_value());
+  app.add_option("--threads", threads, "--sweep: worker threads (default: every core)")
+      ->option_text("<n>");
+  app.add_flag("--solo", solo, "--sweep: run every point as a backtest of its own");
   CLI::Option* list_opt =
       app.add_flag("--list-strategies", list, "print registered strategies and their parameters");
   app.add_option("--format", format_arg, "output format of --list-strategies (default text)")
@@ -225,6 +323,7 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
     return kExitData;
   }
 
+  if (!sweeps.empty()) return run_sweep(prog, cfg, sweeps, data, threads, solo);
   if (cfg.ab.enabled() && cfg.ab.assignment == "branch")
     return run_branches(prog, cfg, source.get());
 

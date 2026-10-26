@@ -127,7 +127,7 @@ struct SimTransportConfig {
   // checks. It costs about 70 ns per order, more than the engine work that produced it, so a
   // benchmark that times send() turns it off; backtests and tests leave it on.
   bool hash_outbound = true;
-  std::size_t md_wire_bytes = 4U << 20;
+  std::size_t md_wire_bytes = 1U << 18;  // to start with: the wire grows when a burst fills it
   std::size_t order_wire_bytes = 1U << 20;
   VenueId venue{0};  // venue of the instruments that name none (and of an empty table)
   std::vector<SimVenueConfig> venues;
@@ -234,6 +234,58 @@ class SimObserver {
   virtual void on_order_event(const EventHeader&, Timestamp /*venue_ts*/) {}
 };
 
+// SimWorld: what the l2_queue fill model keeps of the recorded market, which no order of a run
+// changes: per instrument the venue's depth book (the mirror), the latest book ticker and the
+// trades printed since the book's last update. A SimTransport owns one; the runs of a multiverse
+// (backtest/multiverse.hpp) share one, which takes each recorded event once for all of them.
+//
+// A recorded event is taken in two halves around each run's own part of it
+// (SimTransport::on_source_event_run): before() applies the depth or the ticker and records what
+// each level changed from and to (changes(), the trades since the book's last update taken off the
+// old quantity); after() puts a trade on the tape. A run's queue models read the levels' old and
+// new quantities, never the book between two levels of one message, so applying the whole message
+// first changes nothing a run computes.
+class SimWorld {
+ public:
+  struct LevelChange {
+    Side side;
+    Price px;
+    Qty old_qty;
+    Qty new_qty;
+  };
+  explicit SimWorld(std::size_t instruments);
+  SimWorld(const SimWorld&) = delete;
+  SimWorld& operator=(const SimWorld&) = delete;
+
+  void before(const EventHeader& md, Timestamp now) noexcept;
+  void after(const EventHeader& md, Timestamp now) noexcept;
+  // l3_queue fills from the executions themselves and keeps no tape of the prints.
+  void set_tape_trades(bool v) noexcept { tape_trades_ = v; }
+
+  [[nodiscard]] std::size_t size() const noexcept { return n_; }
+  [[nodiscard]] L2Book<256>* books() noexcept { return mirror_.get(); }
+  [[nodiscard]] QueueTouch* touches() noexcept { return touch_.get(); }
+  [[nodiscard]] TradeTape* tapes() noexcept { return tape_.get(); }
+  // Of the last before(): a depth delta's level changes in message order, whether it was a
+  // snapshot, and for a ticker whether it is newer than the depth book and its quantities less the
+  // trades since.
+  [[nodiscard]] std::span<const LevelChange> changes() const noexcept { return changes_; }
+  [[nodiscard]] bool snapshot() const noexcept { return snapshot_; }
+  [[nodiscard]] bool touch_newer() const noexcept { return touch_newer_; }
+  [[nodiscard]] const QueueTouch& touch_seen() const noexcept { return touch_seen_; }
+
+ private:
+  std::size_t n_;
+  std::unique_ptr<L2Book<256>[]> mirror_;
+  std::unique_ptr<QueueTouch[]> touch_;
+  std::unique_ptr<TradeTape[]> tape_;
+  std::vector<LevelChange> changes_;
+  bool snapshot_ = false;
+  bool touch_newer_ = false;
+  bool tape_trades_ = true;
+  QueueTouch touch_seen_{};
+};
+
 class SimTransport final : public MatchingSink {
  public:
   static constexpr std::size_t kSchedulerCapacity = 1U << 14;
@@ -285,6 +337,11 @@ class SimTransport final : public MatchingSink {
   // venue-side fill model and forwards the event to the engine after md_in latency, in recorded
   // order when hdr.seq gives it (from 1, VenueOrderSource), else at once.
   void on_source_event(const EventHeader& md) noexcept;
+  // A multiverse: the runs share `world`, which takes each recorded event once (SimWorld::before()
+  // and after()); each run takes its own part in between with on_source_event_run(). l2_queue only;
+  // attach before the first event.
+  void attach_world(SimWorld& world) noexcept;
+  void on_source_event_run(const EventHeader& md) noexcept;
 
   // ---- engine side --------------------------------------------------------------------------
   [[nodiscard]] Timestamp next_inbound_ts() noexcept;
@@ -397,7 +454,7 @@ class SimTransport final : public MatchingSink {
         : id(v),
           lat(c.cancel_latency ? LatencyModel(c.order_out, c.ack_in, c.md_in, c.cancel_out, seed)
                                : LatencyModel(c.order_out, c.ack_in, c.md_in, seed)),
-          md_wire(t.md_wire_bytes),
+          md_wire(std::make_unique<MsgRing>(t.md_wire_bytes)),
           order_wire(t.order_wire_bytes),
           user_wire(c.fill_latency ? t.order_wire_bytes : 64),
           orders_10s{seconds(10).ns, c.orders_10s},
@@ -408,7 +465,7 @@ class SimTransport final : public MatchingSink {
     }
     VenueId id;
     LatencyModel lat;
-    MsgRing md_wire;
+    std::unique_ptr<MsgRing> md_wire;  // grows when full (grow_md_wire)
     MsgRing order_wire;
     MsgRing user_wire;  // fills and balances with SimVenueConfig::fill_latency
     Timestamp last_md_arrival{};
@@ -418,6 +475,7 @@ class SimTransport final : public MatchingSink {
     OrderWindow orders_1d;
     std::uint64_t taken = 0;  // new orders and replaces sent (OrderBudget::orders_taken)
     bool md_recorded_arrival;
+    std::uint8_t index = 0;          // in links_
     Duration order_service;          // SimVenueConfig::order_service
     Timestamp last_order_processed;  // venue time the last order message was taken in
     [[nodiscard]] bool limited() const noexcept {
@@ -503,6 +561,9 @@ class SimTransport final : public MatchingSink {
   void publish_account(Link& l, Timestamp venue_ts) noexcept;
   void push_balance(Link& l, BalanceMsg& m) noexcept;
   void push_md_wire(EventHeader& h, Timestamp venue_ts) noexcept;
+  static constexpr std::size_t kMaxMdWireBytes = std::size_t{1} << 30;
+  [[nodiscard]] std::byte* reserve_md(Link& l, std::uint32_t len) noexcept;
+  bool grow_md_wire(Link& l) noexcept;
   // A recorded market-data event onto its venue's wire; `recorded`: its recv_ts, for md_arrival
   // = recorded.
   void forward(const EventHeader& md, Timestamp recorded, Timestamp now) noexcept;
@@ -572,6 +633,26 @@ class SimTransport final : public MatchingSink {
   }
   static void emit_md_thunk(void* ctx, EventHeader& m, Timestamp venue_ts) noexcept;
   [[nodiscard]] static Timestamp head_ts(MsgRing& ring) noexcept;
+  // The wires that hold messages, a bit per wire (busy_): the next inbound message is looked for
+  // in those alone, not in every wire of every venue.
+  static constexpr unsigned kOrderWire = 0;
+  static constexpr unsigned kUserWire = 1;
+  static constexpr unsigned kMdWire = 2;
+  [[nodiscard]] static std::uint32_t wire_bit(const Link& l, unsigned wire) noexcept {
+    return std::uint32_t{1} << (3U * l.index + wire);
+  }
+  [[nodiscard]] static MsgRing& wire(Link& l, unsigned w) noexcept {
+    if (w == kOrderWire) return l.order_wire;
+    if (w == kUserWire) return l.user_wire;
+    return *l.md_wire;
+  }
+  bool wire_push(Link& l, unsigned w, const EventHeader& h) noexcept {
+    if (!wire(l, w).try_push(&h, h.len)) return false;
+    busy_ |= wire_bit(l, w);
+    return true;
+  }
+  std::uint32_t busy_ = 0;
+  static_assert(3 * kMaxVenues <= 32);
   bool move_head(MsgRing& ring, InlineFeed& feed, EventType& type) noexcept;
 
   const SimClock& clock_;
@@ -587,7 +668,10 @@ class SimTransport final : public MatchingSink {
   Link* link_of_inst_[kMaxInstruments] = {};
   bool replace_[kMaxVenues] = {};
   Scheduler sched_;
-  std::unique_ptr<L2Book<256>[]> mirror_;
+  // The recorded market (SimWorld): this transport's own, or a multiverse's.
+  std::unique_ptr<SimWorld> own_world_;
+  SimWorld* world_;
+  L2Book<256>* mirror_;
   QueuePositionModel queue_;
   // L3Queue: the recorded orders resting at the venue, per instrument (ref -> order), and the
   // displayed quantity of each of their levels; l3_seq_ numbers arrivals, ours included.
@@ -601,8 +685,8 @@ class SimTransport final : public MatchingSink {
   std::vector<std::unordered_map<std::int64_t, Qty>> l3_levels_[2];
   std::uint64_t l3_seq_ = 0;
   void l3_level_add(InstrumentId id, Side side, Price px, Qty q, bool add) noexcept;
-  std::unique_ptr<QueueTouch[]> touch_;  // L2Queue: the latest BookTicker per instrument
-  std::unique_ptr<TradeTape[]> tape_;    // L2Queue: trades since the mirror's last update
+  QueueTouch* touch_;  // L2Queue: the latest BookTicker per instrument
+  TradeTape* tape_;    // L2Queue: trades since the mirror's last update
   std::unique_ptr<MdAggregator> agg_;
   std::unique_ptr<SimAccounts> accounts_;
   // With pools: the strategy's orders at the venue by client id -> the member link's venue id.
