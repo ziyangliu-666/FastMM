@@ -805,3 +805,36 @@ TEST_CASE("codecs.itch_l2_bridge: wanted() keeps the configured locates once the
   bridge.clear_locates();
   CHECK(bridge.wanted(msg(enc.add_order(buf, 9, 1, 1, Side::Buy, qt(1), "X", px("1.00")))));
 }
+
+// The engine's queue estimate counts a trade once when it comes before the delta that shows it.
+TEST_CASE("codecs.itch_l2_bridge: a datagram's trades come before its delta") {
+  RecordingSink rec(1U << 16);
+  ItchL2BridgeConfig cfg;
+  cfg.book = L3BookConfig{.price_window_ticks = 1U << 12, .max_orders = 64};
+  ItchL2Bridge bridge(rec.sink, cfg);
+  REQUIRE(bridge.add_instrument("", InstrumentId{1}));
+  REQUIRE(bridge.map_locate(11, InstrumentId{1}));
+  REQUIRE(bridge.mark_all_complete());
+  rec.drain();
+  ItchEncoder enc;
+  std::array<std::byte, 64> buf{};
+  std::uint64_t seq = 0;
+  auto send = [&](std::size_t n) {
+    REQUIRE(n != 0);
+    bridge.on_itch_message(++seq, {buf.data(), n}, DatagramStamp{});
+  };
+  send(enc.add_order(buf, 11, 1, 1, Side::Buy, qt(100), "A", px("10.00")));
+  bridge.end_datagram();
+  rec.drain();
+  send(enc.order_executed(buf, 11, 2, 1, qt(30), 9));
+  send(enc.add_order(buf, 11, 3, 2, Side::Sell, qt(5), "A", px("10.05")));
+  bridge.end_datagram();
+  const std::vector<Bytes> out = rec.drain();
+  REQUIRE(out.size() == 2);
+  CHECK(RecordingSink::type_of(out[0]) == EventType::Trade);
+  CHECK(RecordingSink::as<TradeMsg>(out[0]).qty == qt(30));
+  REQUIRE(RecordingSink::type_of(out[1]) == EventType::BookDelta);
+  const auto* d = reinterpret_cast<const BookDeltaMsg*>(out[1].data());
+  REQUIRE(d->bid_count == 1);
+  CHECK(d->bids()[0] == Level{px("10.00"), qt(70)});  // what the trade took is already gone
+}

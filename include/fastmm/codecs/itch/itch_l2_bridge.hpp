@@ -37,6 +37,12 @@
 // sink has no room for is not lost: the book stays marked and the next end_datagram() emits the
 // difference from what the engine last received.
 //
+// A TradeMsg is emitted as its message is applied, so the trades of a datagram come before its
+// BookDeltaMsg, whose levels already show what they took. That is the order the engine's queue
+// estimate expects (core/queue_tracker.hpp): a trade newer than the depth book goes on its tape and
+// moves the queue, and the next delta drops what it already accounted for. A delta first would
+// cut the queue for the level's drop and the trade would cut it again.
+//
 // EventHeader: t0_cycles and recv_ts from the stamp of the message (the datagram), t1_delta
 // taken after decoding and the L3 update, venue_seq = the sequence of the last message applied,
 // exch_ts = midnight + the ITCH timestamp of that message.

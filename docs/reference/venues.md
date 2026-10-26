@@ -673,7 +673,7 @@ The buffer filling during two snapshots in a row stops the feed: the venue's kil
 
 ### Events
 
-Each datagram yields at most one `BookDeltaMsg` per instrument, with absolute quantities of the top `depth` levels that changed (0 deletes), and a `TradeMsg` per printable execution (E, C with Printable Y, P, Q). T0 (`t0_cycles`) is the `rdtscp` of the receive batch that carried the datagram, also for messages delivered later from the reorder buffer; `recv_ts` is the kernel receive time (the NIC time with `hw_clock = "phc_synced"`, the T0 wall clock on `af_xdp`); `venue_seq` is the MoldUDP64 sequence number of the last message applied; T1 is taken after decoding and the L3 update.
+Each datagram yields at most one `BookDeltaMsg` per instrument, with absolute quantities of the top `depth` levels that changed (0 deletes), and a `TradeMsg` per printable execution (E, C with Printable Y, P, Q). A datagram's trades come before its deltas, which already show what they took; the engine's queue estimate counts each trade once in that order. T0 (`t0_cycles`) is the `rdtscp` of the receive batch that carried the datagram, also for messages delivered later from the reorder buffer; `recv_ts` is the kernel receive time (the NIC time with `hw_clock = "phc_synced"`, the T0 wall clock on `af_xdp`); `venue_seq` is the MoldUDP64 sequence number of the last message applied; T1 is taken after decoding and the L3 update.
 
 ### Orders
 
