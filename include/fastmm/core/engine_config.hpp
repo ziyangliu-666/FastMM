@@ -23,6 +23,10 @@ struct EngineConfig {
   std::uint32_t max_events_per_step = 64;
   Duration crossed_grace = milliseconds(100);
   Duration latency_publish_interval = seconds(1);
+  // The monitors' snapshots (live_stats(), the latency percentiles) are published every
+  // latency_publish_interval and on every change an operator sees. A backtest, which nobody
+  // watches, turns them off: what it records and computes is the same.
+  bool publish_live = true;
   // Risk rejects are logged at WARN: the first of each reason, then at most one line per reason per
   // interval with the number suppressed in between (0 logs every reject).
   Duration reject_log_interval = seconds(10);

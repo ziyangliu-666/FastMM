@@ -29,6 +29,9 @@ Instrument inst(std::uint32_t id = 0) {
 
 struct NoCtx {
   TimerId every(Duration, std::uint64_t) { return TimerId{1}; }
+  std::array<Instrument, 0> list{};
+  const std::array<Instrument, 0>& instruments() const { return list; }
+  void watch(InstrumentId, bool) {}
 };
 
 // A LeadMM configured with `params` on top of the test defaults, started (roles resolved).
@@ -269,6 +272,7 @@ struct LeadCtx {
   int pulls = 0;
   DesiredQuotes last{};
   const std::array<Instrument, 3>& instruments() const { return list; }
+  void watch(InstrumentId, bool) {}
   const Instrument& instrument(InstrumentId id) const { return list[id.value]; }
   const FakeBook& book(InstrumentId id) const { return books[id.value]; }
   Timestamp now() const { return t; }

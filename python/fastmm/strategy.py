@@ -30,6 +30,7 @@ from typing import (
     Any,
     Dict,
     Generic,
+    List,
     Mapping,
     Optional,
     Tuple,
@@ -606,6 +607,60 @@ def _run_hot(config: "BacktestConfig", data: Any, instance: Strategy, name: str,
              recent_rows: int) -> "BacktestResult":
     from ._hot import compiler  # imports numba
 
+    config, param_values, metadata, slow, runner = _hot_prepare(
+        config, instance, spec, slow_delay_ms, max_param_age_ms, fills_capacity, recent_rows)
+    try:
+        result, error, _calls = compiler.run(config, data, instance, name, spec, cache,
+                                             param_values, metadata, slow)
+    except Exception as e:
+        _raise_on_start(name, [runner], e)
+        raise
+    return _hot_finish(name, result, error, slow, runner, slow_delay_ms)
+
+
+def _run_hot_points(config: "BacktestConfig", data: Any, cls: type,
+                    points: List[Dict[str, Any]], threads: int) -> List["BacktestResult"]:
+    """A fresh instance of a hot strategy class per point, every point in one pass over the data
+    (bt::run_multiverse), each with the result run_backtest gives it."""
+    from ._hot import compiler  # imports numba
+
+    spec = cls._fastmm_hot
+    name = cls.strategy_name()
+    instances: List[Strategy] = []
+    values: List[Dict[str, str]] = []
+    slows: List[Optional[Dict[str, Any]]] = []
+    runners: List[Any] = []
+    prepared = config
+    for params in points:
+        instance = cls()
+        merged: Dict[str, Any] = dict(config.params)
+        merged.update(params)
+        try:
+            instance.configure(merged)
+        except ValueError as e:
+            raise ValueError(f"{name}: {e}") from None
+        instance._fastmm_used = True
+        prepared, param_values, _meta, slow, runner = _hot_prepare(
+            config, instance, spec, 0, None, None, 4096)
+        instances.append(instance)
+        values.append(param_values)
+        slows.append(slow)
+        runners.append(runner)
+    try:
+        outs = compiler.run_many(prepared, data, instances, name, spec, True, values, "", slows,
+                                 threads)
+    except Exception as e:
+        _raise_on_start(name, runners, e)
+        raise
+    return [_hot_finish(name, result, error, slow, runner, 0)
+            for (result, error, _calls), slow, runner in zip(outs, slows, runners)]
+
+
+def _hot_prepare(config: "BacktestConfig", instance: Strategy, spec: "_hot_decl.HotSpec",
+                 slow_delay_ms: float, max_param_age_ms: Optional[int],
+                 fills_capacity: Optional[int], recent_rows: int) -> Tuple[Any, ...]:
+    """(config, parameter values, journal metadata, slow tier settings or None, slow runner or
+    None) of one run of a hot strategy instance."""
     age = _max_param_age_ms(config, spec, max_param_age_ms)
     if age != config.max_param_age_ms:
         config = config.copy()
@@ -637,15 +692,21 @@ def _run_hot(config: "BacktestConfig", data: Any, instance: Strategy, name: str,
                 "fills_capacity": int(fills_capacity or 0), "longest_gap_ns": int(gap),
                 "recent_rows": int(recent_rows),
                 "snapshot_interval_ns": slow_runner.SNAPSHOT_INTERVAL_NS}
+    return config, param_values, metadata, slow, runner
 
-    try:
-        result, error, _calls = compiler.run(config, data, instance, name, spec, cache,
-                                             param_values, metadata, slow)
-    except Exception as e:
+
+def _raise_on_start(name: str, runners: List[Any], e: Exception) -> None:
+    """StrategyError from `e` when a slow on_start raised it."""
+    for runner in runners:
         if runner is not None and runner.failed_method == "on_start":
             raise StrategyError(f"{name}.on_start raised {type(e).__name__}: {e}",
                                 hook="on_start", slow_failure="exception") from e
-        raise
+
+
+def _hot_finish(name: str, result: "BacktestResult", error: Optional[Dict[str, Any]],
+                slow: Optional[Dict[str, Any]], runner: Any,
+                slow_delay_ms: float) -> "BacktestResult":
+    """The result of a hot strategy's run, or StrategyError when a hook or the slow tier failed."""
     if runner is not None:
         result._set_slow_methods(runner.timing_rows())
     if error is not None:

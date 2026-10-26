@@ -9,13 +9,15 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: `L3BookConfig::max_overflow_levels` defaults to 8192 levels per side.
 - codecs: `ItchL2Bridge` keeps each book's top up to date as it applies messages instead of reading it from the L3 book for every delta.
 - core: the timer wheel keeps its next expiry instead of scanning every timer for it each time the simulator asks.
-- backtest: under `l2_queue` the points of a sweep or a walk-forward's fold and the arms of an `[ab]` branch test share their passes over the data, each with the result it gives alone.
+- backtest: under `l2_queue` and `l3_queue` the points of a sweep or a walk-forward's fold and the arms of an `[ab]` branch test share their passes over the data, each with the result it gives alone, whatever the strategy.
+- backtest: a run sharing a pass is handed only the market data its engine needs and catches up with the rest before it acts, and a recorded event reaches only the runs whose orders it can reach.
 - sim: the market-data wire starts at 256 KiB and grows when a burst fills it, and the next inbound message is looked for only in the wires that hold one.
 
 ### Added
-- backtest: a population runs thousands of `basic_mm` variants over one pass of `l3_queue` data, each with the fills its own backtest gives (`bt::run_population`, `backtest/population.hpp`).
-- backtest: `bt::compile_tape` writes a population's shared market once, and `backtest/lane_kernel.hpp` runs each (variant, instrument) over it alone.
-- bench: `fastmm-bench-population` times a population against backtests of its variants and checks them fill by fill.
+- core: `StrategyContext::watch` and `quiet_book` declare the market data a strategy's hooks ignore; `basic_mm` and `lead_mm` declare theirs.
+- backtest: `fastmm-backtest --sweep ... --verify K` and `fastmm.sweep(..., verify=K)` run K points again as backtests of their own and fail on the first difference (`bt::result_difference`).
+- python: `fastmm.sweep` and `fastmm.walk_forward` run the points of a class with `@fastmm.hot` hooks in shared passes on C++ threads.
+- bench: `fastmm-bench-multiverse` times a multiverse of any strategy against separate backtests and checks its runs field by field.
 - backtest: the `itch` data source runs a backtest over a day of Nasdaq TotalView-ITCH, every order of the followed stocks; the engine trades on each book's L2 view and the simulated venue gets the orders themselves.
 - sim: `fill_model = "l3_queue"` takes each order's queue position from order-by-order data: it waits behind the recorded orders that came before it and fills from the executions that reach it.
 - bench: `fastmm-bench-queue-truth` scores `l2_queue` and `l3_queue` against a day of ITCH, where every order's outcome is known.

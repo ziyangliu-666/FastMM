@@ -33,13 +33,14 @@ inline constexpr std::uint32_t kRingMsgGranule = 64;
 
 class MsgRing {
  public:
-  // Owns `capacity` bytes (power of two, >= 64).
-  explicit MsgRing(std::size_t capacity)
+  // Owns `capacity` bytes (power of two, >= 64), touched at once (`prefault`) so the first
+  // messages pay no page faults; a simulation's rings, mostly empty, leave them untouched.
+  explicit MsgRing(std::size_t capacity, bool prefault = true)
       : owned_(static_cast<std::byte*>(::operator new(capacity, std::align_val_t{kCacheLine}))),
         buf_(owned_.get()),
         mask_(capacity - 1) {
     FASTMM_CHECK(std::has_single_bit(capacity) && capacity >= kRingMsgGranule);
-    std::memset(buf_, 0, capacity);
+    if (prefault) std::memset(buf_, 0, capacity);
   }
   // Borrows arena memory (pre-faulted, hugepage-advised).
   MsgRing(Arena& arena, std::size_t capacity)

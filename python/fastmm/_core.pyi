@@ -1880,6 +1880,10 @@ def _replay_hot_strategy(path: typing.Any, config: BacktestConfig, name: str, pr
     """
     Internal: replay of a compiled hot strategy from a journal; use fastmm.replay().
     """
+def _result_difference(a: BacktestResult, b: BacktestResult) -> str:
+    """
+    Internal: the first thing two results differ in (bt::result_difference), '' when none; fastmm.sweep(verify=...) checks its points with it.
+    """
 def _run_hot_strategy(config: BacktestConfig, data: typing.Any, name: str, params: dict, program: dict, metadata: str = '', slow: typing.Any = None) -> tuple:
     """
     Internal: backtest of a compiled hot strategy with the GIL released; use fastmm.run_backtest(config, data, strategy=MyStrategy).
@@ -1899,6 +1903,10 @@ def _slow_abi() -> dict:
 def _store_pnl(path: typing.Any, instrument: str = '', from_day: str = '', to_day: str = '') -> tuple[list[str], list[list[str]]]:
     """
     Internal: (columns, rows) of fastmm-pnl's pnl query; raw columns as exact decimals.
+    """
+def _sweep_hot_strategy(config: BacktestConfig, data: typing.Any, name: str, params: list, programs: list, metadata: str, slows: list, threads: typing.SupportsInt | typing.SupportsIndex = 0) -> list:
+    """
+    Internal: the points of a sweep of a compiled hot strategy in multiverses (one pass over the data per batch of points, backtest/multiverse.hpp); fastmm.sweep and walk_forward use it under the queue fill models.
     """
 def _walk_forward_report(grid: dict, metric: str, folds: list) -> dict:
     """
@@ -1963,7 +1971,7 @@ def strategies() -> dict:
     """
 def sweep(config: BacktestConfig, grid: dict, data: typing.Any = None, strategy: str | None = None, threads: typing.SupportsInt | typing.SupportsIndex = 0) -> list:
     """
-    Cartesian parameter sweep of a registered C++ strategy on a thread pool (GIL released). grid: {param: [values]}. Returns [(params, BacktestResult)] in grid order, first parameter varying slowest. Every worker opens its own cursor over `data` (same forms as run_backtest). threads <= 0 uses every hardware thread. Under fill_model l2_queue the points share their passes over the data, with the results each gives alone (backtest/multiverse.hpp). fastmm.sweep also takes a fastmm.Strategy class and runs its points in worker processes.
+    Cartesian parameter sweep of a registered C++ strategy on a thread pool (GIL released). grid: {param: [values]}. Returns [(params, BacktestResult)] in grid order, first parameter varying slowest. Every worker opens its own cursor over `data` (same forms as run_backtest). threads <= 0 uses every hardware thread. Under fill_model l2_queue or l3_queue the points share their passes over the data, with the results each gives alone (backtest/multiverse.hpp). fastmm.sweep also takes a fastmm.Strategy class.
     """
 def walk_forward(config: BacktestConfig, grid: dict, folds: typing.SupportsInt | typing.SupportsIndex, data: typing.Any = None, metric: str = 'net_pnl', strategy: str | None = None, threads: typing.SupportsInt | typing.SupportsIndex = 0) -> dict:
     """

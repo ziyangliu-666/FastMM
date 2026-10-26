@@ -122,16 +122,16 @@ points = fastmm.sweep(cfg, {"half_spread_bps": [0.01, 0.02], "skew_bps_per_unit"
 df = fastmm.sweep_frame(points)           # one row per grid point
 ```
 
-Results come back in grid order with the first parameter varying slowest, each the result `run_backtest` gives for that point. A registered C++ strategy runs on a C++ thread pool with the GIL released, every worker with its own cursor over `data`. A `fastmm.Strategy` class, with plain or hot hooks, runs a fresh instance per point in worker processes forked from the calling one, so a class defined in a script or a notebook works:
+Results come back in grid order with the first parameter varying slowest, each the result `run_backtest` gives for that point. Under `fill_model = "l2_queue"` or `"l3_queue"` the points of a registered C++ strategy, or of a `fastmm.Strategy` class whose hooks are `@fastmm.hot`, share their passes over the data on C++ threads with the GIL released ([Many runs in one pass](explanation/backtesting.md#many-runs-in-one-pass)). A class with plain hooks, and any strategy under `matching`, runs one backtest per point: a C++ strategy on a C++ thread pool, a Python class as a fresh instance in worker processes forked from the calling one, so a class defined in a script or a notebook works:
 
 ```python
 points = fastmm.sweep(cfg, {"half_spread_bps": [1.0, 2.0, 4.0]}, data="synthetic",
                       strategy=MyMM, threads=4)
 ```
 
-`threads` is the number of threads or processes; 0 uses every CPU and 1 runs the points one after another in the calling process. Without `fork` (Windows) the points of a Python strategy run in the calling process.
+`threads` is the number of threads or processes; 0 uses every CPU and 1 runs the points one after another in the calling process. Without `fork` (Windows) the points of a plain Python strategy run in the calling process.
 
-`fastmm.sweep` and `fastmm.walk_forward` take a built-in strategy only: the one `cfg.strategy` names, or `strategy="basic_mm"` (`fastmm.strategies()` lists them). A Python class cannot be passed. To sweep a Python strategy, call `run_backtest` once per point, as `python backtest.py --sweep` does in a project `fastmm init` wrote.
+`verify=K` runs K points, spread over the grid, again as backtests of their own and raises `RuntimeError` naming the first thing that differs (a fill, an order, an equity bar, a count or the outbound hash).
 
 ### Walk-forward
 

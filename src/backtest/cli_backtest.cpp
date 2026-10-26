@@ -21,6 +21,7 @@
 #include "fastmm/strategies/listing.hpp"
 #include "fastmm/strategies/registry.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -119,15 +120,17 @@ int run_branches(const char* prog, const bt::BacktestConfig& cfg, bt::MdSource* 
   return 0;
 }
 
-// --sweep: the grid's points, by default in multiverses (one pass over the data for a group of
-// points, bt::sweep_multiverse), with --solo as separate backtests. One line
-// per point.
+// --sweep: the grid's points, under the queue fill models in multiverses (one pass over the data
+// for a group of points, bt::sweep_by_name), with --solo as separate backtests. One line per
+// point. --verify K runs K points, spread over the grid, again as backtests of their own and
+// compares each with its sweep result (bt::result_difference).
 int run_sweep(const char* prog,
               const bt::BacktestConfig& cfg,
               const std::vector<std::string>& sweeps,
               const std::string& data,
               int threads,
-              bool solo) {
+              bool solo,
+              std::size_t verify) {
   bt::ParamGrid grid;
   for (const std::string& s : sweeps) {
     const std::size_t eq = s.find('=');
@@ -148,8 +151,7 @@ int run_sweep(const char* prog,
   std::vector<bt::SweepPoint> points;
   const auto t0 = std::chrono::steady_clock::now();
   try {
-    points = solo ? bt::sweep_by_name(cfg, cfg.strategy, grid, factory, threads, true)
-                  : bt::sweep_multiverse(cfg, cfg.strategy, grid, factory, threads);
+    points = bt::sweep_by_name(cfg, cfg.strategy, grid, factory, threads, solo);
   } catch (const std::invalid_argument& e) {
     Logger::instance().stop();
     std::fprintf(stderr, "%s: %s\n", prog, e.what());
@@ -178,11 +180,31 @@ int run_sweep(const char* prog,
                 p.result.outbound_sha256.substr(0, 16).c_str());
     events += p.result.md_events;
   }
+  const bool shared = !solo && bt::multiverse_refusal({cfg}).empty();
   std::printf("%zu points %s in %.2f s, %.1f M market-data events a second over the runs\n",
               points.size(),
-              solo ? "as separate backtests" : "in multiverses",
+              shared ? "in multiverses" : "as separate backtests",
               wall,
               wall > 0 ? static_cast<double>(events) / wall / 1e6 : 0.0);
+  if (verify == 0 || points.empty()) return 0;
+  const std::size_t n = std::min(verify, points.size());
+  const bt::BacktestConfig start = bt::shared_start(cfg);
+  for (std::size_t k = 0; k < n; ++k) {
+    const bt::SweepPoint& p = points[k * points.size() / n];
+    bt::BacktestConfig c = start;
+    for (const auto& [key, v] : p.params) c.params[key] = v;
+    c.output_dir.clear();
+    c.journal_out.clear();
+    const std::unique_ptr<bt::MdSource> source = factory();
+    const std::string diff =
+        bt::result_difference(bt::run_backtest(c, cfg.strategy, source.get()), p.result);
+    if (!diff.empty()) {
+      std::fprintf(
+          stderr, "%s: --verify: a point gives another result alone: %s\n", prog, diff.c_str());
+      return kExitRun;
+    }
+  }
+  std::printf("%zu points run again alone: the same results, fill for fill\n", n);
   return 0;
 }
 
@@ -204,6 +226,7 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
   std::vector<std::string> sweeps;
   int threads = 0;
   bool solo = false;
+  std::size_t verify = 0;
 
   CLI::App app("Backtests a registered strategy.", program);
   setup(app);
@@ -237,13 +260,19 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
   app.add_option("--sweep",
                  sweeps,
                  "a parameter's values, every combination with the other --sweep keys run "
-                 "(repeatable); the points share each pass over recorded data (l2_queue)")
+                 "(repeatable); under l2_queue and l3_queue the points share their passes over "
+                 "the data")
       ->option_text("<key=v1,v2,...>")
       ->allow_extra_args(false)
       ->check(key_value());
   app.add_option("--threads", threads, "--sweep: worker threads (default: every core)")
       ->option_text("<n>");
   app.add_flag("--solo", solo, "--sweep: run every point as a backtest of its own");
+  app.add_option("--verify",
+                 verify,
+                 "--sweep: run this many points again as backtests of their own and compare the "
+                 "results, fill for fill")
+      ->option_text("<n>");
   CLI::Option* list_opt =
       app.add_flag("--list-strategies", list, "print registered strategies and their parameters");
   app.add_option("--format", format_arg, "output format of --list-strategies (default text)")
@@ -323,7 +352,7 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
     return kExitData;
   }
 
-  if (!sweeps.empty()) return run_sweep(prog, cfg, sweeps, data, threads, solo);
+  if (!sweeps.empty()) return run_sweep(prog, cfg, sweeps, data, threads, solo, verify);
   if (cfg.ab.enabled() && cfg.ab.assignment == "branch")
     return run_branches(prog, cfg, source.get());
 

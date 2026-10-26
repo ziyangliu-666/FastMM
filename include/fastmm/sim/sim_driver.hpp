@@ -22,6 +22,7 @@
 // finish(); a v1 journal only has receive and fire times, which never move the clock backwards.
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/latency.hpp"
+#include "fastmm/core/market_view.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/transport.hpp"
 #include "fastmm/sim/journal_feed.hpp"
@@ -38,6 +39,13 @@ namespace fastmm::sim {
 struct EngineHooks {
   void* ctx = nullptr;
   std::size_t (*step)(void*) = nullptr;
+  // step() with `event` taken first, read where it lies (Engine::step_with): a multiverse's runs
+  // read the market data they share without a copy into each feed.
+  std::size_t (*step_with)(void*, const EventHeader&) = nullptr;
+  // Engine::follow_market and md_interest: the engine follows a multiverse's market data, which
+  // hands it only the messages it needs (backtest/multiverse.hpp).
+  void (*follow_market)(void*, const MarketView&) = nullptr;
+  const MdInterest* (*md_interest)(void*) = nullptr;
   Timestamp (*next_timer)(void*) = nullptr;
   void (*warm_up)(void*) = nullptr;
   void (*start)(void*) = nullptr;
@@ -52,6 +60,13 @@ struct EngineHooks {
     EngineHooks h;
     h.ctx = &e;
     h.step = [](void* c) { return static_cast<Engine*>(c)->step(); };
+    h.step_with = [](void* c, const EventHeader& m) {
+      return static_cast<Engine*>(c)->step_with(m);
+    };
+    h.follow_market = [](void* c, const MarketView& m) {
+      static_cast<Engine*>(c)->follow_market(m);
+    };
+    h.md_interest = [](void* c) { return &static_cast<Engine*>(c)->md_interest(); };
     h.next_timer = [](void* c) { return static_cast<Engine*>(c)->timers().next_expiry(); };
     h.warm_up = [](void* c) { static_cast<Engine*>(c)->warm_up(); };
     h.start = [](void* c) { static_cast<Engine*>(c)->start(); };
@@ -71,6 +86,30 @@ struct SlowHooks {
   // (Timestamp::max(): none). A time not after `now` is taken as 1 ns after it.
   Timestamp (*run)(void* ctx, Timestamp now) = nullptr;
   Timestamp first = Timestamp::max();  // the first time to run
+};
+
+// Where an event stands in a run's virtual time: its time, then its kind, in the order SimDriver
+// takes the kinds of one instant. A multiverse (backtest/multiverse.hpp) steps each run up to the
+// key of the next event its runs share and puts that event there, so every run sees the order of
+// events it sees alone.
+struct SimKey {
+  enum Rank : std::uint8_t {
+    kGenerator = 0,
+    kSource = 1,      // a recorded event at the venue
+    kOrder = 2,       // an order message reaching the venue
+    kFlush = 3,       // the coupled generator's depth batch
+    kInbound = 4,     // an order event or private message reaching the engine
+    kMarketData = 5,  // market data reaching the engine
+    kParam = 6,
+    kTimer = 7,
+    kSlow = 8,
+    kStop = 9,  // a backtest's equity bar or markout: after everything of its instant
+    kEnd = 10,
+  };
+  Timestamp t;
+  std::uint8_t rank = kGenerator;
+  constexpr auto operator<=>(const SimKey&) const noexcept = default;
+  [[nodiscard]] static constexpr SimKey never() noexcept { return {Timestamp::max(), kEnd}; }
 };
 
 // Power of two: SimDriver times 1 in this many market-data steps (SimDriverStats::md_step_ns).
@@ -119,10 +158,11 @@ class SimDriver {
   }
   void set_measure_wall_clock(bool v) noexcept { measure_ = v; }
 
-  // warm_up + on_start; seeds the book and publishes the first snapshot in coupled mode. The
-  // venues' accounts send their first balance snapshot, delivered at the first step.
+  // on_start; seeds the book and publishes the first snapshot in coupled mode. The venues'
+  // accounts send their first balance snapshot, delivered at the first step. A simulation has no
+  // first event to keep page faults from, so the engine is not warmed up: a sweep's thousands of
+  // engines leave the memory they never use untouched.
   void start() {
-    hooks_.warm_up(hooks_.ctx);
     transport_.publish_balances(clock_.now());
     if (generator_ != nullptr) {
       transport_.enable_aggregator(clock_.now());
@@ -136,7 +176,10 @@ class SimDriver {
 
   // Processes every event with time <= until. Returns false when no event remains or the engine
   // was asked to stop (EngineHooks::stopped).
-  bool run_until(Timestamp until) {
+  bool run_until(Timestamp until) { return run_before(SimKey{until, SimKey::kEnd}); }
+
+  // Processes every event whose key is before `limit`; returns as run_until().
+  bool run_before(SimKey limit) {
     if (!started_) start();
     for (;;) {
       if (stopped_) return false;
@@ -145,10 +188,11 @@ class SimDriver {
         source_done_ = pending_ == nullptr;  // never poll an exhausted source again
       }
       const Timestamp t_gen = generator_ != nullptr ? generator_->next_ts() : Timestamp::max();
-      const Timestamp t_src = pending_ != nullptr ? source_time(*pending_) : world_ts_;
+      const Timestamp t_src = pending_ != nullptr ? source_time(*pending_) : Timestamp::max();
       const Timestamp t_ord = transport_.next_order_arrival();
       const Timestamp t_flush = transport_.next_flush_ts();
-      const Timestamp t_in = transport_.next_inbound_ts();
+      const SimTransport::Inbound in = transport_.next_inbound();
+      const Timestamp t_in = in.ts;
       const Timestamp t_timer = hooks_.next_timer(hooks_.ctx);
       if (params_ != nullptr) params_->collect();
       const Timestamp t_param = params_ != nullptr ? params_->next_ts() : Timestamp::max();
@@ -159,45 +203,59 @@ class SimDriver {
       if (t_src < t) t = t_src;
       if (t_ord < t) t = t_ord;
       if (t_in < t) t = t_in;
-      if (t == Timestamp::max()) return false;
+      if (t == Timestamp::max() && (world_ == nullptr || *world_ == Timestamp::max())) return false;
       if (t_flush < t) t = t_flush;
       if (t_param < t) t = t_param;
       if (t_timer < t) t = t_timer;
       if (t_slow < t) t = t_slow;
-      if (t > until) return true;
-      if (t > clock_.now()) clock_.set(t);
+      if (t == Timestamp::max()) return true;  // waiting for the multiverse's next event
+      SimKey key{t, SimKey::kSlow};
       if (t == t_gen) {
+        key.rank = SimKey::kGenerator;
+      } else if (t == t_src) {
+        key.rank = SimKey::kSource;
+      } else if (t == t_ord) {
+        key.rank = SimKey::kOrder;
+      } else if (t == t_flush) {
+        key.rank = SimKey::kFlush;
+      } else if (t == t_in) {
+        key.rank = in.market_data ? SimKey::kMarketData : SimKey::kInbound;
+      } else if (t == t_param) {
+        key.rank = SimKey::kParam;
+      } else if (t == t_timer) {
+        key.rank = SimKey::kTimer;
+      }
+      if (!(key < limit)) return true;
+      if (t > clock_.now()) clock_.set(t);
+      if (key.rank == SimKey::kGenerator) {
         generator_->step(transport_.matching_engine());
         ++stats_.generator_actions;
-      } else if (t == t_src) {
-        if (pending_ == nullptr) return true;  // the multiverse's next event: world_event()
+      } else if (key.rank == SimKey::kSource) {
         transport_.on_source_event(*pending_);
         pending_ = nullptr;
         ++stats_.source_events;
-      } else if (t == t_ord) {
+      } else if (key.rank == SimKey::kOrder) {
         transport_.process_order_arrival();
         ++stats_.order_arrivals;
-      } else if (t == t_flush) {
+      } else if (key.rank == SimKey::kFlush) {
         transport_.flush_md(t);
         ++stats_.flushes;
-      } else if (t == t_in) {
+      } else if (key.rank == SimKey::kInbound || key.rank == SimKey::kMarketData) {
         const EventType type = transport_.deliver_next_inbound(feed_);
-        const bool md = type == EventType::BookDelta || type == EventType::BookSnapshot ||
-                        type == EventType::Trade || type == EventType::BookTicker ||
-                        type == EventType::OptionTicker || type == EventType::PerpState;
+        const bool md = is_market_data(type);
         if (md) {
           ++stats_.md_delivered;
         } else {
           ++stats_.order_events_delivered;
         }
         engine_step(md);
-      } else if (t == t_param) {
+      } else if (key.rank == SimKey::kParam) {
         const ParamUpdateMsg m = params_->pop();
         if (feed_.push(m.hdr)) {
           ++stats_.param_updates;
           engine_step(false);
         }
-      } else if (t == t_timer) {
+      } else if (key.rank == SimKey::kTimer) {
         ++stats_.timer_steps;
         engine_step(false);
       } else {
@@ -212,16 +270,95 @@ class SimDriver {
   void run_all() { static_cast<void>(run_until(Timestamp::max())); }
 
   // A multiverse (backtest/multiverse.hpp) reads the recorded events once for all its runs, so a
-  // run's driver has no source of its own. set_world_next() gives it the time of the next one,
-  // which it treats as a source event's: run_until() stops before it and an idle run is not over.
-  // world_event() then takes the event as the source branch of run_until() would, after the
-  // shared SimWorld took its half (SimWorld::before()). Timestamp::max(): no more events.
-  void set_world_next(Timestamp t) noexcept { world_ts_ = t; }
+  // run's driver has no source of its own. follow_world() points it at the time of the next event
+  // the multiverse's runs share, which it keeps current: while there is one an idle run is not over
+  // (the multiverse steps the run no further than to it). world_event() then takes a recorded event
+  // as the source branch of run_until() would, after the shared SimWorld took its half
+  // (SimWorld::before()). Null, or Timestamp::max(): no more events.
+  void follow_world(const Timestamp* next) noexcept { world_ = next; }
   void world_event(const EventHeader& md) noexcept {
     const Timestamp t = source_time(md);
     if (t > clock_.now()) clock_.set(t);
     transport_.on_source_event_run(md);
     ++stats_.source_events;
+  }
+  // world_event() in halves, for a multiverse that hands the venue's half only to the runs whose
+  // orders the event can reach and forwards the market data of the runs that share it itself
+  // (SimTransport::venue_event(), feed_event()).
+  void world_venue_event(const EventHeader& md) noexcept {
+    const Timestamp t = source_time(md);
+    if (t > clock_.now()) clock_.set(t);
+    transport_.venue_event(md);
+  }
+  void world_feed_event(const EventHeader& md) noexcept {
+    const Timestamp t = source_time(md);
+    if (t > clock_.now()) clock_.set(t);
+    transport_.feed_event(md);
+  }
+  // Market data the multiverse forwarded for this run and others (recv_ts is its arrival): the
+  // engine takes it where it lies, at its arrival, as it takes its own wire's.
+  void shared_market_data(const EventHeader& md) noexcept {
+    if (md.recv_ts > clock_.now()) clock_.set(md.recv_ts);
+    transport_.count_md_delivered();
+    const bool is_md = is_market_data(md.type);
+    if (is_md) {
+      ++stats_.md_delivered;
+    } else {
+      ++stats_.order_events_delivered;
+    }
+    ++stats_.engine_steps;
+    if (measure_ && is_md && (++md_steps_ & (kMdStepSampleEvery - 1)) == 0) {
+      const Timestamp a = steady_now();
+      hooks_.step_with(hooks_.ctx, md);
+      const Timestamp b = steady_now();
+      stats_.md_step_ns.record(static_cast<std::uint64_t>((b - a).ns));
+    } else {
+      hooks_.step_with(hooks_.ctx, md);
+    }
+    poll_stopped();
+    if (journal_ != nullptr && (stats_.engine_steps & 63U) == 0) drain_journal();
+  }
+  // The key of this run's next own event (not the shared ones): never() when it has none.
+  [[nodiscard]] SimKey next_key() noexcept {
+    if (stopped_) return SimKey::never();
+    SimKey k = SimKey::never();
+    const auto take = [&](Timestamp t, std::uint8_t rank) {
+      if (t != Timestamp::max() && SimKey{t, rank} < k) k = SimKey{t, rank};
+    };
+    take(transport_.next_order_arrival(), SimKey::kOrder);
+    const SimTransport::Inbound in = transport_.next_inbound();
+    take(in.ts, in.market_data ? SimKey::kMarketData : SimKey::kInbound);
+    if (params_ != nullptr) {
+      params_->collect();
+      take(params_->next_ts(), SimKey::kParam);
+    }
+    take(hooks_.next_timer(hooks_.ctx), SimKey::kTimer);
+    take(slow_next_, SimKey::kSlow);
+    return k;
+  }
+  // The earliest of the events an engine step can add: an order on its way to the venue, a timer.
+  // A step adds no other kind, so after one the run's next own event is the earlier of this and
+  // what it was before.
+  [[nodiscard]] SimKey step_key() noexcept {
+    if (stopped_) return SimKey::never();
+    SimKey k = SimKey::never();
+    if (const Timestamp t = transport_.next_order_arrival(); t != Timestamp::max())
+      k = SimKey{t, SimKey::kOrder};
+    if (const Timestamp t = hooks_.next_timer(hooks_.ctx);
+        t != Timestamp::max() && SimKey{t, SimKey::kTimer} < k)
+      k = SimKey{t, SimKey::kTimer};
+    return k;
+  }
+  // Market data the multiverse did not hand this run because its engine did not need it: counted
+  // as delivered, as alone (the engine caught up with it, Engine::catch_up).
+  void credit_market_data(std::uint64_t n) noexcept {
+    stats_.md_delivered += n;
+    stats_.engine_steps += n;
+    transport_.count_md_delivered(n);
+  }
+  // The clock as a run alone would leave it after the events it shares: at the last of them.
+  void reach(Timestamp t) noexcept {
+    if (t > clock_.now()) clock_.set(t);
   }
 
   void finish() {
@@ -235,6 +372,16 @@ class SimDriver {
   [[nodiscard]] Timestamp now() const noexcept { return clock_.now(); }
   // The engine asked to stop; run_until() processes nothing more.
   [[nodiscard]] bool stopped() const noexcept { return stopped_; }
+
+ private:
+ public:
+  // What the stats count as market data (the rest of a market-data wire, a feed's connection
+  // state, counts as an order event).
+  static constexpr bool is_market_data(EventType type) noexcept {
+    return type == EventType::BookDelta || type == EventType::BookSnapshot ||
+           type == EventType::Trade || type == EventType::BookTicker ||
+           type == EventType::OptionTicker || type == EventType::PerpState;
+  }
 
  private:
   static Timestamp source_time(const EventHeader& h) noexcept {
@@ -269,7 +416,7 @@ class SimDriver {
   MdSource* source_ = nullptr;
   const EventHeader* pending_ = nullptr;
   bool source_done_ = false;
-  Timestamp world_ts_ = Timestamp::max();
+  const Timestamp* world_ = nullptr;
   MarketGenerator* generator_ = nullptr;
   JournalFileWriter* journal_ = nullptr;
   ParamSchedule* params_ = nullptr;

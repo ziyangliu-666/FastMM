@@ -538,6 +538,7 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
       throw std::runtime_error("backtest: cannot create journal " + cfg_.journal_out);
   }
   deps_.engine = cfg_.engine;
+  deps_.engine.publish_live = false;  // nobody watches a backtest
   deps_.engine.await_reconcile |= trade_venues_;
   deps_.engine.fees = cfg_.transport.fees;  // what the simulated venue charges
   // The strategy's queue estimate uses the fill model's conservatism.
@@ -647,13 +648,20 @@ struct BacktestSession::Loop {
   // reached.
   Timestamp next_stop{};
   bool done = false;
+  // next_stop()'s last answer and what it depends on.
+  Timestamp stop{};
+  std::size_t stop_fills = static_cast<std::size_t>(-1);
+  Timestamp stop_reached{};
+  Timestamp stop_bar{};
 };
 
 BacktestSession::~BacktestSession() {
   if (impl_ && impl_->journal_file) impl_->journal_file->stop();
 }
 
-void BacktestSession::begin(const sim::EngineHooks& hooks, IEngineRunner* runner, bool world) {
+void BacktestSession::begin(const sim::EngineHooks& hooks,
+                            IEngineRunner* runner,
+                            const Timestamp* world) {
   if (!hooks.valid()) throw std::invalid_argument("backtest: engine hooks not bound");
   if (loop_) throw std::logic_error("backtest: a session runs once");
   loop_ = std::make_unique<Loop>();
@@ -667,10 +675,10 @@ void BacktestSession::begin(const sim::EngineHooks& hooks, IEngineRunner* runner
   if (generator_ != nullptr) driver.set_generator(generator_.get(), cfg_.generator_seed_levels);
   // Recorded streams are not monotone in venue time: the venue takes them in its own order.
   // A multiverse's runs take the recorded events from the multiverse (world_event()).
-  if (world) {
+  if (world != nullptr) {
     if (source_ == nullptr || generator_ != nullptr)
       throw std::invalid_argument("backtest: a multiverse needs recorded data");
-    driver.set_world_next(source_->start_ts().valid() ? source_->start_ts() : b.clock.now());
+    driver.follow_world(world);
   } else if (source_ != nullptr && cfg_.reorder_window.ns > 0) {
     lp.ordered = std::make_unique<sim::VenueOrderSource>(*source_, cfg_.reorder_window);
     driver.set_source(lp.ordered.get());
@@ -767,21 +775,37 @@ void BacktestSession::begin(const sim::EngineHooks& hooks, IEngineRunner* runner
   lp.reached = start;
 }
 
+Timestamp BacktestSession::next_stop() const noexcept {
+  Loop& lp = *loop_;
+  // It moves only with a fill (a markout deadline) or a stop reached.
+  if (lp.stop_fills == impl_->fills.size() && lp.stop_reached == lp.reached &&
+      lp.stop_bar == lp.bar_end)
+    return lp.stop;
+  Timestamp stop = lp.bar_end;
+  if (const Timestamp due = impl_->next_markout_deadline(); due < stop) stop = due;
+  if (lp.step.ns > 0 && lp.reached + lp.step < stop) stop = lp.reached + lp.step;
+  lp.stop = stop;
+  lp.stop_fills = impl_->fills.size();
+  lp.stop_reached = lp.reached;
+  lp.stop_bar = lp.bar_end;
+  return stop;
+}
+
 // The stops of the loop before `limit`, then the events before it (all of them with
-// Timestamp::max()). False once the run is over.
-bool BacktestSession::advance(Timestamp limit) {
+// SimKey::never()). False once the run is over.
+bool BacktestSession::advance(sim::SimKey limit) {
   Loop& lp = *loop_;
   if (lp.done) return false;
   sim::SimBackend& b = *backend_;
   for (;;) {
-    Timestamp stop = lp.bar_end;
-    if (const Timestamp due = impl_->next_markout_deadline(); due < stop) stop = due;
-    if (lp.step.ns > 0 && lp.reached + lp.step < stop) stop = lp.reached + lp.step;
-    if (stop >= limit) {
+    const Timestamp stop = next_stop();
+    // A stop comes after every event of its instant.
+    const sim::SimKey at{stop, sim::SimKey::kStop};
+    if (!(at < limit)) {
       // Everything before the multiverse's next event; the stop comes after it. False: the engine
       // stopped, as the solo loop's run_until(stop) would have found.
       lp.next_stop = stop;
-      if (lp.driver->run_until(Timestamp{limit.ns - 1})) return true;
+      if (lp.driver->run_before(limit)) return true;
     } else if (lp.driver->run_until(stop)) {
       impl_->resolve_markouts(stop, b.transport);
       lp.reached = stop;
@@ -799,28 +823,64 @@ bool BacktestSession::advance(Timestamp limit) {
   }
 }
 
-bool BacktestSession::advance_before(Timestamp t) {
+bool BacktestSession::advance_before(sim::SimKey k) {
   Loop& lp = *loop_;
-  lp.driver->set_world_next(t);
-  if (!lp.done && t <= lp.next_stop && lp.driver->run_until(Timestamp{t.ns - 1})) return true;
-  return advance(t);
+  if (!lp.done && k <= sim::SimKey{lp.next_stop, sim::SimKey::kStop} && lp.driver->run_before(k))
+    return true;
+  return advance(k);
+}
+
+sim::SimKey BacktestSession::next_key() {
+  const Loop& lp = *loop_;
+  if (lp.done) return sim::SimKey::never();
+  const sim::SimKey stop{next_stop(), sim::SimKey::kStop};
+  const sim::SimKey own = lp.driver->next_key();
+  return own < stop ? own : stop;
+}
+
+sim::SimKey BacktestSession::step_key() {
+  return loop_->done ? sim::SimKey::never() : loop_->driver->step_key();
 }
 
 void BacktestSession::world_event(const EventHeader& md) noexcept {
   loop_->driver->world_event(md);
 }
 
+void BacktestSession::world_venue_event(const EventHeader& md) noexcept {
+  loop_->driver->world_venue_event(md);
+}
+
+void BacktestSession::world_feed_event(const EventHeader& md) noexcept {
+  loop_->driver->world_feed_event(md);
+}
+
+void BacktestSession::shared_market_data(const EventHeader& md) noexcept {
+  loop_->driver->shared_market_data(md);
+}
+
+void BacktestSession::reach(Timestamp t) noexcept {
+  loop_->driver->reach(t);
+}
+
+void BacktestSession::credit_market_data(std::uint64_t n) noexcept {
+  loop_->driver->credit_market_data(n);
+}
+
+bool BacktestSession::stopped() const noexcept {
+  return loop_->driver->stopped();
+}
+
 BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,
                                     IEngineRunner* runner,
                                     std::string_view strategy_name) {
-  begin(hooks, runner, false);
+  begin(hooks, runner, nullptr);
   return end(strategy_name);
 }
 
 BacktestResult BacktestSession::end(std::string_view strategy_name) {
   Loop& lp = *loop_;
-  lp.driver->set_world_next(Timestamp::max());
-  while (advance(Timestamp::max())) {
+  lp.driver->follow_world(nullptr);
+  while (advance(sim::SimKey::never())) {
   }
   sim::SimBackend& b = *backend_;
   sim::SimDriver& driver = *lp.driver;

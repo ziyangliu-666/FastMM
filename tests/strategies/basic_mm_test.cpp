@@ -117,6 +117,14 @@ struct QuoteCtx {
     return quoting;
   }
   void pull_quotes(InstrumentId) {}
+  // The band on_book would return at once inside (Price{} both: none).
+  Price quiet_lo{};
+  Price quiet_hi{};
+  void quiet_book(InstrumentId, Price lo, Price hi) {
+    quiet_lo = lo;
+    quiet_hi = hi;
+  }
+  void quiet_book(InstrumentId) { quiet_lo = quiet_hi = Price{}; }
 };
 ConnectionStateMsg connection(ConnState state) {
   ConnectionStateMsg m{};
@@ -150,6 +158,28 @@ TEST_CASE("strategies: a connection change forces the next requote even if the m
     AvellanedaStoikov s;
     check(s);
   }
+}
+
+TEST_CASE("strategies.basic_mm: the quiet band is the one on_book returns at once inside") {
+  BasicMM s;
+  QuoteCtx ctx;
+  const InstrumentId id{0};
+  s.on_book(ctx, id, ctx.b);
+  REQUIRE(ctx.set_quotes_calls == 1);
+  // Mid 100.05, requote_threshold_ticks 1 of 0.01: a mid strictly inside (100.04, 100.06).
+  CHECK(ctx.quiet_lo == px("100.04"));
+  CHECK(ctx.quiet_hi == px("100.06"));
+  ctx.b = FakeBook{px("100.01"), px("100.09")};  // mid 100.05: inside, no requote
+  s.on_book(ctx, id, ctx.b);
+  CHECK(ctx.set_quotes_calls == 1);
+  ctx.b = FakeBook{px("100.02"), px("100.10")};  // mid 100.06: on the edge, requote
+  s.on_book(ctx, id, ctx.b);
+  CHECK(ctx.set_quotes_calls == 2);
+  CHECK(ctx.quiet_lo == px("100.05"));
+  // A disconnect forgets the quoted mid, and the band with it.
+  s.on_connection(ctx, connection(ConnState::Disconnected));
+  CHECK(ctx.quiet_lo == Price{});
+  CHECK(ctx.quiet_hi == Price{});
 }
 
 namespace {

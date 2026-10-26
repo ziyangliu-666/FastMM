@@ -61,7 +61,7 @@ class BasicMM : public StrategyBase<BasicMMParams, ParamScope::PerInstrument> {
   void on_book(Ctx& ctx, InstrumentId id, const Book& book) noexcept {
     if (!book.is_valid()) {
       ctx.pull_quotes(id);
-      last_mid_[id.value] = Price{};
+      forget_mid(ctx, id);
       return;
     }
     const Price mid = book.mid();
@@ -88,7 +88,7 @@ class BasicMM : public StrategyBase<BasicMMParams, ParamScope::PerInstrument> {
       if (book.last_update().valid() &&
           (now - book.last_update()).millis() > params(inst.id).pull_on_stale_ms.millis()) {
         ctx.pull_quotes(inst.id);
-        last_mid_[inst.id.value] = Price{};
+        forget_mid(ctx, inst.id);
       }
     }
   }
@@ -100,7 +100,7 @@ class BasicMM : public StrategyBase<BasicMMParams, ParamScope::PerInstrument> {
   void on_connection(Ctx& ctx, const ConnectionStateMsg& m) noexcept {
     for (const Instrument& inst : ctx.instruments()) {
       if (inst.venue != m.hdr.venue) continue;
-      last_mid_[inst.id.value] = Price{};
+      forget_mid(ctx, inst.id);
       if (m.state != ConnState::Live) continue;
       const auto& book = ctx.book(inst.id);
       if (book.is_valid()) requote(ctx, inst.id, book, inst);
@@ -122,10 +122,19 @@ class BasicMM : public StrategyBase<BasicMMParams, ParamScope::PerInstrument> {
   template <class Ctx>
   void on_quoting(Ctx& ctx, bool enabled) noexcept {
     for (const Instrument& inst : ctx.instruments()) {
-      last_mid_[inst.id.value] = Price{};
+      forget_mid(ctx, inst.id);
       if (!enabled) continue;
       const auto& book = ctx.book(inst.id);
       if (book.is_valid()) requote(ctx, inst.id, book, inst);
+    }
+  }
+
+  // New parameters: the threshold the quiet bands were set with may have changed, so every book
+  // update reaches on_book until the next requote sets them again.
+  template <class Ctx>
+  void on_params(Ctx& ctx) noexcept {
+    for (const Instrument& inst : ctx.instruments()) {
+      if (last_mid_[inst.id.value].is_positive()) ctx.quiet_book(inst.id);
     }
   }
 
@@ -160,7 +169,19 @@ class BasicMM : public StrategyBase<BasicMMParams, ParamScope::PerInstrument> {
     keep_passive(q, book.best_bid().price, book.best_ask().price, inst.tick);
     fit_to_balance(ctx, id, inst, q);
     // Remember the mid only if the quotes were taken; while quoting is disabled they are ignored.
-    last_mid_[id.value] = ctx.set_quotes(id, q) ? mid : Price{};
+    if (!ctx.set_quotes(id, q)) {
+      forget_mid(ctx, id);
+      return;
+    }
+    last_mid_[id.value] = mid;
+    // Until the mid moves the threshold, on_book returns at once: the engine need not call it.
+    const Price thr = inst.ticks(params(id).requote_threshold_ticks);
+    ctx.quiet_book(id, mid - thr, mid + thr);
+  }
+  template <class Ctx>
+  void forget_mid(Ctx& ctx, InstrumentId id) noexcept {
+    last_mid_[id.value] = Price{};
+    ctx.quiet_book(id);
   }
 
   TimerId stale_timer_{};

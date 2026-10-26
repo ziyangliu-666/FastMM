@@ -182,10 +182,12 @@ OPTIONS:
   --duration <seconds>        synthetic horizon
   --journal-out <file>        record the session for fastmm-replay
   --sweep <key=v1,v2,...>     a parameter's values, every combination with the other --sweep
-                              keys run (repeatable); the points share each pass over
-                              recorded data (l2_queue)
+                              keys run (repeatable); under l2_queue and l3_queue the points
+                              share their passes over the data
   --threads <n>               --sweep: worker threads (default: every core)
   --solo                      --sweep: run every point as a backtest of its own
+  --verify <n>                --sweep: run this many points again as backtests of their own
+                              and compare the results, fill for fill
   --list-strategies           print registered strategies and their parameters
   --format <text|json>        output format of --list-strategies (default text)
 ```

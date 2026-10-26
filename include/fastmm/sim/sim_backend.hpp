@@ -33,7 +33,7 @@ struct SimBackend {
              const SimTransportConfig& cfg,
              Timestamp start,
              std::size_t feed_bytes = 1U << 18)
-      : clock(start), transport(clock, instruments, cfg), feed(feed_bytes) {}
+      : clock(start), transport(clock, instruments, cfg), feed(feed_bytes, false) {}
 
   template <StrategyLike S>
   std::unique_ptr<IEngineRunner> make_runner(RunnerDeps& deps) {

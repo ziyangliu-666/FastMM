@@ -587,4 +587,115 @@ bool BacktestResult::write_all(const std::string& dir) const {
          (treasury.pools == 0 || write_file(d / "transfers.csv", transfers_csv()));
 }
 
+namespace {
+
+// The first difference of two columns, or empty.
+template <class T>
+std::string column_difference(std::string_view name,
+                              const std::vector<T>& a,
+                              const std::vector<T>& b) {
+  const std::size_t n = std::min(a.size(), b.size());
+  for (std::size_t i = 0; i < n; ++i) {
+    if (!(a[i] == b[i])) return fmt::format("{}[{}]: {} vs {}", name, i, a[i], b[i]);
+  }
+  if (a.size() != b.size()) return fmt::format("{} rows: {} vs {}", name, a.size(), b.size());
+  return {};
+}
+
+template <class T>
+std::string value_difference(std::string_view name, const T& a, const T& b) {
+  if (a == b) return {};
+  return fmt::format("{}: {} vs {}", name, a, b);
+}
+
+}  // namespace
+
+std::string result_difference(const BacktestResult& a, const BacktestResult& b) {
+  std::string d;
+  const auto col = [&](std::string_view name, const auto& x, const auto& y) {
+    if (d.empty()) d = column_difference(name, x, y);
+  };
+  const auto val = [&](std::string_view name, const auto& x, const auto& y) {
+    if (d.empty()) d = value_difference(name, x, y);
+  };
+  col("orders.ts", a.orders.ts, b.orders.ts);
+  col("orders.venue_ts", a.orders.venue_ts, b.orders.venue_ts);
+  col("orders.trigger_ts", a.orders.trigger_ts, b.orders.trigger_ts);
+  col("orders.cl_ord_id", a.orders.cl_ord_id, b.orders.cl_ord_id);
+  col("orders.orig_cl_ord_id", a.orders.orig_cl_ord_id, b.orders.orig_cl_ord_id);
+  col("orders.instrument", a.orders.instrument, b.orders.instrument);
+  col("orders.side", a.orders.side, b.orders.side);
+  col("orders.price", a.orders.price, b.orders.price);
+  col("orders.qty", a.orders.qty, b.orders.qty);
+  col("orders.kind", a.orders.kind, b.orders.kind);
+  col("orders.type", a.orders.type, b.orders.type);
+  col("fills.ts", a.fills.ts, b.fills.ts);
+  col("fills.instrument", a.fills.instrument, b.fills.instrument);
+  col("fills.side", a.fills.side, b.fills.side);
+  col("fills.price", a.fills.price, b.fills.price);
+  col("fills.qty", a.fills.qty, b.fills.qty);
+  col("fills.fee", a.fills.fee, b.fills.fee);
+  col("fills.cl_ord_id", a.fills.cl_ord_id, b.fills.cl_ord_id);
+  col("fills.liquidity", a.fills.liquidity, b.fills.liquidity);
+  col("fills.mid", a.fills.mid, b.fills.mid);
+  col("fills.best_bid", a.fills.best_bid, b.fills.best_bid);
+  col("fills.best_ask", a.fills.best_ask, b.fills.best_ask);
+  col("fills.queue_ahead", a.fills.queue_ahead, b.fills.queue_ahead);
+  col("fills.markout_horizon_ns", a.fills.markout_horizon_ns, b.fills.markout_horizon_ns);
+  val("fills.markout_mid horizons", a.fills.markout_mid.size(), b.fills.markout_mid.size());
+  for (std::size_t h = 0; d.empty() && h < a.fills.markout_mid.size(); ++h)
+    col("fills.markout_mid", a.fills.markout_mid[h], b.fills.markout_mid[h]);
+  col("equity.ts", a.equity.ts, b.equity.ts);
+  col("equity.realized", a.equity.realized, b.equity.realized);
+  col("equity.unrealized", a.equity.unrealized, b.equity.unrealized);
+  col("equity.fees", a.equity.fees, b.equity.fees);
+  col("equity.position", a.equity.position, b.equity.position);
+  col("equity.mid", a.equity.mid, b.equity.mid);
+  col("equity.quoted", a.equity.quoted, b.equity.quoted);
+  val("equity instruments", a.equity.by_instrument.size(), b.equity.by_instrument.size());
+  for (std::size_t i = 0; d.empty() && i < a.equity.by_instrument.size(); ++i) {
+    const InstrumentEquityRows& x = a.equity.by_instrument[i];
+    const InstrumentEquityRows& y = b.equity.by_instrument[i];
+    col("equity.pnl_<id>", x.pnl, y.pnl);
+    col("equity.position_<id>", x.position, y.position);
+    col("equity.mid_<id>", x.mid, y.mid);
+    col("equity.quoted_<id>", x.quoted, y.quoted);
+  }
+  val("engine.events", a.engine.events, b.engine.events);
+  val("engine.book_updates", a.engine.book_updates, b.engine.book_updates);
+  val("engine.orders_sent", a.engine.orders_sent, b.engine.orders_sent);
+  val("engine.cancels_sent", a.engine.cancels_sent, b.engine.cancels_sent);
+  val("engine.replaces_sent", a.engine.replaces_sent, b.engine.replaces_sent);
+  val("engine.fills", a.engine.fills, b.engine.fills);
+  val("engine.risk_rejects", a.engine.risk_rejects, b.engine.risk_rejects);
+  val("engine.venue_rejects", a.engine.venue_rejects, b.engine.venue_rejects);
+  val("engine.timers_fired", a.engine.timers_fired, b.engine.timers_fired);
+  val("engine.realized_pnl_raw", a.engine.realized_pnl_raw, b.engine.realized_pnl_raw);
+  val("engine.unrealized_pnl_raw", a.engine.unrealized_pnl_raw, b.engine.unrealized_pnl_raw);
+  val("engine.fees_raw", a.engine.fees_raw, b.engine.fees_raw);
+  val("engine.funding_raw", a.engine.funding_raw, b.engine.funding_raw);
+  val("engine.kill_ts_ns", a.engine.kill_ts_ns, b.engine.kill_ts_ns);
+  val("transport.orders_sent", a.transport.orders_sent, b.transport.orders_sent);
+  val("transport.cancels_sent", a.transport.cancels_sent, b.transport.cancels_sent);
+  val("transport.replaces_sent", a.transport.replaces_sent, b.transport.replaces_sent);
+  val("transport.acks", a.transport.acks, b.transport.acks);
+  val("transport.rejects", a.transport.rejects, b.transport.rejects);
+  val("transport.fills", a.transport.fills, b.transport.fills);
+  val("transport.cross_fills", a.transport.cross_fills, b.transport.cross_fills);
+  val("transport.cancel_acks", a.transport.cancel_acks, b.transport.cancel_acks);
+  val("transport.cancel_rejects", a.transport.cancel_rejects, b.transport.cancel_rejects);
+  val("transport.expired", a.transport.expired, b.transport.expired);
+  val("transport.md_forwarded", a.transport.md_forwarded, b.transport.md_forwarded);
+  val("transport.md_delivered", a.transport.md_delivered, b.transport.md_delivered);
+  val("transport.own_tickers", a.transport.own_tickers, b.transport.own_tickers);
+  val("transport.l3_events", a.transport.l3_events, b.transport.l3_events);
+  val("md_events", a.md_events, b.md_events);
+  val("engine_steps", a.engine_steps, b.engine_steps);
+  val("start_ts", a.start_ts, b.start_ts);
+  val("end_ts", a.end_ts, b.end_ts);
+  val("outbound_messages", a.outbound_messages, b.outbound_messages);
+  val("outbound_sha256", a.outbound_sha256, b.outbound_sha256);
+  return d;
+}
+
 }  // namespace fastmm::bt

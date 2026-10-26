@@ -158,4 +158,12 @@ struct BacktestResult {
   [[nodiscard]] bool write_all(const std::string& dir) const;
 };
 
+// The first thing two results of one configuration differ in, as "field[row]: a vs b", or empty
+// when they are the same: every fill (time, instrument, side, price, quantity, fee, order id,
+// liquidity, the venue's book and queue at the fill, the mids at each markout horizon), every order
+// sent, every equity bar, the engine's and the venue's counts, positions and PnL, and the outbound
+// hash. Wall-clock figures are not compared. What a multiverse's run is checked against its own
+// backtest with (fastmm-backtest --verify, fastmm.sweep(verify=...)).
+[[nodiscard]] std::string result_difference(const BacktestResult& a, const BacktestResult& b);
+
 }  // namespace fastmm::bt

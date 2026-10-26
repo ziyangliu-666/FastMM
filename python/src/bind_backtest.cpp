@@ -644,6 +644,21 @@ void with_source_factory(const DataSpec& spec, const BacktestConfig& cfg, Body&&
 
 }  // namespace
 
+void with_sources(const py::object& data,
+                  const BacktestConfig& cfg,
+                  const std::function<void(const bt::SourceFactory&)>& body) {
+  const DataSpec spec = parse_data(data);
+  with_source_factory(spec, cfg, [&](const bt::SourceFactory& factory) {
+    if (factory) {
+      body(factory);
+      return;
+    }
+    body([&]() -> std::unique_ptr<bt::MdSource> {
+      return std::make_unique<bt::SyntheticSource>(bt::synthetic_source_config(cfg));
+    });
+  });
+}
+
 std::unique_ptr<sim::MdSource> open_md_source(const py::object& data,
                                               const InstrumentTable* instruments,
                                               std::vector<py::object>& keep) {
@@ -953,10 +968,9 @@ void bind_backtest(py::module_& m) {
       "Cartesian parameter sweep of a registered C++ strategy on a thread pool (GIL released). "
       "grid: {param: [values]}. Returns [(params, BacktestResult)] in grid order, first "
       "parameter varying slowest. Every worker opens its own cursor over `data` (same forms as "
-      "run_backtest). threads <= 0 uses every hardware thread. Under fill_model l2_queue the "
-      "points share their passes over the data, with the results each gives alone (backtest/"
-      "multiverse.hpp). fastmm.sweep also takes a "
-      "fastmm.Strategy class and runs its points in worker processes.");
+      "run_backtest). threads <= 0 uses every hardware thread. Under fill_model l2_queue or "
+      "l3_queue the points share their passes over the data, with the results each gives alone "
+      "(backtest/multiverse.hpp). fastmm.sweep also takes a fastmm.Strategy class.");
 
   m.def(
       "walk_forward",
@@ -1017,6 +1031,14 @@ void bind_backtest(py::module_& m) {
       },
       py::arg("grid"),
       "Internal: the points of a sweep grid in fastmm.sweep's order, with the caller's values.");
+
+  m.def(
+      "_result_difference",
+      [](const BacktestResult& a, const BacktestResult& b) { return bt::result_difference(a, b); },
+      py::arg("a"),
+      py::arg("b"),
+      "Internal: the first thing two results differ in (bt::result_difference), '' when none; "
+      "fastmm.sweep(verify=...) checks its points with it.");
   m.def("_shared_start",
         &bt::shared_start,
         py::arg("config"),

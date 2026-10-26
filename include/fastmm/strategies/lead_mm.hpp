@@ -138,6 +138,10 @@ class LeadMM : public StrategyBase<LeadMMParams> {
     pulled_ = false;
     for (Top& t : ticker_) t = Top{};
     stale_timer_ = ctx.every(milliseconds(100), kStaleTimer);
+    // The hooks ignore every other instrument's market data: the engine need not hand it over.
+    for (const Instrument& inst : ctx.instruments()) {
+      if (role(inst.id) < 0) ctx.watch(inst.id, false);
+    }
   }
 
   template <class Ctx, class Book>

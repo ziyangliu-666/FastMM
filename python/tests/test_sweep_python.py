@@ -152,3 +152,19 @@ def test_sweep_points_start_from_the_state_file_and_none_writes_it(example_confi
     assert path.read_bytes() == b"s0"
     fastmm.run_backtest(cfg, data="synthetic", strategy=_KeepsState)
     assert path.read_bytes() == b"s0+"
+
+
+def test_hot_class_points_share_passes_and_match_their_own_backtests(example_config):
+    pytest.importorskip("numba")
+    from basic_mm_hot import BasicMMHot
+
+    cfg = _short(example_config, 8)
+    cfg.fill_model = "l2_queue"
+    grid = {"half_spread_bps": [0.01, 0.02, 0.03], "skew_bps_per_unit": [0.0, 0.01]}
+    # verify: every point again as a backtest of its own, compared fill for fill.
+    hot = fastmm.sweep(cfg, grid, data="synthetic", strategy=BasicMMHot, threads=2, verify=6)
+    cpp = fastmm.sweep(cfg, grid, data="synthetic", strategy="basic_mm", verify=2)
+    assert _hashes(hot) == _hashes(cpp)
+    folds = fastmm.walk_forward(cfg, grid, folds=2, data="synthetic", strategy=BasicMMHot)
+    assert folds["table"] == fastmm.walk_forward(cfg, grid, folds=2, data="synthetic",
+                                                 strategy="basic_mm")["table"]

@@ -27,7 +27,7 @@ import re
 import time
 import types as pytypes
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 import llvmlite
 import llvmlite.binding as llvm
@@ -572,8 +572,27 @@ def run(config: Any, data: Any, instance: Any, name: str, spec: HotSpec, cache: 
     the slow tier, when there is one, is in `slow["error"]` (the exception) and `slow["failure"]`
     (the failure code) afterwards."""
     program = compiled(type(instance), spec, cache).program(instance)
-    result, error, calls, slow_error, failure, events = _core._run_hot_strategy(
-        config, data, name, dict(params), program, strategy_meta, slow)
+    out = _core._run_hot_strategy(config, data, name, dict(params), program, strategy_meta, slow)
+    return _outcome(type(instance), spec, cache, out, slow)
+
+
+def run_many(config: Any, data: Any, instances: Sequence[Any], name: str, spec: HotSpec,
+             cache: bool, params: Sequence[Mapping[str, str]], strategy_meta: str,
+             slows: Sequence[Optional[Dict[str, Any]]],
+             threads: int) -> List[Tuple[Any, Optional[Dict[str, Any]], int]]:
+    """run() of every instance in one pass over the data (bt::run_multiverse), each with the
+    result it gives alone. The fill model must be a queue model."""
+    hot = compiled(type(instances[0]), spec, cache)
+    outs = _core._sweep_hot_strategy(config, data, name, [dict(p) for p in params],
+                                     [hot.program(i) for i in instances], strategy_meta,
+                                     list(slows), threads)
+    return [_outcome(type(i), spec, cache, out, slow)
+            for i, out, slow in zip(instances, outs, slows)]
+
+
+def _outcome(cls: type, spec: HotSpec, cache: bool, out: Tuple[Any, ...],
+             slow: Optional[Dict[str, Any]]) -> Tuple[Any, Optional[Dict[str, Any]], int]:
+    result, error, calls, slow_error, failure, events = out
     if slow is not None:
         slow["error"] = slow_error
         slow["failure"] = failure
@@ -581,7 +600,7 @@ def run(config: Any, data: Any, instance: Any, name: str, spec: HotSpec, cache: 
     if error is None:
         return result, None, calls
     status, code, hook, timer, at_ns, events, kill_reason, symbol = error
-    hook_name = hook or compiled(type(instance), spec, cache).timer_names[timer]
+    hook_name = hook or compiled(cls, spec, cache).timer_names[timer]
     what = _WHAT.get(status, f"returned status {status}")
     if status == abi.FAILED:
         what = f"called ctx.fail({code})"

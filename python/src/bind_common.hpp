@@ -3,6 +3,7 @@
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -76,6 +77,23 @@ py::tuple run_hot_strategy(const bt::BacktestConfig& cfg,
                            const py::dict& program,
                            const std::string& metadata,
                            const py::object& slow);
+
+// The configurations' runs of a compiled hot strategy in multiverses (bind_hot.cpp): programs[i]
+// and slows[i] as run_hot_strategy's, for cfgs[i]. Returns the list of run_hot_strategy's tuples.
+py::list sweep_hot_strategy(const std::vector<bt::BacktestConfig>& cfgs,
+                            const py::object& data,
+                            const py::list& programs,
+                            const std::string& metadata,
+                            const py::list& slows,
+                            int threads);
+
+// Runs `body` with the GIL released and a factory of fresh cursors over `data` (the forms
+// run_backtest takes; None: the configuration's source, else the synthetic market as a stream).
+// Defined in bind_backtest.cpp.
+void with_sources(
+    const py::object& data,
+    const bt::BacktestConfig& cfg,
+    const std::function<void(const std::function<std::unique_ptr<sim::MdSource>()>&)>& body);
 
 // str / int / float / bool (and numpy scalars) -> the exact string form the C++ parameter
 // parser accepts. Throws TypeError / ValueError.

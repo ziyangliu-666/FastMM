@@ -88,6 +88,21 @@ class StrategyContext {
     e_->mark_decision();
     e_->pull_quotes(id);
   }
+
+  // ---- what the strategy watches
+  // ----------------------------------------------------------------- The engine calls the
+  // market-data hooks only for what the strategy watches, and needs no more: a multiverse hands an
+  // engine only the messages it needs (backtest/multiverse.hpp). Alone or there, a backtest gives
+  // the same result; declaring less only makes a sweep faster.
+  //
+  // watch(id, false): on_book, on_book_ticker, on_trade and on_option_ticker are not called for
+  // `id` until watch(id, true); ctx.book(id) stays current. Every instrument is watched at start.
+  void watch(InstrumentId id, bool on) noexcept { e_->watch(id, on); }
+  // on_book of `id` is called only once its mid is at or beyond `lo` or `hi`, or the book is not
+  // valid: a strategy that would return at once inside (lo, hi) says so. quiet_book(id): every
+  // update again.
+  void quiet_book(InstrumentId id, Price lo, Price hi) noexcept { e_->quiet_book(id, lo, hi); }
+  void quiet_book(InstrumentId id) noexcept { e_->quiet_book(id); }
   // Why the strategy asks what it asks on a side, for the operator: a short reason
   // ("inventory_cap", "model_off"; empty clears it, at most 23 bytes kept) and the budget it gave
   // the side in the settlement currency. The status file shows it next to what the engine finds

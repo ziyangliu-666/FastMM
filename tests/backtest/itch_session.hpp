@@ -1,28 +1,23 @@
-// The population (backtest/population.hpp) against the engine: every lane of a population over a
-// randomly generated TotalView-ITCH session gets the fills, positions, cash and fees that
-// run_backtest() gives its configuration alone.
-#include "fastmm/backtest/population.hpp"
-
+#pragma once
+// A random TotalView-ITCH session for tests: a few stocks whose orders join, improve, cancel,
+// replace and are executed against in price and time priority, now and then by a sweep through
+// several levels or at a price better than the one displayed; the displayed book never crosses.
 #include "backtest_test_util.hpp"
 #include "journal_builder.hpp"
 
-#include "fastmm/backtest/backtest_runner.hpp"
-#include "fastmm/backtest/data_registry.hpp"
 #include "fastmm/codecs/itch/itch_encoder.hpp"
-#include "fastmm/config/config.hpp"
 #include "fastmm/core/rng.hpp"
 
+#include <algorithm>
 #include <array>
-#include <cstdlib>
+#include <cstdint>
 #include <fstream>
 #include <map>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
-using namespace fastmm;
-using namespace fastmm::bt;
-
-namespace {
+namespace fastmm::bt::testutil {
 
 constexpr std::uint64_t kSecond = 1'000'000'000;
 
@@ -92,7 +87,7 @@ class SessionWriter {
   void put(F&& write) {
     std::array<std::byte, 64> buf{};
     const std::size_t n = write(std::span<std::byte>(buf));
-    REQUIRE(n > 0);
+    if (n == 0) throw std::runtime_error("itch session: message did not fit");
     bytes_.push_back(static_cast<char>((n >> 8U) & 0xFFU));
     bytes_.push_back(static_cast<char>(n & 0xFFU));
     bytes_.append(reinterpret_cast<const char*>(buf.data()), n);
@@ -245,209 +240,4 @@ class SessionWriter {
   std::uint64_t next_match_ = 1;
 };
 
-constexpr const char* kConfig = R"(
-[engine]
-name = "population-test"
-journal = false
-min_requote_ticks = 1
-min_requote_interval_ms = 0
-min_qty_bps = 8000
-post_only = true
-supports_replace = true
-
-[venues.nq]
-kind = "sim"
-supports_replace = true
-
-[venues.nq.fees]
-maker_bps = -0.2
-taker_bps = 0.3
-
-[[instruments]]
-venue = "nq"
-symbol = "AAAA"
-asset_class = "equity"
-tick = "0.01"
-lot = "1"
-min_qty = "1"
-
-[[instruments]]
-venue = "nq"
-symbol = "BBBB"
-asset_class = "equity"
-tick = "0.01"
-lot = "1"
-min_qty = "1"
-
-[strategy]
-name = "basic_mm"
-
-[strategy.params]
-half_spread_bps = 1
-skew_bps_per_unit = 0.5
-quote_qty = 100
-max_inventory = 300
-requote_threshold_ticks = 1
-pull_on_stale_ms = 0
-
-[risk]
-stp = true
-
-[backtest]
-fill_model = "l3_queue"
-latency_fixed_us = 50
-latency_jitter_us = 0
-own_orders_in_feed = false
-markout_horizons_s = ""
-)";
-
-struct Point {
-  const char* half;
-  const char* skew;
-  const char* qty;
-  const char* inv;
-  const char* thr;
-  std::int64_t lat_us;
-};
-
-BacktestConfig with(const BacktestConfig& base, const Point& p) {
-  BacktestConfig c = base;
-  c.params["half_spread_bps"] = p.half;
-  c.params["skew_bps_per_unit"] = p.skew;
-  c.params["quote_qty"] = p.qty;
-  c.params["max_inventory"] = p.inv;
-  c.params["requote_threshold_ticks"] = p.thr;
-  c.transport.order_out.fixed = microseconds(p.lat_us);
-  c.transport.ack_in.fixed = microseconds(p.lat_us);
-  c.output_dir.clear();
-  return c;
-}
-
-}  // namespace
-
-TEST_CASE("population: every lane trades as its configuration alone") {
-  register_builtin_data_sources();
-  const std::uint64_t from = (9 * 3600 + 30 * 60) * kSecond;
-  // FASTMM_POPULATION_SEED: another session (a local fuzz loop); CI runs seed 7.
-  const char* seed_env = std::getenv("FASTMM_POPULATION_SEED");
-  const std::uint64_t seed = seed_env != nullptr ? std::strtoull(seed_env, nullptr, 10) : 7;
-  const std::string path =
-      SessionWriter(seed).write("population_session.itch", from, from + 120 * kSecond);
-  const std::string cfg_path = testutil::tmp_path("population_test.toml");
-  std::ofstream(cfg_path) << kConfig;
-  const BacktestConfig base = BacktestConfig::from_config(Config::load(cfg_path));
-  REQUIRE(check_population(base).empty());
-  const std::string spec = "itch:" + path + ",date=2019-07-30,start=09:30";
-  const auto factory = [&]() { return open_data(spec, &base.instruments); };
-
-  std::vector<Point> points;
-  for (const char* half : {"0.25", "2", "6"})
-    for (const char* skew : {"0", "3"})
-      for (const char* qty : {"100", "300"})
-        for (const char* inv : {"300", "0"})
-          for (const char* thr : {"1", "2"})
-            for (const std::int64_t lat : {20, 400})
-              points.push_back({half, skew, qty, inv, thr, lat});
-  std::vector<LaneSpec> lanes;
-  for (const Point& p : points) lanes.push_back(lane_from_config(with(base, p)));
-
-  std::vector<std::vector<LaneFill>> fills;
-  PopulationStats st;
-  const std::vector<LaneResult> res = run_population(base, lanes, factory, 2, &st, &fills);
-  // The same lanes as lane_kernel.hpp runs them, each (lane, instrument) on its own over the tape.
-  std::unique_ptr<MdSource> tape_src = factory();
-  const Tape tape = compile_tape(base, *tape_src);
-  const std::size_t n_inst = base.instruments.size();
-  const std::vector<lk::Out> kout = run_tape(tape, lanes, 2);
-  REQUIRE(kout.size() == points.size() * n_inst);
-  REQUIRE(res.size() == points.size());
-
-  std::uint64_t total = 0;
-  std::uint64_t taker = 0;
-  std::uint64_t rejects = 0;
-  for (std::size_t i = 0; i < points.size(); ++i) {
-    CAPTURE(i);
-    std::unique_ptr<MdSource> src = factory();
-    const BacktestResult r = run_backtest(with(base, points[i]), "basic_mm", src.get());
-    const FillRows& f = r.fills;
-    const std::vector<LaneFill>& g = fills[i];
-    REQUIRE(f.size() == g.size());
-    Notional cash{};
-    Notional fee{};
-    std::vector<Qty> pos(base.instruments.size());
-    for (std::size_t j = 0; j < f.size(); ++j) {
-      CAPTURE(j);
-      CHECK(f.ts[j] == g[j].ts.ns);
-      CHECK(f.instrument[j] == g[j].instrument);
-      CHECK(f.side[j] == static_cast<std::int8_t>(g[j].side));
-      CHECK(f.price[j] == g[j].price.raw);
-      CHECK(f.qty[j] == g[j].qty.raw);
-      CHECK(f.liquidity[j] == static_cast<std::uint8_t>(g[j].liquidity));
-      const Price p = Price::from_raw(f.price[j]);
-      const Qty q = Qty::from_raw(f.qty[j]);
-      const Notional n = base.instruments.get(InstrumentId{f.instrument[j]}).notional(p, q);
-      cash = f.side[j] == 0 ? cash - n : cash + n;
-      fee = fee + Notional::from_raw(f.fee[j]);
-      pos[f.instrument[j]] += f.side[j] == 0 ? q : -q;
-    }
-    CHECK(cash == res[i].cash);
-    CHECK(fee == res[i].fees);
-    CHECK(pos == res[i].positions);
-    // The run's own decomposition of its fills, marked at the final mid (the engine's net PnL goes
-    // through an average cost rounded at every fill; the decomposition shows that as a residual).
-    CHECK(r.metrics.decomposition.net == doctest::Approx(res[i].net_pnl.to_double()).epsilon(1e-9));
-    CHECK(r.metrics.replaces == res[i].replaces);
-    // The kernel: each instrument's fills in order (hashed), cash, fees and position.
-    std::vector<std::uint64_t> hash(n_inst);
-    for (std::size_t j = 0; j < f.size(); ++j) {
-      std::uint64_t& h = hash[f.instrument[j]];
-      h = lk::mix(lk::mix(lk::mix(lk::mix(h, static_cast<std::uint64_t>(f.ts[j])),
-                                  static_cast<std::uint64_t>(f.side[j])),
-                          static_cast<std::uint64_t>(f.price[j])),
-                  static_cast<std::uint64_t>(f.qty[j]));
-    }
-    Notional kcash{};
-    Notional kfee{};
-    std::uint64_t kreplaces = 0;
-    for (std::size_t k = 0; k < n_inst; ++k) {
-      const lk::Out& o = kout[i * n_inst + k];
-      CAPTURE(k);
-      CHECK(o.error == 0);
-      CHECK(o.fill_hash == hash[k]);
-      CHECK(o.position == pos[k].raw);
-      kcash = kcash + Notional::from_raw(o.cash);
-      kfee = kfee + Notional::from_raw(o.fees);
-      kreplaces += o.replaces;
-    }
-    CHECK(kcash == cash);
-    CHECK(kfee == fee);
-    CHECK(kreplaces == res[i].replaces);
-    total += f.size();
-    taker += res[i].taker_fills;
-    rejects += res[i].venue_rejects + res[i].risk_rejects;
-  }
-  // Seed 7's session exercises the paths: fills, taker fills of a replace, rejects.
-  if (seed == 7) {
-    CHECK(total > 2000);
-    CHECK(taker > 0);
-    CHECK(rejects > 0);
-  }
-}
-
-TEST_CASE("population: configurations outside its scope are refused") {
-  const std::string cfg_path = testutil::tmp_path("population_scope.toml");
-  std::ofstream(cfg_path) << kConfig;
-  BacktestConfig c = BacktestConfig::from_config(Config::load(cfg_path));
-  CHECK(check_population(c).empty());
-  BacktestConfig j = c;
-  j.transport.order_out.jitter = microseconds(10);
-  CHECK_FALSE(check_population(j).empty());
-  BacktestConfig l2 = c;
-  l2.transport.fill_model = sim::FillModel::L2Queue;
-  CHECK_FALSE(check_population(l2).empty());
-  BacktestConfig own = c;
-  own.transport.own_orders_in_feed = true;
-  CHECK_FALSE(check_population(own).empty());
-  const std::vector<LaneSpec> lanes{lane_from_config(j)};
-  CHECK_THROWS_AS(static_cast<void>(run_population(j, lanes, nullptr)), std::invalid_argument);
-}
+}  // namespace fastmm::bt::testutil

@@ -52,19 +52,36 @@ class BacktestSession {
                      IEngineRunner* runner,
                      std::string_view strategy_name);
 
-  // run() in steps, for a multiverse (multiverse.hpp), whose runs share the recorded events:
-  // begin(hooks, runner, true) leaves the source to the caller, which for each recorded event calls
-  // advance_before(event time) (false: this run is over), then world_event(event) after the shared
-  // SimWorld took its half; end() runs what is left and returns what run() would have.
-  // begin(.., false) + end() is run().
-  void begin(const sim::EngineHooks& hooks, IEngineRunner* runner, bool world);
-  bool advance_before(Timestamp t);
+  // run() in steps, for a multiverse (multiverse.hpp), whose runs share the recorded events and
+  // the market data forwarded from them: begin(hooks, runner, &next) leaves the source to the
+  // caller, which keeps `next` at the venue time of the next recorded event (Timestamp::max() when
+  // there is none) and for each event its runs share calls advance_before(the event's key) (false:
+  // this run is over), then hands it the event: world_event() (or its halves) for a recorded event
+  // after the shared SimWorld took its half, shared_market_data() for market data at its arrival.
+  // end() runs what is left and returns what run() would have. begin(.., nullptr) + end() is run().
+  void begin(const sim::EngineHooks& hooks, IEngineRunner* runner, const Timestamp* world);
+  bool advance_before(sim::SimKey k);
   void world_event(const EventHeader& md) noexcept;
+  void world_venue_event(const EventHeader& md) noexcept;
+  void world_feed_event(const EventHeader& md) noexcept;
+  void shared_market_data(const EventHeader& md) noexcept;
+  // The key of this run's own next event or stop (equity bar, markout); never() once it is over.
+  [[nodiscard]] sim::SimKey next_key();
+  // After shared_market_data(): the earliest event the engine's step added (SimDriver::step_key).
+  [[nodiscard]] sim::SimKey step_key();
+  // The clock at the last event the run shared (which it may not have had to take).
+  void reach(Timestamp t) noexcept;
+  // Market data the multiverse did not hand the run, which its engine did not need
+  // (SimDriver::credit_market_data).
+  void credit_market_data(std::uint64_t n) noexcept;
+  // The engine asked to stop: the run takes no further event.
+  [[nodiscard]] bool stopped() const noexcept;
   BacktestResult end(std::string_view strategy_name);
 
  private:
   struct Loop;
-  bool advance(Timestamp limit);
+  bool advance(sim::SimKey limit);
+  [[nodiscard]] Timestamp next_stop() const noexcept;
   std::unique_ptr<Loop> loop_;
   struct Impl;
   BacktestConfig cfg_;

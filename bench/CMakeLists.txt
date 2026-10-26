@@ -72,9 +72,10 @@ fastmm_target_defaults(fastmm-bench-queue-truth)
 target_link_libraries(fastmm-bench-queue-truth PRIVATE fastmm::core)
 set_target_properties(fastmm-bench-queue-truth PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin/bench)
 
-# A population of basic_mm variants over one pass of order-by-order data, against the engine run
-# once per variant (--check compares them exactly). Needs an ITCH file, so it has no smoke test.
-add_executable(fastmm-bench-population population.cpp)
-fastmm_target_defaults(fastmm-bench-population)
-target_link_libraries(fastmm-bench-population PRIVATE fastmm::backtest)
-set_target_properties(fastmm-bench-population PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin/bench)
+# Variants of a strategy over one pass of recorded data (bt::run_multiverse) against the same
+# variants as separate backtests (--check compares them exactly). Needs recorded data.
+add_executable(fastmm-bench-multiverse multiverse.cpp)
+fastmm_target_defaults(fastmm-bench-multiverse)
+target_link_libraries(fastmm-bench-multiverse PRIVATE fastmm::backtest)
+set_target_properties(fastmm-bench-multiverse PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin/bench)
+

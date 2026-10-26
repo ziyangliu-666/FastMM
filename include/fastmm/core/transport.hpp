@@ -144,7 +144,8 @@ class RingFeed {
 // Engine::step(). Backed by an owned MsgRing (no allocation after construction).
 class InlineFeed {
  public:
-  explicit InlineFeed(std::size_t bytes = 1U << 22) : ring_(bytes) {}
+  explicit InlineFeed(std::size_t bytes = 1U << 22, bool prefault = true)
+      : ring_(bytes, prefault) {}
   // Copies the message; false if the queue is full.
   [[nodiscard]] bool push(const EventHeader& m) noexcept { return ring_.try_push(&m, m.len); }
   // In-place construction: reserve, fill, commit.

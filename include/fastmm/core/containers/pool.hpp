@@ -1,8 +1,9 @@
 #pragma once
-// Pool<T, N>: fixed-size object pool handing out 32-bit Handle<T> indices. Free slots form
-// an intrusive singly-linked list threaded through the slot storage itself, so allocate
-// and free are O(1) with no extra memory beyond a liveness bitmap (used for assertions and
-// deterministic handle-order iteration).
+// Pool<T, N>: fixed-size object pool handing out 32-bit Handle<T> indices. Freed slots form
+// an intrusive singly-linked list threaded through the slot storage itself, taken first, then
+// the slots never used, in index order; so allocate and free are O(1) with no extra memory beyond
+// a liveness bitmap (used for assertions and deterministic handle-order iteration), and a slot
+// is not touched before it is first used (warm_up() touches them all).
 //
 // T must be trivially copyable (slots are reused via a union).
 #include "fastmm/core/config_macros.hpp"
@@ -29,31 +30,32 @@ class Pool {
   Pool& operator=(const Pool&) = delete;
 
   void reset() noexcept {
-    for (std::size_t i = 0; i < N; ++i) slots_[i].next_free = static_cast<std::uint32_t>(i + 1);
-    slots_[N - 1].next_free = kNullHandle;
     for (std::size_t w = 0; w < kWords; ++w) live_[w] = 0;
-    free_head_ = 0;
+    free_head_ = kNullHandle;
+    unused_ = 0;
     size_ = 0;
   }
 
-  // Touches every slot so the pages are resident before the hot loop starts.
+  // Touches every slot never used so the pages are resident before the hot loop starts.
   void warm_up() noexcept {
-    for (std::size_t i = 0; i < N; ++i) {
-      volatile std::uint32_t sink = slots_[i].next_free;
-      static_cast<void>(sink);
-    }
+    for (std::size_t i = unused_; i < N; ++i) slots_[i].next_free = 0;
   }
 
   [[nodiscard]] std::size_t size() const noexcept { return size_; }
   [[nodiscard]] static constexpr std::size_t capacity() noexcept { return N; }
-  [[nodiscard]] bool full() const noexcept { return free_head_ == kNullHandle; }
+  [[nodiscard]] bool full() const noexcept { return size_ == N; }
 
   // Returns a null handle when exhausted. The slot contents are indeterminate; callers
   // assign a fully initialised T.
   [[nodiscard]] FASTMM_FORCE_INLINE handle_type allocate() noexcept {
-    const std::uint32_t h = free_head_;
-    if (FASTMM_UNLIKELY(h == kNullHandle)) return handle_type{};
-    free_head_ = slots_[h].next_free;
+    std::uint32_t h = free_head_;
+    if (h != kNullHandle) {
+      free_head_ = slots_[h].next_free;
+    } else if (FASTMM_LIKELY(unused_ < N)) {
+      h = unused_++;
+    } else {
+      return handle_type{};
+    }
     live_[h / 64] |= (1ULL << (h % 64));
     ++size_;
     return handle_type{h};
@@ -122,12 +124,13 @@ class Pool {
   union Slot {
     T obj;
     std::uint32_t next_free;
-    Slot() noexcept : next_free(0) {}
+    Slot() noexcept {}  // NOLINT(modernize-use-equals-default): leaves the slot untouched
   };
 
   std::unique_ptr<Slot[]> slots_;
   std::unique_ptr<std::uint64_t[]> live_;
-  std::uint32_t free_head_ = 0;
+  std::uint32_t free_head_ = kNullHandle;
+  std::uint32_t unused_ = 0;  // slots [unused_, N) were never handed out
   std::size_t size_ = 0;
 };
 

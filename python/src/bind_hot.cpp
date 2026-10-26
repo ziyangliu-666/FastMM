@@ -8,6 +8,7 @@
 
 #include "fastmm/backtest/backtest_config.hpp"
 #include "fastmm/backtest/backtest_runner.hpp"
+#include "fastmm/backtest/multiverse.hpp"
 #include "fastmm/backtest/replay.hpp"
 #include "fastmm/backtest/result.hpp"
 #include "fastmm/core/config_macros.hpp"
@@ -167,28 +168,72 @@ Timestamp run_slow(void* ctx, Timestamp now) {
 
 }  // namespace
 
-py::tuple run_hot_strategy(const bt::BacktestConfig& cfg,
-                           sim::MdSource* source,
-                           const py::dict& program,
-                           const std::string& strategy_meta,
-                           const py::object& slow) {
-  const HotProgram p = py_hot::program_from(program, true);
-  const HotParamTable table(py_hot::param_fields_from(program), p.param_bytes);
-  bt::BacktestSession session(cfg, source, &table.schema(), strategy_meta);
-  std::unique_ptr<IEngineRunner> runner =
-      session.backend().template make_runner<HotStrategy>(session.deps());
-  auto* er = static_cast<EngineRunner<HotSimEngine, HotStrategy>*>(runner.get());
-  HotStrategy& strategy = er->strategy();
-  if (!strategy.attach(p, er->engine().instruments())) {
-    throw py::value_error("fastmm: invalid hot program (record smaller than its parameter block)");
-  }
+namespace {
 
-  // The slow tier: a channel, parameter updates at simulated times and the runner's wake-ups.
+// One backtest of a compiled hot strategy, built and run alone or as a run of a multiverse. The
+// program and parameter table are read from Python with the GIL held (prepare()); build() makes
+// the session and engine (the slow tier's start takes the GIL itself) and outcome() reads the
+// strategy's failure once the run is over.
+struct HotRun {
+  HotProgram program;
+  std::unique_ptr<HotParamTable> table;
+  std::string meta;
+  py::object slow;  // None, or the slow tier's settings and runner (GIL)
+  std::unique_ptr<bt::BacktestSession> session;
+  std::unique_ptr<IEngineRunner> runner;
+  HotStrategy* strategy = nullptr;
+  HotSimEngine* engine = nullptr;
   sim::ParamSchedule schedule;
   std::shared_ptr<SlowChannel> channel;
   SlowRun slow_run;
-  slow_run.error = py::none();
-  if (!slow.is_none()) {
+  sim::EngineHooks hooks{};
+  // What end() leaves of the run once it is over (the engine may be gone by outcome()).
+  bool failed = false;
+  HotError fail{};
+  KillReason kill = KillReason::None;
+  std::uint64_t calls = 0;
+  std::uint64_t events = 0;
+  int slow_failure = 0;
+
+  HotRun(const py::dict& prog, std::string metadata, py::object slow_settings)
+      : program(py_hot::program_from(prog, true)),
+        table(
+            std::make_unique<HotParamTable>(py_hot::param_fields_from(prog), program.param_bytes)),
+        meta(std::move(metadata)),
+        slow(std::move(slow_settings)) {
+    slow_run.error = py::none();
+  }
+
+  // GIL released; takes it for the slow tier's start.
+  void build(const bt::BacktestConfig& cfg, sim::MdSource* source) {
+    session = std::make_unique<bt::BacktestSession>(cfg, source, &table->schema(), meta);
+    runner = session->backend().template make_runner<HotStrategy>(session->deps());
+    auto* er = static_cast<EngineRunner<HotSimEngine, HotStrategy>*>(runner.get());
+    strategy = &er->strategy();
+    engine = &er->engine();
+    if (!strategy->attach(program, engine->instruments())) {
+      throw py::value_error(
+          "fastmm: invalid hot program (record smaller than its parameter block)");
+    }
+    bool has_slow = false;
+    {
+      const py::gil_scoped_acquire gil;
+      has_slow = !slow.is_none();
+      if (has_slow) start_slow(cfg);
+    }
+    static_cast<void>(has_slow);
+    hooks = session->backend().hooks;
+    hooks.stopped = [](void* c) {
+      auto* e = static_cast<HotSimEngine*>(c);
+      if (FASTMM_UNLIKELY(g_hot_watch.load(std::memory_order_relaxed)))
+        g_hot_calls.store(e->strategy().calls(), std::memory_order_relaxed);
+      return e->stopped() || e->strategy().slow_failed();
+    };
+    strategy->warm_up(engine->instruments());
+  }
+
+  // The slow tier: a channel, parameter updates at simulated times and the runner's wake-ups.
+  void start_slow(const bt::BacktestConfig& cfg) {
     const auto s = slow.cast<py::dict>();
     SlowChannelConfig cc;
     cc.instruments = cfg.instruments.size();
@@ -200,69 +245,160 @@ py::tuple run_hot_strategy(const bt::BacktestConfig& cfg,
     cc.recent_rows = s["recent_rows"].cast<std::size_t>();
     cc.snapshot_interval = Duration{s["snapshot_interval_ns"].cast<std::int64_t>()};
     channel = std::make_shared<SlowChannel>(cc);
-    if (!strategy.attach_slow(channel.get()))
+    if (!strategy->attach_slow(channel.get()))
       throw py::value_error("fastmm: the slow channel is smaller than the instrument table");
     schedule.set_delay(Duration{s["delay_ns"].cast<std::int64_t>()});
-    channel->set_param_sink(schedule.threaded_sink(session.backend().clock));
-    session.set_param_schedule(&schedule);
+    channel->set_param_sink(schedule.threaded_sink(session->backend().clock));
+    session->set_param_schedule(&schedule);
     slow_run.runner = s["runner"];
     slow_run.channel = channel.get();
     CoreSlowChannel wrapper{
         channel, symbols_of(cfg.instruments), std::vector<std::uint64_t>(cc.instruments, 0)};
     const auto first =
         slow_run.runner
-            .attr("start")(py::cast(std::move(wrapper)), session.backend().clock.now().ns)
+            .attr("start")(py::cast(std::move(wrapper)), session->backend().clock.now().ns)
             .cast<std::int64_t>();
     sim::SlowHooks sh;
     sh.ctx = &slow_run;
     sh.run = &run_slow;
     sh.first = first < 0 ? Timestamp::max() : Timestamp{first};
-    session.set_slow_hooks(sh);
+    session->set_slow_hooks(sh);
   }
 
-  sim::EngineHooks hooks = session.backend().hooks;
-  hooks.stopped = [](void* c) {
-    auto* e = static_cast<HotSimEngine*>(c);
-    if (FASTMM_UNLIKELY(g_hot_watch.load(std::memory_order_relaxed)))
-      g_hot_calls.store(e->strategy().calls(), std::memory_order_relaxed);
-    return e->stopped() || e->strategy().slow_failed();
-  };
+  // The run is over: what outcome() reports, read while the engine is there.
+  void end() {
+    if (channel) {
+      channel->close();
+      slow_failure = static_cast<int>(channel->failure());
+    }
+    failed = strategy->failed();
+    if (failed) fail = strategy->error();
+    kill = engine->kill_reason();
+    calls = strategy->calls();
+    events = engine->stats().events;
+  }
+  // (result, error, hook calls, slow error, slow failure, engine events), as run_hot_strategy.
+  py::tuple outcome(std::shared_ptr<bt::BacktestResult> result) const {
+    py::object err = py::none();
+    if (failed) {
+      err = py::make_tuple(
+          fail.status,
+          fail.fail_code,
+          fail.hook >= 0 ? std::string(to_string(static_cast<HotHook>(fail.hook))) : std::string(),
+          fail.timer,
+          fail.at.ns,
+          events,
+          std::string(to_string(kill)),
+          std::string(fail.symbol.view()));
+    }
+    return py::make_tuple(std::move(result), err, calls, slow_run.error, slow_failure, events);
+  }
+};
+
+// While a hot backtest runs (for _hot_hold_gil).
+struct Running {
+  Running() { g_hot_running.store(1, std::memory_order_relaxed); }
+  Running(const Running&) = delete;
+  Running& operator=(const Running&) = delete;
+  Running(Running&&) = delete;
+  Running& operator=(Running&&) = delete;
+  ~Running() { g_hot_running.store(0, std::memory_order_relaxed); }
+};
+
+}  // namespace
+
+py::tuple run_hot_strategy(const bt::BacktestConfig& cfg,
+                           sim::MdSource* source,
+                           const py::dict& program,
+                           const std::string& strategy_meta,
+                           const py::object& slow) {
+  HotRun run(program, strategy_meta, slow);
   std::shared_ptr<bt::BacktestResult> result;
   {
     const py::gil_scoped_release release;
-    strategy.warm_up(er->engine().instruments());
+    run.build(cfg, source);
     g_hot_calls.store(0, std::memory_order_relaxed);
-    g_hot_running.store(1, std::memory_order_relaxed);
-    struct Running {
-      Running() = default;
-      Running(const Running&) = delete;
-      Running& operator=(const Running&) = delete;
-      Running(Running&&) = delete;
-      Running& operator=(Running&&) = delete;
-      ~Running() { g_hot_running.store(0, std::memory_order_relaxed); }
-    } const running;
-    result = std::make_shared<bt::BacktestResult>(session.run(hooks, runner.get(), cfg.strategy));
+    const Running running;
+    result = std::make_shared<bt::BacktestResult>(
+        run.session->run(run.hooks, run.runner.get(), cfg.strategy));
+    run.end();
   }
-  if (channel) channel->close();
-  py::object error = py::none();
-  if (strategy.failed()) {
-    const HotError& e = strategy.error();
-    error = py::make_tuple(
-        e.status,
-        e.fail_code,
-        e.hook >= 0 ? std::string(to_string(static_cast<HotHook>(e.hook))) : std::string(),
-        e.timer,
-        e.at.ns,
-        er->engine().stats().events,
-        std::string(to_string(er->engine().kill_reason())),
-        std::string(e.symbol.view()));
+  return run.outcome(std::move(result));
+}
+
+py::list sweep_hot_strategy(const std::vector<bt::BacktestConfig>& cfgs,
+                            const py::object& data,
+                            const py::list& programs,
+                            const std::string& strategy_meta,
+                            const py::list& slows,
+                            int threads) {
+  std::vector<std::unique_ptr<HotRun>> runs;
+  for (std::size_t i = 0; i < cfgs.size(); ++i) {
+    runs.push_back(std::make_unique<HotRun>(
+        programs[i].cast<py::dict>(), strategy_meta, py::reinterpret_borrow<py::object>(slows[i])));
   }
-  const int failure = channel ? static_cast<int>(channel->failure()) : 0;
-  return py::make_tuple(
-      result, error, strategy.calls(), slow_run.error, failure, er->engine().stats().events);
+  std::vector<bt::BacktestResult> results;
+  with_sources(data, cfgs.front(), [&](const bt::SourceFactory& factory) {
+    const Running running;
+    results = bt::run_multiverse(
+        cfgs,
+        [&](std::size_t i, const bt::BacktestConfig& cfg, sim::MdSource& source) {
+          HotRun& r = *runs[i];
+          r.build(cfg, &source);
+          bt::MultiverseRun out;
+          out.session = std::move(r.session);
+          out.runner = std::move(r.runner);
+          out.hooks = r.hooks;
+          out.strategy_name = cfg.strategy;
+          out.on_end = [&r] { r.end(); };
+          return out;
+        },
+        factory,
+        threads);
+  });
+  py::list out;
+  for (std::size_t i = 0; i < runs.size(); ++i)
+    out.append(runs[i]->outcome(std::make_shared<bt::BacktestResult>(std::move(results[i]))));
+  return out;
 }
 
 void bind_hot(py::module_& m) {
+  m.def(
+      "_sweep_hot_strategy",
+      [](const bt::BacktestConfig& config,
+         const py::object& data,
+         const std::string& name,
+         const py::list& params,
+         const py::list& programs,
+         const std::string& metadata,
+         const py::list& slows,
+         int threads) {
+        if (params.size() != programs.size() || params.size() != slows.size())
+          throw py::value_error("_sweep_hot_strategy: one program and one slow tier per point");
+        std::vector<bt::BacktestConfig> cfgs;
+        for (const py::handle p : params) {
+          bt::BacktestConfig cfg = config;
+          cfg.strategy = name;
+          cfg.params.clear();
+          for (const auto& [k, v] : p.cast<py::dict>())
+            cfg.params[py::str(k).cast<std::string>()] = py::str(v).cast<std::string>();
+          cfgs.push_back(std::move(cfg));
+        }
+        if (cfgs.empty()) return py::list();
+        return sweep_hot_strategy(cfgs, data, programs, metadata, slows, threads);
+      },
+      py::arg("config"),
+      py::arg("data"),
+      py::arg("name"),
+      py::arg("params"),
+      py::arg("programs"),
+      py::arg("metadata"),
+      py::arg("slows"),
+      py::arg("threads") = 0,
+      "Internal: the points of a sweep of a compiled hot strategy in multiverses (one pass over "
+      "the data per batch of points, backtest/multiverse.hpp); fastmm.sweep and walk_forward use "
+      "it under the queue fill models.");
+
   m.def(
       "_hot_abi",
       [] {

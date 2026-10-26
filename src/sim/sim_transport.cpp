@@ -11,12 +11,10 @@ namespace fastmm::sim {
 
 namespace {
 
-FixedString<40> decimal_id(std::uint64_t v) noexcept {
-  char buf[24];
-  const auto r = std::to_chars(buf, buf + sizeof buf, v);
-  FixedString<40> s;
-  s.assign(std::string_view(buf, static_cast<std::size_t>(r.ptr - buf)));
-  return s;
+// `v` in decimal into `out`, a zero-initialised message field (its tail stays zero).
+void put_decimal(FixedString<40>& out, std::uint64_t v) noexcept {
+  const auto r = std::to_chars(out.data(), out.data() + FixedString<40>::kCapacity, v);
+  out.set_size(static_cast<std::size_t>(r.ptr - out.data()));
 }
 
 Timestamp venue_time(const EventHeader& h) noexcept {
@@ -40,7 +38,9 @@ SimTransport::SimTransport(const SimClock& clock,
     : clock_(clock),
       instruments_(instruments),
       cfg_(cfg),
-      me_(instruments.size(), this),
+      me_(cfg.fill_model == FillModel::Matching
+              ? std::make_unique<MatchingEngine>(instruments.size(), this)
+              : nullptr),
       own_world_(std::make_unique<SimWorld>(instruments.size())),
       world_(own_world_.get()),
       mirror_(world_->books()),
@@ -100,19 +100,14 @@ SimTransport::SimTransport(const SimClock& clock,
     own_pending_.reserve(n);
     own_buf_ = std::make_unique<EventBuf>();
   }
-  me_.set_stp(kStrategyAccount, cfg.stp);
+  if (me_ != nullptr) me_->set_stp(kStrategyAccount, cfg.stp);
   for (Link*& l : link_of_inst_) l = &at(0);
   for (const Instrument& i : instruments) {
     const VenueId v = venue_of(i);
     link_of_inst_[i.id.value] = &at(index_of[v.value]);
-    me_.set_stp(kStrategyAccount, i.id, cfg.venue_config(v).stp);
+    if (me_ != nullptr) me_->set_stp(kStrategyAccount, i.id, cfg.venue_config(v).stp);
   }
-  if (cfg.fill_model == FillModel::L3Queue) {
-    own_world_->set_tape_trades(false);
-    l3_orders_.resize(instruments.size());
-    l3_levels_[0].resize(instruments.size());
-    l3_levels_[1].resize(instruments.size());
-  }
+  if (cfg.fill_model == FillModel::L3Queue) own_world_->set_l3(true);
 }
 
 bool SimTransport::venue_budget(VenueId v, OrderBudget& out) const noexcept {
@@ -140,7 +135,7 @@ LatencyModel& SimTransport::latency(VenueId v) noexcept {
 void SimTransport::enable_aggregator(Timestamp start) noexcept {
   MdAggregatorConfig mc = cfg_.md;
   mc.venue = link(InstrumentId{0}).id;
-  agg_ = std::make_unique<MdAggregator>(instruments_.size(), me_, mc, start);
+  agg_ = std::make_unique<MdAggregator>(instruments_.size(), *me_, mc, start);
   own_feed_.reset();  // the aggregated book holds our orders
   own_pending_.clear();
 }
@@ -252,7 +247,19 @@ void SimTransport::process_order_arrival() noexcept {
     default:
       break;
   }
+  if (watch_ != nullptr) note_crossed(h->instrument);
   if (own_feed_ != nullptr) flush_own(now);
+}
+
+void SimTransport::note_crossed(InstrumentId id) noexcept {
+  if (id.value >= crossed_seen_.size()) return;
+  bool any = false;
+  queue_.for_each(id, [&](QueuePositionModel::Handle32, const QueuedOrder& o) {
+    any = any || o.crossed.is_positive();
+  });
+  if (static_cast<std::uint8_t>(any) == crossed_seen_[id.value]) return;
+  crossed_seen_[id.value] = static_cast<std::uint8_t>(any);
+  watch_->on_crossed(watch_run_, id, any);
 }
 
 void SimTransport::venue_new(const OutNewOrderMsg& m, Timestamp now) noexcept {
@@ -292,7 +299,7 @@ void SimTransport::venue_new(const OutNewOrderMsg& m, Timestamp now) noexcept {
   if (queue_mode()) {
     queue_new(n, now);
   } else {
-    static_cast<void>(me_.submit(n, now));  // effects arrive through the sink
+    static_cast<void>(me_->submit(n, now));  // effects arrive through the sink
   }
 }
 
@@ -303,7 +310,7 @@ void SimTransport::venue_cancel(const OutCancelMsg& m, Timestamp now) noexcept {
   if (queue_mode()) {
     queue_cancel(m.cl_ord_id, m.hdr.instrument, now);
   } else {
-    static_cast<void>(me_.cancel(kStrategyAccount, m.cl_ord_id, now));
+    static_cast<void>(me_->cancel(kStrategyAccount, m.cl_ord_id, now));
   }
 }
 
@@ -318,7 +325,7 @@ void SimTransport::venue_replace(const OutReplaceMsg& m, Timestamp now) noexcept
     if (queue_mode()) {
       queue_cancel(m.orig_cl_ord_id, m.hdr.instrument, now);
     } else {
-      static_cast<void>(me_.cancel(kStrategyAccount, m.orig_cl_ord_id, now));
+      static_cast<void>(me_->cancel(kStrategyAccount, m.orig_cl_ord_id, now));
     }
     if (closed) {
       emit_reject(m.cl_ord_id, m.hdr.instrument, RejectReason::VenueReject, now, kReduceOnlyCode);
@@ -331,7 +338,7 @@ void SimTransport::venue_replace(const OutReplaceMsg& m, Timestamp now) noexcept
     queue_replace(m, now);
   } else {
     static_cast<void>(
-        me_.replace(kStrategyAccount, m.orig_cl_ord_id, m.cl_ord_id, m.price, m.qty, now));
+        me_->replace(kStrategyAccount, m.orig_cl_ord_id, m.cl_ord_id, m.price, m.qty, now));
   }
 }
 
@@ -349,7 +356,7 @@ Price SimTransport::sweep_price(InstrumentId id, Side side, Qty qty, Timestamp n
   if (queue_mode()) {
     for_each_venue_level(mirror_[id.value], touch_[id.value], opp, now, take);
   } else {
-    const SimBook::Levels& levels = me_.book(id).levels(opp);
+    const SimBook::Levels& levels = me_->book(id).levels(opp);
     for (std::size_t i = levels.size(); i > 0; --i) {
       if (!take(Level{levels[i - 1].price, levels[i - 1].qty})) break;
     }
@@ -431,6 +438,106 @@ SimWorld::SimWorld(std::size_t instruments)
   changes_.reserve(std::size_t{2} * 256);
 }
 
+void SimWorld::set_l3(bool v) {
+  tape_trades_ = !v;
+  l3_orders_.clear();
+  l3_levels_[0].clear();
+  l3_levels_[1].clear();
+  if (!v) return;
+  l3_orders_.resize(n_);
+  l3_levels_[0].resize(n_);
+  l3_levels_[1].resize(n_);
+}
+
+Qty SimWorld::l3_level(InstrumentId id, Side side, Price px) const noexcept {
+  if (id.value >= l3_orders_.size()) return Qty{};
+  const auto& lv = l3_levels_[static_cast<std::size_t>(side)][id.value];
+  const auto it = lv.find(px.raw);
+  return it == lv.end() ? Qty{} : it->second;
+}
+
+void SimWorld::l3_level_add(InstrumentId id, Side side, Price px, Qty q, bool add) noexcept {
+  auto& lv = l3_levels_[static_cast<std::size_t>(side)][id.value];
+  Qty& level = lv[px.raw];
+  if (add) {
+    level += q;
+  } else if (level > q) {
+    level -= q;
+  } else {
+    lv.erase(px.raw);
+  }
+}
+
+void SimWorld::l3_take(InstrumentId id, std::uint64_t ref, Qty q) noexcept {
+  auto& orders = l3_orders_[id.value];
+  const auto it = orders.find(ref);
+  if (it == orders.end()) {
+    ++l3_unknown_;
+    return;
+  }
+  L3Order& o = it->second;
+  if (q.is_zero() || q > o.qty) q = o.qty;
+  l3_change_ = L3Change{L3Change::Kind::Cancel, o.side, o.price, Price{}, q, o.prio};
+  l3_level_add(id, o.side, o.price, q, false);
+  o.qty -= q;
+  if (o.qty.is_zero()) orders.erase(it);
+}
+
+void SimWorld::l3_before(const EventHeader& md) noexcept {
+  const InstrumentId id = md.instrument;
+  l3_change_ = L3Change{};
+  if (id.value >= l3_orders_.size()) return;
+  auto& orders = l3_orders_[id.value];
+  ++l3_events_;
+  switch (md.type) {
+    case EventType::OrderAddL3: {
+      const auto& m = msg_cast<OrderAddL3Msg>(&md);
+      if (!m.qty.is_positive()) return;
+      orders[m.order_ref] = L3Order{++l3_arrivals_ << kPrioShift, m.price, m.qty, m.side};
+      l3_level_add(id, m.side, m.price, m.qty, true);
+      return;
+    }
+    case EventType::OrderExecL3: {
+      const auto& m = msg_cast<OrderExecL3Msg>(&md);
+      const auto it = orders.find(m.order_ref);
+      if (it == orders.end()) {
+        ++l3_unknown_;
+        return;
+      }
+      L3Order& o = it->second;
+      const Qty q = min(m.exec_qty, o.qty);
+      const Price at = m.exec_price.is_positive() ? m.exec_price : o.price;
+      l3_change_ = L3Change{L3Change::Kind::Exec, o.side, o.price, at, q, o.prio};
+      l3_level_add(id, o.side, o.price, q, false);
+      o.qty -= q;
+      if (o.qty.is_zero()) orders.erase(it);
+      return;
+    }
+    case EventType::OrderCancelL3: {
+      const auto& m = msg_cast<OrderCancelL3Msg>(&md);
+      l3_take(id, m.order_ref, m.canceled_qty);
+      return;
+    }
+    case EventType::OrderReplaceL3: {
+      // The replacement joins the back of its level: a new place in the queue.
+      const auto& m = msg_cast<OrderReplaceL3Msg>(&md);
+      const auto it = orders.find(m.old_order_ref);
+      if (it == orders.end()) {
+        ++l3_unknown_;
+        return;
+      }
+      const Side side = it->second.side;
+      l3_take(id, m.old_order_ref, Qty{});
+      if (!m.qty.is_positive()) return;
+      orders[m.new_order_ref] = L3Order{++l3_arrivals_ << kPrioShift, m.price, m.qty, side};
+      l3_level_add(id, side, m.price, m.qty, true);
+      return;
+    }
+    default:
+      return;
+  }
+}
+
 // The book half of queue_apply_book() and queue_apply_touch() (core/queue_model.hpp); the runs
 // take the queue half.
 void SimWorld::before(const EventHeader& md, Timestamp now) noexcept {
@@ -475,6 +582,12 @@ void SimWorld::before(const EventHeader& md, Timestamp now) noexcept {
       }
       break;
     }
+    case EventType::OrderAddL3:
+    case EventType::OrderExecL3:
+    case EventType::OrderCancelL3:
+    case EventType::OrderReplaceL3:
+      if (!l3_orders_.empty()) l3_before(md);
+      break;
     default:
       break;
   }
@@ -507,50 +620,68 @@ void SimTransport::on_source_event(const EventHeader& md) noexcept {
 }
 
 void SimTransport::on_source_event_run(const EventHeader& md) noexcept {
+  venue_event(md);
+  feed_event(md);
+}
+
+void SimTransport::venue_event(const EventHeader& md) noexcept {
   const Timestamp now = venue_time(md);
   const InstrumentId id = md.instrument;
-  if (id.value < instruments_.size()) {
-    switch (md.type) {
-      case EventType::BookDelta:
-      case EventType::BookSnapshot: {
-        const auto& d = msg_cast<BookDeltaMsg>(&md);
-        if (queue_mode()) {
-          queue_on_delta(d, now);
-        } else {
-          mirror_on_delta(d, now);
-        }
-        break;
+  if (id.value >= instruments_.size()) return;
+  switch (md.type) {
+    case EventType::BookDelta:
+    case EventType::BookSnapshot: {
+      const auto& d = msg_cast<BookDeltaMsg>(&md);
+      if (queue_mode()) {
+        queue_on_delta(d, now);
+      } else {
+        mirror_on_delta(d, now);
       }
-      case EventType::Trade:
-        if (queue_mode()) {
-          queue_on_trade(msg_cast<TradeMsg>(&md), now);
-        } else {
-          mirror_on_trade(msg_cast<TradeMsg>(&md), now);
-        }
-        break;
-      case EventType::BookTicker:
-        if (queue_mode()) queue_on_ticker(msg_cast<BookTickerMsg>(&md), now);
-        break;
-      case EventType::OrderAddL3:
-      case EventType::OrderExecL3:
-      case EventType::OrderCancelL3:
-      case EventType::OrderReplaceL3:
-        // The venue's own record of every order; the engine's book is the source's L2 view of it.
-        if (cfg_.fill_model == FillModel::L3Queue) queue_on_l3(md, now);
-        if (md.seq != 0) forward_in_order(nullptr, md.seq, md.recv_ts, now);
-        return;
-      default:
-        break;
+      break;
     }
-    // A derivative account's unrealised PnL: the venue's mark, else the book's mid.
-    if (accounts_ != nullptr && accounts_->derivative(id)) [[unlikely]] {
-      if (md.type == EventType::PerpState) {
-        const auto& p = msg_cast<PerpStateMsg>(&md);
-        if ((p.fields & PerpStateMsg::kMark) != 0) accounts_->mark(id, p.mark_price, true);
-      } else if (md.type != EventType::Trade) {
-        accounts_->mark(id, venue_mid(id), false);
+    case EventType::Trade:
+      if (queue_mode()) {
+        queue_on_trade(msg_cast<TradeMsg>(&md), now);
+      } else {
+        mirror_on_trade(msg_cast<TradeMsg>(&md), now);
       }
+      break;
+    case EventType::BookTicker:
+      if (queue_mode()) queue_on_ticker(msg_cast<BookTickerMsg>(&md), now);
+      break;
+    case EventType::OrderAddL3:
+    case EventType::OrderExecL3:
+    case EventType::OrderCancelL3:
+    case EventType::OrderReplaceL3:
+      // The venue's own record of every order; the engine's book is the source's L2 view of it.
+      if (cfg_.fill_model == FillModel::L3Queue) queue_on_l3(id, now);
+      if (watch_ != nullptr) note_crossed(id);
+      return;
+    default:
+      break;
+  }
+  if (watch_ != nullptr) note_crossed(id);
+  // A derivative account's unrealised PnL: the venue's mark, else the book's mid.
+  if (accounts_ != nullptr && accounts_->derivative(id)) [[unlikely]] {
+    if (md.type == EventType::PerpState) {
+      const auto& p = msg_cast<PerpStateMsg>(&md);
+      if ((p.fields & PerpStateMsg::kMark) != 0) accounts_->mark(id, p.mark_price, true);
+    } else if (md.type != EventType::Trade) {
+      accounts_->mark(id, venue_mid(id), false);
     }
+  }
+}
+
+bool SimTransport::marks_account(InstrumentId id) const noexcept {
+  return accounts_ != nullptr && id.value < instruments_.size() && accounts_->derivative(id);
+}
+
+void SimTransport::feed_event(const EventHeader& md) noexcept {
+  const Timestamp now = venue_time(md);
+  const InstrumentId id = md.instrument;
+  if (id.value < instruments_.size() && is_l3_event(md.type)) {
+    if (md.seq != 0) forward_in_order(nullptr, md.seq, md.recv_ts, now);
+    return;
   }
   // Coupled mode publishes its own view of the book; a venue's mark and funding go through as
   // recorded.
@@ -578,86 +709,6 @@ void SimTransport::on_source_event_run(const EventHeader& md) noexcept {
 bool SimTransport::hides_level(const BookTickerMsg& m) noexcept {
   return (m.bid_px.is_positive() && m.bid_qty.is_zero()) ||
          (m.ask_px.is_positive() && m.ask_qty.is_zero());
-}
-
-void SimTransport::grow_ahead(std::uint64_t seq) {
-  std::size_t cap = ahead_.empty() ? 1024 : ahead_.size();
-  while (cap < kMaxAhead && seq - next_forward_ >= cap) cap *= 2;
-  if (cap == ahead_.size()) return;
-  std::vector<Ahead> next(cap);
-  for (Ahead& a : ahead_) {
-    if (a.seq != 0) next[a.seq & (cap - 1)] = std::move(a);
-  }
-  ahead_ = std::move(next);
-}
-
-void SimTransport::forward_in_order(const EventHeader* md,
-                                    std::uint64_t seq,
-                                    Timestamp recorded,
-                                    Timestamp now) noexcept {
-  const auto after = [](const Waiting& a, const Waiting& b) { return a.seq > b.seq; };
-  if (seq > next_forward_) {
-    if (seq - next_forward_ >= ahead_.size() && ahead_.size() < kMaxAhead) grow_ahead(seq);
-    if (seq - next_forward_ < ahead_.size()) {
-      Ahead& a = ahead_[seq & (ahead_.size() - 1)];
-      if (a.seq == 0) {
-        a.seq = seq;
-        a.recorded = recorded;
-        a.venue = now;
-        a.has_md = md != nullptr;
-        if (md != nullptr) {
-          const std::size_t words = (md->len + sizeof(std::uint64_t) - 1) / sizeof(std::uint64_t);
-          if (a.bytes.size() < words) a.bytes.resize(words);
-          std::memcpy(a.bytes.data(), md, md->len);
-        }
-        return;
-      }
-    }
-    std::uint32_t slot = kNoSlot;
-    if (md != nullptr) {
-      if (waiting_free_.empty()) {
-        waiting_bytes_.emplace_back();
-        slot = static_cast<std::uint32_t>(waiting_bytes_.size() - 1);
-      } else {
-        slot = waiting_free_.back();
-        waiting_free_.pop_back();
-      }
-      std::vector<std::uint64_t>& b = waiting_bytes_[slot];
-      const std::size_t words = (md->len + sizeof(std::uint64_t) - 1) / sizeof(std::uint64_t);
-      if (b.size() < words) b.resize(words);
-      std::memcpy(b.data(), md, md->len);
-    }
-    waiting_.push_back(Waiting{seq, recorded, now, slot});
-    std::push_heap(waiting_.begin(), waiting_.end(), after);
-    return;
-  }
-  if (md != nullptr) forward(*md, recorded, now);
-  if (seq == next_forward_) ++next_forward_;
-  // Every position waiting is past next_forward_ until it moves on: the next to go is at it.
-  for (;;) {
-    if (!ahead_.empty()) {
-      Ahead& a = ahead_[next_forward_ & (ahead_.size() - 1)];
-      if (a.seq == next_forward_) {
-        a.seq = 0;
-        if (a.has_md) {
-          forward(*reinterpret_cast<const EventHeader*>(a.bytes.data()), a.recorded, a.venue);
-        }
-        ++next_forward_;
-        continue;
-      }
-    }
-    if (waiting_.empty() || waiting_.front().seq > next_forward_) break;
-    std::pop_heap(waiting_.begin(), waiting_.end(), after);
-    const Waiting w = waiting_.back();
-    waiting_.pop_back();
-    if (w.slot != kNoSlot) {
-      forward(*reinterpret_cast<const EventHeader*>(waiting_bytes_[w.slot].data()),
-              w.recorded,
-              w.venue);
-      waiting_free_.push_back(w.slot);
-    }
-    if (w.seq == next_forward_) ++next_forward_;
-  }
 }
 
 void SimTransport::forward(const EventHeader& md, Timestamp recorded, Timestamp now) noexcept {
@@ -729,13 +780,13 @@ void SimTransport::mirror_on_trade(const TradeMsg& t, Timestamp now) noexcept {
   n.tif = TimeInForce::Ioc;
   n.price = t.price;
   n.qty = t.qty;
-  static_cast<void>(me_.submit(n, now));  // effects arrive through the sink
+  static_cast<void>(me_->submit(n, now));  // effects arrive through the sink
 }
 
 void SimTransport::sync_level(
     InstrumentId id, Side side, Price px, Qty target, Timestamp now, bool increases) noexcept {
   if (!px.is_positive()) return;
-  const Qty cur = me_.account_qty_at(kGeneratorAccount, id, side, px);
+  const Qty cur = me_->account_qty_at(kGeneratorAccount, id, side, px);
   if (target > cur) {
     if (!increases) return;
     NewOrder n;
@@ -747,9 +798,9 @@ void SimTransport::sync_level(
     n.tif = TimeInForce::Gtc;
     n.price = px;
     n.qty = target - cur;
-    static_cast<void>(me_.submit(n, now));  // may trade through resting strategy orders
+    static_cast<void>(me_->submit(n, now));  // may trade through resting strategy orders
   } else if (target < cur && !increases) {
-    me_.reduce_account_qty(kGeneratorAccount, id, side, px, cur - target, now);
+    me_->reduce_account_qty(kGeneratorAccount, id, side, px, cur - target, now);
   }
 }
 
@@ -803,9 +854,9 @@ void SimTransport::queue_fill(
   if (f < fill) {
     ++stats_.expired;
     emit_expired(o.cl_ord_id, o.order_id, o.instrument, o.cum_qty, now);
-    queue_.remove(h);
+    queue_remove(h);
   } else if (o.leaves().is_zero()) {
-    queue_.remove(h);
+    queue_remove(h);
   }
 }
 
@@ -896,9 +947,7 @@ void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
   Qty ahead;
   if (cfg_.fill_model == FillModel::L3Queue) {
     // Every recorded order resting at the price came before us.
-    const auto& lv = l3_levels_[static_cast<std::size_t>(n.side)][id.value];
-    const auto it = lv.find(n.price.raw);
-    ahead = it == lv.end() ? Qty{} : it->second;
+    ahead = world_->l3_level(id, n.side, n.price);
   } else {
     ahead = queue_at_placement(
         level_qty(book, n.side, n.price), n.side, n.price, book, touch, &tape_[id.value]);
@@ -918,9 +967,10 @@ void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
   }
   // The opposite liquidity it took as a taker is still in the recorded book: it crosses the rest
   // of the order, which has taken it already (on_cross).
+  if (watch_ != nullptr) watch_->on_rest(watch_run_, id, n.side, n.price, true);
   queue_.get(h).cum_qty = cum;
   queue_.get(h).crossed = cum;
-  queue_.get(h).prio = ++l3_seq_;
+  queue_.get(h).prio = (world_->l3_arrivals() << SimWorld::kPrioShift) | ++own_arrivals_;
   note_own(id, n.side, n.price);
 }
 
@@ -931,7 +981,7 @@ void SimTransport::queue_cancel(ClientOrderId id, InstrumentId route, Timestamp 
     return;
   }
   const QueuedOrder o = queue_.get(h);
-  queue_.remove(h);
+  queue_remove(h);
   note_own(o.instrument, o.side, o.price);
   emit_cancel_ack(o.cl_ord_id, o.order_id, o.instrument, o.cum_qty, now);
 }
@@ -953,7 +1003,7 @@ void SimTransport::queue_replace(const OutReplaceMsg& m, Timestamp now) noexcept
       return;
     }
   }
-  queue_.remove(h);
+  queue_remove(h);
   note_own(o.instrument, o.side, o.price);
   emit_cancel_ack(o.cl_ord_id, o.order_id, o.instrument, o.cum_qty, now);
   NewOrder n;
@@ -1011,92 +1061,27 @@ void SimTransport::queue_on_trade(const TradeMsg& t, Timestamp now) noexcept {
                   });
 }
 
-void SimTransport::l3_level_add(InstrumentId id, Side side, Price px, Qty q, bool add) noexcept {
-  auto& lv = l3_levels_[static_cast<std::size_t>(side)][id.value];
-  Qty& level = lv[px.raw];
-  if (add) {
-    level += q;
-  } else if (level > q) {
-    level -= q;
-  } else {
-    lv.erase(px.raw);
-  }
-}
-
-void SimTransport::queue_on_l3(const EventHeader& md, Timestamp now) noexcept {
-  const InstrumentId id = md.instrument;
-  auto& orders = l3_orders_[id.value];
-  ++stats_.l3_events;
-  // Takes `q` (zero: all) off a recorded order that leaves its place (cancel, the old leg of a
-  // replace); the queue behind it moves up.
-  const auto take = [&](std::uint64_t ref, Qty q) {
-    const auto it = orders.find(ref);
-    if (it == orders.end()) {
-      ++stats_.l3_unknown;
+// The queue half of an order-by-order event: the recorded order's half is SimWorld::before().
+void SimTransport::queue_on_l3(InstrumentId id, Timestamp now) noexcept {
+  const SimWorld::L3Change& c = world_->l3();
+  switch (c.kind) {
+    case SimWorld::L3Change::Kind::Cancel:
+      queue_.on_l3_cancel(id, c.side, c.px, c.qty, c.prio);
       return;
-    }
-    L3Order& o = it->second;
-    if (q.is_zero() || q > o.qty) q = o.qty;
-    queue_.on_l3_cancel(id, o.side, o.price, q, o.prio);
-    l3_level_add(id, o.side, o.price, q, false);
-    o.qty -= q;
-    if (o.qty.is_zero()) orders.erase(it);
-  };
-  switch (md.type) {
-    case EventType::OrderAddL3: {
-      const auto& m = msg_cast<OrderAddL3Msg>(&md);
-      if (!m.qty.is_positive()) return;
-      orders[m.order_ref] = L3Order{++l3_seq_, m.price, m.qty, m.side};
-      l3_level_add(id, m.side, m.price, m.qty, true);
-      return;
-    }
-    case EventType::OrderExecL3: {
-      const auto& m = msg_cast<OrderExecL3Msg>(&md);
-      const auto it = orders.find(m.order_ref);
-      if (it == orders.end()) {
-        ++stats_.l3_unknown;
-        return;
-      }
-      L3Order& o = it->second;
-      const Qty q = min(m.exec_qty, o.qty);
-      const Price at = m.exec_price.is_positive() ? m.exec_price : o.price;
+    case SimWorld::L3Change::Kind::Exec:
       queue_.on_l3_execute(
           id,
-          o.side,
-          o.price,
-          at,
-          q,
-          o.prio,
+          c.side,
+          c.px,
+          c.exec_px,
+          c.qty,
+          c.prio,
           now,
           [&](QueuePositionModel::Handle32 h, QueuedOrder& ours, Qty fill, Qty ahead) {
             queue_fill(h, ours, fill, ahead, now);
           });
-      l3_level_add(id, o.side, o.price, q, false);
-      o.qty -= q;
-      if (o.qty.is_zero()) orders.erase(it);
       return;
-    }
-    case EventType::OrderCancelL3: {
-      const auto& m = msg_cast<OrderCancelL3Msg>(&md);
-      take(m.order_ref, m.canceled_qty);
-      return;
-    }
-    case EventType::OrderReplaceL3: {
-      // The replacement joins the back of its level: a new place in the queue.
-      const auto& m = msg_cast<OrderReplaceL3Msg>(&md);
-      const auto it = orders.find(m.old_order_ref);
-      if (it == orders.end()) {
-        ++stats_.l3_unknown;
-        return;
-      }
-      const Side side = it->second.side;
-      take(m.old_order_ref, Qty{});
-      if (!m.qty.is_positive()) return;
-      orders[m.new_order_ref] = L3Order{++l3_seq_, m.price, m.qty, side};
-      l3_level_add(id, side, m.price, m.qty, true);
-      return;
-    }
-    default:
+    case SimWorld::L3Change::Kind::None:
       return;
   }
 }
@@ -1194,7 +1179,7 @@ void SimTransport::emit_ack(ClientOrderId id,
   OrderAckMsg m{};
   init_header(m, EventType::OrderAck, inst, l.id);
   m.cl_ord_id = id;
-  m.venue_order_id = decimal_id(order_id);
+  put_decimal(m.venue_order_id, order_id);
   push_order_wire(l, m.hdr, ts);
   publish_account(l, ts);
 }
@@ -1259,7 +1244,7 @@ void SimTransport::emit_cancel_ack(
   OrderCancelAckMsg m{};
   init_header(m, EventType::OrderCancelAck, inst, l.id);
   m.cl_ord_id = id;
-  m.venue_order_id = decimal_id(order_id);
+  put_decimal(m.venue_order_id, order_id);
   m.cum_qty = cum;
   if (accounts_ != nullptr) accounts_->close(id);
   forget_order(id);
@@ -1287,7 +1272,7 @@ void SimTransport::emit_expired(
   OrderExpiredMsg m{};
   init_header(m, EventType::OrderExpired, inst, l.id);
   m.cl_ord_id = id;
-  m.venue_order_id = decimal_id(order_id);
+  put_decimal(m.venue_order_id, order_id);
   m.cum_qty = cum;
   if (accounts_ != nullptr) accounts_->close(id);
   forget_order(id);
@@ -1312,8 +1297,8 @@ void SimTransport::emit_fill(ClientOrderId id,
   OrderFillMsg m{};
   init_header(m, EventType::OrderFill, inst, l.id);
   m.cl_ord_id = id;
-  m.venue_order_id = decimal_id(order_id);
-  m.exec_id = decimal_id(exec_id);
+  put_decimal(m.venue_order_id, order_id);
+  put_decimal(m.exec_id, exec_id);
   m.price = px;
   m.qty = qty;
   m.cum_qty = cum;
@@ -1465,7 +1450,7 @@ std::byte* SimTransport::reserve_md(Link& l, std::uint32_t len) noexcept {
 bool SimTransport::grow_md_wire(Link& l) noexcept {
   std::unique_ptr<MsgRing> bigger;
   try {
-    bigger = std::make_unique<MsgRing>(l.md_wire->capacity() * 2);
+    bigger = std::make_unique<MsgRing>(l.md_wire->capacity() * 2, false);
   } catch (...) {
     return false;
   }
@@ -1494,7 +1479,7 @@ void SimTransport::note_own(InstrumentId id, Side side, Price px) noexcept {
 
 Qty SimTransport::model_own_at(InstrumentId id, Side side, Price px) const noexcept {
   if (cfg_.fill_model == FillModel::Matching)
-    return me_.account_qty_at(kStrategyAccount, id, side, px);
+    return me_->account_qty_at(kStrategyAccount, id, side, px);
   Qty sum{};
   queue_.for_each(id, [&](QueuePositionModel::Handle32, const QueuedOrder& o) {
     if (o.side == side && o.price == px) sum += o.leaves();
@@ -1698,6 +1683,21 @@ Timestamp SimTransport::next_inbound_ts() noexcept {
   return t;
 }
 
+SimTransport::Inbound SimTransport::next_inbound() noexcept {
+  Timestamp a = Timestamp::max();
+  Timestamp b = Timestamp::max();
+  for (std::uint32_t m = busy_; m != 0; m &= m - 1) {
+    const auto bit = static_cast<unsigned>(std::countr_zero(m));
+    const Timestamp ts = head_ts(wire(at(bit / 3), bit % 3));
+    if (bit % 3 == kMdWire) {
+      b = std::min(b, ts);
+    } else {
+      a = std::min(a, ts);
+    }
+  }
+  return a <= b ? Inbound{a, false} : Inbound{b, true};
+}
+
 bool SimTransport::move_head(MsgRing& ring, InlineFeed& feed, EventType& type) noexcept {
   const std::byte* p = ring.try_peek();
   if (p == nullptr) return false;
@@ -1753,10 +1753,10 @@ EventType SimTransport::deliver_next_inbound(InlineFeed& feed) noexcept {
 
 Price SimTransport::venue_mid(InstrumentId id) const noexcept {
   if (id.value >= instruments_.size()) return Price{};
-  if (queue_mode() || (agg_ == nullptr && me_.book(id).depth(Side::Buy) == 0)) {
+  if (queue_mode() || (agg_ == nullptr && me_->book(id).depth(Side::Buy) == 0)) {
     return mirror_[id.value].mid();
   }
-  const MatchingEngine::TopOfBook top = me_.top_of_book(id);
+  const MatchingEngine::TopOfBook top = me_->top_of_book(id);
   if (top.bid.qty.is_zero() || top.ask.qty.is_zero()) return mirror_[id.value].mid();
   return Price::from_raw((top.bid.price.raw + top.ask.price.raw) / 2);
 }
@@ -1765,17 +1765,17 @@ Price SimTransport::venue_best(InstrumentId id, Side side) const noexcept {
   if (id.value >= instruments_.size()) return Price{};
   const L2Book<256>& mirror = mirror_[id.value];
   const Level m = side == Side::Buy ? mirror.best_bid() : mirror.best_ask();
-  if (queue_mode() || (agg_ == nullptr && me_.book(id).depth(Side::Buy) == 0)) {
+  if (queue_mode() || (agg_ == nullptr && me_->book(id).depth(Side::Buy) == 0)) {
     return m.price;
   }
-  const MatchingEngine::TopOfBook top = me_.top_of_book(id);
+  const MatchingEngine::TopOfBook top = me_->top_of_book(id);
   const Level& t = side == Side::Buy ? top.bid : top.ask;
   return t.qty.is_zero() ? m.price : t.price;
 }
 
 MatchingEngine::SideExposure SimTransport::strategy_exposure(InstrumentId id,
                                                              Side side) const noexcept {
-  if (cfg_.fill_model == FillModel::Matching) return me_.exposure(kStrategyAccount, id, side);
+  if (cfg_.fill_model == FillModel::Matching) return me_->exposure(kStrategyAccount, id, side);
   MatchingEngine::SideExposure e;
   queue_.for_each(id, [&](QueuePositionModel::Handle32, const QueuedOrder& o) {
     if (o.side != side) return;

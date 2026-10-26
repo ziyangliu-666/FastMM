@@ -129,7 +129,7 @@ TEST_CASE("strategies.hooks: implemented hook sets, table and built-in strategie
   CHECK(words<AllHooks>() ==
         "start stop book book_ticker trade option_ticker fill order_update "
         "timer connection quoting params balance risk_reject");
-  CHECK(words<BasicMM>() == "start book fill timer connection quoting balance");
+  CHECK(words<BasicMM>() == "start book fill timer connection quoting params balance");
   CHECK(words<AvellanedaStoikov>() == "start book trade fill connection quoting");
   CHECK(words<OptionsMM>() == "start book option_ticker fill timer connection quoting");
   REQUIRE(kHooks.size() == static_cast<std::size_t>(Hook::Count));

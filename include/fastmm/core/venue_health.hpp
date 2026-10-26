@@ -70,6 +70,21 @@ class VenueHealth {
     s.ack_ts = now;
     ++s.ack_samples;
   }
+  // Venue `v`'s feed-lag half of `from` (not the gate, nor the acks): it followed the same
+  // messages.
+  void copy_feed(const VenueHealth& from, std::size_t v) noexcept {
+    if (v >= kVenues) return;
+    Slot& s = slots_[v];
+    const Slot& f = from.slots_[v];
+    s.bucket_end = f.bucket_end;
+    s.cur_min = f.cur_min;
+    s.done_min = f.done_min;
+    s.lag = f.lag;
+    s.md_ts = f.md_ts;
+    s.md_samples = f.md_samples;
+    s.done = f.done;
+    s.next = f.next;
+  }
   [[nodiscard]] FASTMM_FORCE_INLINE bool gated(VenueId v, Timestamp now) const noexcept {
     return v.value < kVenues && now < slots_[v.value].gate_until;
   }

@@ -57,6 +57,7 @@
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/latency.hpp"
 #include "fastmm/core/log.hpp"
+#include "fastmm/core/market_view.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/oms.hpp"
 #include "fastmm/core/order_budget.hpp"
@@ -195,7 +196,8 @@ class Engine {
         feed_(feed),
         strategy_(strategy),
         ctx_(this),
-        books_(new Book[kMaxInstruments]),
+        own_books_(new Book[kMaxInstruments]),
+        books_(own_books_.get()),
         oms_(cfg.session_epoch),
         risk_(cfg.risk, clock.now()),
         quotes_(cfg.quotes),
@@ -256,6 +258,7 @@ class Engine {
     Logger::instance().attach_current_thread();
     alignas(64) std::byte buf[BookDeltaMsg::size_for(8, 8)];
     for (const Instrument& inst : instruments_) {
+      if (own_books_ == nullptr) break;  // the books are the market's (follow_market)
       auto* d = reinterpret_cast<BookDeltaMsg*>(buf);
       init_header(*d, EventType::BookDelta, inst.id, inst.venue, sizeof buf);
       d->hdr.flags |= EventHeader::kSnapshot;
@@ -275,27 +278,11 @@ class Engine {
   }
 
   // Processes up to max_events_per_step events plus due timers. Returns the number handled.
-  std::size_t step() noexcept {
-    std::size_t n = 0;
-    ++stats_.steps;
-    in_engine_ = true;
-    while (n < cfg_.max_events_per_step) {
-      const EventHeader* h = feed_.next();
-      if (h == nullptr) break;
-      ++n;
-      process(h);
-      feed_.release();
-    }
-    batch_end();
-    refresh_clock();
-    const Timestamp now = clock_.now();
-    if constexpr (!kFeedReplaysTimers)
-      n += timers_.poll(now, [this](TimerId id, std::uint64_t ud) { on_timer_fired(id, ud); });
-    batch_end();
-    if (now - last_publish_ >= cfg_.latency_publish_interval) publish_latency(now);
-    in_engine_ = false;
-    return n;
-  }
+  std::size_t step() noexcept { return step_from(nullptr); }
+
+  // step() with `event` first: a message the caller holds, read where it lies instead of from the
+  // feed (a multiverse's runs share their market data, backtest/multiverse.hpp).
+  std::size_t step_with(const EventHeader& event) noexcept { return step_from(&event); }
 
   // Run-to-completion: processes every event the feed holds now, without timers. The venue calls
   // it (EventSink drain hook) right after decoding an event on this thread. Returns 0 when called
@@ -355,6 +342,7 @@ class Engine {
     if (started_) return;
     started_ = true;
     in_engine_ = true;
+    catch_up();
     latch_clock();
     set_event_origin(Cycles{}, Cycles{});
     // The rate limiter refills from the start time, not from construction (replay constructs the
@@ -390,12 +378,14 @@ class Engine {
     }
     flush_out();
     unlatch_clock();
+    update_interest();
     in_engine_ = false;
   }
   void finish() noexcept {
     if (!started_ || finished_) return;
     finished_ = true;
     in_engine_ = true;
+    catch_up();
     latch_clock();
     set_event_origin(Cycles{}, Cycles{});
     if (journal_.enabled() && !journal_.record_clock(EngineTimeMsg::Kind::Finish, now_))
@@ -447,7 +437,38 @@ class Engine {
     return FASTMM_LIKELY(latched_) ? now_ : clock_.now();
   }
   [[nodiscard]] const Book& book(InstrumentId id) const noexcept { return books_[id.value]; }
-  [[nodiscard]] Book& book_mut(InstrumentId id) noexcept { return books_[id.value]; }
+  // The engine follows `market`, whose books it reads and which keeps what every message changes
+  // besides (market_view.hpp): the engine is handed only the messages md_interest() asks for,
+  // and catches up with the others before it takes anything. Before start().
+  void follow_market(const MarketView& market) noexcept {
+    own_books_.reset();
+    books_ = market.books.get();
+    market_ = &market;
+    market_seen_ = market.counts;
+  }
+  // What this engine needs of the market data to come; current after every step.
+  [[nodiscard]] const MdInterest& md_interest() const noexcept { return interest_; }
+
+  // ---- what the strategy watches (StrategyContext::watch, quiet_book) ---------------------------
+  void watch(InstrumentId id, bool on) noexcept {
+    if (id.value >= kMaxInstruments || watch_[id.value].on == on) return;
+    watch_[id.value].on = on;
+    interest_changed(id);
+  }
+  void quiet_book(InstrumentId id, Price lo, Price hi) noexcept {
+    if (id.value >= kMaxInstruments) return;
+    Watch& w = watch_[id.value];
+    if (w.quiet && w.lo == lo && w.hi == hi) return;
+    w.quiet = true;
+    w.lo = lo;
+    w.hi = hi;
+    interest_changed(id);
+  }
+  void quiet_book(InstrumentId id) noexcept {
+    if (id.value >= kMaxInstruments || !watch_[id.value].quiet) return;
+    watch_[id.value].quiet = false;
+    interest_changed(id);
+  }
   [[nodiscard]] const Position& position(InstrumentId id) const noexcept {
     return positions_.get(id);
   }
@@ -1121,7 +1142,7 @@ class Engine {
     const InstrumentId id = d.hdr.instrument;
     if (FASTMM_UNLIKELY(!instruments_.contains(id))) return;
     Book& b = books_[id.value];
-    b.apply_delta(d);
+    if (own_books_ != nullptr) b.apply_delta(d);
     ++stats_.book_updates;
     track_feed_lag(d.hdr);
     if (FASTMM_UNLIKELY(queue_on_)) queue_on_book(d, b);
@@ -1136,6 +1157,8 @@ class Engine {
       risk_.on_book(id, mid, now);
       if (FASTMM_LIKELY(!perp_.marking()) || perp_.mid_marks(id, now))
         positions_.mark(id, mid, inst);
+      // The max_loss budget's band for this instrument no longer holds once its mid leaves it.
+      if (mid.raw <= risk_lo_[id.value] || mid.raw >= risk_hi_[id.value]) risk_band_stale_ = true;
       if (FASTMM_UNLIKELY(fx_on_) && cfg_.fx.prices[id.value] != 0) on_fx_mid(id, mid);
       if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
     } else {
@@ -1147,9 +1170,12 @@ class Engine {
       }
     }
     if constexpr (has_hook(Hook::Book)) {
-      const Book& view = b;
-      strategy_.on_book(ctx_, id, view);
-      record_strategy_hop(t2);
+      const Watch& w = watch_[id.value];
+      if (w.on && (!w.quiet || !b.is_valid() || b.mid() <= w.lo || b.mid() >= w.hi)) {
+        const Book& view = b;
+        strategy_.on_book(ctx_, id, view);
+        record_strategy_hop(t2);
+      }
     }
     flush_out();
   }
@@ -1204,7 +1230,7 @@ class Engine {
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
     if constexpr (has_hook(Hook::Trade)) {
-      if (FASTMM_LIKELY(known_instrument)) {
+      if (FASTMM_LIKELY(known_instrument && watch_[id.value].on)) {
         strategy_.on_trade(ctx_, id, t);
         record_strategy_hop(t2);
       }
@@ -1219,7 +1245,7 @@ class Engine {
     record_md_hops(t2);
     if constexpr (has_hook(Hook::BookTicker)) {
       const InstrumentId id = m.hdr.instrument;
-      if (FASTMM_LIKELY(instruments_.contains(id))) {
+      if (FASTMM_LIKELY(instruments_.contains(id) && watch_[id.value].on)) {
         strategy_.on_book_ticker(ctx_, id, m);
         record_strategy_hop(t2);
       }
@@ -1233,7 +1259,7 @@ class Engine {
     record_md_hops(t2);
     if constexpr (has_hook(Hook::OptionTicker)) {
       const InstrumentId id = m.hdr.instrument;
-      if (FASTMM_LIKELY(instruments_.contains(id))) {
+      if (FASTMM_LIKELY(instruments_.contains(id) && watch_[id.value].on)) {
         strategy_.on_option_ticker(ctx_, id, m);
         record_strategy_hop(t2);
       }
@@ -2328,6 +2354,7 @@ class Engine {
           r.check_balance_before = static_cast<std::uint8_t>(balances_->check_enabled());
           r.forced = static_cast<std::uint8_t>((m.arg & kLimitsForced) != 0);
           risk_.set_limits(m.limits, now_);
+          risk_band_stale_ = true;
           feed_lag_limit_ = milliseconds(m.limits.max_feed_lag_ms);
           if ((m.arg & kLimitsCheckBalance) != 0)
             balances_->set_check((m.arg & kLimitsCheckBalanceOn) != 0);
@@ -2725,6 +2752,7 @@ class Engine {
   // (shutdown, operator); any other reason is a risk limit or an internal failure, which is an
   // error (fastmm-live exits or keeps running per [engine] on_kill). The first reason is kept.
   void on_kill(KillReason reason, bool planned_stop = false) noexcept {
+    risk_band_stale_ = true;
     ++stats_.kills;
     quoting_enabled_ = false;
     if (kill_reason_ == KillReason::None) {
@@ -3624,6 +3652,7 @@ class Engine {
   void publish_latency(Timestamp now) noexcept {
     last_publish_ = now;
     flush_stale_reject_folds(now);
+    if (!cfg_.publish_live && !journal_.enabled()) return;
     const LatencySnapshot s = latency_.snapshot(now.ns);
     latency_pub_.store(s);
     publish_live(s);
@@ -3645,6 +3674,7 @@ class Engine {
   }
 
   void publish_live(const LatencySnapshot& latency) noexcept {
+    if (!cfg_.publish_live) return;
     EngineLiveStats live;
     live.stats = runner_stats();
     live.kills = stats_.kills;
@@ -3714,6 +3744,181 @@ class Engine {
     live_pub_->store(live);
   }
 
+  // ---- one step ---------------------------------------------------------------------------------
+  std::size_t step_from(const EventHeader* first) noexcept {
+    ++stats_.steps;
+    in_engine_ = true;
+    catch_up();
+    std::size_t n = 0;
+    if (first != nullptr) {
+      process(first);
+      if (market_ != nullptr) took_from_market(*first);
+      n = 1;
+    }
+    while (n < cfg_.max_events_per_step) {
+      const EventHeader* h = feed_.next();
+      if (h == nullptr) break;
+      ++n;
+      process(h);
+      feed_.release();
+    }
+    batch_end();
+    refresh_clock();
+    const Timestamp now = clock_.now();
+    if constexpr (!kFeedReplaysTimers)
+      n += timers_.poll(now, [this](TimerId id, std::uint64_t ud) { on_timer_fired(id, ud); });
+    batch_end();
+    if (now - last_publish_ >= cfg_.latency_publish_interval) publish_latency(now);
+    update_interest();
+    in_engine_ = false;
+    return n;
+  }
+
+  // ---- shared market data (market_view.hpp) -----------------------------------------------------
+  [[nodiscard]] static constexpr bool is_market_data(EventType t) noexcept {
+    return t == EventType::BookDelta || t == EventType::BookSnapshot || t == EventType::Trade ||
+           t == EventType::BookTicker || t == EventType::OptionTicker;
+  }
+  // What the messages the engine was not handed would have left: the risk engine's mids, book times
+  // and last trades, the positions' marks, the feed's lag, the counts. Each of these takes the last
+  // value of its message, so taking the last one is taking them all.
+  void catch_up() noexcept {
+    if (market_ == nullptr || market_->counts.messages == market_seen_.messages) return;
+    const std::uint64_t seen = market_seen_.messages;
+    const std::size_t n = instruments_.size();
+    for (std::uint32_t i = 0; i < n; ++i) {
+      const MarketView::Instrument& r = market_->inst[i];
+      if (r.mid_at > seen) {
+        const InstrumentId id{i};
+        risk_.on_book(id, r.mid, r.mid_ts);
+        positions_.mark(id, r.mid, instruments_.get(id));
+      }
+      if (r.trade_at > seen) risk_.on_trade(InstrumentId{i}, r.trade);
+    }
+    for (std::size_t v = 0; v < market_->health_at.size(); ++v) {
+      if (market_->health_at[v] > seen) health_.copy_feed(market_->health, v);
+    }
+    stats_.events += market_->counts.messages - seen;
+    stats_.book_updates += market_->counts.book_updates - market_seen_.book_updates;
+    stats_.trades += market_->counts.trades - market_seen_.trades;
+    market_seen_ = market_->counts;
+  }
+  // A message of the market taken (step_with): it counts as one the market will have taken.
+  void took_from_market(const EventHeader& m) noexcept {
+    ++market_seen_.messages;
+    if ((m.type == EventType::BookDelta || m.type == EventType::BookSnapshot) &&
+        instruments_.contains(m.instrument))
+      ++market_seen_.book_updates;
+    if (m.type == EventType::Trade) ++market_seen_.trades;
+  }
+
+  void interest_changed(InstrumentId id) noexcept {
+    interest_stale_[id.value] = true;
+    interest_any_stale_ = true;
+  }
+  // The mid band of each instrument within which no move of its mark can trip max_loss: the budget
+  // left (net PnL + max_loss) shared over the instruments with a position. While each instrument's
+  // loss from its mark now stays under its share, their sum stays under the budget. A band may be
+  // narrower than it could be (the engine is then only woken sooner), never wider: its edge is
+  // checked with the positions' own valuation. Set again when a position, a limit or the kill
+  // state changes, or a mark leaves its band.
+  void update_risk_bands() noexcept {
+    risk_band_stale_ = false;
+    band_changes_ = positions_.changes();
+    for (const Instrument& inst : instruments_) {
+      const std::size_t i = inst.id.value;
+      if (risk_lo_[i] != MdInterest::kBelow || risk_hi_[i] != MdInterest::kAbove) {
+        risk_lo_[i] = MdInterest::kBelow;
+        risk_hi_[i] = MdInterest::kAbove;
+        interest_changed(inst.id);
+      }
+    }
+    const Notional limit = risk_.limits().max_loss;
+    if (!limit.is_positive() || risk_.killed()) return;
+    std::size_t held = 0;
+    for (const Instrument& inst : instruments_) {
+      if (!positions_.get(inst.id).qty.is_zero()) ++held;
+    }
+    if (held == 0) return;
+    const Int128 left = static_cast<Int128>(net_pnl().raw) + limit.raw;
+    const Int128 share = left > 0 ? left / static_cast<Int128>(held) : 0;
+    for (const Instrument& inst : instruments_) {
+      const std::size_t i = inst.id.value;
+      const Position& p = positions_.get(inst.id);
+      if (p.qty.is_zero()) continue;
+      interest_changed(inst.id);
+      const Price mark = p.last_mark;
+      if (share <= 0 || !mark.is_positive()) {
+        risk_lo_[i] = MdInterest::kAbove;  // every update
+        continue;
+      }
+      // A long loses as the mid falls, a short as it rises; the band ends a sixteenth of the mark
+      // below it or four times it above (a wider band would only wake the engine less).
+      const bool lng = p.qty.is_positive();
+      const std::int64_t end = lng ? mark.raw / 16
+                                   : (mark.raw > std::numeric_limits<std::int64_t>::max() / 4
+                                          ? std::numeric_limits<std::int64_t>::max()
+                                          : mark.raw * 4);
+      risk_lo_[i] = lng ? band_edge(inst, mark, end, share) : MdInterest::kBelow;
+      risk_hi_[i] = lng ? MdInterest::kAbove : band_edge(inst, mark, end, share);
+    }
+  }
+  // The band's edge on the side of `end` from `mark`: a mid e such that every mid strictly between
+  // e and the mark loses less than `share` from the mark. `end` if it does itself; otherwise the
+  // secant from the mark to `end` (exact for a linear contract), moved halfway to the mark until
+  // the mid next to it is checked to lose less (a loss grows monotonically away from the mark).
+  [[nodiscard]] std::int64_t band_edge(const Instrument& inst,
+                                       Price mark,
+                                       std::int64_t end,
+                                       Int128 share) const noexcept {
+    const Int128 at_mark = positions_.unrealized_at(inst.id, mark, inst).raw;
+    const auto loss = [&](std::int64_t mid) {
+      return at_mark - positions_.unrealized_at(inst.id, Price::from_raw(mid), inst).raw;
+    };
+    const Int128 at_end = loss(end);
+    if (at_end < share) return end;
+    const Int128 span = static_cast<Int128>(end) - mark.raw;
+    auto e = static_cast<std::int64_t>(mark.raw + span * share / at_end);
+    const std::int64_t step = end < mark.raw ? 1 : -1;  // from e towards the mark
+    while (e != mark.raw && loss(e + step) >= share) e += (mark.raw - e + step) / 2;
+    return e;
+  }
+  // md_interest() after a step, for an engine that follows a market.
+  void update_interest() noexcept {
+    if (market_ == nullptr) return;
+    const bool every = journal_.enabled() || cfg_.max_param_age.ns > 0 || feed_lag_limit_.ns > 0 ||
+                       queue_on_ || fx_on_ || perp_.marking() || own_ != nullptr ||
+                       quotes_.starved();
+    if (every != interest_.every) {
+      interest_.every = every;
+      ++interest_.epoch;
+    }
+    if (risk_band_stale_ || band_changes_ != positions_.changes()) update_risk_bands();
+    if (!interest_any_stale_) return;
+    interest_any_stale_ = false;
+    for (const Instrument& inst : instruments_) {
+      const std::size_t i = inst.id.value;
+      if (!interest_stale_[i]) continue;
+      interest_stale_[i] = false;
+      const Watch& w = watch_[i];
+      MdInterest::Instrument n;
+      const bool book = has_hook(Hook::Book) && w.on;
+      n.every_book = book && !w.quiet;
+      n.lo = book && w.quiet ? w.lo.raw : MdInterest::kBelow;
+      n.hi = book && w.quiet ? w.hi.raw : MdInterest::kAbove;
+      n.lo = std::max(n.lo, risk_lo_[i]);
+      n.hi = std::min(n.hi, risk_hi_[i]);
+      n.trades = w.on && has_hook(Hook::Trade);
+      n.tickers = w.on && (has_hook(Hook::BookTicker) || has_hook(Hook::OptionTicker));
+      MdInterest::Instrument& o = interest_.inst[i];
+      if (n.every_book == o.every_book && n.lo == o.lo && n.hi == o.hi && n.trades == o.trades &&
+          n.tickers == o.tickers)
+        continue;
+      n.epoch = ++interest_.epoch;
+      o = n;
+    }
+  }
+
   // ---- members ----------------------------------------------------------------------------------
 
   EngineConfig cfg_;
@@ -3723,7 +3928,37 @@ class Engine {
   Feed& feed_;
   Strategy& strategy_;
   Context ctx_;
-  std::unique_ptr<Book[]> books_;
+  std::unique_ptr<Book[]> own_books_;  // null: follow_market()
+  Book* books_;
+  // The market this engine follows (follow_market), and its counts the engine has taken.
+  const MarketView* market_ = nullptr;
+  MarketView::Counts market_seen_{};
+  // What the strategy watches of each instrument (watch, quiet_book), the max_loss budget's band
+  // (update_risk_bands) and what md_interest() makes of them.
+  struct Watch {
+    bool on = true;
+    bool quiet = false;
+    Price lo;
+    Price hi;
+  };
+  std::array<Watch, kMaxInstruments> watch_{};
+  std::array<std::int64_t, kMaxInstruments> risk_lo_ = filled(MdInterest::kBelow);
+  std::array<std::int64_t, kMaxInstruments> risk_hi_ = filled(MdInterest::kAbove);
+  bool risk_band_stale_ = true;     // a limit, a kill or a mark past its band since
+  std::uint64_t band_changes_ = 0;  // positions_.changes() the bands were set at
+  MdInterest interest_;
+  std::array<bool, kMaxInstruments> interest_stale_ = filled_true();
+  bool interest_any_stale_ = true;
+  static constexpr std::array<std::int64_t, kMaxInstruments> filled(std::int64_t v) noexcept {
+    std::array<std::int64_t, kMaxInstruments> a{};
+    a.fill(v);
+    return a;
+  }
+  static constexpr std::array<bool, kMaxInstruments> filled_true() noexcept {
+    std::array<bool, kMaxInstruments> a{};
+    a.fill(true);
+    return a;
+  }
   Oms oms_;
   RiskEngine risk_;
   VenueHealth health_;  // feed lag and ack RTT per venue, and the feed-lag gate

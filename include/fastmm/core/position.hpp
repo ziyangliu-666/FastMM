@@ -80,6 +80,7 @@ class PositionTracker {
                Qty qty,
                Notional fee,
                const Instrument& inst) noexcept {
+    ++changes_;
     Position& p = pos_[id.value];
     const std::int64_t f = side == Side::Buy ? qty.raw : -qty.raw;
     const std::int64_t cur = p.qty.raw;
@@ -141,6 +142,7 @@ class PositionTracker {
                     Qty qty,
                     Notional fee,
                     const Instrument& inst) noexcept {
+    ++changes_;
     Position& p = pos_[id.value];
     const Notional diff =
         inst.inverse()
@@ -161,6 +163,7 @@ class PositionTracker {
   // holding the position, and a position that is never traded pays it all the same. funding() and
   // total_funding() report the part of realized that it is.
   void on_funding(InstrumentId id, Notional amount) noexcept {
+    ++changes_;
     Position& p = pos_[id.value];
     p.realized += amount;
     realized_total_ += amount;
@@ -175,6 +178,15 @@ class PositionTracker {
     return fund_->per[id.value];
   }
 
+  // How many times the tracker changed other than by a mark: a fill, a correction, funding, a
+  // position set or reset, the accounting or a rate.
+  [[nodiscard]] std::uint64_t changes() const noexcept { return changes_; }
+  // The open position's PnL if it were marked at `mid` (mark() does not change it).
+  [[nodiscard]] Notional unrealized_at(InstrumentId id,
+                                       Price mid,
+                                       const Instrument& inst) const noexcept {
+    return revalue(pos_[id.value], mid, inst);
+  }
   // Mark-to-market the open position, in the instrument's settlement currency.
   void mark(InstrumentId id, Price mid, const Instrument& inst) noexcept {
     Position& p = pos_[id.value];
@@ -190,6 +202,7 @@ class PositionTracker {
   // the tracked one when the position stays on the same side, else takes the last mark: valued at
   // an average of 0, a short of 0.0014 BTC is a loss of its whole notional, which trips max_loss.
   void set(InstrumentId id, Qty qty, Price avg_px, const Instrument& inst) noexcept {
+    ++changes_;
     Position& p = pos_[id.value];
     if (!qty.is_zero() && !avg_px.is_positive()) {
       const bool same_side = !p.qty.is_zero() && p.qty.is_negative() == qty.is_negative();
@@ -201,6 +214,7 @@ class PositionTracker {
     set_exposure(id, signed_notional(p, p.last_mark, inst));
   }
   void reset(InstrumentId id) noexcept {
+    ++changes_;
     Position& p = pos_[id.value];
     realized_total_ -= p.realized;
     book(id, &Totals::realized, Notional{} - p.realized);
@@ -219,6 +233,7 @@ class PositionTracker {
   // the totals below are in the reporting currency. A currency whose rate was never set counts as
   // zero. Without one (the default) nothing is converted and every Notional is added as it is.
   void set_accounting(const FxPlan& plan) noexcept {
+    ++changes_;
     ccy_count_ = plan.count;
     for (std::size_t i = 0; i < kMaxInstruments; ++i) ccy_[i] = plan.ccy[i];
     for (auto& r : rate_) r = FxRate{};
@@ -244,6 +259,7 @@ class PositionTracker {
   // The rate of currency `c` (an index of the plan): the totals in it are converted again.
   void set_rate(std::size_t c, FxRate r) noexcept {
     if (c == 0 || c >= kMaxCurrencies) return;
+    ++changes_;
     rate_[c] = r;
     reconvert(c);
   }
@@ -395,6 +411,7 @@ class PositionTracker {
   std::array<Totals, kMaxCurrencies> native_{};
   std::array<Totals, kMaxCurrencies> conv_{};  // native_ at rate_
   Totals conv_total_{};
+  std::uint64_t changes_ = 0;
   // Funding (on_funding), on the heap: it is rare, and the tracker's own layout, which the mark
   // path reads, stays as it was. Copied with the tracker.
   struct Funding {
