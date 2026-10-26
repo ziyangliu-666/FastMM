@@ -168,6 +168,7 @@ ParseStatus ItchDecoder::trade(const MessageHeader& h,
     m->qty = qty;
     m->trade_id = match;
     m->aggressor = aggressor;
+    m->pad_[0] = TradeMsg::kNoAggressor;  // P and Q: neither names the side that took liquidity
     return commit(sink);
   }
 }

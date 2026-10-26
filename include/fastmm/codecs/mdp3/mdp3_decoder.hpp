@@ -65,10 +65,8 @@ struct Mdp3DecoderConfig {
 };
 
 // TradeMsg::pad_[0] marker for CME AggressorSide 0 (no aggressor: opening trades, trades after a
-// pause, implied participation). The core TradeMsg has no "no aggressor" side, so such trades
-// carry aggressor == Side::Buy plus this marker; consumers that model queue depletion should
-// check it.
-inline constexpr std::uint8_t kTradeNoAggressor = 1;
+// pause, implied participation): TradeMsg::kNoAggressor, read with TradeMsg::has_aggressor().
+inline constexpr std::uint8_t kTradeNoAggressor = TradeMsg::kNoAggressor;
 
 struct Mdp3DecoderStats {
   std::uint64_t packets = 0;

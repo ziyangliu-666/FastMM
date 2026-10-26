@@ -11,8 +11,8 @@
 //   X      Order Cancel (1.4.3)              -> OrderCancelL3Msg, canceled_qty = Cancelled Shares
 //   D      Order Delete (1.4.4)              -> OrderCancelL3Msg, canceled_qty 0 (= delete)
 //   U      Order Replace (1.4.5)             -> OrderReplaceL3Msg
-//   P      Trade, non-cross (1.5.1)          -> TradeMsg
-//   Q      Cross Trade (1.5.2)               -> TradeMsg (only when Shares > 0)
+//   P      Trade, non-cross (1.5.1)          -> TradeMsg, TradeMsg::kNoAggressor
+//   Q      Cross Trade (1.5.2)               -> TradeMsg, TradeMsg::kNoAggressor (Shares > 0)
 //   R      Stock Directory (1.2.1)           -> stock locate -> InstrumentId table, no event
 //   S H Y L V W K J h B I N O                -> validated and ignored
 //
@@ -31,7 +31,8 @@
 //
 // Not carried into the engine messages (no field for them): the Attribution of F, the Cross
 // Type of Q and the Buy/Sell Indicator semantics of P (Nasdaq sends 'B' for every P message
-// since 2014-07-14, so TradeMsg::aggressor is not meaningful).
+// since 2014-07-14, so TradeMsg::aggressor is not meaningful and P and Q trades are flagged
+// TradeMsg::kNoAggressor).
 #include "fastmm/codecs/codec.hpp"
 #include "fastmm/codecs/itch/itch_messages.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"

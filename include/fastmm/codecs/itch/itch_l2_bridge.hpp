@@ -11,7 +11,8 @@
 //   E, C            TradeMsg when the execution is printable (E always, C with Printable = Y):
 //                   price of the resting order (E) or the Execution Price (C), aggressor
 //                   opposite to the resting side, trade_id = Match Number
-//   P, Q            TradeMsg as decoded by ItchDecoder
+//   P, Q            TradeMsg as decoded by ItchDecoder: TradeMsg::kNoAggressor, the resting side
+//                   is not known
 //
 // Books start incomplete. An incomplete book is updated but emits nothing. mark_complete()
 // (after GLIMPSE, or before sequence 1) emits a BookSnapshotMsg (EventHeader::kSnapshot) with
@@ -167,7 +168,8 @@ class ItchL2Bridge {
                   Price price,
                   Qty qty,
                   std::uint64_t match,
-                  Side aggressor) noexcept;
+                  Side aggressor,
+                  bool known_aggressor) noexcept;
   bool flush(Slot& s) noexcept;
   bool emit_snapshot(Slot& s) noexcept;
   bool emit_state(ConnState state, std::int32_t reason, InstrumentId id = {}) noexcept;

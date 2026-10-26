@@ -195,13 +195,19 @@ static_assert(sizeof(TradeParties) == 64 && std::is_trivially_copyable_v<TradePa
 // tail: copy *parties() instead.
 struct TradeMsg {
   static constexpr std::uint32_t kSizeWithParties = 192;
+  // pad_[0]: the venue does not say which side took liquidity (a CME trade with AggressorSide 0, an
+  // ITCH trade against a non-displayed order or a cross); `aggressor` is then Side::Buy and means
+  // nothing, so a queue model cannot tell which side's orders the print reached.
+  static constexpr std::uint8_t kNoAggressor = 1;
 
   EventHeader hdr;
   Price price;
   Qty qty;
   std::uint64_t trade_id;
   Side aggressor;
-  std::uint8_t pad_[39];  // pad_[0]: CME's kTradeNoAggressor (codecs/mdp3/mdp3_decoder.hpp)
+  std::uint8_t pad_[39];  // pad_[0]: kNoAggressor
+
+  [[nodiscard]] bool has_aggressor() const noexcept { return pad_[0] != kNoAggressor; }
 
   [[nodiscard]] const TradeParties* parties() const noexcept {
     if (hdr.len < kSizeWithParties) return nullptr;

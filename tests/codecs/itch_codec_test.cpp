@@ -106,6 +106,7 @@ struct DirectConsumer {
     m.qty = qty;
     m.trade_id = match;
     m.aggressor = side;
+    m.pad_[0] = TradeMsg::kNoAggressor;  // on_trade carries P and Q, which name no aggressor
     record(m, EventType::Trade, inst, ts);
   }
 };

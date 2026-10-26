@@ -114,8 +114,16 @@ struct ItchL2Bridge::Consumer {
     Qty aggregate;
     book.execute(h, qty, &aggregate);
     owner.touch(*slot, side, price, aggregate, seq, ts);
-    if (slot->complete && (flags & OrderExecL3Msg::kNonPrintable) == 0)
-      on_trade(slot->id, ts, exec_price.is_zero() ? price : exec_price, qty, match, opposite(side));
+    if (slot->complete && (flags & OrderExecL3Msg::kNonPrintable) == 0) {
+      owner.emit_trade(*slot,
+                       seq,
+                       ts,
+                       exec_price.is_zero() ? price : exec_price,
+                       qty,
+                       match,
+                       opposite(side),
+                       true);
+    }
   }
   void on_cancel(InstrumentId, Timestamp ts, std::uint64_t ref, Qty qty) noexcept {
     L3Book& book = slot->book;
@@ -154,7 +162,7 @@ struct ItchL2Bridge::Consumer {
   void on_trade(
       InstrumentId, Timestamp ts, Price price, Qty qty, std::uint64_t match, Side side) noexcept {
     if (!slot->complete) return;
-    owner.emit_trade(*slot, seq, ts, price, qty, match, side);
+    owner.emit_trade(*slot, seq, ts, price, qty, match, side, false);  // P and Q
   }
   ItchL2Bridge& owner;
   Slot* slot;
@@ -358,7 +366,8 @@ void ItchL2Bridge::emit_trade(const Slot& s,
                               Price price,
                               Qty qty,
                               std::uint64_t match,
-                              Side aggressor) noexcept {
+                              Side aggressor,
+                              bool known_aggressor) noexcept {
   auto* t = sink_.reserve<TradeMsg>();
   if (FASTMM_UNLIKELY(t == nullptr)) {
     ++stats_.overflow;
@@ -372,6 +381,7 @@ void ItchL2Bridge::emit_trade(const Slot& s,
   t->qty = qty;
   t->trade_id = match;
   t->aggressor = aggressor;
+  if (!known_aggressor) t->pad_[0] = TradeMsg::kNoAggressor;
   stamp_header(t->hdr);
   sink_.commit();
   ++stats_.trades;
