@@ -589,4 +589,97 @@ TEST_CASE("codecs.itch_l2_bridge: a delta the sink has no room for is sent with 
   CHECK(l2.best_ask() == Level{px("5.05"), qt(1)});
   CHECK(l2.depth(Side::Sell) == 2);
   CHECK(l2.depth(Side::Buy) == 2);
+
+  // Both sides now take the sparse quantity path. A retry with no new messages must still
+  // publish both updates against the unchanged baseline.
+  while (std::byte* p = ring.try_reserve(128)) {
+    std::memset(p, 0, 128);
+    reinterpret_cast<EventHeader*>(p)->len = 128;
+    reinterpret_cast<EventHeader*>(p)->type = EventType::Timer;
+    ring.commit();
+  }
+  add(5, Side::Buy, "5.01");
+  add(6, Side::Sell, "5.05");
+  bridge.end_datagram();
+  CHECK(bridge.stats().overflow == 2);
+  drain();
+  CHECK(l2.best_bid().qty == qt(1));
+  CHECK(l2.best_ask().qty == qt(1));
+  bridge.end_datagram();
+  drain();
+  CHECK(l2.best_bid().qty == qt(2));
+  CHECK(l2.best_ask().qty == qt(2));
+}
+
+TEST_CASE("codecs.itch_l2_bridge: sparse top updates cross bitmap words and replenish both edges") {
+  for (const std::uint32_t depth : {1U, 64U, 65U, 129U, 256U}) {
+    CAPTURE(depth);
+    ItchL2BridgeConfig cfg;
+    cfg.venue = VenueId{3};
+    cfg.depth = depth;
+    cfg.book.max_orders = 2048;
+    Harness h(cfg);
+    ItchEncoder enc;
+    std::array<std::byte, 64> buf{};
+    auto send = [&](std::size_t n) {
+      REQUIRE(n != 0);
+      h.on_itch({buf.data(), n});
+    };
+    auto price = [](Side side, std::uint32_t i) {
+      return Price::from_raw(10'000'000'000LL + (side == Side::Buy
+                                                     ? -static_cast<std::int64_t>(i)
+                                                     : 1 + static_cast<std::int64_t>(i)) *
+                                                    1'000'000);
+    };
+    auto ref = [](Side side, std::uint32_t i) {
+      return std::uint64_t{1} + i + (side == Side::Buy ? 0U : 512U);
+    };
+    send(enc.stock_directory(buf, kSimLocate, 1, "FMSIM"));
+    for (const Side side : {Side::Buy, Side::Sell})
+      for (std::uint32_t i = 0; i <= depth; ++i)
+        send(enc.add_order(buf, kSimLocate, 1, ref(side, i), side, qt(1), "FMSIM", price(side, i)));
+    h.datagram();
+    h.complete();
+
+    std::vector<std::uint32_t> indices{0, depth - 1};
+    for (const auto i : {63U, 64U, 127U, 128U, 255U})
+      if (i < depth) indices.push_back(i);
+    std::sort(indices.begin(), indices.end());
+    indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+    std::uint64_t next = 2048;
+    for (const Side side : {Side::Buy, Side::Sell})
+      for (const auto i : indices)
+        send(enc.add_order(buf, kSimLocate, 2, next++, side, qt(3), "FMSIM", price(side, i)));
+    const auto before = h.bridge().stats().delta_levels;
+    h.datagram();
+    CHECK(h.bridge().stats().delta_levels - before == 2 * indices.size());
+
+    // A quantity change that cancels itself must not publish a delta or poison the journal.
+    const auto deltas = h.bridge().stats().deltas;
+    send(enc.add_order(buf, kSimLocate, 3, next, Side::Buy, qt(5), "FMSIM", price(Side::Buy, 0)));
+    send(enc.order_delete(buf, kSimLocate, 3, next++));
+    h.datagram();
+    CHECK(h.bridge().stats().deltas == deltas);
+
+    // Empty the last published level: the formerly hidden next level must enter the top.
+    for (const Side side : {Side::Buy, Side::Sell}) {
+      send(enc.order_delete(buf, kSimLocate, 4, ref(side, depth - 1)));
+      const auto extra =
+          std::uint64_t{2048} + indices.size() * (side == Side::Buy ? 0 : 1) + indices.size() - 1;
+      send(enc.order_delete(buf, kSimLocate, 4, extra));
+    }
+    h.datagram();
+
+    // A better sub-penny price enters and pushes out the previous edge, on both sides.
+    for (const Side side : {Side::Buy, Side::Sell}) {
+      const auto p = Price::from_raw(price(side, 0).raw + (side == Side::Buy ? 10'000 : -10'000));
+      send(enc.add_order(buf, kSimLocate, 5, next++, side, qt(2), "FMSIM", p));
+    }
+    h.datagram();
+    CHECK(h.bridge().stats().book_errors == 0);
+    CHECK(h.bridge().stats().overflow == 0);
+    h.incomplete(7);
+    h.glimpse();
+    h.complete();
+  }
 }

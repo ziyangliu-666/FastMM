@@ -43,6 +43,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstring>
 #include <memory>
 #include <optional>
@@ -146,17 +147,19 @@ struct ItchStream {
 ItchStream make_itch_stream(std::size_t n,
                             std::size_t live_lo = 2'000,
                             std::size_t live_hi = 6'000,
-                            std::uint64_t spread = 50) {
+                            std::uint64_t spread = 50,
+                            std::uint16_t locate = 7,
+                            std::uint64_t seed = 11) {
   ItchStream s;
   itch::ItchEncoder enc;
-  Xoshiro256ss rng(11);
+  Xoshiro256ss rng(seed);
   struct Live {
     std::uint64_t ref;
     std::int64_t qty;
     Side side;
   };
   std::vector<Live> live;
-  std::uint64_t next_ref = 1;
+  std::uint64_t next_ref = 1 + (static_cast<std::uint64_t>(locate - 7) << 32U);
   std::uint64_t match = 1;
   std::array<std::byte, 64> buf{};
   auto push = [&](std::size_t len) {
@@ -181,7 +184,7 @@ ItchStream make_itch_stream(std::size_t n,
     if (op <= 1) {
       const Side side = rng.uniform(2) == 0 ? Side::Buy : Side::Sell;
       const auto q = static_cast<std::int64_t>(1 + rng.uniform(20)) * 100;
-      push(enc.add_order(buf, 7, 1, next_ref, side, Qty::from_int(q), "BENCH", price(side)));
+      push(enc.add_order(buf, locate, 1, next_ref, side, Qty::from_int(q), "BENCH", price(side)));
       live.push_back({next_ref++, q, side});
       continue;
     }
@@ -190,17 +193,17 @@ ItchStream make_itch_stream(std::size_t n,
     if (op == 2 || op == 3) {  // execute 100 shares (E or C)
       const std::int64_t q = std::min<std::int64_t>(100, o.qty);
       if (op == 2) {
-        push(enc.order_executed(buf, 7, 1, o.ref, Qty::from_int(q), match++));
+        push(enc.order_executed(buf, locate, 1, o.ref, Qty::from_int(q), match++));
       } else {
         push(enc.order_executed_with_price(
-            buf, 7, 1, o.ref, Qty::from_int(q), match++, kPrice, rng.uniform(2) == 0));
+            buf, locate, 1, o.ref, Qty::from_int(q), match++, kPrice, rng.uniform(2) == 0));
       }
       o.qty -= q;
     } else if (op == 4) {
-      push(enc.order_delete(buf, 7, 1, o.ref));
+      push(enc.order_delete(buf, locate, 1, o.ref));
       o.qty = 0;
     } else {
-      push(enc.order_replace(buf, 7, 1, o.ref, next_ref, Qty::from_int(o.qty), price(o.side)));
+      push(enc.order_replace(buf, locate, 1, o.ref, next_ref, Qty::from_int(o.qty), price(o.side)));
       o.ref = next_ref++;
     }
     if (o.qty == 0) {
@@ -208,7 +211,7 @@ ItchStream make_itch_stream(std::size_t n,
       live.pop_back();
     }
   }
-  for (const Live& o : live) push(enc.order_delete(buf, 7, 1, o.ref));
+  for (const Live& o : live) push(enc.order_delete(buf, locate, 1, o.ref));
   return s;
 }
 
@@ -216,15 +219,18 @@ ItchStream make_itch_stream(std::size_t n,
 
 static void itch_bridge_bench(benchmark::State& state,
                               const L3BookConfig& book,
-                              const ItchStream& stream) {
+                              const ItchStream& stream,
+                              std::uint16_t symbols = 1) {
   auto ring = std::make_unique<MsgRing>(1U << 22);
   venues::EventSink sink(ring.get(), venues::SinkPolicy::Drop);
   itch::ItchL2BridgeConfig cfg;
   cfg.book = book;
   auto bridge = std::make_unique<itch::ItchL2Bridge>(sink, cfg);
-  bridge->add_instrument("BENCH", InstrumentId{0});
-  bridge->map_locate(7, InstrumentId{0});
-  bridge->mark_complete(InstrumentId{0});
+  for (std::uint16_t symbol = 0; symbol < symbols; ++symbol) {
+    bridge->add_instrument("", InstrumentId{symbol});
+    bridge->map_locate(static_cast<std::uint16_t>(7 + symbol), InstrumentId{symbol});
+    bridge->mark_complete(InstrumentId{symbol});
+  }
   drain(*ring);
   constexpr int kPerDatagram = 8;
   const std::size_t n = stream.msgs.size();
@@ -292,6 +298,41 @@ static void BM_ItchL2Bridge_Message_LargeBookSmallSet(benchmark::State& state) {
   itch_bridge_bench(state, L3BookConfig{}, small_stream());
 }
 BENCHMARK(BM_ItchL2Bridge_Message_LargeBookSmallSet);
+
+// Keep the total resting population and input size roughly fixed, but interleave independent
+// books. Eight messages now dirty several books: deltas_per_msg exposes the lost amortisation
+// of extracting and publishing their tops. Every component stream ends empty, so the merged
+// stream remains replayable without a timed reset.
+static void BM_ItchL2Bridge_Message_MultiSymbol(benchmark::State& state) {
+  const auto symbols = static_cast<std::uint16_t>(state.range(0));
+  std::vector<ItchStream> streams;
+  std::vector<std::size_t> cursor(symbols, 0);
+  std::size_t remaining = 0;
+  for (std::uint16_t i = 0; i < symbols; ++i) {
+    streams.push_back(make_itch_stream((1U << 18) / symbols,
+                                       2'000 / symbols,
+                                       6'000 / symbols,
+                                       50,
+                                       static_cast<std::uint16_t>(7 + i),
+                                       11 + i));
+    remaining += streams.back().msgs.size();
+  }
+  ItchStream merged;
+  merged.msgs.reserve(remaining);
+  merged.len.reserve(remaining);
+  Xoshiro256ss rng(73);
+  while (remaining != 0) {
+    const auto i = rng.uniform(symbols);
+    if (cursor[i] == streams[i].msgs.size()) continue;
+    merged.msgs.push_back(streams[i].msgs[cursor[i]]);
+    merged.len.push_back(streams[i].len[cursor[i]++]);
+    --remaining;
+  }
+  L3BookConfig cfg;
+  cfg.max_orders = std::bit_ceil(std::size_t{8'192} / symbols);
+  itch_bridge_bench(state, cfg, merged, symbols);
+}
+BENCHMARK(BM_ItchL2Bridge_Message_MultiSymbol)->Arg(1)->Arg(10)->Arg(100);
 
 static void BM_MoldUdp64_FramePacket(benchmark::State& state) {
   itch::ItchEncoder enc;

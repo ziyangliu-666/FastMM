@@ -224,7 +224,10 @@ class L3Book {
 
   // ---- mutation ----------------------------------------------------------------------------
 
-  L3Error add(std::uint64_t ref, Side side, Price price, Qty qty) noexcept {
+  // Optional aggregate outputs let a price-level publisher reuse the level just updated,
+  // without looking its price up a second time. They are written only on success.
+  L3Error add(
+      std::uint64_t ref, Side side, Price price, Qty qty, Qty* level_qty = nullptr) noexcept {
     if (FASTMM_UNLIKELY(!qty.is_positive())) return L3Error::BadQty;
     const std::int64_t t = price.raw / tick_.raw;
     if (FASTMM_UNLIKELY(price.raw % tick_.raw != 0)) return L3Error::OffTick;
@@ -247,11 +250,14 @@ class L3Book {
     const std::int64_t rel = t - base_tick_;
     if (FASTMM_LIKELY(static_cast<std::uint64_t>(rel) < static_cast<std::uint64_t>(window_))) {
       add_in_window(side, rel, OrderHandle{h}, o);
+      if (level_qty != nullptr) *level_qty = level_at(side, rel).qty;
     } else if (FASTMM_UNLIKELY(!add_overflow(OrderHandle{h}, o, t) &&
                                !add_after_recentre(OrderHandle{h}, o, t))) {
       by_ref_.erase(ref);
       release(h);
       return L3Error::OutOfWindow;
+    } else if (level_qty != nullptr) {
+      *level_qty = find_level(side, t)->qty;
     }
     ++order_count_;
     ++seq_;
@@ -283,14 +289,16 @@ class L3Book {
   }
 
   // Handle forms: `h` must come from find() with no mutation in between.
-  L3Error execute(OrderHandle h, Qty qty) noexcept {
+  L3Error execute(OrderHandle h, Qty qty, Qty* level_qty = nullptr) noexcept {
     const L3Order& o = orders_[h.idx];
-    reduce(h, qty >= o.qty ? o.qty : qty);
+    const Qty remaining = reduce(h, qty >= o.qty ? o.qty : qty);
+    if (level_qty != nullptr) *level_qty = remaining;
     return L3Error::None;
   }
-  L3Error cancel(OrderHandle h, Qty qty = Qty{}) noexcept {
+  L3Error cancel(OrderHandle h, Qty qty = Qty{}, Qty* level_qty = nullptr) noexcept {
     const L3Order& o = orders_[h.idx];
-    reduce(h, (qty.is_zero() || qty >= o.qty) ? o.qty : qty);
+    const Qty remaining = reduce(h, (qty.is_zero() || qty >= o.qty) ? o.qty : qty);
+    if (level_qty != nullptr) *level_qty = remaining;
     return L3Error::None;
   }
 
@@ -346,6 +354,28 @@ class L3Book {
 
   [[nodiscard]] Level best_bid() const noexcept { return best_level(Side::Buy); }
   [[nodiscard]] Level best_ask() const noexcept { return best_level(Side::Sell); }
+  // First occupied level strictly worse than an existing, tick-aligned price. A publisher
+  // that removes a top level can replenish its edge with one search, rather than walking
+  // every better level again. Ring movement does not invalidate the price.
+  [[nodiscard]] Level next_level(Side side, Price after) const noexcept {
+    const auto s = static_cast<std::size_t>(side);
+    const std::int64_t t = after.raw / tick_.raw;
+    FASTMM_ASSERT(after.raw % tick_.raw == 0);
+    const std::int64_t rel = t - base_tick_;
+    const std::int64_t idx = side == Side::Buy ? next_set_down(s, std::min(rel - 1, window_ - 1))
+                                               : next_set_up(s, std::max(rel + 1, std::int64_t{0}));
+    Level out{};
+    if (idx != kNone) out = Level{price_of(base_tick_ + idx), level_at(side, idx).qty};
+    if (ov_n_[s] != 0) {
+      const std::size_t i = ov_lower_bound(side, t);
+      if (i != 0) {
+        const OvLevel& o = ov_[s][i - 1];
+        const Price price = price_of(o.tick);
+        if (out.qty.is_zero() || better(side, price, out.price)) out = Level{price, o.lvl.qty};
+      }
+    }
+    return out;
+  }
   [[nodiscard]] Price mid() const noexcept {
     const Level b = best_bid();
     const Level a = best_ask();
@@ -740,7 +770,7 @@ class L3Book {
 
   // ---- reduce --------------------------------------------------------------------------------
 
-  void reduce(OrderHandle h, Qty by) noexcept {
+  Qty reduce(OrderHandle h, Qty by) noexcept {
     L3Order& o = orders_[h.idx];
     const Side side = o.side;
     const std::int64_t t = o.price.raw / tick_.raw;
@@ -750,7 +780,7 @@ class L3Book {
       L3Level& lvl = level_at(side, rel);
       o.qty -= by;
       lvl.qty -= by;
-      if (o.qty.is_positive()) return;
+      if (o.qty.is_positive()) return lvl.qty;
       unlink(lvl, o);
       free_order(h, o);
       if (lvl.count == 0) {
@@ -760,9 +790,9 @@ class L3Book {
             ov_n_[static_cast<std::size_t>(side)] != 0)
           note_touch_out();
       }
-      return;
+      return lvl.qty;
     }
-    reduce_overflow(h, o, t, by);
+    return reduce_overflow(h, o, t, by);
   }
   FASTMM_FORCE_INLINE void free_order(OrderHandle h, const L3Order& o) noexcept {
     by_ref_.erase(o.ref);
@@ -829,7 +859,7 @@ class L3Book {
     return add_overflow(h, o, t);
   }
 
-  FASTMM_NOINLINE void reduce_overflow(OrderHandle h, L3Order& o, std::int64_t t, Qty by) noexcept {
+  FASTMM_NOINLINE Qty reduce_overflow(OrderHandle h, L3Order& o, std::int64_t t, Qty by) noexcept {
     const Side side = o.side;
     const auto s = static_cast<std::size_t>(side);
     OvLevel* ov = ov_[s].get();
@@ -838,9 +868,10 @@ class L3Book {
     L3Level& lvl = ov[i].lvl;
     o.qty -= by;
     lvl.qty -= by;
+    const Qty remaining = lvl.qty;  // the store may move in pay_rent()
     if (o.qty.is_positive()) {
       pay_rent();
-      return;
+      return remaining;
     }
     unlink(lvl, o);
     free_order(h, o);
@@ -850,6 +881,7 @@ class L3Book {
       if (i == ov_n_[s] && ov_n_[s] != 0 && best_[s] == kNone) note_touch_out();
     }
     pay_rent();
+    return remaining;
   }
 
   // ---- recentre ----------------------------------------------------------------------------

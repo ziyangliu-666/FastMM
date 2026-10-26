@@ -27,7 +27,7 @@
 // passed to set_venue_seq() (the MoldUDP64 / SoupBinTCP sequence number of the message).
 //
 // decode_into() writes into any sink with EventSink's reserve<M>() / commit(); ScratchSink holds
-// the one event of a call for callers that consume it in place (ItchL2Bridge).
+// the one event of a call for callers that consume it in place.
 //
 // Not carried into the engine messages (no field for them): the Attribution of F, the Cross
 // Type of Q and the Buy/Sell Indicator semantics of P (Nasdaq sends 'B' for every P message
@@ -108,7 +108,10 @@ class ItchDecoder {
   void set_venue_seq(std::uint64_t seq) noexcept { venue_seq_ = seq; }
 
   ParseStatus decode(const FrameView& frame, std::int64_t rx_ts, venues::EventSink& sink) noexcept;
-  // Same as decode() into venues::EventSink or ScratchSink (explicitly instantiated).
+  // Writes to a reserve<M>() / commit() sink, or calls a direct consumer's on_add,
+  // on_execute, on_cancel, on_replace and on_trade with the instrument, exchange timestamp
+  // and normalized fields. Direct consumers supply their own sequence/routing context;
+  // both paths share all validation, mapping and decoder counters.
   template <class Sink>
   ParseStatus decode_into(const FrameView& frame, std::int64_t rx_ts, Sink& sink) noexcept;
 
@@ -124,6 +127,9 @@ class ItchDecoder {
            std::int64_t rx_ts) noexcept;
   template <class Sink>
   ParseStatus commit(Sink& sink) noexcept;
+  [[nodiscard]] Timestamp exchange_time(const MessageHeader& h) const noexcept {
+    return Timestamp{midnight_ns_ + static_cast<std::int64_t>(h.timestamp.get())};
+  }
   bool lookup(const MessageHeader& h, InstrumentId& out) noexcept;
 
   template <class Sink>
@@ -169,3 +175,5 @@ class ItchDecoder {
 static_assert(Decoder<ItchDecoder>);
 
 }  // namespace fastmm::codecs::itch
+
+#include "fastmm/codecs/itch/itch_decoder_impl.hpp"

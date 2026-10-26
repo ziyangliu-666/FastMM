@@ -4,6 +4,9 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+### Changed
+- codecs: `ItchL2Bridge` keeps each book's top up to date as it applies messages instead of reading it from the L3 book for every delta.
+
 ## [0.9.0] - 2026-10-24
 
 A live session can now be replayed from any point: the journal records every outside input,

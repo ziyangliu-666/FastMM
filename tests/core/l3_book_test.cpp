@@ -58,12 +58,15 @@ void check_equal(const Book& b, const Oracle& o) {
     const auto& m = o.side[static_cast<int>(s)];
     REQUIRE(b.depth(s) == m.size());
     std::size_t i = 0;
+    Level previous{};
     auto visit = [&](std::int64_t price, const std::deque<OOrder>& dq) {
       const Level l = b.level(s, i++);
       REQUIRE(l.price == px(price));
       std::int64_t sum = 0;
       for (auto& x : dq) sum += x.qty;
       REQUIRE(l.qty == qt(sum));
+      if (previous.qty.is_positive()) REQUIRE(b.next_level(s, previous.price) == l);
+      previous = l;
       // FIFO order at the level
       std::vector<std::uint64_t> refs;
       b.for_each_order_at(s, px(price), [&](const L3Order& ord) { refs.push_back(ord.ref); });
@@ -75,8 +78,34 @@ void check_equal(const Book& b, const Oracle& o) {
     } else {
       for (auto it = m.begin(); it != m.end(); ++it) visit(it->first, it->second);
     }
+    if (previous.qty.is_positive()) CHECK(b.next_level(s, previous.price).qty.is_zero());
   }
   REQUIRE(b.order_count() == o.where.size());
+}
+
+TEST_CASE("core.l3_book: deletes from the middle of a wrapped index cluster") {
+  Book b(kTick, L3BookConfig{.price_window_ticks = 1024, .max_orders = 16});
+  std::vector<std::uint64_t> refs;
+  // A 32-slot index: force the cluster to cross its last slot, then delete from its middle.
+  for (std::uint64_t ref = 1; refs.size() < 12; ++ref)
+    if ((ref * 0x9E3779B97F4A7C15ULL) >> 59U == 31) refs.push_back(ref);
+  for (const auto ref : refs) REQUIRE(b.add(ref, Side::Buy, px(100), qt(1)) == L3Error::None);
+  while (!refs.empty()) {
+    const auto index = refs.size() / 2;
+    const auto ref = refs[index];
+    const auto h = b.find(ref);
+    REQUIRE(h.valid());
+    Qty aggregate;
+    REQUIRE(b.cancel(h, Qty{}, &aggregate) == L3Error::None);
+    refs.erase(refs.begin() + static_cast<std::ptrdiff_t>(index));
+    CHECK(aggregate == qt(static_cast<std::int64_t>(refs.size())));
+    CHECK(b.order(ref) == nullptr);
+    for (std::size_t i = 0; i < refs.size(); ++i) {
+      REQUIRE(b.order(refs[i]) != nullptr);
+      CHECK(b.qty_ahead(refs[i]) == qt(static_cast<std::int64_t>(i)));
+    }
+  }
+  CHECK(b.order_count() == 0);
 }
 }  // namespace
 
@@ -422,4 +451,35 @@ TEST_CASE("core.l3_book: property test with stub quotes and a drifting market in
 
 TEST_CASE("core.l3_book: property test with a jumping market through negative prices") {
   for (std::uint32_t seed = 1; seed <= 60; ++seed) run_oracle(seed, false, true);
+}
+
+TEST_CASE("core.l3_book: mutations return the price aggregate across window and overflow moves") {
+  Book b(kTick, kCfg);
+  REQUIRE(b.add(1, Side::Buy, px(10000), qt(1)) == L3Error::None);
+  REQUIRE(b.add(2, Side::Sell, px(10001), qt(1)) == L3Error::None);
+  Qty aggregate;
+  std::uint64_t ref = 3;
+  for (const auto price : {10001, 12000, 10, 16000}) {
+    CAPTURE(price);
+    for (int i = 0; i < 8; ++i) {
+      const auto first = ref++;
+      const auto second = ref++;
+      const Qty base = price == 10001 ? qt(1) : Qty{};
+      REQUIRE(b.add(first, Side::Sell, px(price), qt(3), &aggregate) == L3Error::None);
+      CHECK(aggregate == base + qt(3));
+      REQUIRE(b.add(second, Side::Sell, px(price), qt(5), &aggregate) == L3Error::None);
+      CHECK(aggregate == base + qt(8));
+      REQUIRE(b.execute(b.find(first), qt(1), &aggregate) == L3Error::None);
+      CHECK(aggregate == base + qt(7));
+      REQUIRE(b.cancel(b.find(first), Qty{}, &aggregate) == L3Error::None);
+      CHECK(aggregate == base + qt(5));
+      REQUIRE(b.cancel(b.find(second), Qty{}, &aggregate) == L3Error::None);
+      CHECK(aggregate == base);
+    }
+  }
+  aggregate = qt(99);
+  CHECK(b.add(1, Side::Buy, px(10000), qt(1), &aggregate) == L3Error::DuplicateRef);
+  CHECK(aggregate == qt(99));
+  CHECK(b.add(ref, Side::Buy, px(10000), Qty{}, &aggregate) == L3Error::BadQty);
+  CHECK(aggregate == qt(99));
 }

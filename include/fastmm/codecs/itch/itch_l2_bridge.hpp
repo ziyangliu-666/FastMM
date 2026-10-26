@@ -131,12 +131,19 @@ class ItchL2Bridge {
 
  private:
   struct Slot;
+  struct Consumer;
   static constexpr std::uint16_t kNoSlot = 0xFFFF;
 
   [[nodiscard]] Slot* slot_of(InstrumentId id) const noexcept;
-  void touch(Slot& s, Side side, Price price, std::uint64_t seq, Timestamp exch_ts) noexcept;
+  void touch(Slot& s,
+             Side side,
+             Price price,
+             Qty level_qty,
+             std::uint64_t seq,
+             Timestamp exch_ts) noexcept;
   void emit_trade(const Slot& s,
-                  const EventHeader& src,
+                  std::uint64_t seq,
+                  Timestamp exch_ts,
                   Price price,
                   Qty qty,
                   std::uint64_t match,
@@ -152,12 +159,10 @@ class ItchL2Bridge {
   Price tick_;
   L3BookConfig book_cfg_;
   ItchDecoder decoder_;
-  ScratchSink scratch_;
   DatagramStamp stamp_{};
   std::unique_ptr<std::uint16_t[]> locate_slot_;
   std::vector<std::unique_ptr<Slot>> slots_;
   std::vector<std::uint16_t> dirty_;  // capacity = slots_.size()
-  std::unique_ptr<Level[]> top_;      // 2 x depth: current top, bids then asks
   std::unique_ptr<Level[]> changes_;  // 4 x depth
   std::size_t incomplete_ = 0;
   ItchL2BridgeStats stats_{};

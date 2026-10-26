@@ -4,23 +4,37 @@
 #include "fastmm/core/config_macros.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 
 namespace fastmm::codecs::itch {
 
 struct ItchL2Bridge::Slot {
+  // What changed in a side's top since the last emission. While no level entered or left it,
+  // the published and current tops have the same prices at the same indices, and `words` marks
+  // the indices whose quantity changed. Once one did (`ranks_changed`), flush() compares them.
+  struct Changes {
+    std::uint64_t words[(kMaxDepth + 63) / 64]{};
+    bool ranks_changed = false;
+  };
   Slot(InstrumentId i, std::uint16_t idx, Price tick, const L3BookConfig& cfg, std::uint32_t depth)
-      : id(i), index(idx), book(tick, cfg), pub(new Level[2 * static_cast<std::size_t>(depth)]) {}
+      : id(i), index(idx), book(tick, cfg), pub(new Level[4 * static_cast<std::size_t>(depth)]) {}
 
   [[nodiscard]] Level* published(Side side, std::uint32_t depth) const noexcept {
     return pub.get() + (side == Side::Buy ? 0 : depth);
   }
 
+  [[nodiscard]] Level* current(Side side, std::uint32_t depth) const noexcept {
+    return pub.get() + (side == Side::Buy ? 2 * depth : 3 * depth);
+  }
+
   InstrumentId id;
   std::uint16_t index;  // in slots_
   L3Book book;
-  std::unique_ptr<Level[]> pub;  // top last emitted: bids [0, depth), asks [depth, 2 x depth)
+  std::unique_ptr<Level[]> pub;  // published bids and asks, then the current ones
   std::uint32_t pub_n[2] = {0, 0};
+  std::uint32_t current_n[2] = {0, 0};
+  Changes changed[2];
   std::uint64_t first_seq = 0;  // first message applied since the last emission
   std::uint64_t last_seq = 0;   // last message applied
   std::uint64_t prev_u = 0;     // last_update_id of the last emission
@@ -64,6 +78,88 @@ std::uint32_t diff_levels(Side side,
 
 }  // namespace
 
+// The decoder's direct consumer: it applies each book message to the L3 book and the current top
+// as the decoder validates it, with no engine message in between. Only published events get a
+// header.
+struct ItchL2Bridge::Consumer {
+  Consumer(ItchL2Bridge& bridge, Slot* book_slot, std::uint64_t sequence)
+      : owner(bridge), slot(book_slot), seq(sequence) {}
+  void on_add(
+      InstrumentId, Timestamp ts, std::uint64_t ref, Side side, Price price, Qty qty) noexcept {
+    Qty aggregate;
+    if (FASTMM_UNLIKELY(slot->book.add(ref, side, price, qty, &aggregate) != L3Error::None)) {
+      ++owner.stats_.book_errors;
+      return;
+    }
+    owner.touch(*slot, side, price, aggregate, seq, ts);
+  }
+  void on_execute(InstrumentId,
+                  Timestamp ts,
+                  std::uint64_t ref,
+                  Qty qty,
+                  Price exec_price,
+                  std::uint64_t match,
+                  std::uint8_t flags) noexcept {
+    L3Book& book = slot->book;
+    const auto h = book.find(ref);
+    if (FASTMM_UNLIKELY(!h.valid())) {
+      ++owner.stats_.book_errors;
+      return;
+    }
+    const Side side = book.at(h).side;
+    const Price price = book.at(h).price;
+    Qty aggregate;
+    book.execute(h, qty, &aggregate);
+    owner.touch(*slot, side, price, aggregate, seq, ts);
+    if (slot->complete && (flags & OrderExecL3Msg::kNonPrintable) == 0)
+      on_trade(slot->id, ts, exec_price.is_zero() ? price : exec_price, qty, match, opposite(side));
+  }
+  void on_cancel(InstrumentId, Timestamp ts, std::uint64_t ref, Qty qty) noexcept {
+    L3Book& book = slot->book;
+    const auto h = book.find(ref);
+    if (FASTMM_UNLIKELY(!h.valid())) {
+      ++owner.stats_.book_errors;
+      return;
+    }
+    const Side side = book.at(h).side;
+    const Price price = book.at(h).price;
+    Qty aggregate;
+    book.cancel(h, qty, &aggregate);
+    owner.touch(*slot, side, price, aggregate, seq, ts);
+  }
+  void on_replace(InstrumentId,
+                  Timestamp ts,
+                  std::uint64_t old_ref,
+                  std::uint64_t new_ref,
+                  Price price,
+                  Qty qty) noexcept {
+    L3Book& book = slot->book;
+    const auto h = book.find(old_ref);
+    if (FASTMM_UNLIKELY(!h.valid())) {
+      ++owner.stats_.book_errors;
+      return;
+    }
+    const Side side = book.at(h).side;
+    const Price before = book.at(h).price;
+    Qty aggregate;
+    book.cancel(h, Qty{}, &aggregate);
+    owner.touch(*slot, side, before, aggregate, seq, ts);
+    if (FASTMM_UNLIKELY(book.add(new_ref, side, price, qty, &aggregate) != L3Error::None)) {
+      ++owner.stats_.book_errors;
+      return;
+    }
+    owner.touch(*slot, side, price, aggregate, seq, ts);
+  }
+  void on_trade(
+      InstrumentId, Timestamp ts, Price price, Qty qty, std::uint64_t match, Side side) noexcept {
+    if (!slot->complete) return;
+    owner.emit_trade(*slot, seq, ts, price, qty, match, side);
+  }
+  ItchL2Bridge& owner;
+  Slot* slot;
+  std::uint64_t seq;
+};
+
 ItchL2Bridge::ItchL2Bridge(venues::EventSink& sink, const ItchL2BridgeConfig& cfg)
     : sink_(sink),
       venue_(cfg.venue),
@@ -72,7 +168,6 @@ ItchL2Bridge::ItchL2Bridge(venues::EventSink& sink, const ItchL2BridgeConfig& cf
       book_cfg_(cfg.book),
       decoder_(cfg.venue),
       locate_slot_(new std::uint16_t[ItchDecoder::kLocateSlots]),
-      top_(new Level[2 * static_cast<std::size_t>(cfg.depth)]),
       changes_(new Level[4 * static_cast<std::size_t>(cfg.depth)]) {
   FASTMM_CHECK(cfg.depth >= 1 && cfg.depth <= kMaxDepth);
   std::fill_n(locate_slot_.get(), ItchDecoder::kLocateSlots, kNoSlot);
@@ -160,10 +255,10 @@ venues::ParseStatus ItchL2Bridge::on_itch_message(std::uint64_t seq,
       slots_[slot_idx]->book.prefetch(nasdaq::load_be64(msg.data() + 11));
   }
   stamp_ = stamp;
-  scratch_.reset();
   decoder_.set_venue_seq(seq);
   const std::uint64_t mapped_before = decoder_.stats().directory_mapped;
-  const venues::ParseStatus st = decoder_.decode_into(frame, stamp.recv_ts.ns, scratch_);
+  Consumer consumer(*this, slot_idx == kNoSlot ? nullptr : slots_[slot_idx].get(), seq);
+  const venues::ParseStatus st = decoder_.decode_into(frame, stamp.recv_ts.ns, consumer);
   if (FASTMM_UNLIKELY(type == 'R' || type == 'S')) {
     if (st != venues::ParseStatus::Ignored || msg.size() < sizeof(SystemEvent)) return st;
     if (type == 'S') {
@@ -180,106 +275,64 @@ venues::ParseStatus ItchL2Bridge::on_itch_message(std::uint64_t seq,
     }
     return st;
   }
-  EventHeader* ev = scratch_.event();
-  if (ev == nullptr) return st;
-  Slot& s = *slots_[slot_idx];
-  L3Book& book = s.book;
-  switch (ev->type) {
-    case EventType::OrderAddL3: {
-      const auto& m = msg_cast<OrderAddL3Msg>(ev);
-      if (FASTMM_UNLIKELY(book.add(m.order_ref, m.side, m.price, m.qty) != L3Error::None)) {
-        ++stats_.book_errors;
-        break;
-      }
-      touch(s, m.side, m.price, seq, ev->exch_ts);
-      break;
-    }
-    case EventType::OrderExecL3: {
-      const auto& m = msg_cast<OrderExecL3Msg>(ev);
-      const L3Book::OrderHandle h = book.find(m.order_ref);
-      if (FASTMM_UNLIKELY(!h.valid())) {
-        ++stats_.book_errors;
-        break;
-      }
-      const Side side = book.at(h).side;
-      const Price price = book.at(h).price;
-      book.execute(h, m.exec_qty);
-      touch(s, side, price, seq, ev->exch_ts);
-      if (s.complete && m.printable()) {
-        emit_trade(s,
-                   *ev,
-                   m.exec_price.is_zero() ? price : m.exec_price,
-                   m.exec_qty,
-                   m.match_id,
-                   opposite(side));
-      }
-      break;
-    }
-    case EventType::OrderCancelL3: {
-      const auto& m = msg_cast<OrderCancelL3Msg>(ev);
-      const L3Book::OrderHandle h = book.find(m.order_ref);
-      if (FASTMM_UNLIKELY(!h.valid())) {
-        ++stats_.book_errors;
-        break;
-      }
-      const Side side = book.at(h).side;
-      const Price price = book.at(h).price;
-      book.cancel(h, m.canceled_qty);
-      touch(s, side, price, seq, ev->exch_ts);
-      break;
-    }
-    case EventType::OrderReplaceL3: {
-      const auto& m = msg_cast<OrderReplaceL3Msg>(ev);
-      const L3Book::OrderHandle h = book.find(m.old_order_ref);
-      if (FASTMM_UNLIKELY(!h.valid())) {
-        ++stats_.book_errors;
-        break;
-      }
-      const Side side = book.at(h).side;
-      const Price price = book.at(h).price;
-      book.cancel(h);
-      touch(s, side, price, seq, ev->exch_ts);
-      if (FASTMM_UNLIKELY(book.add(m.new_order_ref, side, m.price, m.qty) != L3Error::None)) {
-        ++stats_.book_errors;
-        break;
-      }
-      touch(s, side, m.price, seq, ev->exch_ts);
-      break;
-    }
-    case EventType::Trade: {
-      if (!s.complete) break;
-      stamp_header(*ev);
-      if (FASTMM_UNLIKELY(!sink_.push(*ev))) {
-        ++stats_.overflow;
-        break;
-      }
-      ++stats_.trades;
-      break;
-    }
-    default:
-      break;
-  }
   return st;
 }
 
 void ItchL2Bridge::touch(
-    Slot& s, Side side, Price price, std::uint64_t seq, Timestamp exch_ts) noexcept {
+    Slot& s, Side side, Price price, Qty level_qty, std::uint64_t seq, Timestamp exch_ts) noexcept {
   if (!s.pending) {
     s.pending = true;
     s.first_seq = seq;
   }
   s.last_seq = seq;
   s.last_exch_ts = exch_ts;
-  if (!s.complete || s.dirty) return;
+  if (!s.complete) return;
   const auto si = static_cast<std::size_t>(side);
-  const std::uint32_t n = s.pub_n[si];
-  if (n == depth_ && better(side, s.published(side, depth_)[n - 1].price, price)) return;
+  auto& changed = s.changed[si];
+  std::uint32_t& n = s.current_n[si];
+  Level* now = s.current(side, depth_);
+  if (n == depth_ && better(side, now[n - 1].price, price)) return;
+  std::uint32_t lo = 0;
+  std::uint32_t hi = n;
+  while (lo < hi) {
+    const std::uint32_t mid = lo + (hi - lo) / 2;
+    if (better(side, now[mid].price, price))
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  if (lo < n && now[lo].price == price) {
+    if (now[lo].qty == level_qty) return;
+    if (level_qty.is_positive()) {
+      now[lo].qty = level_qty;
+      if (!changed.ranks_changed) changed.words[lo / 64] |= std::uint64_t{1} << (lo % 64);
+    } else {
+      const bool full = n == depth_;
+      --n;
+      std::memmove(now + lo, now + lo + 1, sizeof(Level) * (n - lo));
+      if (full) {
+        const Level next = n != 0 ? s.book.next_level(side, now[n - 1].price)
+                                  : (side == Side::Buy ? s.book.best_bid() : s.book.best_ask());
+        if (next.qty.is_positive()) now[n++] = next;
+      }
+      changed.ranks_changed = true;
+    }
+  } else {
+    if (level_qty.is_zero() || lo == depth_) return;
+    const std::uint32_t nn = std::min(n + 1, depth_);
+    std::memmove(now + lo + 1, now + lo, sizeof(Level) * (nn - lo - 1));
+    now[lo] = Level{price, level_qty};
+    n = nn;
+    changed.ranks_changed = true;
+  }
+  if (s.dirty) return;
   s.dirty = true;
   dirty_.push_back(s.index);
 }
 
 void ItchL2Bridge::emit_trade(const Slot& s,
-                              const EventHeader& src,
+                              std::uint64_t seq,
+                              Timestamp exch_ts,
                               Price price,
                               Qty qty,
                               std::uint64_t match,
@@ -291,8 +344,8 @@ void ItchL2Bridge::emit_trade(const Slot& s,
   }
   *t = TradeMsg{};
   init_header(*t, EventType::Trade, s.id, venue_);
-  t->hdr.venue_seq = src.venue_seq;
-  t->hdr.exch_ts = src.exch_ts;
+  t->hdr.venue_seq = seq;
+  t->hdr.exch_ts = exch_ts;
   t->price = price;
   t->qty = qty;
   t->trade_id = match;
@@ -313,16 +366,35 @@ void ItchL2Bridge::end_datagram() noexcept {
 }
 
 bool ItchL2Bridge::flush(Slot& s) noexcept {
-  Level* now_b = top_.get();
-  Level* now_a = top_.get() + depth_;
-  const auto nb = static_cast<std::uint32_t>(s.book.top_levels(Side::Buy, {now_b, depth_}));
-  const auto na = static_cast<std::uint32_t>(s.book.top_levels(Side::Sell, {now_a, depth_}));
+  Level* now_b = s.current(Side::Buy, depth_);
+  Level* now_a = s.current(Side::Sell, depth_);
+  // The current top is maintained by mutations. Quantities keep their published indices
+  // until a rank changes, so that common case emits only the marked slots, already in order.
+  auto collect = [&](Side side, const Level* now, Level* out) {
+    const auto si = static_cast<std::size_t>(side);
+    const auto& changed = s.changed[si];
+    const Level* pub = s.published(side, depth_);
+    if (changed.ranks_changed)
+      return diff_levels(side, pub, s.pub_n[si], now, s.current_n[si], out);
+    std::uint32_t count = 0;
+    for (std::size_t word = 0; word < (depth_ + 63) / 64; ++word) {
+      std::uint64_t bits = changed.words[word];
+      while (bits != 0) {
+        const auto i = word * 64 + static_cast<std::size_t>(std::countr_zero(bits));
+        if (now[i].qty != pub[i].qty) out[count++] = now[i];
+        bits &= bits - 1;
+      }
+    }
+    return count;
+  };
+  const std::uint32_t nb = s.current_n[0];
+  const std::uint32_t na = s.current_n[1];
   Level* chg = changes_.get();
-  const std::uint32_t cb =
-      diff_levels(Side::Buy, s.published(Side::Buy, depth_), s.pub_n[0], now_b, nb, chg);
-  const std::uint32_t ca =
-      diff_levels(Side::Sell, s.published(Side::Sell, depth_), s.pub_n[1], now_a, na, chg + cb);
+  const std::uint32_t cb = collect(Side::Buy, now_b, chg);
+  const std::uint32_t ca = collect(Side::Sell, now_a, chg + cb);
   if (cb + ca == 0) {
+    s.changed[0] = {};
+    s.changed[1] = {};
     s.dirty = false;
     return true;
   }
@@ -348,8 +420,27 @@ bool ItchL2Bridge::flush(Slot& s) noexcept {
   sink_.commit();
   ++stats_.deltas;
   stats_.delta_levels += cb + ca;
-  std::memcpy(s.published(Side::Buy, depth_), now_b, sizeof(Level) * nb);
-  std::memcpy(s.published(Side::Sell, depth_), now_a, sizeof(Level) * na);
+  // A failed reservation leaves both the publication baseline and the journal intact.
+  auto publish = [&](Side side, const Level* now, std::uint32_t n) {
+    const auto si = static_cast<std::size_t>(side);
+    auto& changed = s.changed[si];
+    Level* pub = s.published(side, depth_);
+    if (changed.ranks_changed) {
+      std::memcpy(pub, now, sizeof(Level) * n);
+    } else {
+      for (std::size_t word = 0; word < (depth_ + 63) / 64; ++word) {
+        std::uint64_t bits = changed.words[word];
+        while (bits != 0) {
+          const auto i = word * 64 + static_cast<std::size_t>(std::countr_zero(bits));
+          pub[i] = now[i];
+          bits &= bits - 1;
+        }
+      }
+    }
+    changed = {};
+  };
+  publish(Side::Buy, now_b, nb);
+  publish(Side::Sell, now_a, na);
   s.pub_n[0] = nb;
   s.pub_n[1] = na;
   s.prev_u = s.last_seq;
@@ -389,9 +480,15 @@ bool ItchL2Bridge::emit_snapshot(Slot& s) noexcept {
   ++stats_.snapshots;
   s.pub_n[0] = nb;
   s.pub_n[1] = na;
+  s.current_n[0] = nb;
+  s.current_n[1] = na;
+  std::memcpy(s.current(Side::Buy, depth_), pb, sizeof(Level) * nb);
+  std::memcpy(s.current(Side::Sell, depth_), pa, sizeof(Level) * na);
   s.prev_u = s.last_seq;
   s.pending = false;
   s.dirty = false;
+  s.changed[0] = {};
+  s.changed[1] = {};
   return true;
 }
 
@@ -433,8 +530,11 @@ void ItchL2Bridge::mark_incomplete(std::int32_t reason_code) noexcept {
     s->book.clear();
     s->complete = false;
     s->dirty = false;
+    s->changed[0] = {};
+    s->changed[1] = {};
     s->pending = false;
     s->pub_n[0] = s->pub_n[1] = 0;
+    s->current_n[0] = s->current_n[1] = 0;
     s->prev_u = 0;
   }
   dirty_.clear();

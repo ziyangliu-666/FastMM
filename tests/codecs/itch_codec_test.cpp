@@ -43,7 +43,113 @@ M view(const Bytes& b) {
   std::memcpy(&m, b.data(), sizeof m);
   return m;
 }
+
+struct DirectConsumer {
+  std::vector<Bytes> events;
+  std::uint64_t seq = 0;
+
+  template <class M>
+  void record(M& message, EventType type, InstrumentId inst, Timestamp ts) {
+    init_header(message, type, inst, VenueId{3});
+    message.hdr.venue_seq = seq;
+    message.hdr.exch_ts = ts;
+    message.hdr.recv_ts = Timestamp{42};
+    const auto* p = reinterpret_cast<const std::byte*>(&message);
+    events.emplace_back(p, p + sizeof(M));
+  }
+  void on_add(InstrumentId inst, Timestamp ts, std::uint64_t ref, Side side, Price price, Qty qty) {
+    OrderAddL3Msg m{};
+    m.order_ref = ref;
+    m.side = side;
+    m.price = price;
+    m.qty = qty;
+    record(m, EventType::OrderAddL3, inst, ts);
+  }
+  void on_execute(InstrumentId inst,
+                  Timestamp ts,
+                  std::uint64_t ref,
+                  Qty qty,
+                  Price price,
+                  std::uint64_t match,
+                  std::uint8_t flags) {
+    OrderExecL3Msg m{};
+    m.order_ref = ref;
+    m.exec_qty = qty;
+    m.exec_price = price;
+    m.match_id = match;
+    m.exec_flags = flags;
+    record(m, EventType::OrderExecL3, inst, ts);
+  }
+  void on_cancel(InstrumentId inst, Timestamp ts, std::uint64_t ref, Qty qty) {
+    OrderCancelL3Msg m{};
+    m.order_ref = ref;
+    m.canceled_qty = qty;
+    record(m, EventType::OrderCancelL3, inst, ts);
+  }
+  void on_replace(InstrumentId inst,
+                  Timestamp ts,
+                  std::uint64_t old_ref,
+                  std::uint64_t new_ref,
+                  Price price,
+                  Qty qty) {
+    OrderReplaceL3Msg m{};
+    m.old_order_ref = old_ref;
+    m.new_order_ref = new_ref;
+    m.price = price;
+    m.qty = qty;
+    record(m, EventType::OrderReplaceL3, inst, ts);
+  }
+  void on_trade(
+      InstrumentId inst, Timestamp ts, Price price, Qty qty, std::uint64_t match, Side side) {
+    TradeMsg m{};
+    m.price = price;
+    m.qty = qty;
+    m.trade_id = match;
+    m.aggressor = side;
+    record(m, EventType::Trade, inst, ts);
+  }
+};
+
 }  // namespace
+
+TEST_CASE(
+    "codecs.itch: direct consumption preserves events and validation for every fixture prefix") {
+  ItchDecoder normal(VenueId{3});
+  ItchDecoder typed(VenueId{3});
+  REQUIRE(normal.add_symbol("AAPL", InstrumentId{1}));
+  REQUIRE(typed.add_symbol("AAPL", InstrumentId{1}));
+  normal.map_locate(kLocate, InstrumentId{1});
+  typed.map_locate(kLocate, InstrumentId{1});
+  normal.set_midnight(Timestamp{1'700'000'000'000'000'000});
+  typed.set_midnight(Timestamp{1'700'000'000'000'000'000});
+  RecordingSink rec;
+  DirectConsumer consumer;
+  std::uint64_t seq = 0;
+  for (const auto& [name, raw] : fixtures()) {
+    CAPTURE(name);
+    for (std::size_t n = 0; n <= raw.size(); ++n) {
+      CAPTURE(n);
+      normal.set_venue_seq(++seq);
+      typed.set_venue_seq(seq);
+      consumer.seq = seq;
+      const FrameView frame{{raw.data(), n}, n, 0};
+      CHECK(normal.decode(frame, 42, rec.sink) == typed.decode_into(frame, 42, consumer));
+      CHECK(rec.drain() == consumer.events);
+      consumer.events.clear();
+    }
+  }
+  const auto& a = normal.stats();
+  const auto& b = typed.stats();
+  CHECK(a.messages == b.messages);
+  CHECK(a.events == b.events);
+  CHECK(a.ignored == b.ignored);
+  CHECK(a.directory == b.directory);
+  CHECK(a.directory_mapped == b.directory_mapped);
+  CHECK(a.unknown_locate == b.unknown_locate);
+  CHECK(a.unknown_type == b.unknown_type);
+  CHECK(a.malformed == b.malformed);
+  CHECK(a.overflow == b.overflow);
+}
 
 TEST_CASE("codecs.itch: fixtures cover all 23 message types at the spec lengths") {
   std::set<char> seen;
