@@ -379,6 +379,7 @@ void bind_hot(py::module_& m) {
         for (const py::handle p : params) {
           bt::BacktestConfig cfg = config;
           cfg.strategy = name;
+          cfg.keep_orders = false;
           cfg.params.clear();
           for (const auto& [k, v] : p.cast<py::dict>())
             cfg.params[py::str(k).cast<std::string>()] = py::str(v).cast<std::string>();

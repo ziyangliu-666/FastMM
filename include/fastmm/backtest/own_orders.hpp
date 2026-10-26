@@ -47,12 +47,20 @@ enum class OrderEnd : std::uint8_t {
 };
 [[nodiscard]] std::string_view to_string(OrderEnd e) noexcept;
 
-// Venue time of a market-data message: its exch_ts, else its receive time.
-// A live session's journal (it carries a TSC calibration) or a backtest's whose simulated feed
-// showed its orders (kHeaderOwnInFeed).
-[[nodiscard]] inline bool feed_shows_own(const JournalFileHeader& h) noexcept {
+// The session's venue feeds showed its own resting orders, so its engine followed them: a live
+// session's (its journal carries a TSC calibration) or a backtest's with own_orders_in_feed
+// (kHeaderOwnInFeed).
+[[nodiscard]] inline bool session_saw_own(const JournalFileHeader& h) noexcept {
   return h.tsc0 != 0 || (h.header_flags & kHeaderOwnInFeed) != 0;
 }
+// The journal's market data carry the session's own resting orders: a live session's, or a
+// backtest's with own_orders_in_feed from before format v5 (since v5 it records the market data as
+// recorded and our quantity as OwnLevels records).
+[[nodiscard]] inline bool feed_shows_own(const JournalFileHeader& h) noexcept {
+  return h.tsc0 != 0 || ((h.header_flags & kHeaderOwnInFeed) != 0 && h.version < 5);
+}
+
+// Venue time of a market-data message: its exch_ts, else its receive time.
 
 [[nodiscard]] inline Timestamp venue_ts(const EventHeader& h) noexcept {
   return h.exch_ts.valid() ? h.exch_ts : h.recv_ts;

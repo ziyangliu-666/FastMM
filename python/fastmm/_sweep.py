@@ -46,6 +46,7 @@ def _point_config(config: Any) -> Any:
     cfg = _core._shared_start(config)
     cfg.output_dir = ""
     cfg.journal_out = ""
+    cfg.keep_orders = False
     return cfg
 
 

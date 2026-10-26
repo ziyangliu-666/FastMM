@@ -1,6 +1,9 @@
-// SimTransport's recorded feed with our resting orders in it (own_orders_in_feed).
+// SimTransport's recorded feed with our resting orders in it (own_orders_in_feed), and the
+// engine's book and tickers with them shown.
 #include "test_support.hpp"
 
+#include "fastmm/core/engine.hpp"
+#include "fastmm/sim/sim_driver.hpp"
 #include "fastmm/sim/sim_transport.hpp"
 
 #include <cstring>
@@ -154,7 +157,7 @@ sim::SimTransportConfig config(sim::FillModel model, bool own) {
 
 }  // namespace
 
-TEST_CASE("sim.own_feed: recorded depth and tickers show our resting orders") {
+TEST_CASE("sim.own_feed: our resting quantity follows the instrument's next message") {
   for (const sim::FillModel model : {sim::FillModel::L2Queue, sim::FillModel::Matching}) {
     CAPTURE(static_cast<int>(model));
     const InstrumentTable t = table();
@@ -166,87 +169,200 @@ TEST_CASE("sim.own_feed: recorded depth and tickers show our resting orders") {
     ticker(v, 10, "99.00", "101.00");
     static_cast<void>(drain(v, clock, feed, at(20)));
 
-    // A bid inside the spread: the venue's real-time top of book is now ours, so a ticker goes
-    // out (no update id of its own); the recorded depth has not shown it yet.
+    // A bid inside the spread rests at 110 us; nothing goes out until the instrument's next
+    // message, which goes out as recorded, right behind our quantity at its arrival.
     REQUIRE(v.send(bid(1, "99.50", "0.3").hdr));
     std::vector<Msg> w = drain(v, clock, feed, at(1000));
-    const Msg* tk = find(w, EventType::BookTicker);
-    REQUIRE(tk != nullptr);
-    CHECK(tk->as<BookTickerMsg>().bid_px == px("99.50"));
-    CHECK(tk->as<BookTickerMsg>().bid_qty == qt("0.3"));
-    CHECK(tk->as<BookTickerMsg>().ask_px == px("101.00"));
-    CHECK(tk->hdr().venue_seq == 0);
-    CHECK((tk->hdr().flags & EventHeader::kSynthetic) != 0);
-    CHECK(tk->hdr().exch_ts == at(110));  // sent at 10 us, 100 us to the venue
-    CHECK(v.stats().own_tickers == 1);
-
-    // A second bid at the recorded 99.00: a recorded ticker shows our 99.50 on top; the next
-    // depth update carries both our levels, 99.00 with ours added to the recorded quantity.
-    REQUIRE(v.send(bid(2, "99.00", "0.2").hdr));
-    static_cast<void>(drain(v, clock, feed, at(2000)));
-    CHECK(v.stats().own_tickers == 1);  // not the top: no ticker
-    ticker(v, 2100, "99.00", "101.00");
-    depth(v, 2200, {{px("98.00"), qt("3")}}, {});
-    w = drain(v, clock, feed, at(3000));
+    CHECK(find(w, EventType::OwnLevels) == nullptr);
+    ticker(v, 1100, "99.00", "101.00");
+    w = drain(v, clock, feed, at(2000));
     REQUIRE(w.size() == 2);
-    CHECK(w[0].as<BookTickerMsg>().bid_px == px("99.50"));
-    CHECK(w[0].as<BookTickerMsg>().bid_qty == qt("0.3"));
-    CHECK(w[0].hdr().venue_seq == 7);
-    const auto& d = w[1].as<BookDeltaMsg>();
-    CHECK(level(d, Side::Buy, px("98.00")) == qt("3"));
-    CHECK(level(d, Side::Buy, px("99.50")) == qt("0.3"));
-    CHECK(level(d, Side::Buy, px("99.00")) == qt("1.2"));
+    REQUIRE(w[0].hdr().type == EventType::OwnLevels);
+    const auto& o = w[0].as<OwnLevelsMsg>();
+    CHECK(o.bid_count == 1);
+    CHECK(o.ask_count == 0);
+    CHECK(level(o, Side::Buy, px("99.50")) == qt("0.3"));
+    CHECK(w[0].hdr().exch_ts == at(1100));
+    CHECK(w[0].hdr().recv_ts == w[1].hdr().recv_ts);
+    CHECK((w[0].hdr().flags & EventHeader::kSynthetic) != 0);
+    CHECK(w[1].hdr().type == EventType::BookTicker);
+    CHECK(w[1].as<BookTickerMsg>().bid_px == px("99.00"));
+    CHECK(w[1].hdr().venue_seq == 7);
+    CHECK(v.stats().own_levels == 1);
 
-    // Cancelled: the top goes back to the recorded one (the last ticker), the next depth update
-    // deletes the level that was only ours and gives 99.00 its recorded quantity back.
+    // A second bid at the recorded 99.00: only what changed goes out.
+    REQUIRE(v.send(bid(2, "99.00", "0.2").hdr));
+    static_cast<void>(drain(v, clock, feed, at(3000)));
+    depth(v, 3100, {{px("98.00"), qt("3")}}, {});
+    w = drain(v, clock, feed, at(4000));
+    REQUIRE(w.size() == 2);
+    CHECK(level(w[1].as<BookDeltaMsg>(), Side::Buy, px("98.00")) == qt("3"));
+    CHECK(level(w[1].as<BookDeltaMsg>(), Side::Buy, px("99.00")) == Qty::from_raw(-1));
+    const auto& o2 = w[0].as<OwnLevelsMsg>();
+    CHECK(o2.bid_count == 1);
+    CHECK(level(o2, Side::Buy, px("99.00")) == qt("0.2"));
+
+    // Cancelled: both levels go to zero with the next message; then nothing more.
     REQUIRE(v.send(cancel(1).hdr));
     REQUIRE(v.send(cancel(2).hdr));
-    w = drain(v, clock, feed, at(4000));
-    tk = find(w, EventType::BookTicker);
-    REQUIRE(tk != nullptr);
-    CHECK(tk->as<BookTickerMsg>().bid_px == px("99.00"));
-    CHECK(tk->as<BookTickerMsg>().bid_qty == qt("1"));
-    depth(v, 4100, {}, {{px("101.00"), qt("2")}});
-    w = drain(v, clock, feed, at(5000));
-    REQUIRE(w.size() == 1);
-    const auto& d2 = w[0].as<BookDeltaMsg>();
-    CHECK(level(d2, Side::Buy, px("99.50")).is_zero());
-    CHECK(level(d2, Side::Buy, px("99.00")) == qt("1"));
-    CHECK(level(d2, Side::Sell, px("101.00")) == qt("2"));
+    static_cast<void>(drain(v, clock, feed, at(5000)));
+    depth(v, 5100, {}, {{px("101.00"), qt("2")}});
+    w = drain(v, clock, feed, at(6000));
+    REQUIRE(w.size() == 2);
+    const auto& o3 = w[0].as<OwnLevelsMsg>();
+    CHECK(o3.bid_count == 2);
+    CHECK(level(o3, Side::Buy, px("99.50")).is_zero());
+    CHECK(level(o3, Side::Buy, px("99.00")).is_zero());
+    depth(v, 6100, {}, {{px("101.00"), qt("3")}});
+    w = drain(v, clock, feed, at(7000));
+    CHECK(w.size() == 1);
+    CHECK(v.stats().own_levels == 3);
   }
 }
 
-TEST_CASE("sim.own_feed: without it, or without recorded tickers, nothing is added") {
+TEST_CASE("sim.own_feed: without it, nothing is added") {
   const InstrumentTable t = table();
-  SUBCASE("own_orders_in_feed = false") {
-    SimClock clock{at(0)};
-    sim::SimTransport v(clock, t, config(sim::FillModel::L2Queue, false));
-    CHECK_FALSE(v.own_in_feed(VenueId{0}));
-    InlineFeed feed(1 << 20);
-    depth(v, 0, {{px("99.00"), qt("1")}}, {{px("101.00"), qt("1")}}, true);
-    ticker(v, 10, "99.00", "101.00");
-    REQUIRE(v.send(bid(1, "99.50", "0.3").hdr));
-    static_cast<void>(drain(v, clock, feed, at(1000)));
-    depth(v, 1100, {{px("98.00"), qt("3")}}, {});
-    const std::vector<Msg> w = drain(v, clock, feed, at(2000));
-    REQUIRE(w.size() == 1);
-    CHECK(w[0].as<BookDeltaMsg>().bid_count == 1);
-    CHECK(v.stats().own_tickers == 0);
-    CHECK(v.stats().own_levels == 0);
+  SimClock clock{at(0)};
+  sim::SimTransport v(clock, t, config(sim::FillModel::L2Queue, false));
+  CHECK_FALSE(v.own_in_feed(VenueId{0}));
+  InlineFeed feed(1 << 20);
+  depth(v, 0, {{px("99.00"), qt("1")}}, {{px("101.00"), qt("1")}}, true);
+  ticker(v, 10, "99.00", "101.00");
+  REQUIRE(v.send(bid(1, "99.50", "0.3").hdr));
+  static_cast<void>(drain(v, clock, feed, at(1000)));
+  depth(v, 1100, {{px("98.00"), qt("3")}}, {});
+  const std::vector<Msg> w = drain(v, clock, feed, at(2000));
+  REQUIRE(w.size() == 1);
+  CHECK(w[0].as<BookDeltaMsg>().bid_count == 1);
+  CHECK(v.stats().own_levels == 0);
+}
+
+namespace {
+
+// Market data from a list, in venue time.
+class ListSource final : public sim::MdSource {
+ public:
+  void add(const EventHeader& h) {
+    const auto* b = reinterpret_cast<const std::byte*>(&h);
+    msgs_.emplace_back(b, b + h.len);
   }
-  SUBCASE("depth only: no ticker is made up, the depth still shows us") {
-    SimClock clock{at(0)};
-    sim::SimTransport v(clock, t, config(sim::FillModel::L2Queue, true));
-    InlineFeed feed(1 << 20);
-    depth(v, 0, {{px("99.00"), qt("1")}}, {{px("101.00"), qt("1")}}, true);
-    REQUIRE(v.send(bid(1, "99.50", "0.3").hdr));
-    std::vector<Msg> w = drain(v, clock, feed, at(1000));
-    CHECK(find(w, EventType::BookTicker) == nullptr);
-    depth(v, 1100, {{px("99.00"), qt("1")}}, {{px("101.00"), qt("1")}}, true);
-    w = drain(v, clock, feed, at(2000));
-    REQUIRE(w.size() == 1);
-    // A snapshot lists every level of ours.
-    CHECK(level(w[0].as<BookDeltaMsg>(), Side::Buy, px("99.50")) == qt("0.3"));
-    CHECK(v.stats().own_tickers == 0);
+  const EventHeader* next() override {
+    if (i_ >= msgs_.size()) return nullptr;
+    std::memcpy(buf_.bytes, msgs_[i_].data(), msgs_[i_].size());
+    ++i_;
+    return &buf_.hdr();
   }
+  void reset() override { i_ = 0; }
+
+ private:
+  std::vector<std::vector<std::byte>> msgs_;
+  std::size_t i_ = 0;
+  sim::EventBuf buf_;
+};
+
+void depth_at(ListSource& src,
+              std::int64_t us,
+              std::initializer_list<Level> bids,
+              std::initializer_list<Level> asks,
+              bool snapshot = false) {
+  alignas(64) std::byte buf[BookDeltaMsg::size_for(8, 8)] = {};
+  auto* d = reinterpret_cast<BookDeltaMsg*>(buf);
+  const auto nb = static_cast<std::uint32_t>(bids.size());
+  const auto na = static_cast<std::uint32_t>(asks.size());
+  init_header(*d,
+              snapshot ? EventType::BookSnapshot : EventType::BookDelta,
+              kId,
+              VenueId{0},
+              BookDeltaMsg::size_for(nb, na));
+  if (snapshot) d->hdr.flags |= EventHeader::kSnapshot;
+  d->hdr.exch_ts = at(us);
+  d->hdr.recv_ts = at(us);
+  d->bid_count = nb;
+  d->ask_count = na;
+  std::size_t k = 0;
+  for (const Level& l : bids) d->levels()[k++] = l;
+  for (const Level& l : asks) d->levels()[k++] = l;
+  src.add(d->hdr);
+}
+
+// Bids 0.3 at 99.50 at the first book, and writes down what it sees.
+struct Watcher {
+  struct Seen {
+    std::int64_t us;
+    bool ticker;
+    Level bid;
+    Level ask;
+    std::size_t bids;
+  };
+  std::vector<Seen> seen;
+  bool sent = false;
+  template <class Ctx, class Book>
+  void on_book(Ctx& ctx, InstrumentId id, const Book& b) noexcept {
+    seen.push_back(
+        Seen{(ctx.now().ns - kT0) / 1000, false, b.best_bid(), b.best_ask(), b.depth(Side::Buy)});
+    if (!sent) {
+      sent = true;
+      static_cast<void>(ctx.send(NewOrderRequest::limit(id, Side::Buy, px("99.50"), qt("0.3"))));
+    }
+  }
+  template <class Ctx>
+  void on_book_ticker(Ctx& ctx, InstrumentId, const BookTickerMsg& m) noexcept {
+    seen.push_back(Seen{(ctx.now().ns - kT0) / 1000,
+                        true,
+                        Level{m.bid_px, m.bid_qty},
+                        Level{m.ask_px, m.ask_qty},
+                        0});
+  }
+};
+
+}  // namespace
+
+TEST_CASE("sim.own_feed: the engine's book and tickers show our quantity the feed sent") {
+  const InstrumentTable t = table();
+  SimClock clock{at(0)};
+  sim::SimTransport venue(clock, t, config(sim::FillModel::L2Queue, true));
+  InlineFeed feed(1 << 20);
+  EngineConfig cfg;
+  cfg.risk.max_order_qty = qt("10");
+  cfg.risk.max_position = qt("10");
+  cfg.risk.max_open_orders = 8;
+  cfg.risk.price_collar_bps = 5000;
+  cfg.risk.stale_md = seconds(60);
+  Watcher w;
+  Engine<Watcher, SimClock, sim::SimTransport, InlineFeed> engine(cfg, t, clock, venue, feed, w);
+  ListSource src;
+  depth_at(
+      src, 0, {{px("99.00"), qt("1")}, {px("98.00"), qt("2")}}, {{px("101.00"), qt("1")}}, true);
+  // Our bid rests at 100 us. The ticker shows it on top; so does the book.
+  BookTickerMsg tk{};
+  init_header(tk, EventType::BookTicker, kId, VenueId{0});
+  tk.hdr.exch_ts = tk.hdr.recv_ts = at(1000);
+  tk.bid_px = px("99.00");
+  tk.bid_qty = qt("1");
+  tk.ask_px = px("101.00");
+  tk.ask_qty = qt("1");
+  src.add(tk.hdr);
+  depth_at(src, 2000, {}, {{px("101.00"), qt("2")}});
+  // An ask at our bid's price: there ours is not shown (the venue would have matched it).
+  depth_at(src, 3000, {}, {{px("99.50"), qt("0.1")}});
+  sim::SimDriver driver(clock, venue, feed, sim::EngineHooks::for_engine(engine));
+  driver.set_source(&src);
+  driver.run_all();
+  driver.finish();
+  REQUIRE(w.seen.size() == 4);
+  CHECK(w.seen[0].bid.price == px("99.00"));
+  CHECK(w.seen[1].ticker);
+  CHECK(w.seen[1].bid.price == px("99.50"));
+  CHECK(w.seen[1].bid.qty == qt("0.3"));
+  CHECK(w.seen[1].ask.price == px("101.00"));
+  CHECK(w.seen[2].bid.price == px("99.50"));
+  CHECK(w.seen[2].bid.qty == qt("0.3"));
+  CHECK(w.seen[2].bids == 3);
+  CHECK(w.seen[3].bid.price == px("99.00"));
+  CHECK(w.seen[3].ask.price == px("99.50"));
+  CHECK(w.seen[3].bids == 2);
+  // Between steps the book is the market's alone.
+  CHECK(engine.book(kId).best_bid().price == px("99.00"));
+  CHECK(engine.book(kId).depth(Side::Buy) == 2);
+  CHECK(venue.stats().own_levels >= 1);
 }

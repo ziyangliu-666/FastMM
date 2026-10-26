@@ -112,7 +112,7 @@ JournalInfo inspect_journal(const std::string& path) {
     if ((e->flags & EventHeader::kOutbound) != 0) {
       ++info.outbound_messages;
       if ((e->flags & EventHeader::kDropped) != 0) ++info.dropped_outbound;
-    } else if (JournalSource::is_market_data(e->type)) {
+    } else if (sim::SimDriver::is_market_data(e->type)) {
       ++info.market_data_messages;
     }
   });
@@ -211,7 +211,7 @@ ReplayResult replay_impl(const std::string& path,
   }
   // A live session's feed showed its own orders (a journal with a TSC calibration is live), and a
   // backtest's with own_orders_in_feed.
-  backend.transport.set_own_in_feed(feed_shows_own(header));
+  backend.transport.set_own_in_feed(session_saw_own(header));
   backend.transport.set_dropped(std::move(dropped));
   const std::size_t expected_count = expected.size();
   if (opt.verify) backend.transport.set_expected(std::move(expected));

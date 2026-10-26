@@ -98,6 +98,12 @@ class TimerWheel {
       cur_ms_ = now_ms - static_cast<std::int64_t>(kSlots);
     // Bring overflow timers that are now within the horizon into the wheel.
     if (now_ms + static_cast<std::int64_t>(kSlots) > overflow_min_ms_) promote_overflow();
+    // Nothing is due when the earliest expiry is known to be later: the cursor moves on without
+    // the walk, which would visit every ms slot since the last poll and fire nothing.
+    if (!next_stale_ && now < next_) {
+      cur_ms_ = now_ms;
+      return 0;
+    }
     const std::int64_t steps = now_ms - cur_ms_;
     // Process slots cur_ms_ .. now_ms inclusive (the current slot may have new timers). The walk's
     // next timer is walk_next_, which unlink() moves on when a callback cancels that timer.

@@ -1,8 +1,9 @@
 #pragma once
-// Metrics (8.4) computed from the result rows: equity bars (1 s by default), fills and
-// orders. Every input is an exact integer (raw 1e-8 fixed point); the doubles here are
+// Metrics (8.4) computed from the result rows: equity bars (1 s by default) and fills, and the
+// orders' OrderStats. Every input is an exact integer (raw 1e-8 fixed point); the doubles here are
 // reporting-only and never feed back into the simulation.
 #include "fastmm/backtest/markout.hpp"
+#include "fastmm/core/latency.hpp"
 #include "fastmm/core/time.hpp"
 
 #include <cstdint>
@@ -132,6 +133,64 @@ struct MetricsInputs {
   std::int64_t end_ts = 0;
 };
 
+// The order half of the metrics, kept as a run goes: the counts of new orders, cancels and
+// replaces, the virtual tick-to-order latency, and each new order's first fill for the fill
+// quality's quotes filled and time to fill (a replace chain's fills count for the new order that
+// began it, at the earliest of them). It holds only the chains that can still fill, so a run need
+// not keep its order rows (BacktestConfig::keep_orders).
+class OrderStats {
+ public:
+  // An order message sent: kind is kOrderKindNew, Cancel or Replace, `orig` the order a replace
+  // replaces, `venue_ts` its arrival at the venue (0: lost), `trigger_ts` the T0 of the event
+  // that caused it (0: unknown).
+  void on_order(std::uint8_t kind,
+                std::uint64_t id,
+                std::uint64_t orig,
+                std::int64_t venue_ts,
+                std::int64_t trigger_ts);
+  void on_fill(std::uint64_t id, std::int64_t ts);
+  // The order can no longer fill (rejected, cancelled, replaced, expired or filled).
+  void on_end(std::uint64_t id);
+  // The rows' orders, then their fills.
+  [[nodiscard]] static OrderStats of(const OrderRows& orders, const FillRows& fills);
+
+ private:
+  friend Metrics compute_metrics(const EquityRows&,
+                                 const FillRows&,
+                                 OrderStats&,
+                                 const MetricsInputs&);
+  struct Chain {
+    std::int64_t venue_ts = 0;     // of the new order that began it; 0: none, or it was lost
+    std::int64_t first_fill = -1;  // the earliest fill of any of its orders
+    std::uint32_t open = 0;        // its orders that can still fill; 0: a free slot
+  };
+  // Open order id -> its chain's slot in chains_, open addressing with linear probing (a run sends
+  // hundreds of thousands of orders, a few of them open at a time); id 0 marks an empty entry.
+  struct Entry {
+    std::uint64_t id = 0;
+    std::uint32_t chain = 0;
+  };
+  [[nodiscard]] Entry* find(std::uint64_t id) noexcept;
+  void insert(std::uint64_t id, std::uint32_t chain);
+  void erase(Entry* e) noexcept;
+  [[nodiscard]] std::uint32_t new_chain(std::int64_t venue_ts);
+  void close(std::uint32_t chain);
+  std::vector<Entry> table_;  // a power of two, at most half full
+  std::size_t entries_ = 0;
+  std::vector<Chain> chains_;
+  std::vector<std::uint32_t> free_;  // chain slots to reuse
+  LogLinearHistogram virt_;
+  std::vector<std::int64_t> time_to_fill_;
+  std::uint64_t orders_ = 0;
+  std::uint64_t cancels_ = 0;
+  std::uint64_t replaces_ = 0;
+  std::uint64_t quotes_filled_ = 0;
+};
+
+[[nodiscard]] Metrics compute_metrics(const EquityRows& equity,
+                                      const FillRows& fills,
+                                      OrderStats& orders,
+                                      const MetricsInputs& in);
 [[nodiscard]] Metrics compute_metrics(const EquityRows& equity,
                                       const FillRows& fills,
                                       const OrderRows& orders,

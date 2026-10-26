@@ -60,6 +60,8 @@ class Xoshiro256ss {
   static constexpr result_type min() noexcept { return 0; }
   static constexpr result_type max() noexcept { return UINT64_MAX; }
 
+  friend constexpr bool operator==(const Xoshiro256ss&, const Xoshiro256ss&) noexcept = default;
+
  private:
   static constexpr std::uint64_t rotl(std::uint64_t x, int k) noexcept {
     return (x << k) | (x >> (64 - k));

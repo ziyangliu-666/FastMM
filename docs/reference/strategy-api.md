@@ -324,7 +324,7 @@ The engine derives these from the order events and the market data it journals, 
 | `queue_ahead(order_id)` | `std::optional<Qty>`: the estimated quantity resting ahead of an open order at its price; `nullopt` before its ack and once it is terminal |
 | `order_times(order_id)` | `const OrderTimes*` of an open order, `nullptr` once terminal: `sent` (engine clock), `venue_ack` (the ack's `exch_ts`, whole ms on Binance; 0 when the venue gives none), `local_ack` (the ack's `recv_ts`). After a replace they describe the replacement from its ack on. `OmsUpdate::times` carries them in `on_order_update`, the terminal update included, and through `Fill::update` in `on_fill` |
 
-Whether a venue's feed shows our orders is a transport property (`own_in_feed(venue)`): yes for `LiveTransport` and for the replay of a live journal (one with a TSC calibration), no for `SimTransport`.
+Whether a venue's feed shows our orders is a transport property (`own_in_feed(venue)`): yes for `LiveTransport`, for the replay of a live journal (one with a TSC calibration) and for a backtest with `[backtest] own_orders_in_feed`, whose simulated venue sends our quantity as `OwnLevels` messages that the engine shows in its book.
 
 `queue_ahead` runs the `l2_queue` fill model's queue model ([`core/queue_model.hpp`](../../include/fastmm/core/queue_model.hpp)) on the market data the strategy sees, with `[engine] queue_conservatism` (`[backtest] queue_conservatism` in a backtest):
 

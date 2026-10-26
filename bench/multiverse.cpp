@@ -3,7 +3,8 @@
 //
 //   fastmm-bench-multiverse --config C.toml --data SPEC [--strategy NAME]
 //                           [--sweep key=v1,v2,...]... [--latency-us a,b,...] [--variants N]
-//                           [--threads T] [--check K] [--solo K]
+//                           [--own-feed 0|1] [--md-jitter-us J] [--threads T] [--check K] [--solo
+//                           K]
 //
 // The variants are the grid of the --sweep keys (strategy parameters) and --latency-us (the order
 // and ack paths' fixed latency), in a fixed shuffled order, the first --variants of them; the first
@@ -12,6 +13,9 @@
 // the list, through run_backtest() and compares each result with its multiverse run
 // (bt::result_difference: every fill, order, equity bar, count and the outbound hash); any
 // difference fails the run. --solo K times K separate backtests, the cost the multiverse replaces.
+// --own-feed sets [backtest] own_orders_in_feed and --md-jitter-us the market data's latency
+// jitter (latency_md_jitter_us) of every variant. The variants keep no order rows, as a sweep's
+// points do.
 #include "fastmm/backtest/multiverse.hpp"
 
 #include "fastmm/backtest/backtest_config.hpp"
@@ -61,6 +65,8 @@ int main(int argc, char** argv) {
   int threads = 1;
   std::size_t check = 0;
   std::size_t solo = 0;
+  int own_feed = -1;
+  long md_jitter_us = -1;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     const auto next = [&]() -> std::string {
@@ -94,10 +100,15 @@ int main(int argc, char** argv) {
       check = std::strtoull(next().c_str(), nullptr, 10);
     } else if (a == "--solo") {
       solo = std::strtoull(next().c_str(), nullptr, 10);
+    } else if (a == "--own-feed") {
+      own_feed = std::atoi(next().c_str());
+    } else if (a == "--md-jitter-us") {
+      md_jitter_us = std::atol(next().c_str());
     } else {
       std::fprintf(stderr,
                    "usage: %s --config C.toml --data SPEC [--strategy NAME] [--sweep k=v1,v2]... "
-                   "[--latency-us a,b] [--variants N] [--threads T] [--check K] [--solo K]\n",
+                   "[--latency-us a,b] [--variants N] [--own-feed 0|1] [--md-jitter-us J] "
+                   "[--threads T] [--check K] [--solo K]\n",
                    argv[0]);
       return 2;
     }
@@ -120,6 +131,13 @@ int main(int argc, char** argv) {
   if (strategy != base.strategy) base.params.clear();
   base.output_dir.clear();
   base.journal_out.clear();
+  base.keep_orders = false;  // as a sweep's points: the metrics and the hash cover the orders
+  if (own_feed >= 0) base.transport.own_orders_in_feed = own_feed != 0;
+  if (md_jitter_us >= 0) {
+    base.transport.md_in.jitter = microseconds(md_jitter_us);
+    for (sim::SimVenueConfig& v : base.transport.venues)
+      v.md_in.jitter = base.transport.md_in.jitter;
+  }
 
   // The variants: the configuration's own, then the grid in a fixed shuffled order.
   std::vector<bt::BacktestConfig> cfgs;

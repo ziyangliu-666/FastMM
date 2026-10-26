@@ -26,7 +26,8 @@
 //                own quantity at its venue time: queue_after_touch
 //   own quantity others_shown(): a level showing less than ours there predates our order
 //
-// Off until enable() (the strategy's first queue_ahead). State is a side array by OMS slot, one
+// Off until enable() (the strategy's first queue_ahead), which allocates its state: an engine whose
+// strategy never asks holds none of it. State is a side array by OMS slot, one
 // list and one trade tape per instrument. A trade newer than the depth book goes on the tape, and a
 // book update drops what it now shows; a delta also costs, for each of our orders on the
 // instrument, a price compare per level on its side, and a trade one step per order plus a sort
@@ -55,21 +56,24 @@ class QueueTracker {
   explicit QueueTracker(std::int64_t conservatism_bps = 10'000)
       : bps_(conservatism_bps < 0        ? 0
              : conservatism_bps > 10'000 ? 10'000
-                                         : conservatism_bps),
-        slots_(std::make_unique<Slot[]>(kMaxOpenOrders)),
-        touch_(std::make_unique<QueueTouch[]>(kMaxInstruments)),
-        tape_(std::make_unique<TradeTape[]>(kMaxInstruments)),
-        print_order_(std::make_unique<std::uint32_t[]>(kMaxOpenOrders)),
-        owed_(std::make_unique<Owed[]>(kMaxInstruments)) {
+                                         : conservatism_bps) {
     head_.fill(kNone);
   }
 
   [[nodiscard]] std::int64_t conservatism_bps() const noexcept { return bps_; }
   [[nodiscard]] bool enabled() const noexcept { return enabled_; }
-  void enable() noexcept { enabled_ = true; }
+  void enable() {
+    if (enabled_) return;
+    slots_ = std::make_unique<Slot[]>(kMaxOpenOrders);
+    touch_ = std::make_unique<QueueTouch[]>(kMaxInstruments);
+    tape_ = std::make_unique<TradeTape[]>(kMaxInstruments);
+    print_order_ = std::make_unique<std::uint32_t[]>(kMaxOpenOrders);
+    owed_ = std::make_unique<Owed[]>(kMaxInstruments);
+    enabled_ = true;
+  }
   [[nodiscard]] bool any(InstrumentId id) const noexcept { return head_[id.value] != kNone; }
   [[nodiscard]] bool tracked(Handle<Order> h) const noexcept {
-    return h.valid() && slots_[h.idx].on;
+    return enabled_ && h.valid() && slots_[h.idx].on;
   }
   [[nodiscard]] std::optional<Qty> ahead(Handle<Order> h) const noexcept {
     if (!tracked(h)) return std::nullopt;
@@ -138,9 +142,11 @@ class QueueTracker {
   }
 
   // After `b` applied `d`. own(side, px): our quantity in the feed at that price as of the book's
-  // last update (zero where the feed does not show our orders).
-  template <class Own>
-  void on_book(const BookDeltaMsg& d, const L2Book<256>& b, Own&& own) noexcept {
+  // last update (zero where the feed does not show our orders); shown(side, px, qty): what the
+  // feed shows at a price `d` lists with `qty` (qty itself, or more where the engine shows our
+  // quantity in the book, Engine::show_own).
+  template <class Own, class Shown>
+  void on_book(const BookDeltaMsg& d, const L2Book<256>& b, Own&& own, Shown&& shown_at) noexcept {
     const InstrumentId id = d.hdr.instrument;
     tape_[id.value].forget_through(b.last_update());
     if (d.is_snapshot()) {
@@ -160,7 +166,7 @@ class QueueTracker {
       const std::uint32_t end = buy ? d.bid_count : d.bid_count + d.ask_count;
       for (std::uint32_t k = buy ? 0 : d.bid_count; k < end; ++k) {
         if (lv[k].price != s.px) continue;
-        const Qty shown = others_shown(lv[k].qty, own(s.side, s.px));
+        const Qty shown = others_shown(shown_at(s.side, s.px, lv[k].qty), own(s.side, s.px));
         s.ahead = queue_after_level_change(s.ahead, s.level, shown, bps_);
         s.level = shown;
       }

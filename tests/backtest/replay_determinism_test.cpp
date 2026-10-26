@@ -205,7 +205,7 @@ TEST_CASE("backtest.golden: sample_1000 journal gives the committed BasicMM outb
   CHECK(js.reader().header().rng_seed == 42);
   const BacktestResult r = run_backtest(cfg, cfg.strategy, &js);
   // The recorded events, and a book ticker each time our orders moved the top of book.
-  CHECK(r.md_events == 1000 + r.transport.own_tickers);
+  CHECK(r.md_events == 1000 + r.transport.own_levels);
   CHECK(r.outbound_messages > 0);
   CHECK(r.outbound_sha256 == expected);
 

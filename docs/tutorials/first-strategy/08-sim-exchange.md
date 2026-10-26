@@ -74,7 +74,7 @@ The session journal also renders as a page: `python3 tools/report.py runs/tutori
 ```
 
 ```text
-journal  runs/tutorial/sim.fmj: format v4, 5473 messages (1810 market data, 733 outbound), rng_seed 42, strategy 'first_mm'
+journal  runs/tutorial/sim.fmj: format v5, 5473 messages (1810 market data, 733 outbound), rng_seed 42, strategy 'first_mm'
 session  epoch 1, quoting enabled, cancel-replace venues 0x1, engine clock recorded
 config   embedded in the journal (hash 03cb0711746f2516)
 replay   strategy=first_mm events=4695

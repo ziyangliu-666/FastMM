@@ -11,8 +11,8 @@
 #include <atomic>
 #include <cstring>
 #include <exception>
-#include <map>
 #include <memory>
+#include <mutex>
 #include <queue>
 #include <stdexcept>
 #include <string>
@@ -70,13 +70,15 @@ class RestingIndex final : public sim::RestingWatch {
         inst_pos_(runs * instruments, 0),
         crossed_pos_(runs * instruments, kNone),
         marks_(instruments),
+        own_changed_(instruments),
+        shared_(runs, false),
         stamp_(runs, 0) {}
 
   void on_rest(
       std::uint32_t run, InstrumentId id, Side side, Price px, bool resting) noexcept override {
     if (id.value >= n_) return;
     const std::size_t si = std::size_t{id.value} * 2 + static_cast<std::size_t>(side);
-    std::map<std::int64_t, std::vector<std::uint32_t>>& levels = sides_[si];
+    Levels& levels = sides_[si];
     std::vector<OwnLevel>& mine = own_[static_cast<std::size_t>(run) * n_ * 2 + si];
     auto it =
         std::find_if(mine.begin(), mine.end(), [&](const OwnLevel& o) { return o.px == px.raw; });
@@ -84,13 +86,14 @@ class RestingIndex final : public sim::RestingWatch {
       if (it != mine.end()) {
         ++it->count;
       } else {
-        std::vector<std::uint32_t>& level = levels[px.raw];
-        mine.push_back(OwnLevel{px.raw, 1, static_cast<std::uint32_t>(level.size())});
-        level.push_back(run);
+        auto lv = lower(levels, px.raw);
+        if (lv == levels.end() || lv->px != px.raw) lv = levels.insert(lv, PriceRuns{px.raw, {}});
+        mine.push_back(OwnLevel{px.raw, 1, static_cast<std::uint32_t>(lv->runs.size())});
+        lv->runs.push_back(run);
       }
     } else if (it != mine.end() && --it->count == 0) {
-      const auto lv = levels.find(px.raw);
-      std::vector<std::uint32_t>& level = lv->second;
+      const auto lv = lower(levels, px.raw);
+      std::vector<std::uint32_t>& level = lv->runs;
       const std::uint32_t pos = it->pos;
       level[pos] = level.back();
       level.pop_back();
@@ -132,6 +135,16 @@ class RestingIndex final : public sim::RestingWatch {
       if (pos < c.size()) crossed_pos_[static_cast<std::size_t>(c[pos]) * n_ + id.value] = pos;
     }
   }
+
+  void on_own_changed(std::uint32_t run, InstrumentId id) noexcept override {
+    if (id.value < n_ && shared_[run]) own_changed_[id.value].push_back(run);
+  }
+  // The runs of a feed group whose resting quantity on `id` changed, for the group to send with
+  // its next message of `id`; a run's feed of its own sends it itself (shared(run, false)).
+  [[nodiscard]] std::vector<std::uint32_t>& own_changed(InstrumentId id) noexcept {
+    return own_changed_[id.value];
+  }
+  void set_shared(std::uint32_t run, bool shared) { shared_[run] = shared; }
 
   // Run `run` marks a derivative account on `id` with every event but a trade.
   void add_mark(std::uint32_t run, InstrumentId id) {
@@ -212,6 +225,21 @@ class RestingIndex final : public sim::RestingWatch {
     std::uint32_t count;
     std::uint32_t pos;
   };
+  // The runs resting at a price; a side keeps them by price, ascending (few prices: the runs'
+  // quotes near the touch).
+  struct PriceRuns {
+    std::int64_t px;
+    std::vector<std::uint32_t> runs;
+  };
+  using Levels = std::vector<PriceRuns>;
+  static Levels::iterator lower(Levels& v, std::int64_t px) noexcept {
+    return std::lower_bound(
+        v.begin(), v.end(), px, [](const PriceRuns& l, std::int64_t p) { return l.px < p; });
+  }
+  static Levels::const_iterator lower(const Levels& v, std::int64_t px) noexcept {
+    return std::lower_bound(
+        v.begin(), v.end(), px, [](const PriceRuns& l, std::int64_t p) { return l.px < p; });
+  }
 
   void remove(std::vector<std::uint32_t>& v,
               std::vector<std::uint32_t>& pos_of,
@@ -230,18 +258,18 @@ class RestingIndex final : public sim::RestingWatch {
     for (const std::uint32_t r : runs) add(r, out);
   }
   void at_price(InstrumentId id, Side side, Price px, std::vector<std::uint32_t>& out) {
-    const auto& levels = sides_[std::size_t{id.value} * 2 + static_cast<std::size_t>(side)];
-    const auto it = levels.find(px.raw);
-    if (it != levels.end()) add_all(it->second, out);
+    const Levels& levels = sides_[std::size_t{id.value} * 2 + static_cast<std::size_t>(side)];
+    const auto it = lower(levels, px.raw);
+    if (it != levels.end() && it->px == px.raw) add_all(it->runs, out);
   }
   // Orders on `side` at `px` or better for that side (a bid at or above it, an ask at or below).
   void at_or_better(InstrumentId id, Side side, Price px, std::vector<std::uint32_t>& out) {
-    const auto& levels = sides_[std::size_t{id.value} * 2 + static_cast<std::size_t>(side)];
+    const Levels& levels = sides_[std::size_t{id.value} * 2 + static_cast<std::size_t>(side)];
     if (side == Side::Buy) {
-      for (auto it = levels.lower_bound(px.raw); it != levels.end(); ++it) add_all(it->second, out);
+      for (auto it = lower(levels, px.raw); it != levels.end(); ++it) add_all(it->runs, out);
     } else {
-      for (auto it = levels.begin(); it != levels.end() && it->first <= px.raw; ++it)
-        add_all(it->second, out);
+      for (auto it = levels.begin(); it != levels.end() && it->px <= px.raw; ++it)
+        add_all(it->runs, out);
     }
   }
   // The orders the venue's opposite side reaches after a view of the book, and those holding a
@@ -265,16 +293,17 @@ class RestingIndex final : public sim::RestingWatch {
   }
 
   std::size_t n_;
-  // [instrument * 2 + side]: per price, the runs resting there (each once)
-  std::vector<std::map<std::int64_t, std::vector<std::uint32_t>>> sides_;
+  std::vector<Levels> sides_;  // [instrument * 2 + side]: per price, the runs resting there
   std::vector<std::vector<OwnLevel>> own_;  // [(run * instruments + instrument) * 2 + side]
-  std::vector<std::vector<std::uint32_t>> on_inst_;  // runs with an order on the instrument
-  std::vector<std::vector<std::uint32_t>> crossed_;  // runs holding a cross on it
-  std::vector<std::uint32_t> inst_count_;            // [run * n + instrument]: its orders there
-  std::vector<std::uint32_t> inst_pos_;              // its place in on_inst_
-  std::vector<std::uint32_t> crossed_pos_;           // its place in crossed_, kNone if absent
-  std::vector<std::vector<std::uint32_t>> marks_;    // runs marking a derivative account on it
-  std::vector<std::uint64_t> stamp_;                 // per run, the last event it was listed for
+  std::vector<std::vector<std::uint32_t>> on_inst_;      // runs with an order on the instrument
+  std::vector<std::vector<std::uint32_t>> crossed_;      // runs holding a cross on it
+  std::vector<std::uint32_t> inst_count_;                // [run * n + instrument]: its orders there
+  std::vector<std::uint32_t> inst_pos_;                  // its place in on_inst_
+  std::vector<std::uint32_t> crossed_pos_;               // its place in crossed_, kNone if absent
+  std::vector<std::vector<std::uint32_t>> marks_;        // runs marking a derivative account on it
+  std::vector<std::vector<std::uint32_t>> own_changed_;  // per instrument (on_own_changed)
+  std::vector<bool> shared_;                             // per run: in a feed group
+  std::vector<std::uint64_t> stamp_;  // per run, the last event it was listed for
   std::uint64_t event_ = 0;
 };
 
@@ -306,10 +335,10 @@ class MdQueue {
 
 // Which of a feed group's runs a message reaches (MdInterest): those that take every message, and
 // per instrument those that take every book update, every trade or every ticker, and those with a
-// mid band, kept in two heaps (the highest lower edge first, the lowest upper edge first) so a book
-// update finds the runs whose band its mid left without looking at the others. A run's entry is
-// filed again when its engine's interest moves; heap entries of an old band are dropped when they
-// come up (a version per run and instrument).
+// band on the book's mid, best bid or best ask, kept in two heaps per band (the highest lower edge
+// first, the lowest upper edge first) so a book update finds the runs whose band it left without
+// looking at the others. A run's entry is filed again when its engine's interest moves; heap
+// entries of an old band are dropped when they come up (a version per run and instrument).
 class WakeIndex {
  public:
   void init(std::size_t instruments, std::size_t runs) {
@@ -317,8 +346,10 @@ class WakeIndex {
     every_book_.resize(instruments);
     trades_.resize(instruments);
     tickers_.resize(instruments);
-    lo_.resize(instruments);
-    hi_.resize(instruments);
+    for (std::size_t a = 0; a < kAxes; ++a) {
+      lo_[a].resize(instruments);
+      hi_[a].resize(instruments);
+    }
     filed_.resize(runs * instruments);
     seen_.assign(runs, 0);
     every_pos_.assign(runs, kNone);
@@ -338,7 +369,8 @@ class WakeIndex {
       if (n.epoch <= seen) continue;
       Filed& f = filed_[run * n_ + i];
       // An empty band takes every update.
-      const bool every_book = n.every_book || n.lo >= n.hi;
+      const bool every_book =
+          n.every_book || n.lo >= n.hi || n.bid_lo >= n.bid_hi || n.ask_lo >= n.ask_hi;
       set(every_book_[i],
           f.every_book,
           run,
@@ -351,8 +383,12 @@ class WakeIndex {
         return filed_[r * n_ + i].tickers;
       });
       ++f.version;
-      f.lo = every_book ? MdInterest::kBelow : n.lo;
-      f.hi = every_book ? MdInterest::kAbove : n.hi;
+      const std::int64_t lo[kAxes] = {n.lo, n.bid_lo, n.ask_lo};
+      const std::int64_t hi[kAxes] = {n.hi, n.bid_hi, n.ask_hi};
+      for (std::size_t a = 0; a < kAxes; ++a) {
+        f.lo[a] = every_book ? MdInterest::kBelow : lo[a];
+        f.hi[a] = every_book ? MdInterest::kAbove : hi[a];
+      }
       push_band(run, i, f);
     }
   }
@@ -380,11 +416,14 @@ class WakeIndex {
           return;
         }
         add_all(every_book_[id.value], out);
-        const std::int64_t mid = b.mid().raw;
-        Heap& lo = lo_[id.value];
-        while (!lo.empty() && lo.front().bound >= mid) take(lo, id.value, true, out);
-        Heap& hi = hi_[id.value];
-        while (!hi.empty() && hi.front().bound <= mid) take(hi, id.value, false, out);
+        const std::int64_t value[kAxes] = {
+            b.mid().raw, b.best_bid().price.raw, b.best_ask().price.raw};
+        for (std::size_t a = 0; a < kAxes; ++a) {
+          Heap& lo = lo_[a][id.value];
+          while (!lo.empty() && lo.front().bound >= value[a]) take(lo, a, id.value, true, out);
+          Heap& hi = hi_[a][id.value];
+          while (!hi.empty() && hi.front().bound <= value[a]) take(hi, a, id.value, false, out);
+        }
         return;
       }
       case EventType::Trade:
@@ -399,20 +438,21 @@ class WakeIndex {
         return;
     }
   }
-  // The band entries reach() took off whose band did not move go back: the mid still has to come
+  // The band entries reach() took off whose band did not move go back: the book still has to come
   // back inside before they stop waking their run.
   void restore() {
     for (const Taken& t : taken_) {
       const Filed& f = filed_[t.run * n_ + t.inst];
       if (f.version != t.version) continue;
-      Heap& h = t.low ? lo_[t.inst] : hi_[t.inst];
-      h.push_back(Bound{t.low ? f.lo : f.hi, t.run, f.version});
+      Heap& h = t.low ? lo_[t.axis][t.inst] : hi_[t.axis][t.inst];
+      h.push_back(Bound{t.low ? f.lo[t.axis] : f.hi[t.axis], t.run, f.version});
       std::push_heap(h.begin(), h.end(), t.low ? low_first : high_first);
     }
   }
 
  private:
   static constexpr std::uint32_t kNone = 0xFFFF'FFFF;
+  static constexpr std::size_t kAxes = 3;  // the mid, the best bid, the best ask
   struct Bound {
     std::int64_t bound;
     std::uint32_t run;
@@ -427,13 +467,14 @@ class WakeIndex {
     std::uint32_t trades = kNone;
     std::uint32_t tickers = kNone;
     std::uint32_t version = 0;
-    std::int64_t lo = MdInterest::kBelow;
-    std::int64_t hi = MdInterest::kAbove;
+    std::int64_t lo[kAxes] = {MdInterest::kBelow, MdInterest::kBelow, MdInterest::kBelow};
+    std::int64_t hi[kAxes] = {MdInterest::kAbove, MdInterest::kAbove, MdInterest::kAbove};
   };
   struct Taken {
     std::uint32_t run;
     std::uint32_t inst;
     std::uint32_t version;
+    std::uint8_t axis;
     bool low;
   };
   // A list of runs with each run's place in it (`place(run)`): `run` in or out.
@@ -456,21 +497,24 @@ class WakeIndex {
     if (at < list.size()) place(list[at]) = at;
   }
   void push_band(std::uint32_t run, std::size_t i, const Filed& f) {
-    if (f.lo != MdInterest::kBelow) {
-      lo_[i].push_back(Bound{f.lo, run, f.version});
-      std::push_heap(lo_[i].begin(), lo_[i].end(), low_first);
-    }
-    if (f.hi != MdInterest::kAbove) {
-      hi_[i].push_back(Bound{f.hi, run, f.version});
-      std::push_heap(hi_[i].begin(), hi_[i].end(), high_first);
+    for (std::size_t a = 0; a < kAxes; ++a) {
+      if (f.lo[a] != MdInterest::kBelow) {
+        lo_[a][i].push_back(Bound{f.lo[a], run, f.version});
+        std::push_heap(lo_[a][i].begin(), lo_[a][i].end(), low_first);
+      }
+      if (f.hi[a] != MdInterest::kAbove) {
+        hi_[a][i].push_back(Bound{f.hi[a], run, f.version});
+        std::push_heap(hi_[a][i].begin(), hi_[a][i].end(), high_first);
+      }
     }
   }
-  void take(Heap& h, std::size_t i, bool low, std::vector<std::uint32_t>& out) {
+  void take(Heap& h, std::size_t axis, std::size_t i, bool low, std::vector<std::uint32_t>& out) {
     std::pop_heap(h.begin(), h.end(), low ? low_first : high_first);
     const Bound b = h.back();
     h.pop_back();
     if (filed_[b.run * n_ + i].version != b.version) return;
-    taken_.push_back(Taken{b.run, static_cast<std::uint32_t>(i), b.version, low});
+    taken_.push_back(Taken{
+        b.run, static_cast<std::uint32_t>(i), b.version, static_cast<std::uint8_t>(axis), low});
     add(b.run, out);
   }
   void add(std::uint32_t run, std::vector<std::uint32_t>& out) {
@@ -487,8 +531,8 @@ class WakeIndex {
   std::vector<std::vector<std::uint32_t>> every_book_;
   std::vector<std::vector<std::uint32_t>> trades_;
   std::vector<std::vector<std::uint32_t>> tickers_;
-  std::vector<Heap> lo_;
-  std::vector<Heap> hi_;
+  std::array<std::vector<Heap>, kAxes> lo_;
+  std::array<std::vector<Heap>, kAxes> hi_;
   std::vector<Filed> filed_;              // [run * instruments + instrument]
   std::vector<std::uint64_t> seen_;       // per run, the interest epoch filed
   std::vector<std::uint32_t> every_pos_;  // per run, its place in every_
@@ -502,8 +546,10 @@ class WakeIndex {
 // group applies each message to its books, hands it to the runs whose engines need it, and then
 // lets the market view take it.
 struct FeedGroup {
+  // A venue's market-data path as the runs have it before the first message: equal paths draw the
+  // same delays for the same messages.
   struct VenueMd {
-    Duration latency{};
+    sim::MdPath path{};
     bool recorded_arrival = false;
     bool used = false;
     friend bool operator==(const VenueMd&, const VenueMd&) = default;
@@ -513,6 +559,18 @@ struct FeedGroup {
   std::unique_ptr<MarketView> market;
   std::array<MdQueue, kMaxVenues> queues;
   std::array<Timestamp, kMaxVenues> last_arrival{};
+  // Per venue, the messages pushed and popped, and the OwnLevelsMsg of a run that goes right
+  // ahead of one of them (SimTransport::own_levels): in `own`, with the message it goes ahead of
+  // and the run in `own_to`, in the order they came.
+  struct OwnAhead {
+    std::uint64_t ahead_of;
+    std::uint32_t run;
+  };
+  std::array<std::uint64_t, kMaxVenues> pushed{};
+  std::array<std::uint64_t, kMaxVenues> popped{};
+  std::array<MdQueue, kMaxVenues> own;
+  std::array<std::vector<OwnAhead>, kMaxVenues> own_to;
+  std::array<std::size_t, kMaxVenues> own_next{};
   std::vector<std::uint32_t> runs;
   WakeIndex wake;
   std::uint64_t forwarded = 0;
@@ -521,12 +579,13 @@ struct FeedGroup {
   // The next event its runs share: a recorded event or its own market data (the runs follow it).
   Timestamp next_shared = Timestamp::max();
 
-  // SimTransport::forward() of every run of the group.
-  void forward(const EventHeader& md, Timestamp recorded, Timestamp now) {
+  // SimTransport::forward() of every run of the group; the venue's queue it went to and its
+  // arrival.
+  std::uint8_t forward(const EventHeader& md, Timestamp recorded, Timestamp now, Timestamp& at) {
     const std::uint8_t v =
         md.instrument.value < kMaxInstruments ? venue_of[md.instrument.value] : venue_of[0];
-    const VenueMd& c = venues[v];
-    Timestamp arrival = now + c.latency;
+    VenueMd& c = venues[v];
+    Timestamp arrival = now + c.path.draw();
     if (c.recorded_arrival && recorded > now) arrival = arrival + (recorded - now);
     if (arrival < last_arrival[v]) arrival = last_arrival[v];
     last_arrival[v] = arrival;
@@ -539,7 +598,21 @@ struct FeedGroup {
     h->t1_delta = h->t2_delta = 0;
     h->seq = 0;
     queues[v].push(*h);
+    ++pushed[v];
     ++forwarded;
+    at = arrival;
+    return v;
+  }
+  // Run `run`'s own message `m` goes right ahead of the last message pushed to venue `v`'s queue,
+  // at its arrival.
+  void own_ahead(std::uint8_t v, std::uint32_t run, const EventHeader& m, Timestamp arrival) {
+    alignas(64) std::array<std::byte, kMaxSourceEventBytes> buf;
+    std::memcpy(buf.data(), &m, m.len);
+    auto* h = reinterpret_cast<EventHeader*>(buf.data());
+    h->recv_ts = arrival;
+    h->t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
+    own[v].push(*h);
+    own_to[v].push_back(OwnAhead{pushed[v], run});
   }
   // The key of the message that goes next and its venue (the lowest on a tie); false: none.
   bool next(sim::SimKey& key, std::size_t& venue) const noexcept {
@@ -555,16 +628,15 @@ struct FeedGroup {
   }
 };
 
-// The group a configuration's runs could share, or none (its feed is its own).
-bool shares_feed(const BacktestConfig& c, FeedGroup& g) {
-  if (c.transport.own_orders_in_feed) return false;
+// The group a run could share, or none (its feed is its own): its venues' market-data paths
+// before the first message.
+bool shares_feed(const BacktestConfig& c, const sim::SimTransport& t, FeedGroup& g) {
   g.venue_of = venue_of_instruments(c);
   for (const Instrument& i : c.instruments) {
     const std::uint8_t v = g.venue_of[i.id.value];
-    if (v >= kMaxVenues) return false;
-    const sim::SimVenueConfig vc = c.transport.venue_config(VenueId{v});
-    if (vc.md_in.jitter.ns > 0) return false;
-    g.venues[v] = FeedGroup::VenueMd{vc.md_in.fixed, vc.md_recorded_arrival, true};
+    const sim::MdPath* path = v < kMaxVenues ? t.md_path(VenueId{v}) : nullptr;
+    if (path == nullptr) return false;
+    g.venues[v] = FeedGroup::VenueMd{*path, t.md_recorded_arrival(VenueId{v}), true};
   }
   return true;
 }
@@ -625,7 +697,7 @@ class Pass {
         if (transport.marks_account(inst.id)) index_.add_mark(k, inst.id);
       }
       FeedGroup g;
-      if (shares_feed(c, g) && r.parts.hooks.follow_market != nullptr) {
+      if (shares_feed(c, transport, g) && r.parts.hooks.follow_market != nullptr) {
         r.own_feed = false;
         std::size_t at = groups_.size();
         for (std::size_t j = 0; j < groups_.size(); ++j) {
@@ -639,6 +711,7 @@ class Pass {
         }
         r.group = static_cast<std::uint32_t>(at);
         groups_[at]->runs.push_back(k);
+        index_.set_shared(k, true);
         r.parts.hooks.follow_market(r.parts.hooks.ctx, *groups_[at]->market);
       } else {
         own_feed_.push_back(k);
@@ -655,7 +728,7 @@ class Pass {
     }
   }
 
-  void run(MdSource& source, std::vector<BacktestResult>& out) {
+  void run(MdSource& source, std::vector<BacktestResult>& out, const ResultHook& done) {
     const Duration window = first_.reorder_window;
     std::unique_ptr<sim::VenueOrderSource> ordered;
     MdSource* events = &source;
@@ -708,6 +781,7 @@ class Pass {
         res.md_reordered = ordered->reordered();
         res.md_late = ordered->late();
       }
+      if (done) done(r.index, res);
       out[r.index] = std::move(res);
     }
   }
@@ -807,7 +881,13 @@ class Pass {
   void forward(const EventHeader& md, Timestamp now) {
     const InstrumentId id = md.instrument;
     const auto to_groups = [this](const EventHeader& m, Timestamp recorded, Timestamp venue) {
-      for (const std::unique_ptr<FeedGroup>& g : groups_) g->forward(m, recorded, venue);
+      for (std::size_t gi = 0; gi < groups_.size(); ++gi) {
+        FeedGroup& g = *groups_[gi];
+        Timestamp arrival;
+        const std::uint8_t v = g.forward(m, recorded, venue, arrival);
+        if (m.instrument.value < first_.instruments.size())
+          own_levels(gi, v, m.instrument, venue, arrival);
+      }
     };
     if ((id.value < first_.instruments.size() && sim::SimTransport::is_l3_event(md.type)) ||
         (md.type == EventType::BookTicker &&
@@ -822,10 +902,32 @@ class Pass {
     }
   }
 
+  // The runs of group `gi` whose resting quantity on `id` changed send it right ahead of the
+  // group's message of `id` (SimTransport::forward of a run alone).
+  void own_levels(
+      std::size_t gi, std::uint8_t v, InstrumentId id, Timestamp now, Timestamp arrival) {
+    std::vector<std::uint32_t>& changed = index_.own_changed(id);
+    if (changed.empty()) return;
+    FeedGroup& g = *groups_[gi];
+    std::size_t keep = 0;
+    for (const std::uint32_t k : changed) {
+      Run& r = runs_[k];
+      if (r.group != gi) {
+        changed[keep++] = k;
+        continue;
+      }
+      if (!r.live) continue;
+      const OwnLevelsMsg* m = r.parts.session->backend().transport.own_levels(id, now);
+      if (m != nullptr) g.own_ahead(v, k, m->hdr, arrival);
+    }
+    changed.resize(keep);
+  }
+
   void market_data(FeedGroup& g, std::size_t venue, SimKey key) {
     const EventHeader& m = *g.queues[venue].head();
     // Every run takes its own events before it, those of the group on the books before it.
     advance_all(key);
+    own_ahead(g, venue);
     if ((m.type == EventType::BookDelta || m.type == EventType::BookSnapshot) &&
         first_.instruments.contains(m.instrument))
       g.market->books[m.instrument.value].apply_delta(msg_cast<BookDeltaMsg>(&m));
@@ -858,6 +960,37 @@ class Pass {
     g.last_md = std::max(g.last_md, m.recv_ts);
     if (counted) ++g.md_taken;
     g.queues[venue].pop();
+    ++g.popped[venue];
+  }
+  // The runs' own messages that go right ahead of venue `venue`'s next message of group `g`, each
+  // as the run's step, before the group's books take that message.
+  void own_ahead(FeedGroup& g, std::size_t venue) {
+    std::vector<FeedGroup::OwnAhead>& to = g.own_to[venue];
+    std::size_t& next = g.own_next[venue];
+    while (next < to.size() && to[next].ahead_of == g.popped[venue] + 1) {
+      const std::uint32_t k = to[next++].run;
+      const EventHeader& own = *g.own[venue].head();
+      Run& r = runs_[k];
+      if (r.live) {
+        reach(r);
+        r.parts.session->shared_market_data(own);
+        if (r.parts.session->stopped()) {
+          die(k);
+        } else {
+          if (const SimKey s = r.parts.session->step_key(); s < r.key) {
+            r.key = s;
+            ++r.version;
+            heap_.push(HeapEntry{s, k, r.version});
+          }
+          refile(k);
+        }
+      }
+      g.own[venue].pop();
+    }
+    if (next == to.size()) {
+      to.clear();
+      next = 0;
+    }
   }
   // The runs of `g` with a timer due at `t` (the heap holds every run's next key) join woken_.
   void due_now(Timestamp t, FeedGroup& g) {
@@ -946,7 +1079,8 @@ std::string multiverse_refusal(const std::vector<BacktestConfig>& cfgs) {
 std::vector<BacktestResult> run_multiverse(const std::vector<BacktestConfig>& cfgs,
                                            const MultiverseFactory& make,
                                            const SourceFactory& source_factory,
-                                           int threads) {
+                                           int threads,
+                                           const ResultHook& done) {
   std::vector<BacktestResult> out(cfgs.size());
   if (cfgs.empty()) return out;
   check_shareable(cfgs);
@@ -961,11 +1095,17 @@ std::vector<BacktestResult> run_multiverse(const std::vector<BacktestConfig>& cf
   if (w > g) w = static_cast<unsigned>(g);
   std::vector<std::vector<std::size_t>> passes(g);
   for (std::size_t i = 0; i < cfgs.size(); ++i) passes[i % g].push_back(i);
+  // The passes end on their own threads: one result at a time to `done`.
+  std::mutex done_mutex;
+  const ResultHook serial = [&](std::size_t i, BacktestResult& r) {
+    const std::lock_guard lock(done_mutex);
+    done(i, r);
+  };
   const auto run_one = [&](std::size_t k) {
     std::unique_ptr<MdSource> source = source_factory();
     if (source == nullptr) throw std::invalid_argument("multiverse: needs recorded data");
     Pass pass(cfgs, passes[k], make, *source);
-    pass.run(*source, out);
+    pass.run(*source, out, done ? serial : ResultHook{});
   };
   if (w == 1) {
     for (std::size_t k = 0; k < g; ++k) run_one(k);
@@ -999,10 +1139,12 @@ std::vector<BacktestResult> run_multiverse(const std::vector<BacktestConfig>& cf
 std::vector<BacktestResult> run_multiverse(const std::vector<BacktestConfig>& cfgs,
                                            std::string_view strategy,
                                            const SourceFactory& source_factory,
-                                           int threads) {
+                                           int threads,
+                                           const ResultHook& done) {
   if (cfgs.empty()) return {};
   check_shareable(cfgs);
-  return run_multiverse(cfgs, registry_factory(find_strategy(strategy)), source_factory, threads);
+  return run_multiverse(
+      cfgs, registry_factory(find_strategy(strategy)), source_factory, threads, done);
 }
 
 std::vector<BacktestResult> run_multiverse(const std::vector<BacktestConfig>& cfgs,
@@ -1015,7 +1157,7 @@ std::vector<BacktestResult> run_multiverse(const std::vector<BacktestConfig>& cf
   std::vector<std::size_t> all(cfgs.size());
   for (std::size_t i = 0; i < all.size(); ++i) all[i] = i;
   Pass pass(cfgs, all, make, source);
-  pass.run(source, out);
+  pass.run(source, out, {});
   return out;
 }
 
@@ -1023,7 +1165,8 @@ std::vector<SweepPoint> sweep_multiverse(const BacktestConfig& base,
                                          std::string_view strategy,
                                          const ParamGrid& grid,
                                          const SourceFactory& source_factory,
-                                         int threads) {
+                                         int threads,
+                                         const ResultHook& done) {
   const std::vector<ParamMap> points = expand_grid(grid);
   const BacktestConfig start = shared_start(base);
   std::vector<BacktestConfig> cfgs;
@@ -1033,6 +1176,7 @@ std::vector<SweepPoint> sweep_multiverse(const BacktestConfig& base,
     for (const auto& [k, v] : p) c.params[k] = v;
     c.output_dir.clear();
     c.journal_out.clear();
+    c.keep_orders = false;
     cfgs.push_back(std::move(c));
   }
   // Without data, the synthetic market as a stream (l2_queue), the one each point would read.
@@ -1041,7 +1185,7 @@ std::vector<SweepPoint> sweep_multiverse(const BacktestConfig& base,
     if (s == nullptr) s = std::make_unique<SyntheticSource>(synthetic_source_config(base));
     return s;
   };
-  std::vector<BacktestResult> results = run_multiverse(cfgs, strategy, factory, threads);
+  std::vector<BacktestResult> results = run_multiverse(cfgs, strategy, factory, threads, done);
   std::vector<SweepPoint> out(points.size());
   for (std::size_t i = 0; i < points.size(); ++i) {
     out[i].params = points[i];
@@ -1055,9 +1199,10 @@ std::vector<SweepPoint> sweep_by_name(const BacktestConfig& base,
                                       const ParamGrid& grid,
                                       const SourceFactory& source_factory,
                                       int threads,
-                                      bool separately) {
+                                      bool separately,
+                                      const ResultHook& done) {
   if (!separately && queue_model(base.transport.fill_model))
-    return sweep_multiverse(base, strategy, grid, source_factory, threads);
+    return sweep_multiverse(base, strategy, grid, source_factory, threads, done);
   return sweep(
       base,
       grid,
@@ -1065,7 +1210,8 @@ std::vector<SweepPoint> sweep_by_name(const BacktestConfig& base,
       [strategy = std::move(strategy)](const BacktestConfig& c, MdSource* s) {
         return run_backtest(c, strategy, s);
       },
-      threads);
+      threads,
+      done);
 }
 
 WalkForwardReport walk_forward_by_name(const BacktestConfig& base,

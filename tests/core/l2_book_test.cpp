@@ -151,6 +151,48 @@ TEST_CASE("core.l2_book: crossed detection and grace, truncation") {
   CHECK_FALSE(b.has_snapshot());
 }
 
+TEST_CASE("core.l2_book: our own quantity comes in and goes out, past a full side too") {
+  L2Book<4> b;
+  for (int i = 0; i < 4; ++i) {
+    b.apply_level(Side::Buy, px(90 + i), qt(1));
+    b.apply_level(Side::Sell, px(100 + i), qt(2));
+  }
+  b.mark_snapshot();
+  const auto bids = b.raw(Side::Buy);
+  const auto asks = b.raw(Side::Sell);
+  bool joined = true;
+  bool inside = false;
+  CHECK(b.add_own(Side::Buy, px(93), qt(5), joined));  // at the touch: added to it
+  CHECK_FALSE(joined);
+  CHECK(b.add_own(Side::Buy, px(95), qt(3), inside));  // inside: a level of its own, past 4
+  CHECK(inside);
+  CHECK(b.depth(Side::Buy) == 5);
+  CHECK(b.best_bid().price == px(95));
+  CHECK(b.level(Side::Buy, 1).qty == qt(6));
+  CHECK(b.level(Side::Buy, 4).price == px(90));  // the worst stays
+  CHECK_FALSE(b.truncated());
+  for (int k = 0; k < static_cast<int>(L2Book<4>::kOwnLevels) - 1; ++k) {
+    bool in = false;
+    REQUIRE(b.add_own(Side::Buy, px(200 + k), qt(1), in));
+  }
+  bool full = false;
+  CHECK_FALSE(b.add_own(Side::Buy, px(400), qt(1), full));  // no room left
+  for (int k = 0; k < static_cast<int>(L2Book<4>::kOwnLevels) - 1; ++k)
+    b.remove_own(Side::Buy, px(200 + k), qt(1), true);
+  b.remove_own(Side::Buy, px(95), qt(3), inside);
+  b.remove_own(Side::Buy, px(93), qt(5), joined);
+  REQUIRE(b.depth(Side::Buy) == bids.size());
+  for (std::size_t i = 0; i < bids.size(); ++i) {
+    CHECK(b.raw(Side::Buy)[i].price == bids[i].price);
+    CHECK(b.raw(Side::Buy)[i].qty == bids[i].qty);
+  }
+  CHECK(b.depth(Side::Sell) == asks.size());
+  // Taken out again, a full side drops its worst for a better level as before.
+  CHECK(b.apply_level(Side::Buy, px(94), qt(1)));
+  CHECK(b.depth(Side::Buy) == 4);
+  CHECK(b.level(Side::Buy, 3).price == px(91));
+}
+
 TEST_CASE("core.l2_book: property test vs std::map oracle, 200 seeds x 5000 ops") {
   for (std::uint32_t seed = 1; seed <= 200; ++seed) {
     CAPTURE(seed);

@@ -245,6 +245,100 @@ max_leader_age_ms = 500
   check_exact(variants(base, grid, 24, stress_seed(104)), "lead_mm", random_market(rc));
 }
 
+TEST_CASE(
+    "backtest.multiverse.exact: our orders in the feed and jittered market data, deep books") {
+  // Books 256 levels deep whose deepest levels come and go, every run's orders shown in its feed
+  // (most of them) and half of the runs on one seed with jittered market data: those share one
+  // feed, the rest each their own seed's.
+  const ParamGrid grid = {{"half_spread_bps", {"0.2", "1", "4"}},
+                          {"levels", {"1", "3"}},
+                          {"requote_threshold_ticks", {"0", "2"}}};
+  const auto deep = [](std::vector<BacktestConfig> cfgs) {
+    for (std::size_t k = 0; k < cfgs.size(); ++k) {
+      cfgs[k].transport.own_orders_in_feed = k % 5 != 4;
+      if (k % 2 == 0) {
+        cfgs[k].transport.seed = 7;
+        cfgs[k].transport.md_in = sim::LatencyParams{microseconds(300), microseconds(200)};
+      }
+    }
+    return cfgs;
+  };
+  RandomMarketConfig rc;
+  rc.seed = stress_seed(15);
+  rc.depth = 300;
+  rc.venues = {VenueId{0}, VenueId{0}};
+  const BacktestConfig mm = config_of(std::string(kEngine) + instruments({"a", "a"}) + R"(
+[strategy]
+name = "basic_mm"
+[strategy.params]
+half_spread_bps = 1
+skew_bps_per_unit = 0.5
+quote_qty = 1
+max_inventory = 10
+requote_threshold_ticks = 1
+pull_on_stale_ms = 0
+)" + kRisk + backtest("l2_queue"));
+  check_exact(deep(variants(mm, grid, 32, stress_seed(111))), "basic_mm", random_market(rc));
+  check_exact(deep(variants(mm, grid, 12, stress_seed(112))), "basic_mm", random_market(rc), 3);
+  const BacktestConfig as = config_of(std::string(kEngine) + instruments({"a", "a"}) + R"(
+[strategy]
+name = "avellaneda_stoikov"
+[strategy.params]
+gamma = 0.1
+kappa = 50
+quote_qty = 1
+max_inventory = 10
+sigma_window_s = 5
+)" + kRisk + backtest("l2_queue"));
+  check_exact(deep(variants(as, {{"gamma", {"0.01", "0.1", "1"}}}, 12, stress_seed(113))),
+              "avellaneda_stoikov",
+              random_market(rc));
+}
+
+TEST_CASE(
+    "backtest.multiverse.exact: a point that keeps no order rows has its backtest's metrics") {
+  // The metrics count the orders as the run goes (OrderStats), so a sweep's points, which keep no
+  // order rows, report what their backtests report from theirs.
+  const BacktestConfig base = config_of(std::string(kEngine) + instruments({"a", "a"}) + R"(
+[strategy]
+name = "basic_mm"
+[strategy.params]
+half_spread_bps = 1
+skew_bps_per_unit = 0.5
+quote_qty = 1
+max_inventory = 10
+requote_threshold_ticks = 0
+pull_on_stale_ms = 0
+)" + kRisk + backtest("l2_queue"));
+  std::vector<BacktestConfig> cfgs = variants(
+      base, {{"half_spread_bps", {"0.2", "1"}}, {"levels", {"1", "3"}}}, 12, stress_seed(114));
+  for (BacktestConfig& c : cfgs) c.keep_orders = false;
+  RandomMarketConfig rc;
+  rc.seed = stress_seed(16);
+  rc.venues = {VenueId{0}, VenueId{0}};
+  const SourceFactory factory = random_market(rc);
+  const std::vector<BacktestResult> mv = run_multiverse(cfgs, "basic_mm", factory, 2);
+  for (std::size_t i = 0; i < cfgs.size(); ++i) {
+    CAPTURE(i);
+    BacktestConfig c = cfgs[i];
+    c.keep_orders = true;
+    const std::unique_ptr<MdSource> source = factory();
+    const BacktestResult alone = run_backtest(c, "basic_mm", source.get());
+    REQUIRE(alone.orders.size() > 0);
+    CHECK(mv[i].orders.size() == 0);
+    CHECK(result_difference(alone, mv[i]) == "");
+    // Every metric of the summary; the wall time is the only line that may differ.
+    const auto summary = [](const BacktestResult& r) {
+      std::string s = r.summary_json();
+      const std::size_t w = s.find("\"wall_seconds\"");
+      if (w != std::string::npos) s.erase(w, s.find('\n', w) - w);
+      return s;
+    };
+    CHECK(summary(alone) == summary(mv[i]));
+    CHECK(alone.metrics.fill_quality.quotes_filled > 0);
+  }
+}
+
 TEST_CASE("backtest.multiverse.exact: xmm quoting one venue and hedging on another") {
   const BacktestConfig base = config_of(R"(
 [engine]

@@ -134,9 +134,12 @@ struct RunTier {
 // Venue-side collector: records orders and fills as the simulated venue sees them and
 // samples equity bars. Vectors are reserved up front so a typical run does not reallocate.
 struct BacktestSession::Impl final : sim::SimObserver {
-  Impl(const InstrumentTable& instruments, std::size_t bars, const std::vector<Duration>& horizons)
-      : ledger(instruments) {
-    orders.reserve(kReserveOrders);
+  Impl(const InstrumentTable& instruments,
+       std::size_t bars,
+       const std::vector<Duration>& horizons,
+       bool keep_orders_)
+      : ledger(instruments), keep_orders(keep_orders_) {
+    if (keep_orders) orders.reserve(kReserveOrders);
     fills.reserve(kReserveFills);
     equity.by_instrument.resize(instruments.size());
     equity.reserve(bars);
@@ -148,10 +151,7 @@ struct BacktestSession::Impl final : sim::SimObserver {
   }
 
   void on_order_sent(const EventHeader& h, Timestamp ts, Timestamp venue_ts) override {
-    orders.ts.push_back(ts.ns);
-    orders.venue_ts.push_back(venue_ts.ns);
-    orders.trigger_ts.push_back(static_cast<std::int64_t>(h.t0_cycles.v));
-    orders.instrument.push_back(h.instrument.value);
+    const auto trigger = static_cast<std::int64_t>(h.t0_cycles.v);
     std::uint64_t id = 0;
     std::uint64_t orig = 0;
     std::int8_t side = -1;
@@ -185,6 +185,12 @@ struct BacktestSession::Impl final : sim::SimObserver {
       default:
         break;
     }
+    order_stats.on_order(kind, id, orig, venue_ts.ns, trigger);
+    if (!keep_orders) return;
+    orders.ts.push_back(ts.ns);
+    orders.venue_ts.push_back(venue_ts.ns);
+    orders.trigger_ts.push_back(trigger);
+    orders.instrument.push_back(h.instrument.value);
     orders.cl_ord_id.push_back(id);
     orders.orig_cl_ord_id.push_back(orig);
     orders.side.push_back(side);
@@ -209,9 +215,24 @@ struct BacktestSession::Impl final : sim::SimObserver {
     queue_position_known = queue_position_known || ctx.queue_known;
     for (std::vector<std::int64_t>& col : fills.markout_mid) col.push_back(0);
     ledger.on_fill(f);
+    order_stats.on_fill(f.cl_ord_id.value, ts.ns);
+    if (!f.leaves_qty.is_positive()) order_stats.on_end(f.cl_ord_id.value);
   }
   void on_order_event(const EventHeader& h, Timestamp) override {
-    if (h.type == EventType::OrderReject) ++rejects;
+    switch (h.type) {
+      case EventType::OrderReject:
+        ++rejects;
+        order_stats.on_end(msg_cast<OrderRejectMsg>(&h).cl_ord_id.value);
+        break;
+      case EventType::OrderCancelAck:
+        order_stats.on_end(msg_cast<OrderCancelAckMsg>(&h).cl_ord_id.value);
+        break;
+      case EventType::OrderExpired:
+        order_stats.on_end(msg_cast<OrderExpiredMsg>(&h).cl_ord_id.value);
+        break;
+      default:
+        break;
+    }
   }
 
   void sample(Timestamp ts,
@@ -274,8 +295,10 @@ struct BacktestSession::Impl final : sim::SimObserver {
   }
 
   PnLLedger ledger;
+  bool keep_orders;
   FillRows fills;
   OrderRows orders;
+  OrderStats order_stats;
   EquityRows equity;
   std::vector<std::size_t> next_;  // per horizon, the first unresolved fill
   std::uint64_t rejects = 0;
@@ -505,7 +528,7 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
   const std::size_t bars = source_ == synthetic_.get() || generator_ != nullptr
                                ? static_cast<std::size_t>(cfg_.duration.ns / cfg_.equity_bar.ns) + 4
                                : kReserveBars;
-  impl_ = std::make_unique<Impl>(cfg_.instruments, bars, cfg_.markout_horizons);
+  impl_ = std::make_unique<Impl>(cfg_.instruments, bars, cfg_.markout_horizons, cfg_.keep_orders);
   impl_->ledger.set_accounting(cfg_.engine.fx);
   backend_->transport.set_observer(impl_.get());
   if (!cfg_.journal_out.empty()) {
@@ -953,7 +976,7 @@ BacktestResult BacktestSession::end(std::string_view strategy_name) {
   in.final_mid.resize(cfg_.instruments.size());
   for (const Instrument& i : cfg_.instruments)
     in.final_mid[i.id.value] = b.transport.venue_mid(i.id).raw;
-  r.metrics = compute_metrics(r.equity, r.fills, r.orders, in);
+  r.metrics = compute_metrics(r.equity, r.fills, impl_->order_stats, in);
   r.wall_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count();
   return r;
 }

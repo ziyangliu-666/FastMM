@@ -196,7 +196,7 @@ class Engine {
         feed_(feed),
         strategy_(strategy),
         ctx_(this),
-        own_books_(new Book[kMaxInstruments]),
+        own_books_(new Book[std::max<std::size_t>(instruments.size(), 1)]),
         books_(own_books_.get()),
         oms_(cfg.session_epoch),
         risk_(cfg.risk, clock.now()),
@@ -233,6 +233,7 @@ class Engine {
     if (own_venues_ != 0) {
       own_ = std::make_unique<OwnQuantity>();
       own_->prepare(instruments_.size());
+      own_shown_ = std::make_unique<OwnShown[]>(instruments_.size());
     }
     risk_.set_underlying(cfg.underlying);
     balances_->build(instruments_, cfg.fees, cfg.balance, &cfg_.pools);
@@ -343,6 +344,7 @@ class Engine {
     started_ = true;
     in_engine_ = true;
     catch_up();
+    show_own_all();
     latch_clock();
     set_event_origin(Cycles{}, Cycles{});
     // The rate limiter refills from the start time, not from construction (replay constructs the
@@ -378,6 +380,7 @@ class Engine {
     }
     flush_out();
     unlatch_clock();
+    hide_own_all();
     update_interest();
     in_engine_ = false;
   }
@@ -386,6 +389,7 @@ class Engine {
     finished_ = true;
     in_engine_ = true;
     catch_up();
+    show_own_all();
     latch_clock();
     set_event_origin(Cycles{}, Cycles{});
     if (journal_.enabled() && !journal_.record_clock(EngineTimeMsg::Kind::Finish, now_))
@@ -405,6 +409,7 @@ class Engine {
     }
     publish_latency(now_);
     unlatch_clock();
+    hide_own_all();
     in_engine_ = false;
   }
   // The engine thread is the only writer: a plain increment, no read-modify-write. With the kill
@@ -436,7 +441,11 @@ class Engine {
   [[nodiscard]] FASTMM_FORCE_INLINE Timestamp now() const noexcept {
     return FASTMM_LIKELY(latched_) ? now_ : clock_.now();
   }
-  [[nodiscard]] const Book& book(InstrumentId id) const noexcept { return books_[id.value]; }
+  // The book of an instrument of the table; an empty one for any other id.
+  [[nodiscard]] const Book& book(InstrumentId id) const noexcept {
+    static const Book kNone{};
+    return FASTMM_LIKELY(id.value < instruments_.size()) ? books_[id.value] : kNone;
+  }
   // The engine follows `market`, whose books it reads and which keeps what every message changes
   // besides (market_view.hpp): the engine is handed only the messages md_interest() asks for,
   // and catches up with the others before it takes anything. Before start().
@@ -573,8 +582,8 @@ class Engine {
       sell.underlying = underlying_inputs(id, Side::Sell);
     }
     RiskHeadroom h = risk_.headroom(instruments_.get(id), buy, sell, net_pnl());
-    if (balances_live_ && books_[id.value].is_valid()) {
-      const Price mid = books_[id.value].mid();
+    if (balances_live_ && book(id).is_valid()) {
+      const Price mid = book(id).mid();
       h.balance_buy_qty = balance_room(id, Side::Buy, mid);
       h.balance_sell_qty = balance_room(id, Side::Sell, mid);
     }
@@ -721,12 +730,12 @@ class Engine {
   // ... as of the book's last update.
   [[nodiscard]] Qty own_qty(InstrumentId id, Side side, Price px) const noexcept {
     if (own_ == nullptr) return Qty{};
-    return own_qty(id, side, px, books_[id.value].last_update());
+    return own_qty(id, side, px, book(id).last_update());
   }
   // The best level on `side` after taking our quantity out; levels that were only ours are
   // skipped. Level{} when nothing is left.
   [[nodiscard]] Level best_ex_self(InstrumentId id, Side side) const noexcept {
-    const Book& b = books_[id.value];
+    const Book& b = book(id);
     const std::size_t n = b.depth(side);
     for (std::size_t i = 0; i < n; ++i) {
       const Level l = b.level(side, i);
@@ -1039,6 +1048,9 @@ class Engine {
       case EventType::BookTicker:
         on_book_ticker(msg_cast<BookTickerMsg>(h));
         break;
+      case EventType::OwnLevels:
+        on_own_levels(msg_cast<OwnLevelsMsg>(h));
+        break;
       case EventType::OptionTicker:
         on_option_ticker(msg_cast<OptionTickerMsg>(h));
         break;
@@ -1142,12 +1154,61 @@ class Engine {
     const InstrumentId id = d.hdr.instrument;
     if (FASTMM_UNLIKELY(!instruments_.contains(id))) return;
     Book& b = books_[id.value];
-    if (own_books_ != nullptr) b.apply_delta(d);
+    const bool own = shows_own(id.value);
+    if (own_books_ != nullptr) {
+      if (own) hide_own(id.value);
+      b.apply_delta(d);
+      if (own) show_own(id.value);
+    }
+    // The touch box our orders' book is woken in (update_interest) follows the market's touch.
+    if (own) interest_changed(id);
     ++stats_.book_updates;
     track_feed_lag(d.hdr);
     if (FASTMM_UNLIKELY(queue_on_)) queue_on_book(d, b);
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
+    book_changed(id, b, t2);
+  }
+
+  // Our quantity a simulated feed shows on an instrument (OwnLevelsMsg): the book and the tickers
+  // show it from now on. It comes right ahead of a message of the instrument, with which the
+  // strategy sees it.
+  FASTMM_NOINLINE void on_own_levels(const OwnLevelsMsg& m) noexcept {
+    const InstrumentId id = m.hdr.instrument;
+    if (!instruments_.contains(id) || own_shown_ == nullptr) return;
+    const std::uint32_t i = id.value;
+    OwnShown& o = own_shown_[i];
+    const bool had = shows_own(i);
+    if (own_showing_) hide_own(i);
+    for (const Side side : {Side::Buy, Side::Sell}) {
+      auto& v = o.levels[static_cast<std::size_t>(side)];
+      for (const Level& l : side == Side::Buy ? m.bids() : m.asks()) {
+        auto it =
+            std::find_if(v.begin(), v.end(), [&](const Level& x) { return x.price == l.price; });
+        if (it != v.end()) {
+          if (l.qty.is_positive()) {
+            it->qty = l.qty;
+          } else {
+            v.erase_at(static_cast<std::size_t>(it - v.begin()));
+          }
+        } else if (l.qty.is_positive()) {
+          static_cast<void>(v.push_back(l));  // past kOwnLevels prices: not shown
+        }
+      }
+    }
+    const bool has = shows_own(i);
+    if (has && !had) static_cast<void>(own_shown_ids_.push_back(i));
+    if (!has && had) {
+      auto it = std::find(own_shown_ids_.begin(), own_shown_ids_.end(), i);
+      own_shown_ids_.erase_at(static_cast<std::size_t>(it - own_shown_ids_.begin()));
+    }
+    if (own_showing_) show_own(i);
+    interest_changed(id);
+  }
+
+  // What a change of an instrument's book does besides the book: the risk engine's mid, the
+  // positions' marks, a crossed book's pull, the strategy.
+  void book_changed(InstrumentId id, const Book& b, Cycles t2) noexcept {
     const Timestamp now = now_;
     const Instrument& inst = instruments_.get(id);
     if (FASTMM_LIKELY(b.is_valid())) {
@@ -1238,13 +1299,21 @@ class Engine {
     flush_out();
   }
 
-  void on_book_ticker(const BookTickerMsg& m) noexcept {
+  void on_book_ticker(const BookTickerMsg& recorded) noexcept {
+    // With our orders shown, the ticker shows our best orders too (show_own_top).
+    const InstrumentId id = recorded.hdr.instrument;
+    BookTickerMsg shown{};
+    const bool own = instruments_.contains(id) && shows_own(id.value);
+    if (FASTMM_UNLIKELY(own)) {
+      shown = recorded;
+      show_own_top(id.value, shown);
+    }
+    const BookTickerMsg& m = own ? shown : recorded;
     track_feed_lag(m.hdr);
     if (FASTMM_UNLIKELY(queue_on_)) queue_on_ticker(m);
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
     if constexpr (has_hook(Hook::BookTicker)) {
-      const InstrumentId id = m.hdr.instrument;
       if (FASTMM_LIKELY(instruments_.contains(id) && watch_[id.value].on)) {
         strategy_.on_book_ticker(ctx_, id, m);
         record_strategy_hop(t2);
@@ -1804,7 +1873,18 @@ class Engine {
   // Queue position updates, out of line: the market-data handlers keep only the check.
   FASTMM_NOINLINE void queue_on_book(const BookDeltaMsg& d, const Book& b) noexcept {
     const InstrumentId id = d.hdr.instrument;
-    queue_.on_book(d, b, [&](Side s, Price px) { return own_qty(id, s, px, b.last_update()); });
+    queue_.on_book(
+        d,
+        b,
+        [&](Side s, Price px) { return own_qty(id, s, px, b.last_update()); },
+        [&](Side s, Price px, Qty qty) {
+          if (own_shown_ != nullptr) {
+            for (const typename OwnShown::Added& a : own_shown_[id.value].added) {
+              if (a.side == s && a.px == px) qty += a.qty;
+            }
+          }
+          return qty;
+        });
   }
   FASTMM_NOINLINE void queue_on_trade(const TradeMsg& t) noexcept {
     queue_.on_trade(t, oms_, books_[t.hdr.instrument.value]);
@@ -1818,7 +1898,7 @@ class Engine {
   // What the queue model places an order behind: the displayed quantity at its price less our
   // own, or the touch of a BookTicker newer than the depth book.
   [[nodiscard]] Qty queue_shown(const Order& o) const noexcept {
-    const Book& b = books_[o.instrument.value];
+    const Book& b = book(o.instrument);
     const Qty shown = level_qty(b, o.side, o.price);
     const Qty own = own_qty(o.instrument, o.side, o.price);
     return queue_.at_placement(others_shown(shown, own), o, b, [&](Side s, Price p, Timestamp t) {
@@ -2206,7 +2286,7 @@ class Engine {
   // The price an order holds at: its own, or the book's mid for a market order.
   [[nodiscard]] Price hold_price(InstrumentId id, OrderType type, Price px) const noexcept {
     if (type != OrderType::Market) return px;
-    const Book& b = books_[id.value];
+    const Book& b = book(id);
     return b.is_valid() ? b.mid() : Price{};
   }
   [[nodiscard]] std::int64_t order_hold(const Order& o) const noexcept {
@@ -3749,7 +3829,19 @@ class Engine {
     ++stats_.steps;
     in_engine_ = true;
     catch_up();
+    show_own_all();
     std::size_t n = 0;
+    // Messages already in the feed (an [ab] arm's parameters, what a slow tier handed over) came
+    // first: `first` goes behind them, as a wire's message would.
+    if constexpr (requires {
+                    feed_.empty();
+                    feed_.push(*first);
+                  }) {
+      if (first != nullptr && !feed_.empty() && feed_.push(*first)) {
+        if (market_ != nullptr) took_from_market(*first);
+        first = nullptr;
+      }
+    }
     if (first != nullptr) {
       process(first);
       if (market_ != nullptr) took_from_market(*first);
@@ -3769,6 +3861,7 @@ class Engine {
       n += timers_.poll(now, [this](TimerId id, std::uint64_t ud) { on_timer_fired(id, ud); });
     batch_end();
     if (now - last_publish_ >= cfg_.latency_publish_interval) publish_latency(now);
+    hide_own_all();
     update_interest();
     in_engine_ = false;
     return n;
@@ -3790,8 +3883,15 @@ class Engine {
       const MarketView::Instrument& r = market_->inst[i];
       if (r.mid_at > seen) {
         const InstrumentId id{i};
-        risk_.on_book(id, r.mid, r.mid_ts);
-        positions_.mark(id, r.mid, instruments_.get(id));
+        Price mid = r.mid;
+        if (FASTMM_UNLIKELY(shows_own(i))) {
+          Price bid = r.bid;
+          Price ask = r.ask;
+          own_touch(i, bid, ask);
+          mid = Price::from_raw((bid.raw + ask.raw) / 2);
+        }
+        risk_.on_book(id, mid, r.mid_ts);
+        positions_.mark(id, mid, instruments_.get(id));
       }
       if (r.trade_at > seen) risk_.on_trade(InstrumentId{i}, r.trade);
     }
@@ -3803,8 +3903,193 @@ class Engine {
     stats_.trades += market_->counts.trades - market_seen_.trades;
     market_seen_ = market_->counts;
   }
+  // ---- our orders in a simulated feed (OwnLevelsMsg)
+  // --------------------------------------------- The book of an instrument whose feed shows our
+  // orders is the market's with our quantity added, during a step (show_own_all) and not between
+  // steps (hide_own_all): the market's book is all the runs of a multiverse share, and each run
+  // sees its own orders in it. Our quantity at or through the market's opposite touch is not shown:
+  // the venue would have matched it, and the fill model waits for a trade.
+  [[nodiscard]] bool shows_own(std::uint32_t i) const noexcept {
+    return own_shown_ != nullptr &&
+           !(own_shown_[i].levels[0].empty() && own_shown_[i].levels[1].empty());
+  }
+  void show_own(std::uint32_t i) noexcept {
+    OwnShown& o = own_shown_[i];
+    Book& b = books_[i];
+    const Level bid = b.best_bid();
+    const Level ask = b.best_ask();
+    for (const Side side : {Side::Buy, Side::Sell}) {
+      for (const Level& l : o.levels[static_cast<std::size_t>(side)]) {
+        if (side == Side::Buy ? ask.qty.is_positive() && l.price >= ask.price
+                              : bid.qty.is_positive() && l.price <= bid.price)
+          continue;
+        bool inserted = false;
+        if (b.add_own(side, l.price, l.qty, inserted))
+          static_cast<void>(
+              o.added.push_back(typename OwnShown::Added{side, inserted, l.price, l.qty}));
+      }
+    }
+  }
+  void hide_own(std::uint32_t i) noexcept {
+    OwnShown& o = own_shown_[i];
+    Book& b = books_[i];
+    for (std::size_t k = o.added.size(); k > 0; --k) {
+      const typename OwnShown::Added& a = o.added[k - 1];
+      b.remove_own(a.side, a.px, a.qty, a.inserted);
+    }
+    o.added.clear();
+  }
+  void show_own_all() noexcept {
+    if (own_shown_ids_.empty()) return;
+    for (const std::uint32_t i : own_shown_ids_) show_own(i);
+    own_showing_ = true;
+  }
+  void hide_own_all() noexcept {
+    if (!own_showing_) return;
+    for (const std::uint32_t i : own_shown_ids_) hide_own(i);
+    own_showing_ = false;
+  }
+  // The best bid and ask of the book with our quantity shown, from the market's (zero: none).
+  void own_touch(std::uint32_t i, Price& bid, Price& ask) const noexcept {
+    const OwnShown& o = own_shown_[i];
+    const Price mb = bid;
+    const Price ma = ask;
+    for (const Level& l : o.levels[0]) {
+      if ((!ma.is_positive() || l.price < ma) && (!bid.is_positive() || l.price > bid))
+        bid = l.price;
+    }
+    for (const Level& l : o.levels[1]) {
+      if ((!mb.is_positive() || l.price > mb) && (!ask.is_positive() || l.price < ask))
+        ask = l.price;
+    }
+  }
+  // A recorded book ticker with our best orders in it: a side's best order of ours shown at or
+  // inside the recorded top (none at or through the opposite one).
+  void show_own_top(std::uint32_t i, BookTickerMsg& m) const noexcept {
+    const OwnShown& o = own_shown_[i];
+    const Price rb = m.bid_px;
+    const Price ra = m.ask_px;
+    const auto show = [](Price& px, Qty& qty, const Level& l, bool buy) {
+      if (!px.is_positive() || (buy ? l.price > px : l.price < px)) {
+        px = l.price;
+        qty = l.qty;
+      } else if (l.price == px) {
+        qty += l.qty;
+      }
+    };
+    const Level* best = nullptr;
+    for (const Level& l : o.levels[0]) {
+      if (ra.is_positive() && l.price >= ra) continue;
+      if (best == nullptr || l.price > best->price) best = &l;
+    }
+    if (best != nullptr) show(m.bid_px, m.bid_qty, *best, true);
+    best = nullptr;
+    for (const Level& l : o.levels[1]) {
+      if (rb.is_positive() && l.price <= rb) continue;
+      if (best == nullptr || l.price < best->price) best = &l;
+    }
+    if (best != nullptr) show(m.ask_px, m.ask_qty, *best, false);
+  }
+  // The box of the market's touch within which the mid of instrument i's book with our orders in
+  // it stays strictly inside (lo, hi) and our orders stay shown or hidden as they are: false when
+  // there is none (the engine then takes every update). Each bound is exclusive, as lo and hi are.
+  [[nodiscard]] bool own_box(std::uint32_t i,
+                             std::int64_t lo,
+                             std::int64_t hi,
+                             MdInterest::Instrument& n) const noexcept {
+    const Book& b = books_[i];
+    if (lo >= hi || !b.is_valid()) return false;
+    constexpr std::int64_t kBelow = MdInterest::kBelow;
+    constexpr std::int64_t kAbove = MdInterest::kAbove;
+    const std::int64_t bb = b.best_bid().price.raw;
+    const std::int64_t ba = b.best_ask().price.raw;
+    if (bb <= 0) return false;  // the mid's rounding below assumes positive prices
+    const OwnShown& o = own_shown_[i];
+    std::int64_t bid_lo = 0;
+    std::int64_t bid_hi = kAbove;
+    std::int64_t ask_lo = 0;
+    std::int64_t ask_hi = kAbove;
+    // A bid of ours is shown while the market's ask is above it, an ask while its bid is below.
+    std::int64_t vb = kBelow;  // the best of ours shown
+    std::int64_t va = kAbove;
+    for (const Level& l : o.levels[0]) {
+      const std::int64_t p = l.price.raw;
+      if (p < ba) {
+        vb = std::max(vb, p);
+        ask_lo = std::max(ask_lo, p);
+      } else {
+        ask_hi = std::min(ask_hi, p + 1);
+      }
+    }
+    for (const Level& l : o.levels[1]) {
+      const std::int64_t p = l.price.raw;
+      if (p > bb) {
+        va = std::min(va, p);
+        bid_hi = std::min(bid_hi, p);
+      } else {
+        bid_lo = std::max(bid_lo, p - 1);
+      }
+    }
+    if (vb != kBelow && va != kAbove && vb >= va) return false;  // ours cross each other
+    // The touch with ours shown: our best where it is at or better than the market's, as long as
+    // the market's stays at or behind it; else the market's, as long as it stays ahead of ours.
+    const bool bid_ours = vb != kBelow && vb >= bb;
+    const bool ask_ours = va != kAbove && va <= ba;
+    if (bid_ours) {
+      bid_hi = std::min(bid_hi, vb + 1);
+    } else if (vb != kBelow) {
+      bid_lo = std::max(bid_lo, vb);
+    }
+    if (ask_ours) {
+      ask_lo = std::max(ask_lo, va - 1);
+    } else if (va != kAbove) {
+      ask_hi = std::min(ask_hi, va);
+    }
+    // The mid, (bid + ask) / 2 rounded down, strictly inside (lo, hi): bid + ask in
+    // [2 lo + 2, 2 hi - 1].
+    const Int128 b0 = bid_ours ? vb : bb;
+    const Int128 a0 = ask_ours ? va : ba;
+    const Int128 sum_lo = lo == kBelow ? std::numeric_limits<Int128>::min() : Int128{lo} * 2 + 2;
+    const Int128 sum_hi = hi == kAbove ? std::numeric_limits<Int128>::max() : Int128{hi} * 2 - 1;
+    if (b0 + a0 < sum_lo || b0 + a0 > sum_hi) return false;
+    const auto clamp = [](Int128 v) {
+      return v <= kBelow ? kBelow : v >= kAbove ? kAbove : static_cast<std::int64_t>(v);
+    };
+    const bool finite_lo = lo != kBelow;
+    const bool finite_hi = hi != kAbove;
+    if (!bid_ours && ask_ours) {
+      if (finite_lo) bid_lo = std::max(bid_lo, clamp(sum_lo - a0 - 1));
+      if (finite_hi) bid_hi = std::min(bid_hi, clamp(sum_hi - a0 + 1));
+    } else if (bid_ours && !ask_ours) {
+      if (finite_lo) ask_lo = std::max(ask_lo, clamp(sum_lo - b0 - 1));
+      if (finite_hi) ask_hi = std::min(ask_hi, clamp(sum_hi - b0 + 1));
+    } else if (!bid_ours && !ask_ours) {
+      // Both move: each takes half of the room the sum has, down and up.
+      const Int128 s0 = b0 + a0;
+      if (finite_lo) {
+        const Int128 down = s0 - sum_lo;
+        bid_lo = std::max(bid_lo, clamp(b0 - down / 2 - 1));
+        ask_lo = std::max(ask_lo, clamp(a0 - (down - down / 2) - 1));
+      }
+      if (finite_hi) {
+        const Int128 up = sum_hi - s0;
+        bid_hi = std::min(bid_hi, clamp(b0 + up / 2 + 1));
+        ask_hi = std::min(ask_hi, clamp(a0 + (up - up / 2) + 1));
+      }
+    }
+    if (!(bid_lo < bb && bb < bid_hi && ask_lo < ba && ba < ask_hi)) return false;
+    n.lo = kBelow;
+    n.hi = kAbove;
+    n.bid_lo = bid_lo;
+    n.bid_hi = bid_hi;
+    n.ask_lo = ask_lo;
+    n.ask_hi = ask_hi;
+    return true;
+  }
+
   // A message of the market taken (step_with): it counts as one the market will have taken.
   void took_from_market(const EventHeader& m) noexcept {
+    if (m.type == EventType::OwnLevels) return;  // this run's own, not the market's
     ++market_seen_.messages;
     if ((m.type == EventType::BookDelta || m.type == EventType::BookSnapshot) &&
         instruments_.contains(m.instrument))
@@ -3887,8 +4172,7 @@ class Engine {
   void update_interest() noexcept {
     if (market_ == nullptr) return;
     const bool every = journal_.enabled() || cfg_.max_param_age.ns > 0 || feed_lag_limit_.ns > 0 ||
-                       queue_on_ || fx_on_ || perp_.marking() || own_ != nullptr ||
-                       quotes_.starved();
+                       queue_on_ || fx_on_ || perp_.marking() || quotes_.starved();
     if (every != interest_.every) {
       interest_.every = every;
       ++interest_.epoch;
@@ -3908,11 +4192,17 @@ class Engine {
       n.hi = book && w.quiet ? w.hi.raw : MdInterest::kAbove;
       n.lo = std::max(n.lo, risk_lo_[i]);
       n.hi = std::min(n.hi, risk_hi_[i]);
+      // With our orders shown, the mid band is the market touch's box that keeps it.
+      if (!n.every_book && shows_own(static_cast<std::uint32_t>(i)) &&
+          (n.lo != MdInterest::kBelow || n.hi != MdInterest::kAbove) &&
+          !own_box(static_cast<std::uint32_t>(i), n.lo, n.hi, n))
+        n.every_book = true;
       n.trades = w.on && has_hook(Hook::Trade);
       n.tickers = w.on && (has_hook(Hook::BookTicker) || has_hook(Hook::OptionTicker));
       MdInterest::Instrument& o = interest_.inst[i];
       if (n.every_book == o.every_book && n.lo == o.lo && n.hi == o.hi && n.trades == o.trades &&
-          n.tickers == o.tickers)
+          n.tickers == o.tickers && n.bid_lo == o.bid_lo && n.bid_hi == o.bid_hi &&
+          n.ask_lo == o.ask_lo && n.ask_hi == o.ask_hi)
         continue;
       n.epoch = ++interest_.epoch;
       o = n;
@@ -4094,6 +4384,21 @@ class Engine {
   // Venues whose feed shows our orders (bit v), and our quantity there; null when there are none.
   std::uint32_t own_venues_ = 0;
   std::unique_ptr<OwnQuantity> own_;
+  // Our quantity a simulated feed shows (OwnLevelsMsg), per instrument and side by price, and what
+  // of it the book holds now (show_own); null without venues whose feed shows our orders.
+  struct OwnShown {
+    struct Added {
+      Side side;
+      bool inserted;
+      Price px;
+      Qty qty;
+    };
+    StaticVector<Level, Book::kOwnLevels> levels[2];
+    StaticVector<Added, 2 * Book::kOwnLevels> added;
+  };
+  std::unique_ptr<OwnShown[]> own_shown_;
+  StaticVector<std::uint32_t, kMaxInstruments> own_shown_ids_;  // instruments with levels
+  bool own_showing_ = false;                                    // in a step: the books show them
   // Balances per venue and asset, and the hold of each open order by its OMS slot (valid once a
   // venue has reported: balances_live_).
   std::unique_ptr<BalanceBook> balances_ = std::make_unique<BalanceBook>();

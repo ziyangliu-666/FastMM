@@ -62,16 +62,19 @@ using MultiverseFactory =
 // Throws std::invalid_argument when the configurations cannot share a pass: fill_model must be
 // l2_queue or l3_queue, the data recorded (not synthetic), and the instrument tables and reorder
 // windows the same.
+// `done` sees each run's result as its pass ends (sweep.hpp, ResultHook).
 [[nodiscard]] std::vector<BacktestResult> run_multiverse(const std::vector<BacktestConfig>& cfgs,
                                                          const MultiverseFactory& make,
                                                          const SourceFactory& source_factory,
-                                                         int threads = 0);
+                                                         int threads = 0,
+                                                         const ResultHook& done = {});
 
 // The runs of a registered strategy; also throws for an unknown strategy.
 [[nodiscard]] std::vector<BacktestResult> run_multiverse(const std::vector<BacktestConfig>& cfgs,
                                                          std::string_view strategy,
                                                          const SourceFactory& source_factory,
-                                                         int threads = 0);
+                                                         int threads = 0,
+                                                         const ResultHook& done = {});
 
 // Every run in one pass over `source`, read from its current position (reset() it first to
 // reuse one), on the calling thread.
@@ -87,6 +90,7 @@ using MultiverseFactory =
                                                        std::string_view strategy,
                                                        const ParamGrid& grid,
                                                        const SourceFactory& source_factory,
-                                                       int threads = 0);
+                                                       int threads = 0,
+                                                       const ResultHook& done = {});
 
 }  // namespace fastmm::bt

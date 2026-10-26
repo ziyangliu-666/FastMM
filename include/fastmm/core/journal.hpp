@@ -24,6 +24,10 @@
 // than by trades, as the venue reported it) and the open orders of a checkpoint (StrategyStateMsg
 // kOrdersPart).
 //
+// Format v5 (readers accept v1 to v5) adds OwnLevels records: a backtest whose simulated feed
+// shows its orders (kHeaderOwnInFeed) journals the market data as recorded and our quantity in
+// the feed as OwnLevels, where before v5 its market data carried our quantity.
+//
 // Blocks are 1 MiB max; a message never straddles blocks. A trailer is an empty block with
 // kBlockFlagTrailer; if it is missing the file was not closed cleanly and the reader
 // discards any partial tail block (crc mismatch / short read).
@@ -53,7 +57,7 @@
 
 namespace fastmm {
 
-inline constexpr std::uint32_t kJournalVersion = 4;
+inline constexpr std::uint32_t kJournalVersion = 5;
 inline constexpr std::uint32_t kJournalMinVersion = 1;  // oldest version JournalReader opens
 inline constexpr std::size_t kJournalBlockBytes = 1U << 20;
 inline constexpr std::size_t kJournalExtentBytes = 64U << 20;

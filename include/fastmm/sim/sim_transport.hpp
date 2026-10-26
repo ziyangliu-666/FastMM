@@ -32,10 +32,11 @@
 //     from VenueOrderSource come in venue-time order with their recorded position in hdr.seq;
 //     the engine still gets them in recorded order: one that came ahead of an earlier-recorded
 //     event waits for it before going onto the wire (the venue side has applied it already). With
-//     own_orders_in_feed the forwarded feed shows the strategy's resting orders, as a live
-//     venue's does: each depth level and book ticker carries our quantity at its price, the next
-//     depth update also carries our levels that changed since the last one, and a book ticker
-//     goes out when our orders move the top of book (data with book tickers only).
+//     own_orders_in_feed the feed shows the strategy's resting orders, as a live venue's does:
+//     the recorded messages go out as recorded, and when our resting quantity on an instrument
+//     changed, an OwnLevelsMsg with our quantity at the prices that changed goes right ahead of
+//     the instrument's next message, at its arrival. The engine shows it in its book and tickers
+//     (Engine::show_own), so every run over the same data reads the same recorded messages.
 #include "fastmm/core/account_pool.hpp"
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
@@ -128,8 +129,9 @@ struct SimTransportConfig {
   // checks. It costs about 70 ns per order, more than the engine work that produced it, so a
   // benchmark that times send() turns it off; backtests and tests leave it on.
   bool hash_outbound = true;
-  std::size_t md_wire_bytes = 1U << 18;  // to start with: the wire grows when a burst fills it
-  std::size_t order_wire_bytes = 1U << 20;
+  // To start with: a wire grows when a burst fills it.
+  std::size_t md_wire_bytes = 1U << 16;
+  std::size_t order_wire_bytes = 1U << 16;
   VenueId venue{0};  // venue of the instruments that name none (and of an empty table)
   std::vector<SimVenueConfig> venues;
   // The strategy's account on each venue listed (sim_account.hpp): the venue refuses an order the
@@ -209,8 +211,7 @@ struct SimTransportStats {
   std::uint64_t expired = 0;
   std::uint64_t md_forwarded = 0;
   std::uint64_t md_delivered = 0;
-  std::uint64_t own_tickers = 0;  // book tickers sent because our orders moved the top of book
-  std::uint64_t own_levels = 0;   // depth levels forwarded with our quantity in them
+  std::uint64_t own_levels = 0;  // OwnLevels messages: our quantity in the feed changed
   std::uint64_t order_events_delivered = 0;
   Notional fees_charged{};
 };
@@ -226,6 +227,9 @@ class RestingWatch {
   virtual void on_rest(
       std::uint32_t run, InstrumentId id, Side side, Price px, bool resting) noexcept = 0;
   virtual void on_crossed(std::uint32_t run, InstrumentId id, bool crossed) noexcept = 0;
+  // Our resting quantity on `id` changed, for the feed to show (own_orders_in_feed): once until
+  // own_levels() takes it.
+  virtual void on_own_changed(std::uint32_t run, InstrumentId id) noexcept = 0;
 };
 
 // The venue's own view of the book at the moment of a fill, for fill-quality reporting.
@@ -415,6 +419,12 @@ class SimTransport final : public MatchingSink {
   // in it (own_orders_in_feed). A multiverse forwards the market data of runs whose feed shows none
   // of their orders once for all of them (backtest/multiverse.hpp) and calls only venue_event().
   void feed_event(const EventHeader& md) noexcept;
+  // Our resting quantity that changed on `id` since the feed last showed it, as the OwnLevelsMsg
+  // the venue sends with the instrument's market data at venue time `now` (exch_ts; recv_ts is the
+  // caller's); null when nothing changed. A run alone sends it right ahead of the message it
+  // forwards, at its arrival; a multiverse that forwards the message for many runs
+  // (backtest/multiverse.hpp) hands it to the run right before that message.
+  [[nodiscard]] const OwnLevelsMsg* own_levels(InstrumentId id, Timestamp now) noexcept;
   [[nodiscard]] static constexpr bool is_l3_event(EventType t) noexcept {
     return t == EventType::OrderAddL3 || t == EventType::OrderExecL3 ||
            t == EventType::OrderCancelL3 || t == EventType::OrderReplaceL3;
@@ -465,6 +475,20 @@ class SimTransport final : public MatchingSink {
   [[nodiscard]] std::size_t venue_count() const noexcept { return n_links_; }
   [[nodiscard]] VenueId venue_at(std::size_t k) const noexcept { return at(k).id; }
   // Latency model of venue `v` (the first venue when `v` is not simulated).
+  // The market-data path of venue `v` as it stands (its latency and jitter stream), null for a
+  // venue not simulated, and whether its messages arrive at their recorded time.
+  [[nodiscard]] const MdPath* md_path(VenueId v) const noexcept {
+    for (std::size_t k = 0; k < n_links_; ++k) {
+      if (at(k).id == v) return &at(k).lat.md_path();
+    }
+    return nullptr;
+  }
+  [[nodiscard]] bool md_recorded_arrival(VenueId v) const noexcept {
+    for (std::size_t k = 0; k < n_links_; ++k) {
+      if (at(k).id == v) return at(k).md_recorded_arrival;
+    }
+    return false;
+  }
   [[nodiscard]] LatencyModel& latency(VenueId v) noexcept;
   [[nodiscard]] LatencyModel& latency() noexcept { return at(0).lat; }
   [[nodiscard]] const OutboundHasher& outbound_hash() const noexcept { return hasher_; }
@@ -558,8 +582,8 @@ class SimTransport final : public MatchingSink {
           lat(c.cancel_latency ? LatencyModel(c.order_out, c.ack_in, c.md_in, c.cancel_out, seed)
                                : LatencyModel(c.order_out, c.ack_in, c.md_in, seed)),
           md_wire(std::make_unique<MsgRing>(t.md_wire_bytes, false)),
-          order_wire(t.order_wire_bytes, false),
-          user_wire(c.fill_latency ? t.order_wire_bytes : 64, false),
+          order_wire(std::make_unique<MsgRing>(t.order_wire_bytes, false)),
+          user_wire(std::make_unique<MsgRing>(c.fill_latency ? t.order_wire_bytes : 64, false)),
           orders_10s{seconds(10).ns, c.orders_10s},
           orders_1d{seconds(86'400).ns, c.orders_1d},
           md_recorded_arrival(c.md_recorded_arrival),
@@ -568,9 +592,10 @@ class SimTransport final : public MatchingSink {
     }
     VenueId id;
     LatencyModel lat;
-    std::unique_ptr<MsgRing> md_wire;  // grows when full (grow_md_wire)
-    MsgRing order_wire;
-    MsgRing user_wire;  // fills and balances with SimVenueConfig::fill_latency
+    // Each grows when full (grow_wire).
+    std::unique_ptr<MsgRing> md_wire;
+    std::unique_ptr<MsgRing> order_wire;
+    std::unique_ptr<MsgRing> user_wire;  // fills and balances with SimVenueConfig::fill_latency
     Timestamp last_md_arrival{};
     Timestamp last_order_arrival{};
     Timestamp last_user_arrival{};
@@ -675,10 +700,12 @@ class SimTransport final : public MatchingSink {
   void push_md_wire(EventHeader& h, Timestamp venue_ts) noexcept;
   static constexpr std::size_t kMaxMdWireBytes = std::size_t{1} << 30;
   [[nodiscard]] std::byte* reserve_md(Link& l, std::uint32_t len) noexcept;
-  bool grow_md_wire(Link& l) noexcept;
+  static bool grow_wire(std::unique_ptr<MsgRing>& ring) noexcept;
   // A recorded market-data event onto its venue's wire; `recorded`: its recv_ts, for md_arrival
   // = recorded.
   void forward(const EventHeader& md, Timestamp recorded, Timestamp now) noexcept;
+  // A copy of `md` onto `l`'s market-data wire, arriving at `arrival` (null: the wire is full).
+  EventHeader* push_md_at(Link& l, const EventHeader& md, Timestamp arrival) noexcept;
   // forward() in recorded order: the event at position `seq` (`md` null: nothing to send) goes
   // out once every earlier position has, those after it that were waiting with it.
   void forward_in_order(const EventHeader* md,
@@ -690,21 +717,10 @@ class SimTransport final : public MatchingSink {
     });
   }
   // Our orders in the recorded feed (own_orders_in_feed): note_own() marks a level of ours that
-  // changed, with_own() gives a recorded depth update or ticker with our quantity in it, and
-  // flush_own() sends a ticker for each instrument whose top of book our orders moved.
+  // changed; the instrument's next message carries the change (own_levels()).
   void note_own(InstrumentId id, Side side, Price px) noexcept;
-  [[nodiscard]] const EventHeader& with_own(const EventHeader& md) noexcept;
-  void flush_own(Timestamp now) noexcept;
   // Our resting quantity at a price, from the fill model.
   [[nodiscard]] Qty model_own_at(InstrumentId id, Side side, Price px) const noexcept;
-  // The recorded top of book on `side`: the last recorded ticker when it is newer than the depth,
-  // else the mirror's.
-  [[nodiscard]] Level recorded_top(InstrumentId id, Side side) const noexcept;
-  // Our quantity at `px` that the feed shows: none at or through the recorded opposite touch (a
-  // live venue would have matched the order there; the fill model waits for a trade).
-  [[nodiscard]] Qty shown_own(InstrumentId id, Side side, Price px) const noexcept;
-  // The top of book the feed shows now on `side`: the recorded one with our best order shown.
-  [[nodiscard]] Level shown_top(InstrumentId id, Side side) const noexcept;
   // Venue of an instrument; an unknown one (a cancel of an order the venue never saw) goes
   // through the first venue.
   [[nodiscard]] Link& link(InstrumentId id) noexcept {
@@ -757,13 +773,17 @@ class SimTransport final : public MatchingSink {
   [[nodiscard]] static std::uint32_t wire_bit(const Link& l, unsigned wire) noexcept {
     return std::uint32_t{1} << (3U * l.index + wire);
   }
-  [[nodiscard]] static MsgRing& wire(Link& l, unsigned w) noexcept {
+  [[nodiscard]] static std::unique_ptr<MsgRing>& wire_ptr(Link& l, unsigned w) noexcept {
     if (w == kOrderWire) return l.order_wire;
     if (w == kUserWire) return l.user_wire;
-    return *l.md_wire;
+    return l.md_wire;
   }
+  [[nodiscard]] static MsgRing& wire(Link& l, unsigned w) noexcept { return *wire_ptr(l, w); }
   bool wire_push(Link& l, unsigned w, const EventHeader& h) noexcept {
-    if (!wire(l, w).try_push(&h, h.len)) return false;
+    std::unique_ptr<MsgRing>& ring = wire_ptr(l, w);
+    while (!ring->try_push(&h, h.len)) {
+      if (ring->capacity() >= kMaxMdWireBytes || !grow_wire(ring)) return false;
+    }
     busy_ |= wire_bit(l, w);
     return true;
   }
@@ -798,26 +818,16 @@ class SimTransport final : public MatchingSink {
   // With pools: the strategy's orders at the venue by client id -> the member link's venue id.
   using OrderVenues = OpenHashMap<std::uint64_t, std::uint8_t, SimAccounts::kMaxOrders>;
   std::unique_ptr<OrderVenues> order_venues_;
-  // Per instrument, recorded data with own_orders_in_feed (null otherwise and in coupled mode).
+  // Per instrument, recorded data with own_orders_in_feed (null otherwise and in coupled mode): our
+  // quantity by price the feed has shown, and the levels of ours that changed since.
   struct OwnFeed {
-    std::vector<Level> levels[2];               // our resting quantity by price, per Side
-    std::vector<std::pair<Side, Price>> stale;  // levels of `levels` to recompute
-    std::vector<std::pair<Side, Price>> dirty;  // our levels changed since the last depth update
-    bool pending = false;                       // our orders changed since the last flush_own()
-    bool tickers = false;                       // the recorded feed has book tickers
-    bool ticker_newer = false;                  // the last recorded top came in a ticker
-    Level recorded_bid{};                       // the last recorded ticker's top
-    Level recorded_ask{};
-    Level sent_bid{};  // the top of the last ticker forwarded
-    Level sent_ask{};
+    std::vector<Level> shown[2];
+    std::vector<std::pair<Side, Price>> changed;
   };
-  // Brings `f.levels` up to date with the fill model.
-  void refresh_own(InstrumentId id, OwnFeed& f) noexcept;
   std::unique_ptr<OwnFeed[]> own_feed_;
+  std::unique_ptr<EventBuf> own_buf_;
   // Recorded events applied ahead of an earlier-recorded one wait here to be forwarded.
   RecordedOrder in_order_;
-  std::vector<InstrumentId> own_pending_;
-  std::unique_ptr<EventBuf> own_buf_;
   SimObserver* observer_ = nullptr;
   RestingWatch* watch_ = nullptr;
   std::uint32_t watch_run_ = 0;

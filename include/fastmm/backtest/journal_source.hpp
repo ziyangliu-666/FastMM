@@ -16,7 +16,9 @@
 // backtest does not see its live twin as someone else's liquidity. A BookTicker whose best bid or
 // ask was only ours is dropped. Public trades are kept, our own fills included: the aggressor
 // existed whether or not our order did, and without it would have traded with the next order at
-// that price, which is what a simulated order there stands for.
+// that price, which is what a simulated order there stands for. A backtest's journal from format
+// v5 on has nothing of ours in its market data (our quantity is in its OwnLevels records, which a
+// source never reads), so strip_own leaves it as it is.
 //
 // remap: the journal numbers its instruments as the recording session did, so two recordings of
 // different instrument sets both count from 0 and, merged, overwrite each other's books. Given the

@@ -5,6 +5,13 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Changed
+- sim: with `own_orders_in_feed` the simulated venue sends the recorded market data as recorded, and our resting quantity that changed on an instrument as an `OwnLevels` message right ahead of its next message; the engine shows it in its book and book tickers. No recorded level is rewritten and no book ticker is made up for our orders, so the results of a strategy that reads the book move.
+- sim: market-data latency jitter draws from a stream of its own, so the feed's delays depend on the seed and the data alone; runs with jittered market data give other results than before.
+- backtest: runs whose feed shows their orders, the shipped default, and runs with jittered market data on one seed share their pass's market data like the rest.
+- backtest: a sweep's points keep no order rows; their metrics count the orders as they go (`OrderStats`) and their outbound hash covers them. `fastmm-backtest --sweep` keeps of each point the metrics it prints.
+- core: the journal format is 5: a backtest whose feed shows its orders journals the market data as recorded and its quantity as `OwnLevels` records; `strip_own` leaves such a journal as it is.
+- core: an engine holds books for its own instruments, not 256, and the queue estimate allocates its state at the strategy's first `queue_ahead`.
+- core: the timer wheel's poll skips the walk of its slots when nothing is due.
 - core: the L3 book's overflow store holds its levels in blocks of 64, so a new level deep in the book moves one block, not every level behind it.
 - core: `L3BookConfig::max_overflow_levels` defaults to 8192 levels per side.
 - codecs: `ItchL2Bridge` keeps each book's top up to date as it applies messages instead of reading it from the L3 book for every delta.
@@ -14,6 +21,9 @@ All notable changes are recorded here (Keep a Changelog format).
 - sim: the market-data wire starts at 256 KiB and grows when a burst fills it, and the next inbound message is looked for only in the wires that hold one.
 
 ### Added
+- backtest: `bt::ResultHook`: `bt::run_multiverse`, `bt::sweep` and `bt::sweep_by_name` hand each result to it as it is done, to keep only what the caller needs.
+- python: `BacktestConfig.keep_orders`.
+- bench: `fastmm-bench-multiverse --own-feed` and `--md-jitter-us`.
 - core: `StrategyContext::watch` and `quiet_book` declare the market data a strategy's hooks ignore; `basic_mm` and `lead_mm` declare theirs.
 - backtest: `fastmm-backtest --sweep ... --verify K` and `fastmm.sweep(..., verify=K)` run K points again as backtests of their own and fail on the first difference (`bt::result_difference`).
 - python: `fastmm.sweep` and `fastmm.walk_forward` run the points of a class with `@fastmm.hot` hooks in shared passes on C++ threads.
@@ -27,6 +37,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - bench: `fastmm-bench-l3-itch` takes `--max-overflow` and `--from`, reports book errors by kind and the peak overflow levels, and reads files over 4 GiB.
 
 ### Fixed
+- backtest: a run sharing a pass takes a message behind those already in its engine's feed (an `[ab]` arm's parameters at the start), as it does alone.
 - core: an L3 book crossed by more than its price window keeps its window on the touch it holds instead of centring between the touches and holding neither.
 - venues: while `nasdaq_itch` waits for a snapshot it buffers only its stocks' messages, not the whole market's, so `recovery_buffer_packets` no longer fills in seconds at the open.
 - venues: a `nasdaq_itch` book whose capacity refuses an order leaves service alone; the venue no longer resynchronises every book and retakes the snapshot every second without going live.

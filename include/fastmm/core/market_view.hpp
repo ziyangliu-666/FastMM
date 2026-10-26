@@ -34,8 +34,10 @@ struct MarketView {
     std::uint64_t mid_at = 0;    // the message (count, from 1) that last set `mid`, 0: none
     std::uint64_t trade_at = 0;  // ... and `trade`
     Price mid;                   // of the last valid book
-    Timestamp mid_ts;            // the engine time it was taken at
-    Price trade;                 // the last trade's price
+    Price bid;                   // ... and its touch
+    Price ask;
+    Timestamp mid_ts;  // the engine time it was taken at
+    Price trade;       // the last trade's price
   };
   // What the engines count of the messages (Engine stats): every one, the book updates of a known
   // instrument, the trades.
@@ -66,6 +68,8 @@ struct MarketView {
         if (const L2Book<256>& b = books[id.value]; b.is_valid()) {
           Instrument& r = inst[id.value];
           r.mid = b.mid();
+          r.bid = b.best_bid().price;
+          r.ask = b.best_ask().price;
           r.mid_ts = now;
           r.mid_at = counts.messages;
         }
@@ -112,11 +116,16 @@ struct MdInterest {
   static constexpr std::int64_t kAbove = std::numeric_limits<std::int64_t>::max();
   struct Instrument {
     std::uint64_t epoch = 0;
-    // A book update whose mid is at or beyond lo or hi (raw prices), or that leaves the book
-    // invalid; every_book: every one.
+    // A book update whose mid is at or beyond lo or hi (raw prices), whose best bid or best ask is
+    // at or beyond its own bounds (a book shown with our orders in it, Engine::own_box), or that
+    // leaves the book invalid; every_book: every one.
     bool every_book = true;
     std::int64_t lo = kBelow;
     std::int64_t hi = kAbove;
+    std::int64_t bid_lo = kBelow;
+    std::int64_t bid_hi = kAbove;
+    std::int64_t ask_lo = kBelow;
+    std::int64_t ask_hi = kAbove;
     bool trades = true;   // trades
     bool tickers = true;  // book and option tickers
   };

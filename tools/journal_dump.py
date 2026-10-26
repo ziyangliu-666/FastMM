@@ -36,6 +36,7 @@ EVENT_TYPES = [
     "Control", "ConnectionState", "Reconcile", "LatencySample", "OutNewOrder", "OutCancel",
     "OutReplace", "OrderAddL3", "OrderExecL3", "OrderCancelL3", "OrderReplaceL3", "OptionTicker",
     "EngineTime", "ParamUpdate", "Funding", "Balance", "PerpState", "StrategyState", "AccountFlow",
+    "OwnLevels",
 ]
 PARAM_TYPES = {0: "int", 1: "double", 2: "bool", 3: "decimal", 4: "bps", 5: "ms"}
 ENGINE_TIME_KINDS = {0: "sync", 1: "start", 2: "finish"}
@@ -175,7 +176,7 @@ def party(b: bytes) -> str:
 def decode_body(type_name: str, body: bytes, params=()) -> str:
     q = lambda off: struct.unpack_from("<q", body, off)[0]  # noqa: E731
     u64 = lambda off: struct.unpack_from("<Q", body, off)[0]  # noqa: E731
-    if type_name in ("BookDelta", "BookSnapshot"):
+    if type_name in ("BookDelta", "BookSnapshot", "OwnLevels"):
         nb, na, first, last, prev = struct.unpack_from("<IIQQQ", body, 0)
         levels = [struct.unpack_from("<qq", body, 32 + 16 * i) for i in range(nb + na)]
         fmt_lv = lambda lv: " ".join(f"{dec(p)}x{dec(s)}" for p, s in lv[:5]) + (" ..." if len(lv) > 5 else "")  # noqa: E731

@@ -328,7 +328,11 @@ enum class EventType : std::uint8_t {
   PerpState = 29,      // mark, index and funding of one derivative (PerpStateMsg)
   StrategyState = 30,  // journal only: a checkpoint or a restored state (StrategyStateMsg)
   AccountFlow = 31,    // money in or out of an account other than by trades (AccountFlowMsg)
-  Count = 32,
+  // Our resting quantity at the prices of one instrument's book as a simulated venue's feed shows
+  // it ([backtest] own_orders_in_feed; OwnLevelsMsg): the engine's book is the recorded one with it
+  // added.
+  OwnLevels = 32,
+  Count = 33,
 };
 [[nodiscard]] constexpr std::string_view to_string(EventType t) noexcept {
   switch (t) {
@@ -396,6 +400,8 @@ enum class EventType : std::uint8_t {
       return "StrategyState";
     case EventType::AccountFlow:
       return "AccountFlow";
+    case EventType::OwnLevels:
+      return "OwnLevels";
     case EventType::Count:
       return "Count";
   }

@@ -316,7 +316,7 @@ TEST_CASE("backtest.sources: synthetic, journal, CSV and array data give identic
   const BacktestResult base = run_backtest(cfg, "basic_mm", &synth);
   REQUIRE(base.metrics.fills > 0);
   // Every recorded event, and a book ticker each time our orders moved the top of book.
-  CHECK(base.md_events == n + base.transport.own_tickers);
+  CHECK(base.md_events == n + base.transport.own_levels);
 
   JournalSource js(path);
   CsvSource csv = CsvSource::from_text(text);

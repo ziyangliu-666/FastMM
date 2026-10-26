@@ -245,6 +245,10 @@ void bind_config(py::module_& m) {
       .def_readwrite("measure_wall_clock",
                      &BacktestConfig::measure_wall_clock,
                      "Measure wall-clock tick-to-order per engine step.")
+      .def_readwrite("keep_orders",
+                     &BacktestConfig::keep_orders,
+                     "The result keeps a row for every order sent (BacktestResult.orders); a "
+                     "sweep's points do not, their metrics and outbound hash cover the orders.")
       .def_readwrite("source",
                      &BacktestConfig::source,
                      "'synthetic' | 'journal' | 'csv' | '' (used when run_backtest(data=None)).")

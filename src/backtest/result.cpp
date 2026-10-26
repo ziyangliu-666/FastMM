@@ -618,17 +618,23 @@ std::string result_difference(const BacktestResult& a, const BacktestResult& b) 
   const auto val = [&](std::string_view name, const auto& x, const auto& y) {
     if (d.empty()) d = value_difference(name, x, y);
   };
-  col("orders.ts", a.orders.ts, b.orders.ts);
-  col("orders.venue_ts", a.orders.venue_ts, b.orders.venue_ts);
-  col("orders.trigger_ts", a.orders.trigger_ts, b.orders.trigger_ts);
-  col("orders.cl_ord_id", a.orders.cl_ord_id, b.orders.cl_ord_id);
-  col("orders.orig_cl_ord_id", a.orders.orig_cl_ord_id, b.orders.orig_cl_ord_id);
-  col("orders.instrument", a.orders.instrument, b.orders.instrument);
-  col("orders.side", a.orders.side, b.orders.side);
-  col("orders.price", a.orders.price, b.orders.price);
-  col("orders.qty", a.orders.qty, b.orders.qty);
-  col("orders.kind", a.orders.kind, b.orders.kind);
-  col("orders.type", a.orders.type, b.orders.type);
+  // A sweep's point keeps no order rows (BacktestConfig::keep_orders): its orders are in the
+  // outbound hash and the metrics.
+  const bool orders = a.orders.size() > 0 && b.orders.size() > 0;
+  const auto ord = [&](std::string_view name, const auto& x, const auto& y) {
+    if (orders) col(name, x, y);
+  };
+  ord("orders.ts", a.orders.ts, b.orders.ts);
+  ord("orders.venue_ts", a.orders.venue_ts, b.orders.venue_ts);
+  ord("orders.trigger_ts", a.orders.trigger_ts, b.orders.trigger_ts);
+  ord("orders.cl_ord_id", a.orders.cl_ord_id, b.orders.cl_ord_id);
+  ord("orders.orig_cl_ord_id", a.orders.orig_cl_ord_id, b.orders.orig_cl_ord_id);
+  ord("orders.instrument", a.orders.instrument, b.orders.instrument);
+  ord("orders.side", a.orders.side, b.orders.side);
+  ord("orders.price", a.orders.price, b.orders.price);
+  ord("orders.qty", a.orders.qty, b.orders.qty);
+  ord("orders.kind", a.orders.kind, b.orders.kind);
+  ord("orders.type", a.orders.type, b.orders.type);
   col("fills.ts", a.fills.ts, b.fills.ts);
   col("fills.instrument", a.fills.instrument, b.fills.instrument);
   col("fills.side", a.fills.side, b.fills.side);
@@ -687,8 +693,26 @@ std::string result_difference(const BacktestResult& a, const BacktestResult& b) 
   val("transport.expired", a.transport.expired, b.transport.expired);
   val("transport.md_forwarded", a.transport.md_forwarded, b.transport.md_forwarded);
   val("transport.md_delivered", a.transport.md_delivered, b.transport.md_delivered);
-  val("transport.own_tickers", a.transport.own_tickers, b.transport.own_tickers);
+  val("transport.own_levels", a.transport.own_levels, b.transport.own_levels);
   val("transport.l3_events", a.transport.l3_events, b.transport.l3_events);
+  val("metrics.orders", a.metrics.orders, b.metrics.orders);
+  val("metrics.cancels", a.metrics.cancels, b.metrics.cancels);
+  val("metrics.replaces", a.metrics.replaces, b.metrics.replaces);
+  val("metrics.virtual_tick_to_order_p50_ns",
+      a.metrics.virtual_tick_to_order_p50_ns,
+      b.metrics.virtual_tick_to_order_p50_ns);
+  val("metrics.virtual_tick_to_order_p99_ns",
+      a.metrics.virtual_tick_to_order_p99_ns,
+      b.metrics.virtual_tick_to_order_p99_ns);
+  val("metrics.quotes_filled",
+      a.metrics.fill_quality.quotes_filled,
+      b.metrics.fill_quality.quotes_filled);
+  val("metrics.time_to_fill_p50_ns",
+      a.metrics.fill_quality.time_to_fill_p50_ns,
+      b.metrics.fill_quality.time_to_fill_p50_ns);
+  val("metrics.time_to_fill_p99_ns",
+      a.metrics.fill_quality.time_to_fill_p99_ns,
+      b.metrics.fill_quality.time_to_fill_p99_ns);
   val("md_events", a.md_events, b.md_events);
   val("engine_steps", a.engine_steps, b.engine_steps);
   val("start_ts", a.start_ts, b.start_ts);

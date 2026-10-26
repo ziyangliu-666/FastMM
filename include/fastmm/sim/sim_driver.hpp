@@ -380,7 +380,8 @@ class SimDriver {
   static constexpr bool is_market_data(EventType type) noexcept {
     return type == EventType::BookDelta || type == EventType::BookSnapshot ||
            type == EventType::Trade || type == EventType::BookTicker ||
-           type == EventType::OptionTicker || type == EventType::PerpState;
+           type == EventType::OptionTicker || type == EventType::PerpState ||
+           type == EventType::OwnLevels;
   }
 
  private:

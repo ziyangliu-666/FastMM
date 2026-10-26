@@ -93,6 +93,9 @@ struct BacktestConfig {
   // must refresh or clear it.
   std::string config_toml;
   bool measure_wall_clock = true;
+  // The result keeps a row for every order sent (BacktestResult::orders). A sweep's points do not:
+  // their metrics count the orders as they go (OrderStats), and the outbound hash covers them.
+  bool keep_orders = true;
   // Post-fill markout horizons in simulated time; empty turns markouts off. The run stops the
   // simulated clock at every fill time + horizon to read the venue mid there, so the shortest
   // horizon also bounds how often the run loop is entered.

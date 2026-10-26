@@ -17,7 +17,9 @@ The synthetic market's shape is set in basis points of its starting mid ([`[sim]
 
 ## Our orders in the feed
 
-A live venue's depth and book ticker streams show our resting orders; a strategy that reads the touch sees its own quote there. With recorded data (`[backtest] own_orders_in_feed`, on by default) the simulated venue does the same (`SimTransport::with_own`): each forwarded depth level and ticker carries our resting quantity at its price, the next depth update also carries our levels that changed since the last one (quantity 0 for one that was only ours), and a book ticker goes out when one of our orders moves the top of book, flagged synthetic and with no update id, so a strategy comparing it with the depth book goes by time. Our orders at or through the recorded opposite touch are not shown: a live venue would have matched them, as the fill model does with the quantity that came in after them; what is left of an order larger than that quantity stays on the book unseen. The synthetic market's book holds our orders in any case. The engine follows our quantity in the feed as on a live venue.
+A live venue's depth and book ticker streams show our resting orders; a strategy that reads the touch sees its own quote there. With recorded data (`[backtest] own_orders_in_feed`, on by default) the simulated venue does the same. It sends the recorded messages as recorded and, once our resting quantity on an instrument has changed, an `OwnLevels` message with our quantity at the prices that changed, right ahead of the instrument's next message and arriving with it. The engine shows that quantity in the book and in the book tickers the strategy reads: a level holds the recorded quantity plus ours, a price of ours the recording has no level at is a level of its own (past the 256 a side if need be), and a ticker's top is the better of the recorded one and our best order, the two added at the same price. Our quantity at or through the recorded opposite touch is not shown: a live venue would have matched it, as the fill model does with the quantity that came in after it. The engine follows our quantity in the feed as on a live venue (`ctx.own_qty`), and the synthetic market's book holds our orders in any case.
+
+Every run over the same data thus reads the same recorded messages, and the runs of a sweep share them whether their feeds show their orders or not ([Many runs in one pass](#many-runs-in-one-pass)).
 
 Without it a strategy acts on a book a live venue never showed. `lead_mm` never improves on its own order (a live book shows it at the touch); when the level it had improved on goes, a feed without our order shows the next level as the touch, and the strategy moves its quote down to it and back, a cancel and a new order each time.
 
@@ -29,11 +31,13 @@ A recording is in receive order, and its streams reach the recorder with differe
 
 Under the queue fill models (`l2_queue`, `l3_queue`) the recorded market does not depend on our orders: every run over the same data reads the same events, puts them in the same venue order, keeps the same venue books and, under `l3_queue`, the same record of every recorded order. A sweep's points, a walk-forward's folds and the arms of an `[ab]` branch test therefore share their passes over the data (`backtest/multiverse.hpp`). One cursor reads the events and one `sim::SimWorld` applies each to the venue's books and orders. An index of the orders the runs rest at the venue, by instrument, side and price, hands a recorded event only to the runs whose orders it can reach: a cancel or an execution ahead of them, a trade at or through their price, a book that crosses them.
 
-The market data forwarded to the engines is shared as well when the runs' feeds are the same (our orders not in the feed, the same fixed market-data latency): one copy in arrival order, one set of engine books, and one `MarketView` (`core/market_view.hpp`) with what every message changes besides the books, such as each instrument's last mid and trade, the feed's lag and the counts. An engine is handed a message only when its `MdInterest` asks for it: the instruments and mid bands its strategy watches (`watch` and `quiet_book`, [Strategy API](../reference/strategy-api.md#context)), the band its positions' marks can move in before `max_loss` trips, and the settings that act on every message (a journal, `max_param_age_ms`, a feed-lag limit, FX conversion, perpetual marks, our orders in the feed, the strategy's queue estimate). Before an engine takes anything it catches up with the messages it was not given, which leaves it as taking each of them would have. `basic_mm` asks for its book once the mid has moved its requote threshold, `lead_mm` ignores the instruments it neither quotes nor leads with; a strategy that declares nothing is handed every message, and the result is the same either way.
+The market data forwarded to the engines is shared as well among the runs whose venues have the same market-data path: the same fixed latency, the same arrival rule and, with jitter, the same seed, since the feed's delays come from a stream of their own (`sim::MdPath`) that depends on the seed and the data alone; a sweep's points share one seed and so one feed. They read one copy in arrival order, one set of engine books, and one `MarketView` (`core/market_view.hpp`) with what every message changes besides the books, such as each instrument's last mid, touch and trade, the feed's lag and the counts. An engine is handed a message only when its `MdInterest` asks for it: the instruments and mid bands its strategy watches (`watch` and `quiet_book`, [Strategy API](../reference/strategy-api.md#context)), the band its positions' marks can move in before `max_loss` trips, and the settings that act on every message (a journal, `max_param_age_ms`, a feed-lag limit, FX conversion, perpetual marks, the strategy's queue estimate). Before an engine takes anything it catches up with the messages it was not given, which leaves it as taking each of them would have. `basic_mm` asks for its book once the mid has moved its requote threshold, `lead_mm` ignores the instruments it neither quotes nor leads with; a strategy that declares nothing is handed every message, and the result is the same either way.
 
-Each run keeps its own engine, strategy, simulated venue links, accounts, latency draws and seed. The runs step in lockstep on the order of the events they share, and at one instant in the order a run alone takes its kinds of events, so each run gets the result `run_backtest()` gives its configuration: fills, orders, equity bars, markouts, cash, positions and outbound hash. `tests/backtest/multiverse_exact_test.cpp` compares them field by field (`bt::result_difference`) for `basic_mm`, `avellaneda_stoikov`, `lead_mm`, `xmm` and `options_mm` under both queue models, with variants that differ in parameters, fixed and jittered latencies, our orders in the feed and loss limits that trip, in passes on several threads. `fastmm-backtest --sweep ... --verify 4` and `fastmm.sweep(..., verify=4)` run 4 points of a real sweep again as backtests of their own and fail on the first difference.
+A run whose feed shows its orders reads the same books ([Our orders in the feed](#our-orders-in-the-feed)): its `OwnLevels` messages come to it alone, each right before the message it goes ahead of, and its engine adds its quantity to the shared books during its own steps and takes it out again after them. Its mid band becomes a box on the market's touch, within which the book with its orders in it keeps its mid inside the band and its orders stay shown or hidden as they are (`Engine::own_box`); while its quotes are the touch, the market moving behind them does not wake it.
 
-`fastmm-backtest --sweep half_spread_bps=1,2,4 --sweep quote_qty=100,200` runs a grid this way and `--solo` runs each point as a backtest of its own; `fastmm.sweep`, `fastmm.walk_forward` (each fold in its own passes), `bt::sweep_by_name`, `bt::walk_forward_by_name` and `bt::run_multiverse` share passes whenever the fill model is a queue model and the strategy is C++ or a Python class with `@fastmm.hot` hooks. A pass holds up to 128 runs, each with its engine and venue (about 9 MB) and its result; the passes of a sweep spread over its threads. A run in a pass costs what its own strategy and orders cost: [Sweep performance](sweep-performance.md) has the measurements.
+Each run keeps its own engine, strategy, simulated venue links, accounts, latency draws and seed. The runs step in lockstep on the order of the events they share, and at one instant in the order a run alone takes its kinds of events, so each run gets the result `run_backtest()` gives its configuration: fills, orders, equity bars, markouts, cash, positions and outbound hash. `tests/backtest/multiverse_exact_test.cpp` compares them field by field (`bt::result_difference`) for `basic_mm`, `avellaneda_stoikov`, `lead_mm`, `xmm` and `options_mm` under both queue models, with variants that differ in parameters, fixed and jittered latencies, their orders in the feed or not, books 256 levels deep and loss limits that trip, in passes on several threads. `fastmm-backtest --sweep ... --verify 4` and `fastmm.sweep(..., verify=4)` run 4 points of a real sweep again as backtests of their own and fail on the first difference.
+
+`fastmm-backtest --sweep half_spread_bps=1,2,4 --sweep quote_qty=100,200` runs a grid this way and `--solo` runs each point as a backtest of its own; `fastmm.sweep`, `fastmm.walk_forward` (each fold in its own passes), `bt::sweep_by_name`, `bt::walk_forward_by_name` and `bt::run_multiverse` share passes whenever the fill model is a queue model and the strategy is C++ or a Python class with `@fastmm.hot` hooks. A pass holds a bounded number of runs and the passes of a sweep spread over its threads, so only the runs of the passes under way are in memory, each with its engine, its venue and its result. A sweep's points keep no order rows (`BacktestConfig::keep_orders`): their metrics count the orders as they go and their outbound hash covers them, and their fills and equity bars stay. Every sweep hands each point's result, as it is done, to an optional `bt::ResultHook` that may drop what its caller does not need; `fastmm-backtest --sweep` keeps the metrics it prints, and the whole result of the points `--verify` runs again. A run in a pass costs what its own strategy and orders cost; [Sweep performance](sweep-performance.md) has the numbers: time, memory and the runs a pass holds.
 
 ## Markouts
 
@@ -206,29 +210,29 @@ The latency model draws every message's delay from one distribution, while a ven
 
 <!-- output: fastmm-backtest --config configs/backtest-example.toml --data synthetic --out - -->
 ```text
-  net pnl                        -12.5750
-  fills (maker / taker)          152 (152 / 0)
+  net pnl                        -12.1548
+  fills (maker / taker)          147 (147 / 0)
   spread captured (bps)          0.008
   realized spread (bps of notional) 0.008
-  fills at / inside / behind / through 7.2% / 31.6% / 59.2% / 2.0%
-  quotes filled / placed         109 / 368 (29.6%)
-  time to fill p50/p90/p99       37.2 / 271.8 / 1100.2 ms
+  fills at / inside / behind / through 6.8% / 30.6% / 60.5% / 2.0%
+  quotes filled / placed         105 / 365 (28.8%)
+  time to fill p50/p90/p99       44.1 / 271.8 / 1100.2 ms
   queue ahead at fill p50/p90    0.00000 / 0.00102
 
-where the PnL came from (quote currency, 12584.09 traded notional)
-  gross spread capture                 0.0095  +0.008 bps of 12104.09, over the 148 of 152 fills that had a venue mid
-  mid drift after the fills           -0.0004  adverse selection + the open inventory, marked at the final mid
-  fees paid                          -12.5841
+where the PnL came from (quote currency, 12163.49 traded notional)
+  gross spread capture                 0.0093  +0.008 bps of 11803.49, over the 144 of 147 fills that had a venue mid
+  mid drift after the fills           -0.0006  adverse selection + the open inventory, marked at the final mid
+  fees paid                          -12.1635
   rebates received                     0.0000
-  = net                              -12.5750
-  reported net pnl                   -12.5750
+  = net                              -12.1548
+  reported net pnl                   -12.1548
   unexplained                         -0.0000  fixed-point rounding, or something this split does not model
 
 markout per fill (mid at fill + horizon vs the fill price; bps of notional)
   horizon     markout     mo bps    capture    cap bps    adv.sel    fills past end   no mid
-  1s           0.0085     0.0081     0.0080     0.0076    -0.0005      130       18        4
-  10s          0.0073     0.0080     0.0068     0.0075    -0.0005      115       33        4
-  1m           0.0000     0.0000     0.0000     0.0000     0.0000        0      152        0
+  1s           0.0081     0.0079     0.0078     0.0076    -0.0003      126       18        3
+  10s          0.0067     0.0076     0.0066     0.0075    -0.0001      111       33        3
+  1m           0.0000     0.0000     0.0000     0.0000     0.0000        0      147        0
 ```
 
 `first_mm` from the tutorial (`examples/cpp/tutorial/first_mm_backtest.cpp`, 60 s, seed 7, same fees) on the matching fill model:

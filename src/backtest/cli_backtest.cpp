@@ -148,10 +148,22 @@ int run_sweep(const char* prog,
     return data.empty() ? bt::open_source(cfg) : bt::open_data(data, &cfg.instruments);
   };
   Logger::instance().start(stderr, LogLevel::Warn);
+  // A line per point needs its metrics: the rows go as each point ends, but for the points
+  // --verify runs again.
+  const std::size_t n_points = bt::expand_grid(grid).size();
+  const std::size_t n_verify = std::min(verify, n_points);
+  std::vector<bool> verified(n_points, false);
+  for (std::size_t k = 0; k < n_verify; ++k) verified[k * n_points / n_verify] = true;
+  const bt::ResultHook trim = [&](std::size_t i, bt::BacktestResult& r) {
+    if (verified[i]) return;
+    r.fills = {};
+    r.equity = {};
+    r.orders = {};
+  };
   std::vector<bt::SweepPoint> points;
   const auto t0 = std::chrono::steady_clock::now();
   try {
-    points = bt::sweep_by_name(cfg, cfg.strategy, grid, factory, threads, solo);
+    points = bt::sweep_by_name(cfg, cfg.strategy, grid, factory, threads, solo, trim);
   } catch (const std::invalid_argument& e) {
     Logger::instance().stop();
     std::fprintf(stderr, "%s: %s\n", prog, e.what());

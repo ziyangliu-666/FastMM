@@ -56,37 +56,8 @@ class L2Book {
   FASTMM_FORCE_INLINE bool apply_level(Side side, Price price, Qty qty, Qty& old) noexcept {
     old = Qty{};
     auto& v = levels(side);
-    // Position such that v[i].price is the first level at-or-better than `price` when
-    // scanning from the worst (front) - i.e. lower_bound in "goodness" order.
-    std::size_t i = v.size();
     bool found = false;
-    // Linear scan from the best (back) over the top kLinearScan levels.
-    const std::size_t stop = v.size() > kLinearScan ? v.size() - kLinearScan : 0;
-    while (i > stop) {
-      const Price p = v[i - 1].price;
-      if (p == price) {
-        found = true;
-        --i;
-        break;
-      }
-      if (better(side, price, p)) break;  // insert after v[i-1]
-      --i;
-    }
-    if (!found && i == stop && stop > 0) {
-      // Bisect the remainder [0, stop): find first index whose price is at-or-better.
-      std::size_t lo = 0;
-      std::size_t hi = stop;
-      while (lo < hi) {
-        const std::size_t mid = lo + (hi - lo) / 2;
-        if (better(side, price, v[mid].price)) {
-          lo = mid + 1;
-        } else {
-          hi = mid;
-        }
-      }
-      i = lo;
-      found = i < v.size() && v[i].price == price;
-    }
+    const std::size_t i = locate(v, side, price, found);
     if (found) {
       old = v[i].qty;
       if (qty.is_zero()) {
@@ -97,7 +68,7 @@ class L2Book {
       return true;
     }
     if (qty.is_zero()) return true;  // delete of an unknown level: no-op
-    if (FASTMM_UNLIKELY(v.full())) {
+    if (FASTMM_UNLIKELY(v.size() >= kMaxDepth)) {
       truncated_[static_cast<std::size_t>(side)] = true;
       if (i == 0) return false;  // worse than everything we hold
       // Drop the worst level and insert in one shift: only the i - 1 levels worse than the
@@ -108,6 +79,35 @@ class L2Book {
     }
     v.insert_at(i, Level{price, qty});
     return true;
+  }
+
+  // Our own quantity shown in a book that is otherwise the market's (the engine's view of a
+  // simulated feed that shows our orders, OwnLevelsMsg): add_own() adds `qty` at `price`, a level
+  // of its own where there is none, beyond kMaxDepth if the side is full (a side has room for
+  // kOwnLevels more); remove_own() takes it out again, which leaves the book as it was when nothing
+  // else changed it in between. add_own() returns false, adding nothing, when there is no room.
+  static constexpr std::size_t kOwnLevels = 32;
+  bool add_own(Side side, Price price, Qty qty, bool& inserted) noexcept {
+    auto& v = levels(side);
+    bool found = false;
+    const std::size_t i = locate(v, side, price, found);
+    inserted = !found;
+    if (found) {
+      v[i].qty += qty;
+      return true;
+    }
+    return v.insert_at(i, Level{price, qty});
+  }
+  void remove_own(Side side, Price price, Qty qty, bool inserted) noexcept {
+    auto& v = levels(side);
+    bool found = false;
+    const std::size_t i = locate(v, side, price, found);
+    if (!found) return;
+    if (inserted) {
+      v.erase_at(i);
+    } else {
+      v[i].qty -= qty;
+    }
   }
 
   // O(levels) for a snapshot sorted best-first or worst-first with no empty level (what every
@@ -233,16 +233,46 @@ class L2Book {
   [[nodiscard]] Timestamp last_update() const noexcept { return last_update_; }
 
   // Raw access (worst..best order) for tests/tools.
-  [[nodiscard]] const StaticVector<Level, kMaxDepth>& raw(Side side) const noexcept {
-    return levels(side);
-  }
+  using Levels = StaticVector<Level, kMaxDepth + kOwnLevels>;
+  [[nodiscard]] const Levels& raw(Side side) const noexcept { return levels(side); }
 
  private:
-  FASTMM_FORCE_INLINE StaticVector<Level, kMaxDepth>& levels(Side s) noexcept {
+  FASTMM_FORCE_INLINE Levels& levels(Side s) noexcept { return s == Side::Buy ? bids_ : asks_; }
+  FASTMM_FORCE_INLINE const Levels& levels(Side s) const noexcept {
     return s == Side::Buy ? bids_ : asks_;
   }
-  FASTMM_FORCE_INLINE const StaticVector<Level, kMaxDepth>& levels(Side s) const noexcept {
-    return s == Side::Buy ? bids_ : asks_;
+  // The index of the first level at or better than `price` counted from the worst (front): a
+  // lower_bound in "goodness" order; `found` when that level is at `price`. Scans the top
+  // kLinearScan levels from the best (back), then bisects the rest.
+  FASTMM_FORCE_INLINE static std::size_t locate(const Levels& v,
+                                                Side side,
+                                                Price price,
+                                                bool& found) noexcept {
+    std::size_t i = v.size();
+    found = false;
+    const std::size_t stop = v.size() > kLinearScan ? v.size() - kLinearScan : 0;
+    while (i > stop) {
+      const Price p = v[i - 1].price;
+      if (p == price) {
+        found = true;
+        return i - 1;
+      }
+      if (better(side, price, p)) return i;  // insert after v[i-1]
+      --i;
+    }
+    if (stop == 0) return 0;
+    std::size_t lo = 0;
+    std::size_t hi = stop;
+    while (lo < hi) {
+      const std::size_t mid = lo + (hi - lo) / 2;
+      if (better(side, price, v[mid].price)) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    found = lo < v.size() && v[lo].price == price;
+    return lo;
   }
   // A side flagged kTruncatedBids/Asks left out the venue's changes behind the last level it
   // carries: the book's levels behind that one may be stale, so they go (the side is truncated()
@@ -301,8 +331,8 @@ class L2Book {
     }
   }
 
-  StaticVector<Level, kMaxDepth> bids_;
-  StaticVector<Level, kMaxDepth> asks_;
+  Levels bids_;
+  Levels asks_;
   std::uint64_t seq_ = 0;
   Timestamp last_update_{};
   Timestamp crossed_since_{};

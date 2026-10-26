@@ -119,15 +119,14 @@ TEST_CASE("backtest.own_feed: lead_mm keeps a bid that became the touch, as it d
   CHECK(new_orders(r, Side::Buy) == 1);
   CHECK(new_orders(r, Side::Sell) == 1);
   CHECK(r.metrics.cancels == 0);
-  CHECK(r.transport.own_tickers >= 2);  // our bid and ask each made the top of book
-  CHECK(r.transport.own_levels >= 2);
+  CHECK(r.transport.own_levels >= 1);  // our bid and ask showed in the feed
 
   // A feed without our orders (the simulator before own_orders_in_feed): the touch looks like
   // 99.95, and lead_mm moves its bid down to 99.96 at once.
   const BacktestResult without = run(false);
   CHECK(new_orders(without, Side::Buy) == 2);
   CHECK(without.metrics.cancels == 1);
-  CHECK(without.transport.own_tickers == 0);
+  CHECK(without.transport.own_levels == 0);
 }
 
 TEST_CASE("backtest.own_feed: a run with our orders in its feed replays to the same hash") {
@@ -139,9 +138,15 @@ TEST_CASE("backtest.own_feed: a run with our orders in its feed replays to the s
   CHECK(rp.outbound_sha256 == rec.outbound_sha256);
   CHECK(rp.first_mismatch == -1);
   CHECK(rp.ok());
-  // The journal says its feed showed our orders, so strip_own takes them out again.
+  // The journal says its engine saw our orders, which came as OwnLevels records: its market data
+  // are as recorded, with nothing of ours to strip.
   JournalReader reader;
   REQUIRE(reader.open(path.string()));
-  CHECK(feed_shows_own(reader.header()));
-  CHECK_NOTHROW(JournalSource(path.string(), true));
+  CHECK(session_saw_own(reader.header()));
+  CHECK_FALSE(feed_shows_own(reader.header()));
+  std::size_t own = 0;
+  reader.for_each([&](const EventHeader* h) { own += h->type == EventType::OwnLevels ? 1U : 0U; });
+  CHECK(own == rec.transport.own_levels);
+  CHECK_NOTHROW(JournalSource(path.string()));
+  CHECK_NOTHROW(JournalSource(path.string(), true));  // nothing of ours to strip
 }

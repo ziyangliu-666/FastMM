@@ -93,11 +93,9 @@ SimTransport::SimTransport(const SimClock& clock,
     own_feed_ = std::make_unique<OwnFeed[]>(n);
     for (std::size_t i = 0; i < n; ++i) {
       OwnFeed& f = own_feed_[i];
-      for (std::vector<Level>& v : f.levels) v.reserve(16);
-      f.stale.reserve(16);
-      f.dirty.reserve(16);
+      for (std::vector<Level>& v : f.shown) v.reserve(16);
+      f.changed.reserve(16);
     }
-    own_pending_.reserve(n);
     own_buf_ = std::make_unique<EventBuf>();
   }
   if (me_ != nullptr) me_->set_stp(kStrategyAccount, cfg.stp);
@@ -137,7 +135,6 @@ void SimTransport::enable_aggregator(Timestamp start) noexcept {
   mc.venue = link(InstrumentId{0}).id;
   agg_ = std::make_unique<MdAggregator>(instruments_.size(), *me_, mc, start);
   own_feed_.reset();  // the aggregated book holds our orders
-  own_pending_.clear();
 }
 
 // ---- TransportLike ---------------------------------------------------------------------------
@@ -248,7 +245,6 @@ void SimTransport::process_order_arrival() noexcept {
       break;
   }
   if (watch_ != nullptr) note_crossed(h->instrument);
-  if (own_feed_ != nullptr) flush_own(now);
 }
 
 void SimTransport::note_crossed(InstrumentId id) noexcept {
@@ -679,31 +675,22 @@ bool SimTransport::marks_account(InstrumentId id) const noexcept {
 void SimTransport::feed_event(const EventHeader& md) noexcept {
   const Timestamp now = venue_time(md);
   const InstrumentId id = md.instrument;
-  if (id.value < instruments_.size() && is_l3_event(md.type)) {
+  // The venue's own record of every order (the engine's book is the source's L2 view of it), and a
+  // recorded ticker one side of which was only the session's own orders (strip_own: the venue took
+  // its other side; the engine, with none of ours there, would see a level nobody holds) do not go
+  // to the engine. Coupled mode publishes its own view of the book; a venue's mark and funding go
+  // through as recorded.
+  if ((id.value < instruments_.size() && is_l3_event(md.type)) ||
+      (agg_ != nullptr && md.type != EventType::PerpState) ||
+      (md.type == EventType::BookTicker && hides_level(msg_cast<BookTickerMsg>(&md)))) {
     if (md.seq != 0) forward_in_order(nullptr, md.seq, md.recv_ts, now);
-    return;
-  }
-  // Coupled mode publishes its own view of the book; a venue's mark and funding go through as
-  // recorded.
-  if (agg_ != nullptr && md.type != EventType::PerpState) {
-    if (md.seq != 0) forward_in_order(nullptr, md.seq, md.recv_ts, now);
-    return;
-  }
-  const EventHeader& out =
-      own_feed_ != nullptr && id.value < instruments_.size() ? with_own(md) : md;
-  if (md.type == EventType::BookTicker && hides_level(msg_cast<BookTickerMsg>(&out))) {
-    // A recorded ticker one side of which was only the session's own orders (strip_own): the venue
-    // took its other side; the engine, with none of ours there, would see a level nobody holds.
-    if (md.seq != 0) forward_in_order(nullptr, md.seq, md.recv_ts, now);
-    if (own_feed_ != nullptr) flush_own(now);
     return;
   }
   if (md.seq != 0) {
-    forward_in_order(&out, md.seq, md.recv_ts, now);
+    forward_in_order(&md, md.seq, md.recv_ts, now);
   } else {
-    forward(out, md.recv_ts, now);
+    forward(md, md.recv_ts, now);
   }
-  if (own_feed_ != nullptr) flush_own(now);
 }
 
 bool SimTransport::hides_level(const BookTickerMsg& m) noexcept {
@@ -714,25 +701,36 @@ bool SimTransport::hides_level(const BookTickerMsg& m) noexcept {
 void SimTransport::forward(const EventHeader& md, Timestamp recorded, Timestamp now) noexcept {
   // Forward a copy with the arrival stamp, on the wire of the instrument's venue.
   Link& l = link(md.instrument);
-  std::byte* p = reserve_md(l, md.len);
-  if (p == nullptr) {
-    ++stats_.wire_full;
-    return;
-  }
-  std::memcpy(p, &md, md.len);
-  auto* h = reinterpret_cast<EventHeader*>(p);
-  h->exch_ts = now;
   Timestamp arrival = now + l.lat.md_in();
   if (l.md_recorded_arrival && recorded > now) arrival = arrival + (recorded - now);
   if (arrival < l.last_md_arrival) arrival = l.last_md_arrival;
   l.last_md_arrival = arrival;
+  // Our quantity that changed on the instrument goes right ahead of its message, at its arrival.
+  if (own_feed_ != nullptr && md.instrument.value < instruments_.size()) {
+    if (const OwnLevelsMsg* own = own_levels(md.instrument, now); own != nullptr)
+      push_md_at(l, own->hdr, arrival);
+  }
+  if (EventHeader* h = push_md_at(l, md, arrival); h != nullptr) {
+    h->exch_ts = now;
+    ++stats_.md_forwarded;
+  }
+}
+
+EventHeader* SimTransport::push_md_at(Link& l, const EventHeader& md, Timestamp arrival) noexcept {
+  std::byte* p = reserve_md(l, md.len);
+  if (p == nullptr) {
+    ++stats_.wire_full;
+    return nullptr;
+  }
+  std::memcpy(p, &md, md.len);
+  auto* h = reinterpret_cast<EventHeader*>(p);
   h->recv_ts = arrival;
   h->t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
   h->t1_delta = h->t2_delta = 0;
   h->seq = 0;
   l.md_wire->commit();
   busy_ |= wire_bit(l, kMdWire);
-  ++stats_.md_forwarded;
+  return h;
 }
 
 // ---- matching model fed with historical levels ------------------------------------------------
@@ -1439,27 +1437,27 @@ void SimTransport::push_md_wire(EventHeader& h, Timestamp venue_ts) noexcept {
 std::byte* SimTransport::reserve_md(Link& l, std::uint32_t len) noexcept {
   std::byte* p = l.md_wire->try_reserve(len);
   while (p == nullptr && l.md_wire->capacity() < kMaxMdWireBytes) {
-    if (!grow_md_wire(l)) return nullptr;
+    if (!grow_wire(l.md_wire)) return nullptr;
     p = l.md_wire->try_reserve(len);
   }
   return p;
 }
 
-// The market data in flight lives in a ring small enough to stay in cache; a burst that fills it
+// The messages in flight live in a ring small enough to stay in cache; a burst that fills it
 // (recorded arrival times seconds late, say) moves it to one twice the size, in order.
-bool SimTransport::grow_md_wire(Link& l) noexcept {
+bool SimTransport::grow_wire(std::unique_ptr<MsgRing>& ring) noexcept {
   std::unique_ptr<MsgRing> bigger;
   try {
-    bigger = std::make_unique<MsgRing>(l.md_wire->capacity() * 2, false);
+    bigger = std::make_unique<MsgRing>(ring->capacity() * 2, false);
   } catch (...) {
     return false;
   }
-  while (const std::byte* m = l.md_wire->try_peek()) {
+  while (const std::byte* m = ring->try_peek()) {
     const auto* h = reinterpret_cast<const EventHeader*>(m);
     static_cast<void>(bigger->try_push(h, h->len));
-    l.md_wire->release();
+    ring->release();
   }
-  l.md_wire = std::move(bigger);
+  ring = std::move(bigger);
   return true;
 }
 
@@ -1467,14 +1465,54 @@ bool SimTransport::grow_md_wire(Link& l) noexcept {
 
 void SimTransport::note_own(InstrumentId id, Side side, Price px) noexcept {
   if (own_feed_ == nullptr || id.value >= instruments_.size() || !px.is_positive()) return;
-  OwnFeed& f = own_feed_[id.value];
+  std::vector<std::pair<Side, Price>>& changed = own_feed_[id.value].changed;
   const std::pair<Side, Price> key{side, px};
-  if (std::find(f.stale.begin(), f.stale.end(), key) == f.stale.end()) f.stale.push_back(key);
-  if (std::find(f.dirty.begin(), f.dirty.end(), key) == f.dirty.end()) f.dirty.push_back(key);
-  if (!f.pending) {
-    f.pending = true;
-    own_pending_.push_back(id);
+  if (std::find(changed.begin(), changed.end(), key) != changed.end()) return;
+  if (changed.empty() && watch_ != nullptr) watch_->on_own_changed(watch_run_, id);
+  changed.push_back(key);
+}
+
+const OwnLevelsMsg* SimTransport::own_levels(InstrumentId id, Timestamp now) noexcept {
+  OwnFeed& f = own_feed_[id.value];
+  if (f.changed.empty()) return nullptr;
+  auto& out = own_buf_->as<OwnLevelsMsg>();
+  constexpr std::size_t kCap = (kMaxSourceEventBytes - sizeof(OwnLevelsMsg)) / sizeof(Level);
+  Level* lv = out.levels();
+  std::uint32_t count[2] = {0, 0};
+  std::size_t n = 0;
+  for (const Side side : {Side::Buy, Side::Sell}) {
+    std::vector<Level>& shown = f.shown[static_cast<std::size_t>(side)];
+    for (const auto& [s, px] : f.changed) {
+      if (s != side) continue;
+      const Qty q = model_own_at(id, side, px);
+      auto it =
+          std::find_if(shown.begin(), shown.end(), [&](const Level& l) { return l.price == px; });
+      const Qty was = it != shown.end() ? it->qty : Qty{};
+      if (q == was || n >= kCap) continue;
+      if (it == shown.end()) {
+        shown.push_back(Level{px, q});
+      } else if (q.is_positive()) {
+        it->qty = q;
+      } else {
+        *it = shown.back();
+        shown.pop_back();
+      }
+      lv[n++] = Level{px, q};
+      ++count[static_cast<std::size_t>(side)];
+    }
   }
+  f.changed.clear();
+  if (n == 0) return nullptr;
+  init_header(
+      out, EventType::OwnLevels, id, link(id).id, OwnLevelsMsg::size_for(count[0], count[1]));
+  out.hdr.flags |= EventHeader::kSynthetic;
+  out.hdr.exch_ts = now;
+  out.bid_count = count[0];
+  out.ask_count = count[1];
+  out.first_update_id = out.last_update_id = out.prev_update_id = 0;
+  ++stats_.own_levels;
+  ++stats_.md_forwarded;
+  return &out;
 }
 
 Qty SimTransport::model_own_at(InstrumentId id, Side side, Price px) const noexcept {
@@ -1485,186 +1523,6 @@ Qty SimTransport::model_own_at(InstrumentId id, Side side, Price px) const noexc
     if (o.side == side && o.price == px) sum += o.leaves();
   });
   return sum;
-}
-
-void SimTransport::refresh_own(InstrumentId id, OwnFeed& f) noexcept {
-  for (const auto& [side, px] : f.stale) {
-    std::vector<Level>& v = f.levels[static_cast<std::size_t>(side)];
-    const Qty q = model_own_at(id, side, px);
-    auto it = std::find_if(v.begin(), v.end(), [&](const Level& l) { return l.price == px; });
-    if (it != v.end()) {
-      if (q.is_positive()) {
-        it->qty = q;
-      } else {
-        v.erase(it);
-      }
-    } else if (q.is_positive()) {
-      v.push_back(Level{px, q});
-    }
-  }
-  f.stale.clear();
-}
-
-namespace {
-Qty qty_at(const std::vector<Level>& v, Price px) noexcept {
-  for (const Level& l : v) {
-    if (l.price == px) return l.qty;
-  }
-  return Qty{};
-}
-Level best_level(const std::vector<Level>& v, Side side) noexcept {
-  Level b{};
-  for (const Level& l : v) {
-    if (b.qty.is_zero() || better(side, l.price, b.price)) b = l;
-  }
-  return b;
-}
-}  // namespace
-
-Level SimTransport::recorded_top(InstrumentId id, Side side) const noexcept {
-  const OwnFeed& f = own_feed_[id.value];
-  const L2Book<256>& book = mirror_[id.value];
-  const bool buy = side == Side::Buy;
-  if (f.tickers && f.ticker_newer) return buy ? f.recorded_bid : f.recorded_ask;
-  return buy ? book.best_bid() : book.best_ask();
-}
-
-Qty SimTransport::shown_own(InstrumentId id, Side side, Price px) const noexcept {
-  const Level opp = recorded_top(id, opposite(side));
-  if (opp.qty.is_positive() && (side == Side::Buy ? px >= opp.price : px <= opp.price))
-    return Qty{};
-  return qty_at(own_feed_[id.value].levels[static_cast<std::size_t>(side)], px);
-}
-
-Level SimTransport::shown_top(InstrumentId id, Side side) const noexcept {
-  const OwnFeed& f = own_feed_[id.value];
-  Level top = recorded_top(id, side);
-  Level own{};
-  for (const Level& l : f.levels[static_cast<std::size_t>(side)]) {
-    if (!shown_own(id, side, l.price).is_positive()) continue;
-    if (own.qty.is_zero() || better(side, l.price, own.price)) own = l;
-  }
-  if (own.qty.is_zero()) return top;
-  if (top.qty.is_zero() || better(side, own.price, top.price)) return own;
-  if (own.price == top.price) top.qty += own.qty;
-  return top;
-}
-
-const EventHeader& SimTransport::with_own(const EventHeader& md) noexcept {
-  const InstrumentId id = md.instrument;
-  OwnFeed& f = own_feed_[id.value];
-  switch (md.type) {
-    case EventType::BookTicker: {
-      const auto& m = msg_cast<BookTickerMsg>(&md);
-      f.tickers = true;
-      f.ticker_newer = true;
-      f.recorded_bid = Level{m.bid_px, m.bid_qty};
-      f.recorded_ask = Level{m.ask_px, m.ask_qty};
-      refresh_own(id, f);
-      if (f.levels[0].empty() && f.levels[1].empty()) {
-        // None of ours on the book: the venue shows the recorded top.
-        f.sent_bid = f.recorded_bid;
-        f.sent_ask = f.recorded_ask;
-        return md;
-      }
-      auto& out = own_buf_->as<BookTickerMsg>();
-      std::memcpy(&out, &m, sizeof m);
-      const Level bid = shown_top(id, Side::Buy);
-      const Level ask = shown_top(id, Side::Sell);
-      out.bid_px = bid.price;
-      out.bid_qty = bid.qty;
-      out.ask_px = ask.price;
-      out.ask_qty = ask.qty;
-      f.sent_bid = bid;
-      f.sent_ask = ask;
-      return out.hdr;
-    }
-    case EventType::BookDelta:
-    case EventType::BookSnapshot: {
-      f.ticker_newer = false;
-      refresh_own(id, f);
-      const auto& d = msg_cast<BookDeltaMsg>(&md);
-      const bool snapshot = d.is_snapshot();
-      if (f.dirty.empty() && f.levels[0].empty() && f.levels[1].empty()) return md;
-      auto& out = own_buf_->as<BookDeltaMsg>();
-      std::memcpy(&out, &d, sizeof(BookDeltaMsg));
-      constexpr std::size_t kCap = (kMaxSourceEventBytes - sizeof(BookDeltaMsg)) / sizeof(Level);
-      Level* lv = out.levels();
-      std::uint32_t count[2] = {0, 0};
-      std::size_t n = 0;
-      for (const Side side : {Side::Buy, Side::Sell}) {
-        const auto k = static_cast<std::size_t>(side);
-        const std::vector<Level>& own = f.levels[k];
-        const std::size_t first = n;
-        for (const Level& l : side == Side::Buy ? d.bids() : d.asks()) {
-          Level x = l;
-          const Qty q = shown_own(id, side, l.price);
-          if (q.is_positive()) {
-            x.qty += q;
-            ++stats_.own_levels;
-          }
-          if (n < kCap) lv[n++] = x;
-        }
-        const auto listed = [&](Price px) {
-          for (std::size_t i = first; i < n; ++i) {
-            if (lv[i].price == px) return true;
-          }
-          return false;
-        };
-        const auto add = [&](Price px) {
-          if (listed(px) || n >= kCap) return;
-          const Qty total = level_qty(mirror_[id.value], side, px) + shown_own(id, side, px);
-          if (snapshot && total.is_zero()) return;
-          lv[n++] = Level{px, total};
-          ++stats_.own_levels;
-        };
-        // Our levels that changed since the last depth update; a snapshot lists all of ours.
-        for (const auto& [s, px] : f.dirty) {
-          if (s == side) add(px);
-        }
-        if (snapshot) {
-          for (const Level& l : own) add(l.price);
-        }
-        count[k] = static_cast<std::uint32_t>(n - first);
-      }
-      f.dirty.clear();
-      out.bid_count = count[0];
-      out.ask_count = count[1];
-      out.hdr.len = BookDeltaMsg::size_for(count[0], count[1]);
-      return out.hdr;
-    }
-    default:
-      return md;
-  }
-}
-
-void SimTransport::flush_own(Timestamp now) noexcept {
-  for (const InstrumentId id : own_pending_) {
-    OwnFeed& f = own_feed_[id.value];
-    f.pending = false;
-    refresh_own(id, f);
-    if (!f.tickers) continue;
-    const Level bid = shown_top(id, Side::Buy);
-    const Level ask = shown_top(id, Side::Sell);
-    if (bid.price == f.sent_bid.price && bid.qty == f.sent_bid.qty &&
-        ask.price == f.sent_ask.price && ask.qty == f.sent_ask.qty)
-      continue;
-    // The venue's real-time top of book changed with our order: its ticker stream says so. No
-    // update id of the venue's own: a strategy compares it with the depth book by time. Flagged
-    // synthetic: strip_own drops it from this run's journal.
-    BookTickerMsg m{};
-    init_header(m, EventType::BookTicker, id, link(id).id);
-    m.hdr.flags |= EventHeader::kSynthetic;
-    m.bid_px = bid.price;
-    m.bid_qty = bid.qty;
-    m.ask_px = ask.price;
-    m.ask_qty = ask.qty;
-    f.sent_bid = bid;
-    f.sent_ask = ask;
-    ++stats_.own_tickers;
-    push_md_wire(m.hdr, now);
-  }
-  own_pending_.clear();
 }
 
 // ---- engine side -------------------------------------------------------------------------------

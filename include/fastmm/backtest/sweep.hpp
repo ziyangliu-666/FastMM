@@ -28,6 +28,11 @@ struct SweepPoint {
   BacktestResult result;
 };
 
+// Called with each point's result as it is done (index in the list of points or configurations),
+// one call at a time, before it is kept: a caller that needs less of it (the CLI prints the
+// metrics) can drop the rest there, so a sweep of thousands of points holds no more than that.
+using ResultHook = std::function<void(std::size_t index, BacktestResult& result)>;
+
 // Expands the grid in order: [{k1: v11, k2: v21}, {k1: v11, k2: v22}, ...].
 [[nodiscard]] std::vector<ParamMap> expand_grid(const ParamGrid& grid);
 
@@ -37,7 +42,8 @@ std::vector<SweepPoint> sweep(const BacktestConfig& base,
                               const ParamGrid& grid,
                               const SourceFactory& source_factory,
                               const RunFn& run,
-                              int threads = 0);
+                              int threads = 0,
+                              const ResultHook& done = {});
 
 template <StrategyLike S>
 std::vector<SweepPoint> sweep(const BacktestConfig& base,
@@ -60,7 +66,8 @@ std::vector<SweepPoint> sweep_by_name(const BacktestConfig& base,
                                       const ParamGrid& grid,
                                       const SourceFactory& source_factory = {},
                                       int threads = 0,
-                                      bool separately = false);
+                                      bool separately = false,
+                                      const ResultHook& done = {});
 
 // ---- walk-forward ------------------------------------------------------------------------------
 

@@ -26,6 +26,9 @@ struct RandomMarketConfig {
   bool tickers = true;
   std::int64_t max_delay_ns = 2'000'000;
   std::int64_t lot_raw = 100'000'000;  // 1
+  // Levels per side of a snapshot (up to 256). Past 8, a depth update also changes a level out to
+  // `depth` + 32 ticks from the touch now and then, so a 256-level book fills and drops levels.
+  std::size_t depth = 8;
 };
 
 class RandomMarket final : public sim::MdSource {
@@ -62,16 +65,17 @@ class RandomMarket final : public sim::MdSource {
     Book& b = books_[i];
     b.bids.clear();
     b.asks.clear();
-    for (int k = 0; k < 8; ++k) {
+    const auto depth = static_cast<std::int64_t>(std::min<std::size_t>(cfg_.depth, 255));
+    for (std::int64_t k = 0; k < depth; ++k) {
       b.bids[b.mid - 1 - k] = 1 + static_cast<std::int64_t>(rng_.uniform(9));
       b.asks[b.mid + 1 + k] = 1 + static_cast<std::int64_t>(rng_.uniform(9));
     }
     if (shape == 1) b.bids[b.mid + 2] = 3;  // crossed
     if (shape == 2) b.asks.clear();         // one-sided
-    alignas(64) std::byte raw[BookDeltaMsg::size_for(32, 32)];
+    alignas(64) std::byte raw[BookDeltaMsg::size_for(256, 256)];
     auto& d = *reinterpret_cast<BookDeltaMsg*>(raw);
-    const auto nb = static_cast<std::uint32_t>(b.bids.size());
-    const auto na = static_cast<std::uint32_t>(b.asks.size());
+    const auto nb = static_cast<std::uint32_t>(std::min<std::size_t>(b.bids.size(), 256));
+    const auto na = static_cast<std::uint32_t>(std::min<std::size_t>(b.asks.size(), 256));
     init_header(d,
                 EventType::BookSnapshot,
                 InstrumentId{i},
@@ -82,9 +86,9 @@ class RandomMarket final : public sim::MdSource {
     d.ask_count = na;
     d.first_update_id = d.last_update_id = ++b.update_id;
     std::uint32_t n = 0;
-    for (auto it = b.bids.rbegin(); it != b.bids.rend(); ++it)
+    for (auto it = b.bids.rbegin(); it != b.bids.rend() && n < nb; ++it)
       d.levels()[n++] = level(it->first, it->second);
-    for (auto it = b.asks.begin(); it != b.asks.end(); ++it)
+    for (auto it = b.asks.begin(); it != b.asks.end() && n < nb + na; ++it)
       d.levels()[n++] = level(it->first, it->second);
     push(d.hdr, ts);
     if (shape != 0) snapshot(i, ts + 1'000, 0);  // and back to a valid book
@@ -122,7 +126,9 @@ class RandomMarket final : public sim::MdSource {
     const int changes = 1 + static_cast<int>(rng_.uniform(3));
     for (int k = 0; k < changes; ++k) {
       const bool bid = rng_.uniform(2) == 0;
-      const std::int64_t off = 1 + static_cast<std::int64_t>(rng_.uniform(6));
+      const bool deep = cfg_.depth > 8 && rng_.uniform(3) == 0;
+      const std::int64_t off =
+          1 + static_cast<std::int64_t>(deep ? rng_.uniform(cfg_.depth + 32) : rng_.uniform(6));
       const std::int64_t px = bid ? b.mid - off : b.mid + off;
       const std::int64_t q =
           rng_.uniform(5) == 0 ? 0 : 1 + static_cast<std::int64_t>(rng_.uniform(12));

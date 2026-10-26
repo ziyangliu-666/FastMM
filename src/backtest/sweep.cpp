@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <exception>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -73,6 +74,7 @@ BacktestConfig point_config(const BacktestConfig& start, const ParamMap& point) 
   for (const auto& [k, v] : point) cfg.params[k] = v;
   cfg.output_dir.clear();
   cfg.journal_out.clear();
+  cfg.keep_orders = false;
   return cfg;
 }
 
@@ -96,7 +98,8 @@ std::vector<SweepPoint> sweep(const BacktestConfig& base,
                               const ParamGrid& grid,
                               const SourceFactory& source_factory,
                               const RunFn& run,
-                              int threads) {
+                              int threads,
+                              const ResultHook& done) {
   // The registry is not thread-safe for writers: register before any worker can look it up
   // (run_backtest by name registers too, which would otherwise race on the first sweep).
   register_builtin_strategies();
@@ -104,10 +107,15 @@ std::vector<SweepPoint> sweep(const BacktestConfig& base,
   std::vector<SweepPoint> results(points.size());
   for (std::size_t i = 0; i < points.size(); ++i) results[i].params = points[i];
   const BacktestConfig start = shared_start(base);
+  std::mutex done_mutex;
   run_pool(points.size(), threads, source_factory, [&](std::size_t i, MdSource* source) {
     const BacktestConfig cfg = point_config(start, points[i]);
     if (source) source->reset();
     results[i].result = run(cfg, source);
+    if (done) {
+      const std::lock_guard lock(done_mutex);
+      done(i, results[i].result);
+    }
   });
   return results;
 }

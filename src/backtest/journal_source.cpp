@@ -93,6 +93,10 @@ JournalSource::JournalSource(const std::string& path,
     }
     rbuf_.resize((kMaxMsgBytes + 7) / 8);
   }
+  // A backtest's journal from format v5 on records the market data as recorded: none of ours in it.
+  if (strip_own && !feed_shows_own(parts_.front().header()) &&
+      session_saw_own(parts_.front().header()))
+    strip_own = false;
   if (strip_own) {
     const OwnOrderLog log = collect_own_orders(parts_);
     if (!log.live) {

@@ -136,6 +136,9 @@ static_assert(sizeof(BookDeltaMsg) == 96 && alignof(BookDeltaMsg) == 8);
   return f;
 }
 using BookSnapshotMsg = BookDeltaMsg;  // same layout; hdr.type == BookSnapshot, kSnapshot set
+// EventType::OwnLevels, the same layout: each level is our resting quantity at that price as the
+// feed shows it from now on, zero for none. The update ids are unused.
+using OwnLevelsMsg = BookDeltaMsg;
 
 // One side of a public trade as the venue names it, on venues that publish who traded
 // (Hyperliquid: wallet addresses; Lighter: account indexes). Copied as sent; FastMM gives it no

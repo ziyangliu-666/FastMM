@@ -10,7 +10,6 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <unordered_map>
 
 namespace fastmm::bt {
 
@@ -68,9 +67,149 @@ const MarkoutHorizon* Metrics::markout(std::int64_t horizon_ns) const noexcept {
   return nullptr;
 }
 
+void OrderStats::on_order(std::uint8_t kind,
+                          std::uint64_t id,
+                          std::uint64_t orig,
+                          std::int64_t venue_ts,
+                          std::int64_t trigger_ts) {
+  switch (kind) {
+    case kOrderKindNew:
+      ++orders_;
+      break;
+    case kOrderKindCancel:
+      ++cancels_;
+      break;
+    case kOrderKindReplace:
+      ++replaces_;
+      break;
+    default:
+      break;
+  }
+  if (venue_ts > 0 && trigger_ts > 0 && venue_ts >= trigger_ts)
+    virt_.record(static_cast<std::uint64_t>(venue_ts - trigger_ts));
+  if (kind == kOrderKindCancel || id == 0 || find(id) != nullptr) return;
+  // A new order begins a chain; a replace continues the chain of the order it replaces, or begins
+  // one of its own when that order is not open (the venue refuses it: nothing of it fills).
+  std::uint32_t chain = 0;
+  if (const Entry* e = kind == kOrderKindReplace ? find(orig) : nullptr; e != nullptr) {
+    chain = e->chain;
+  } else {
+    chain = new_chain(kind == kOrderKindNew ? venue_ts : 0);
+  }
+  ++chains_[chain].open;
+  insert(id, chain);
+}
+
+void OrderStats::on_fill(std::uint64_t id, std::int64_t ts) {
+  const Entry* e = find(id);
+  if (e == nullptr) return;
+  Chain& c = chains_[e->chain];
+  if (c.first_fill < 0 || ts < c.first_fill) c.first_fill = ts;
+}
+
+void OrderStats::on_end(std::uint64_t id) {
+  Entry* e = find(id);
+  if (e == nullptr) return;
+  const std::uint32_t chain = e->chain;
+  erase(e);
+  if (--chains_[chain].open == 0) close(chain);
+}
+
+std::uint32_t OrderStats::new_chain(std::int64_t venue_ts) {
+  std::uint32_t k = 0;
+  if (!free_.empty()) {
+    k = free_.back();
+    free_.pop_back();
+  } else {
+    k = static_cast<std::uint32_t>(chains_.size());
+    chains_.emplace_back();
+  }
+  chains_[k] = Chain{venue_ts, -1, 0};
+  return k;
+}
+
+void OrderStats::close(std::uint32_t chain) {
+  const Chain c = chains_[chain];
+  chains_[chain].open = 0;
+  free_.push_back(chain);
+  if (c.venue_ts <= 0 || c.first_fill < 0) return;
+  ++quotes_filled_;
+  if (c.first_fill >= c.venue_ts) time_to_fill_.push_back(c.first_fill - c.venue_ts);
+}
+
+namespace {
+std::size_t slot_of(std::uint64_t id, std::size_t mask) noexcept {
+  return static_cast<std::size_t>((id * 0x9E3779B97F4A7C15ULL) >> 32) & mask;
+}
+}  // namespace
+
+OrderStats::Entry* OrderStats::find(std::uint64_t id) noexcept {
+  if (table_.empty()) return nullptr;
+  const std::size_t mask = table_.size() - 1;
+  for (std::size_t i = slot_of(id, mask);; i = (i + 1) & mask) {
+    if (table_[i].id == id) return &table_[i];
+    if (table_[i].id == 0) return nullptr;
+  }
+}
+
+void OrderStats::insert(std::uint64_t id, std::uint32_t chain) {
+  if ((entries_ + 1) * 2 > table_.size()) {
+    std::vector<Entry> old(std::max<std::size_t>(table_.size() * 2, 64));
+    old.swap(table_);
+    entries_ = 0;
+    for (const Entry& e : old) {
+      if (e.id != 0) insert(e.id, e.chain);
+    }
+  }
+  const std::size_t mask = table_.size() - 1;
+  std::size_t i = slot_of(id, mask);
+  while (table_[i].id != 0) i = (i + 1) & mask;
+  table_[i] = Entry{id, chain};
+  ++entries_;
+}
+
+// Backward-shift deletion: the entries after it that probed past it move up, so a lookup never
+// needs a tombstone.
+void OrderStats::erase(Entry* e) noexcept {
+  const std::size_t mask = table_.size() - 1;
+  auto i = static_cast<std::size_t>(e - table_.data());
+  for (std::size_t j = (i + 1) & mask; table_[j].id != 0; j = (j + 1) & mask) {
+    const std::size_t home = slot_of(table_[j].id, mask);
+    // j's entry may fill the hole at i unless its home lies cyclically in (i, j].
+    if (((j - home) & mask) >= ((j - i) & mask)) {
+      table_[i] = table_[j];
+      i = j;
+    }
+  }
+  table_[i] = Entry{};
+  --entries_;
+}
+
+OrderStats OrderStats::of(const OrderRows& orders, const FillRows& fills) {
+  OrderStats s;
+  const bool chains = orders.orig_cl_ord_id.size() == orders.size();
+  for (std::size_t i = 0; i < orders.size(); ++i) {
+    s.on_order(orders.kind[i],
+               orders.cl_ord_id[i],
+               chains ? orders.orig_cl_ord_id[i] : orders.cl_ord_id[i],
+               orders.venue_ts[i],
+               orders.trigger_ts[i]);
+  }
+  for (std::size_t i = 0; i < fills.size(); ++i) s.on_fill(fills.cl_ord_id[i], fills.ts[i]);
+  return s;
+}
+
 Metrics compute_metrics(const EquityRows& equity,
                         const FillRows& fills,
                         const OrderRows& orders,
+                        const MetricsInputs& in) {
+  OrderStats stats = OrderStats::of(orders, fills);
+  return compute_metrics(equity, fills, stats, in);
+}
+
+Metrics compute_metrics(const EquityRows& equity,
+                        const FillRows& fills,
+                        OrderStats& orders,
                         const MetricsInputs& in) {
   Metrics m;
   const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -152,8 +291,6 @@ Metrics compute_metrics(const EquityRows& equity,
   std::uint64_t behind_touch = 0;
   std::uint64_t through_touch = 0;
   std::vector<std::int64_t> queue_ahead;
-  // cl_ord_id -> the fill's own earliest timestamp, for the time-to-fill distribution.
-  std::unordered_map<std::uint64_t, std::int64_t> first_fill_ts;
 
   for (std::size_t i = 0; i < fills.size(); ++i) {
     const bool taker = fills.liquidity[i] == static_cast<std::uint8_t>(Liquidity::Taker);
@@ -175,8 +312,6 @@ Metrics compute_metrics(const EquityRows& equity,
     notional_raw += mul(price, qty).raw;
     const std::int64_t fee = fills.fee[i];
     (fee >= 0 ? fees_paid_raw : rebates_raw) += fee >= 0 ? fee : -fee;
-
-    first_fill_ts.try_emplace(fills.cl_ord_id[i], fills.ts[i]);  // fills are in time order
 
     if (fills.queue_ahead.size() == fills.size() && fills.queue_ahead[i] >= 0)
       queue_ahead.push_back(fills.queue_ahead[i]);
@@ -277,56 +412,23 @@ Metrics compute_metrics(const EquityRows& equity,
   }
 
   // ---- orders -----------------------------------------------------------------------------
-  // A replace gives the order a new cl_ord_id: the fills of every order in a replace chain count
-  // for the new order that began it, at the earliest of them.
-  if (orders.orig_cl_ord_id.size() == orders.size()) {
-    std::unordered_map<std::uint64_t, std::uint64_t> origin;  // replacing id -> the new order's
-    for (std::size_t i = 0; i < orders.size(); ++i) {
-      if (orders.kind[i] != kOrderKindReplace) continue;
-      const std::uint64_t orig = orders.orig_cl_ord_id[i];
-      const auto it = origin.find(orig);
-      origin[orders.cl_ord_id[i]] = it != origin.end() ? it->second : orig;
-    }
-    for (const auto& [id, root] : origin) {
-      const auto f = first_fill_ts.find(id);
-      if (f == first_fill_ts.end()) continue;
-      const std::int64_t ts = f->second;
-      const auto [r, added] = first_fill_ts.try_emplace(root, ts);
-      if (!added) r->second = std::min(r->second, ts);
-    }
+  // The chains still open (a run's end, or rows without their ends) close now.
+  for (std::uint32_t k = 0; k < orders.chains_.size(); ++k) {
+    if (orders.chains_[k].open > 0) orders.close(k);
   }
-  LogLinearHistogram virt;
-  std::vector<std::int64_t> ttf_sorted;
-  for (std::size_t i = 0; i < orders.size(); ++i) {
-    switch (orders.kind[i]) {
-      case kOrderKindNew:
-        ++m.orders;
-        break;
-      case kOrderKindCancel:
-        ++m.cancels;
-        break;
-      case kOrderKindReplace:
-        ++m.replaces;
-        break;
-      default:
-        break;
-    }
-    if (orders.venue_ts[i] > 0 && orders.trigger_ts[i] > 0 &&
-        orders.venue_ts[i] >= orders.trigger_ts[i]) {
-      virt.record(static_cast<std::uint64_t>(orders.venue_ts[i] - orders.trigger_ts[i]));
-    }
-    if (orders.kind[i] != kOrderKindNew || orders.venue_ts[i] <= 0) continue;
-    const auto it = first_fill_ts.find(orders.cl_ord_id[i]);
-    if (it == first_fill_ts.end()) continue;
-    ++fq.quotes_filled;
-    if (it->second >= orders.venue_ts[i]) ttf_sorted.push_back(it->second - orders.venue_ts[i]);
-  }
-  m.virtual_tick_to_order_p50_ns = virt.percentile(0.5);
-  m.virtual_tick_to_order_p99_ns = virt.percentile(0.99);
+  orders.table_.clear();
+  orders.entries_ = 0;
+  m.orders = orders.orders_;
+  m.cancels = orders.cancels_;
+  m.replaces = orders.replaces_;
+  m.virtual_tick_to_order_p50_ns = orders.virt_.percentile(0.5);
+  m.virtual_tick_to_order_p99_ns = orders.virt_.percentile(0.99);
   m.fill_ratio = m.orders > 0 ? static_cast<double>(m.fills) / static_cast<double>(m.orders) : 0.0;
   fq.quotes_placed = m.orders;
+  fq.quotes_filled = orders.quotes_filled_;
   fq.fill_rate_per_quote =
       m.orders > 0 ? static_cast<double>(fq.quotes_filled) / static_cast<double>(m.orders) : 0.0;
+  std::vector<std::int64_t>& ttf_sorted = orders.time_to_fill_;
   if (!ttf_sorted.empty()) {
     std::sort(ttf_sorted.begin(), ttf_sorted.end());
     const auto at = [&](double p) {

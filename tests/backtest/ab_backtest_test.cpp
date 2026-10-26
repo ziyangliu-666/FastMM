@@ -402,6 +402,7 @@ TEST_CASE("backtest.ab: the branches of one multiverse are the branches run one 
   REQUIRE(together.size() == 2);
   for (std::size_t arm = 0; arm < 2; ++arm) {
     CAPTURE(arm);
+    CHECK(result_difference(alone[arm], together[arm]) == "");
     CHECK(together[arm].outbound_sha256 == alone[arm].outbound_sha256);
     CHECK(together[arm].fills.size() == alone[arm].fills.size());
     CHECK(together[arm].metrics.net_pnl == alone[arm].metrics.net_pnl);

@@ -112,6 +112,14 @@ class BacktestConfig:
     def journal_out(self, arg0: str) -> None:
         ...
     @property
+    def keep_orders(self) -> bool:
+        """
+        The result keeps a row for every order sent (BacktestResult.orders); a sweep's points do not, their metrics and outbound hash cover the orders.
+        """
+    @keep_orders.setter
+    def keep_orders(self, arg0: bool) -> None:
+        ...
+    @property
     def latency_fixed_us(self) -> int:
         """
         Fixed order and ack latency, microseconds.
@@ -1977,5 +1985,5 @@ def walk_forward(config: BacktestConfig, grid: dict, folds: typing.SupportsInt |
     """
     Walk-forward sweep: the grid runs on `folds` consecutive time slices of `data`, and the best point of fold i-1 by `metric` (net_pnl, realized_pnl, sharpe_bar, spread_captured_bps) is scored on fold i. Returns a dict: metric, folds (start_ts, end_ts, best, chosen, in_sample, out_of_sample, hindsight, scores, points), mean_in_sample, mean_out_of_sample, mean_hindsight, choice_changes and table (the printable report). folds=1 runs exactly fastmm.sweep. The synthetic market needs fill_model='l2_queue' for folds > 1. This entry point runs a registered C++ strategy; fastmm.walk_forward also takes a fastmm.Strategy class.
     """
-__version__: str = '0.8.0'
+__version__: str = '0.9.0'
 _store_schema_version: int = 12
