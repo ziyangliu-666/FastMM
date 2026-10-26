@@ -84,7 +84,7 @@ struct L3BookConfig {
   std::size_t price_window_ticks = std::size_t{1}
                                    << 16;  // per side; multiple of 64, rounded up to a power of two
   std::size_t max_orders = std::size_t{1} << 20;
-  std::size_t max_overflow_levels = 1024;  // per side
+  std::size_t max_overflow_levels = 8192;  // per side
 };
 
 namespace detail {

@@ -546,6 +546,7 @@ Line and recovery keys apply to the multicast feed; `rx_backend` selects how it 
 | `recovery_buffer_packets` | integer |  | datagrams buffered while a GLIMPSE snapshot is taken, allocated at start (default 65536) |
 | `price_window_ticks` | integer |  | L3 book price window per side, in 0.0001 steps, a multiple of 64 (rounded up to a power of two); orders outside go to an overflow store (default 65536) |
 | `max_orders` | integer |  | resting orders per instrument the L3 book holds (default 262144) |
+| `max_overflow_levels` | integer |  | price levels outside the L3 window per side, allocated at start; 0 disables overflow (default 8192) |
 | `hw_timestamps` | boolean |  | kernel: enable NIC receive timestamps on the line interfaces (SIOCSHWTSTAMP, CAP_NET_ADMIN) (default false) |
 | `hw_clock` | string |  | none \| phc_synced: use the NIC timestamp as recv_ts (only when the PHC is synchronised to CLOCK_REALTIME) (default none) |
 | `order_entry` | string |  | none (every order is rejected) \| sim_ouch (OUCH 5.0 to fastmm-sim-itch) (default none) |

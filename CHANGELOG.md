@@ -6,7 +6,14 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ### Changed
 - core: the L3 book's overflow store holds its levels in blocks of 64, so a new level deep in the book moves one block, not every level behind it.
+- core: `L3BookConfig::max_overflow_levels` defaults to 8192 levels per side.
 - codecs: `ItchL2Bridge` keeps each book's top up to date as it applies messages instead of reading it from the L3 book for every delta.
+
+### Added
+- venues: `nasdaq_itch` `max_overflow_levels` sets the L3 overflow store's capacity, 8192 levels per side by default.
+
+### Fixed
+- venues: a busy Nasdaq stock's open no longer fills the L3 overflow store and resynchronises the feed; the store held a fixed 1024 levels per side.
 
 ## [0.9.0] - 2026-10-24
 

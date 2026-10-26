@@ -181,6 +181,7 @@ void NasdaqItchVenue::attach(const SymbolTable& symbols,
   bc.depth = cfg_.depth;
   bc.book.price_window_ticks = cfg_.price_window_ticks;
   bc.book.max_orders = cfg_.max_orders;
+  bc.book.max_overflow_levels = cfg_.max_overflow_levels;
   bridge_ = std::make_unique<codecs::itch::ItchL2Bridge>(md_sink, bc);
 }
 
@@ -1241,6 +1242,7 @@ NasdaqItchVenueConfig make_nasdaq_itch_config(const VenueSection& v, bool dry_ru
   c.price_window_ticks = extra_u64("price_window_ticks", c.price_window_ticks, 64, 1U << 24);
   if (c.price_window_ticks % 64 != 0) throw bad("price_window_ticks", "must be a multiple of 64");
   c.max_orders = extra_u64("max_orders", c.max_orders, 16, 1U << 26);
+  c.max_overflow_levels = extra_u64("max_overflow_levels", c.max_overflow_levels, 0, 1U << 20);
   c.hw_timestamps = extra_bool("hw_timestamps", false);
   const std::string clock = extra("hw_clock");
   if (clock.empty() || clock == "none") {

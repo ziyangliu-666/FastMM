@@ -45,6 +45,7 @@ TEST_CASE("venues.nasdaq_itch: config keys and defaults") {
   CHECK(c.max_request_attempts == 4);
   CHECK(c.recovery_buffer_packets == 65536);
   CHECK(c.depth == 20);
+  CHECK(c.max_overflow_levels == 8192);
   CHECK(c.order_entry == OrderEntry::None);
   CHECK(c.hw_clock == HwClock::None);
   CHECK(c.glimpse_url.empty());
@@ -69,6 +70,7 @@ TEST_CASE("venues.nasdaq_itch: config keys and defaults") {
                                        {"depth", "5"},
                                        {"price_window_ticks", "4096"},
                                        {"max_orders", "100000"},
+                                       {"max_overflow_levels", "8192"},
                                        {"hw_timestamps", "true"},
                                        {"hw_clock", "phc_synced"},
                                        {"order_entry", "sim_ouch"},
@@ -90,6 +92,10 @@ TEST_CASE("venues.nasdaq_itch: config keys and defaults") {
   CHECK(x.depth == 5);
   CHECK(x.price_window_ticks == 4096);
   CHECK(x.max_orders == 100'000);
+  CHECK(x.max_overflow_levels == 8192);
+  CHECK(make_nasdaq_itch_config(
+            section({{"line_a", "239.1.1.1:1"}, {"max_overflow_levels", "0"}}), false, false)
+            .max_overflow_levels == 0);
   CHECK(x.hw_timestamps);
   CHECK(x.hw_clock == HwClock::PhcSynced);
   CHECK(x.order_entry == OrderEntry::SimOuch);
@@ -148,6 +154,8 @@ TEST_CASE("venues.nasdaq_itch: bad config values are refused with the key") {
   refused({{"line_a", "239.1.1.1:1"}, {"glimpse_url", "host:1"}}, "glimpse_url");
   refused({{"line_a", "239.1.1.1:1"}, {"depth", "0"}}, "depth");
   refused({{"line_a", "239.1.1.1:1"}, {"price_window_ticks", "100"}}, "price_window_ticks");
+  refused({{"line_a", "239.1.1.1:1"}, {"max_overflow_levels", "-1"}}, "max_overflow_levels");
+  refused({{"line_a", "239.1.1.1:1"}, {"max_overflow_levels", "1048577"}}, "max_overflow_levels");
   refused({{"line_a", "239.1.1.1:1"}, {"hw_clock", "tai"}}, "hw_clock");
   refused({{"line_a", "239.1.1.1:1"}, {"order_entry", "ouch"}}, "order_entry");
   refused({{"line_a", "239.1.1.1:1"}, {"order_entry", "sim_ouch"}}, "ouch_url");

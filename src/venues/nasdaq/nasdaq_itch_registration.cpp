@@ -118,6 +118,11 @@ constexpr VenueKeySpec kNasdaqItchKeys[] = {
      KeyType::Int,
      false,
      "resting orders per instrument the L3 book holds (default 262144)"},
+    {"max_overflow_levels",
+     KeyType::Int,
+     false,
+     "price levels outside the L3 window per side, allocated at start; 0 disables overflow "
+     "(default 8192)"},
     {"hw_timestamps",
      KeyType::Bool,
      false,

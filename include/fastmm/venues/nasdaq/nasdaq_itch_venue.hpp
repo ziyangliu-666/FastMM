@@ -120,6 +120,7 @@ struct NasdaqItchVenueConfig {
   std::uint32_t depth = 20;
   std::size_t price_window_ticks = std::size_t{1} << 16;  // per side, units of 0.0001
   std::size_t max_orders = std::size_t{1} << 18;          // per instrument
+  std::size_t max_overflow_levels = 8192;                 // per side, outside the price window
   bool hw_timestamps = false;  // SIOCSHWTSTAMP on the line interfaces (kernel backend)
   HwClock hw_clock = HwClock::None;
   OrderEntry order_entry = OrderEntry::None;

@@ -268,8 +268,8 @@ const ItchStream& small_stream() {
 //
 // The price spread stays small because the book's default price window is 2^16 ticks, and an ITCH
 // tick is $0.0001: 150 cents each way is already 30,000 ticks, and anything outside the window goes
-// to the 1,024-level overflow store and then fails. So this benchmark varies the number of resting
-// orders, not the number of price levels.
+// to the overflow store. So this benchmark varies the number of resting orders, not the number of
+// price levels; BM_L3_DeepOverflowAddCancel (bench_book) times a deep overflow store.
 const ItchStream& large_stream() {
   static const ItchStream s = make_itch_stream(1U << 20, 200'000, 260'000, 150);
   return s;
