@@ -2,9 +2,44 @@
 
 #include "test_support.hpp"
 
+#include "fastmm/core/rng.hpp"
+
 #include <vector>
 
 using namespace fastmm;
+
+TEST_CASE("core.timer_wheel: next_expiry follows adds, cancels and fires") {
+  // Every timer lies within the wheel's horizon, so next_expiry_before() over the whole wheel is
+  // the earliest one by a different route. Callbacks add and cancel timers and ask for
+  // next_expiry() in the middle of a poll.
+  Xoshiro256ss rng(7);
+  TimerWheel<256> w(Timestamp{0});
+  std::vector<TimerId> ids;
+  Timestamp now{0};
+  const Duration horizon = milliseconds(4000);
+  const auto oracle = [&] {
+    const Timestamp t = w.next_expiry_before(now + horizon);
+    return t == now + horizon ? Timestamp::max() : t;
+  };
+  for (int step = 0; step < 20'000; ++step) {
+    const std::uint64_t r = rng.next() % 10;
+    if (r < 4 && w.size() < 200) {
+      const Duration d{static_cast<std::int64_t>(1 + rng.next() % 3'000'000'000ULL)};
+      ids.push_back(w.add(now, d, rng.next() % 3 == 0, 0));
+    } else if (r < 6 && !ids.empty()) {
+      static_cast<void>(w.cancel(ids[rng.next() % ids.size()]));
+    } else {
+      now = now + Duration{static_cast<std::int64_t>(rng.next() % 30'000'000)};
+      static_cast<void>(w.poll(now, [&](TimerId fired, std::uint64_t) {
+        static_cast<void>(w.next_expiry());
+        if (rng.next() % 4 == 0) static_cast<void>(w.cancel(fired));
+        if (rng.next() % 4 == 0 && w.size() < 200)
+          ids.push_back(w.add(now, milliseconds(3), false, 0));
+      }));
+    }
+    REQUIRE(w.next_expiry() == oracle());
+  }
+}
 
 TEST_CASE("core.timer_wheel: next_expiry_before scans only the slots up to the limit") {
   const Timestamp now{seconds(1).ns};

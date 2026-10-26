@@ -8,6 +8,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: the L3 book's overflow store holds its levels in blocks of 64, so a new level deep in the book moves one block, not every level behind it.
 - core: `L3BookConfig::max_overflow_levels` defaults to 8192 levels per side.
 - codecs: `ItchL2Bridge` keeps each book's top up to date as it applies messages instead of reading it from the L3 book for every delta.
+- core: the timer wheel keeps its next expiry instead of scanning every timer for it each time the simulator asks.
 
 ### Added
 - backtest: the `itch` data source runs a backtest over a day of Nasdaq TotalView-ITCH, every order of the followed stocks; the engine trades on each book's L2 view and the simulated venue gets the orders themselves.

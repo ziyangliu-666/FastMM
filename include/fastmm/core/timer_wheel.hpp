@@ -67,6 +67,7 @@ class TimerWheel {
     t.active = true;
     t.list = kUnlinked;
     link(h.idx, t);
+    if (t.expiry < next_) next_ = t.expiry;
     return id_of(h.idx);
   }
   bool cancel(TimerId id) noexcept {
@@ -75,6 +76,7 @@ class TimerWheel {
     Timer& t = pool_.get(h);
     if (!t.active) return false;
     t.active = false;
+    if (t.expiry <= next_) next_stale_ = true;
     unlink(h.idx, t);
     if (firing_ != h.idx) release(h);  // the firing timer is freed after its callback
     return true;
@@ -128,14 +130,19 @@ class TimerWheel {
     return true;
   }
 
-  // Earliest pending expiry (Timestamp::max() if none). O(live timers): used by the sim
-  // scheduler, not the live loop.
+  // Earliest pending expiry (Timestamp::max() if none): used by the sim scheduler, not the live
+  // loop. Kept as timers are added; a scan of the live timers after one fired or the earliest was
+  // cancelled.
   [[nodiscard]] Timestamp next_expiry() const noexcept {
-    Timestamp best = Timestamp::max();
-    pool_.for_each([&](Handle<Timer>, const Timer& t) {
-      if (t.active && t.expiry < best) best = t.expiry;
-    });
-    return best;
+    if (next_stale_) {
+      Timestamp best = Timestamp::max();
+      pool_.for_each([&](Handle<Timer>, const Timer& t) {
+        if (t.active && t.expiry < best) best = t.expiry;
+      });
+      next_ = best;
+      next_stale_ = false;
+    }
+    return next_;
   }
   // Earliest pending expiry before `limit`, or `limit` if there is none. Scans the wheel slots from
   // the last poll up to `limit` (one per ms), so it is cheap for a limit a few ms ahead: the live
@@ -178,6 +185,7 @@ class TimerWheel {
   template <class F>
   std::size_t fire(std::uint32_t idx, Timer& t, Timestamp now, F& f) noexcept {
     const Handle<Timer> h{idx};
+    next_stale_ = true;
     unlink(idx, t);
     firing_ = idx;
     f(id_of(idx), t.user_data);
@@ -185,6 +193,7 @@ class TimerWheel {
     Timer& tt = pool_.get(h);  // re-fetch: callback may have cancelled it
     if (!tt.active) {
       release(h);
+      next_stale_ = true;
       return 1;
     }
     if (tt.repeat) {
@@ -196,6 +205,7 @@ class TimerWheel {
       tt.active = false;
       release(h);
     }
+    next_stale_ = true;  // the callback may have asked for next_expiry()
     return 1;
   }
 
@@ -259,6 +269,8 @@ class TimerWheel {
   std::int64_t overflow_min_ms_ = kNever;
   std::int64_t cur_ms_;
   std::uint32_t firing_ = kNullHandle;
+  mutable Timestamp next_ = Timestamp::max();  // next_expiry() unless next_stale_
+  mutable bool next_stale_ = false;
   std::uint32_t walk_next_ = kNullHandle;  // poll()'s next timer in the slot it walks
 };
 
