@@ -42,8 +42,8 @@ OUCH 5.0 (fixed part before Appendage Length, then `Appendage Length(2)` and Tag
 | X Order Cancel | `OrderCancelL3Msg`, `canceled_qty` = Cancelled Shares |
 | D Order Delete | `OrderCancelL3Msg`, `canceled_qty` 0 (= delete) |
 | U Order Replace | `OrderReplaceL3Msg` |
-| P Trade (non-displayable) | `TradeMsg` |
-| Q Cross Trade | `TradeMsg` (skipped when Shares is 0) |
+| P Trade (non-displayable) | `TradeMsg` with `TradeMsg::kNoAggressor`: Nasdaq sends B for every P, so the side that took liquidity is unknown |
+| Q Cross Trade | `TradeMsg` with `TradeMsg::kNoAggressor` (skipped when Shares is 0) |
 | R Stock Directory | stock locate -> `InstrumentId` table, no event |
 | S H Y L V W K J h B I N O | validated, ignored |
 
@@ -80,6 +80,8 @@ The `nasdaq_itch` venue sets the store's capacity with `max_overflow_levels` (de
 The window is a ring, so moving it (a recentre) moves only the levels that leave or enter it, never the window itself. It moves when a touch has left it and the overflow store has since taken about as many operations at that touch as the move costs: to the midpoint of the touches when they are less than a window apart; when they are further apart, the window stays on the touch it holds (moves to the bid when it holds neither). A touch that steps out of the window and straight back, such as an order beyond the touch cancelled at once, moves nothing. Each operation costs O(1) amortised, whatever the window; `clear()`, which a resync runs on every book, costs the orders the book holds, not its capacity. `recentre_count()`, `recentre_failures()` (moves skipped because the overflow store was full) and `recentre_levels_moved()` count the moves, and the venue reports them summed over the books in the [status file](../status-file.md#multicast-feed) and as `fastmm_feed_book_recentres_total`.
 
 `fastmm-bench-l3-itch FILE` (in `bin/bench/`) replays an ITCH 5.0 file in NASDAQ's sample format into one book per stock locate and prints the latency percentiles per message, the recentres per book with their cost, the book errors by kind and the most levels an overflow store held, and with `--check` compares every touch with a `std::map` book. `--window`, `--max-orders` and `--max-overflow` set the book's capacities; `--from 09:30` applies the messages before that exchange time untimed, so the open is timed on warm books.
+
+`fastmm-bench-queue-truth FILE [--top K] [--hidden]` scores the backtest's queue models against the file: it follows every order that joins or improves the touch, or joins the level behind it, and compares what ITCH executed against it with what the `l2_queue` rule (at five conservatisms) and the `l3_queue` rule give it, order by order and in markouts ([Backtesting](../../explanation/backtesting.md#the-queue-from-every-order)). A day of the 100 most active stocks takes about 35 s.
 
 ## MoldUDP64
 

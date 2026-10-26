@@ -5,6 +5,10 @@
 //       FillModel::Matching : MatchingEngine, account 1 (strategy) vs account 0 (flow)
 //       FillModel::L2Queue  : QueuePositionModel against a mirror of the historical book and the
 //                             latest BookTicker when it is newer than that book
+//       FillModel::L3Queue  : the same, with the queue taken from order-by-order data (the
+//                             OrderAddL3 / Exec / Cancel / Replace events of the source): each
+//                             order of ours sits in its level's FIFO between the recorded orders
+//                             that came before and after it, and only executions reach it
 //   venue --acks/fills--> order wire (arrival = max(prev, t + ack_in)) --> InlineFeed
 //   venue --market data--> md wire   (arrival = max(prev, t + md_in))  --> InlineFeed
 //
@@ -58,13 +62,14 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace fastmm::sim {
 
-enum class FillModel : std::uint8_t { Matching = 0, L2Queue = 1 };
+enum class FillModel : std::uint8_t { Matching = 0, L2Queue = 1, L3Queue = 2 };
 [[nodiscard]] constexpr std::string_view to_string(FillModel m) noexcept {
-  return m == FillModel::Matching ? "matching" : "l2_queue";
+  return m == FillModel::Matching ? "matching" : m == FillModel::L2Queue ? "l2_queue" : "l3_queue";
 }
 
 // One venue's own settings. A venue without an entry in SimTransportConfig::venues takes the
@@ -195,6 +200,9 @@ struct SimTransportStats {
   // l2_queue: fills of resting orders that the opposite side of the recorded book reached without
   // a print (QueuePositionModel::on_cross)
   std::uint64_t cross_fills = 0;
+  // l3_queue: order-by-order events applied, and those naming an order the venue does not hold
+  std::uint64_t l3_events = 0;
+  std::uint64_t l3_unknown = 0;
   std::uint64_t cancel_acks = 0;
   std::uint64_t cancel_rejects = 0;
   std::uint64_t expired = 0;
@@ -212,7 +220,7 @@ struct FillContext {
   Price best_bid;  // venue best bid / ask, to tell a fill at the touch from one behind it
   Price best_ask;
   Qty queue_ahead;           // displayed quantity still ahead of us just before the fill
-  bool queue_known = false;  // only FillModel::L2Queue tracks a queue position
+  bool queue_known = false;  // only the queue fill models track a queue position
 };
 
 // Result-side hooks (backtest collectors). Called on the venue side, in virtual time.
@@ -436,6 +444,9 @@ class SimTransport final : public MatchingSink {
   void queue_on_delta(const BookDeltaMsg& d, Timestamp now) noexcept;
   void queue_on_trade(const TradeMsg& t, Timestamp now) noexcept;
   void queue_on_ticker(const BookTickerMsg& m, Timestamp now) noexcept;
+  // L3Queue: a recorded order-by-order event (OrderAddL3 / Exec / Cancel / Replace)
+  void queue_on_l3(const EventHeader& md, Timestamp now) noexcept;
+  [[nodiscard]] bool queue_mode() const noexcept { return cfg_.fill_model != FillModel::Matching; }
   // A side with a price and no quantity: a recorded level that was only the session's own orders.
   [[nodiscard]] static bool hides_level(const BookTickerMsg& m) noexcept;
   // Fills our resting orders that the opposite side of the venue's book now reaches.
@@ -578,6 +589,18 @@ class SimTransport final : public MatchingSink {
   Scheduler sched_;
   std::unique_ptr<L2Book<256>[]> mirror_;
   QueuePositionModel queue_;
+  // L3Queue: the recorded orders resting at the venue, per instrument (ref -> order), and the
+  // displayed quantity of each of their levels; l3_seq_ numbers arrivals, ours included.
+  struct L3Order {
+    std::uint64_t prio = 0;
+    Price price;
+    Qty qty;
+    Side side = Side::Buy;
+  };
+  std::vector<std::unordered_map<std::uint64_t, L3Order>> l3_orders_;
+  std::vector<std::unordered_map<std::int64_t, Qty>> l3_levels_[2];
+  std::uint64_t l3_seq_ = 0;
+  void l3_level_add(InstrumentId id, Side side, Price px, Qty q, bool add) noexcept;
   std::unique_ptr<QueueTouch[]> touch_;  // L2Queue: the latest BookTicker per instrument
   std::unique_ptr<TradeTape[]> tape_;    // L2Queue: trades since the mirror's last update
   std::unique_ptr<MdAggregator> agg_;

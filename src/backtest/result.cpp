@@ -183,6 +183,10 @@ std::string BacktestResult::summary_table() const {
       fmt::format("{} / {} ns", m.wall_tick_to_order_p50_ns, m.wall_tick_to_order_p99_ns));
   if (md_reordered != 0 || md_late != 0)
     row("recorded events reordered / late", fmt::format("{} / {}", md_reordered, md_late));
+  if (transport.l3_events != 0) {
+    row("order-by-order events / unknown order",
+        fmt::format("{} / {}", transport.l3_events, transport.l3_unknown));
+  }
   if (treasury.pools != 0) {
     std::string moved;
     for (const std::string& a : moved_assets(treasury))

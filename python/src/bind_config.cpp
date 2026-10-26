@@ -286,7 +286,8 @@ void bind_config(py::module_& m) {
           [](const BacktestConfig& c) { return std::string(to_string(c.transport.fill_model)); },
           [](BacktestConfig& c, const std::string& s) {
             const auto fm = bt::parse_fill_model(s);
-            if (!fm) throw py::value_error("fill_model must be 'matching' or 'l2_queue'");
+            if (!fm)
+              throw py::value_error("fill_model must be 'matching', 'l2_queue' or 'l3_queue'");
             c.transport.fill_model = *fm;
           },
           "'matching' (orders rest in the simulated book) or 'l2_queue' (queue position on "

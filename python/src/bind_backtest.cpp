@@ -247,6 +247,8 @@ py::dict transport_dict(const sim::SimTransportStats& s) {
   d["rejects_other"] = s.rejects_other;
   d["fills"] = s.fills;
   d["cross_fills"] = s.cross_fills;
+  d["l3_events"] = s.l3_events;
+  d["l3_unknown"] = s.l3_unknown;
   d["cancel_acks"] = s.cancel_acks;
   d["cancel_rejects"] = s.cancel_rejects;
   d["expired"] = s.expired;

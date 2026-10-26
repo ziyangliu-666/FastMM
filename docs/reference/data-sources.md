@@ -39,6 +39,7 @@ Several specs separated by `;` are merged by event time, ties going to the earli
 | `csv` | as written | as written | as written | as written, ns |
 | `binance` | yes | no | yes | venue transaction time, ms |
 | `tardis` | yes | yes | yes | exchange time, µs |
+| `itch` | yes | yes, and every order | yes | exchange time, ns |
 
 The queue model sets an order's queue position from the displayed quantity at its price, so a source without depth says nothing about any price except the touch: an order resting one tick behind the best quote is modelled as alone at its price and fills as soon as a trade reaches it. On such a source, fills behind the touch are optimistic ([Backtesting](../explanation/backtesting.md#model-assumptions)).
 
@@ -98,6 +99,29 @@ Normalized datasets from [datasets.tardis.dev](https://datasets.tardis.dev): `in
 Snapshots are truncated to the 256 best levels per side (`RowAssembler`); a delta with more rows on a side goes out as several messages of the same timestamp. Rows sharing a timestamp form one message; the feed has no update id. With `start`, the book rows before it are applied to a book that goes out as one `BookSnapshot` stamped with the first row at or after `start`, so the run starts on the book the day had then.
 
 Licence: The [Tardis terms](https://docs.tardis.dev/legal/terms-of-service) grant a perpetual licence to keep and use downloaded data, including free samples (clause 9.4), for internal, research or personal use. Clause 9.2 forbids redistributing the raw data; only derived data aggregated to 10 minutes or coarser may be passed on.
+
+## `itch`
+
+A day of Nasdaq TotalView-ITCH 5.0: every displayed order, added, executed, cancelled and replaced, in the order the matching engine handled it. NASDAQ publishes full days at [emi.nasdaq.com/ITCH](https://emi.nasdaq.com/ITCH/Nasdaq%20ITCH/); gunzip the file first (a day is about 8.6 GB, read through a memory map).
+
+| Option | Default | Meaning |
+|---|---|---|
+| `path` (1st positional) | — | The file, a 2-byte big-endian length before each message |
+| `date` | from the file name | `YYYY-MM-DD`; NASDAQ's names start `MMDDYYYY` |
+| `start` / `end` | the whole file | `HH:MM[:SS]`, New York time |
+| `venue` | `0` | The venue whose instruments the source follows, matched by symbol |
+| `depth` | `64` | Levels per side in the engine's book, 1 to 256 |
+| `max_orders` | `262144` | Resting orders per book |
+
+Each followed book is an L3 book (`ItchL2Bridge`, [Nasdaq ITCH](codecs/nasdaq.md)). The engine trades on its L2 view: one `BookDelta` per book for the messages of one ITCH timestamp, a `Trade` for every printable execution at its execution price, and the P and Q trades with `TradeMsg::kNoAggressor`, since ITCH does not say which side they took. The simulated venue also gets the order-by-order events themselves (`OrderAddL3`, `OrderExecL3`, `OrderCancelL3`, `OrderReplaceL3`), which the engine never sees. Under `fill_model = "l3_queue"` they give each of our orders its place in its level's queue ([Backtesting](../explanation/backtesting.md#the-queue-from-every-order)); under `l2_queue` the venue ignores them.
+
+The books build from the first message of the file. With `start`, the messages before it are applied but not yielded, and the run begins with each book's resting orders in queue order, then each book's snapshot. Exchange time and receive time are both midnight New York (daylight saving time by the rule in force since 2007) plus the message's timestamp; `[backtest] latency_md_us` delays them.
+
+```bash
+fastmm-backtest --config itch.toml --data "itch:07302019.NASDAQ_ITCH50,start=09:30,end=16:00"
+```
+
+A full day of eight active stocks, every message of the file read and the books built from 04:00, runs in about 11 s on one core.
 
 ## Others considered
 

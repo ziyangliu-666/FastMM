@@ -52,6 +52,9 @@ class MdSource {
   [[nodiscard]] virtual Timestamp start_ts() const { return Timestamp{}; }
   // One line about what the source did to the data, for the run's report (empty: nothing).
   [[nodiscard]] virtual std::string note() const { return {}; }
+  // The source yields every order of its books (OrderAddL3 and the rest), from the start of the
+  // run: what fill_model = "l3_queue" needs.
+  [[nodiscard]] virtual bool order_by_order() const { return false; }
 };
 
 }  // namespace fastmm::sim

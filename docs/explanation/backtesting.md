@@ -98,6 +98,23 @@ net = gross spread capture + mid drift after the fills − fees paid + rebates r
 
 `mid drift` is `signed qty * (final mid − mid at fill)` summed over the fills: the adverse selection over the whole run plus the mark-to-market of whatever inventory is still open at the end. `unexplained` is the difference from the ledger's own net PnL: fixed-point rounding on a healthy run; anything larger means the split, not the ledger, is wrong.
 
+## The queue from every order
+
+An L2 feed shows how much rests at a price, never in what order, so `l2_queue` has to guess what a shrinking level means for an order inside it: `queue_conservatism` 0 shares every cancel between the orders ahead and behind in proportion, 1 assumes all of it came from behind. A day of Nasdaq TotalView-ITCH settles the question, because it shows every order and what became of it. `fastmm-bench-queue-truth FILE` follows each order that joins the touch (or the level behind it), runs the `l2_queue` rule on the L2 view of the same messages over the order's life, and compares with what ITCH executed against it. On 2019-07-30, the 100 most active stocks, continuous session:
+
+| Orders joining the touch | Orders filled in truth | Filled by the model too | Filled by the model only | Filled quantity, model / truth | Markout at 10 s, model fills | Same, true fills |
+|---|---:|---:|---:|---:|---:|---:|
+| `l2_queue`, conservatism 0 | 629,373 | 587,343 | 38,693 | 0.99 | −0.474 bps | −0.477 bps |
+| `l2_queue`, conservatism 0.5 | 629,373 | 498,137 | 20,239 | 0.81 | −0.492 bps | −0.477 bps |
+| `l2_queue`, conservatism 1 | 629,373 | 289,803 | 0 | 0.44 | −0.486 bps | −0.477 bps |
+| `l3_queue` | 629,373 | 629,373 | 0 | 1.00 | −0.477 bps | −0.477 bps |
+
+Of 13.5 million orders that joined the touch, 4.7 % were filled. With the proportional rule the model fills the right quantity overall, and the fills it makes are as toxic as the true ones, but of the orders it or the truth filled, one in eight is filled by one and not the other. At conservatism 1, the default, it fills fewer than half the orders that were filled and under half the quantity; one level behind the touch it fills a third. Orders that improve the touch have nothing ahead and every setting fills them alike.
+
+Order-by-order data needs no such rule. `fill_model = "l3_queue"` keeps every recorded order the source gives the venue (the [`itch`](../reference/data-sources.md#itch) source does), each with its place in the arrival sequence. Ours gets the next place when it reaches the venue: what rests at its price is ahead of it, a cancel or execution of an order ahead moves it up, one behind it changes nothing, and an execution of an order behind it, or at a worse price, is an aggressor that met ours first and fills it. On the same day this rule, run on each real order as if it were ours, reproduces every one of the 629,373 fills and makes none of its own. That is a measurement and not a tautology: Nasdaq's book turned out to be strictly first in, first out among displayed orders once one detail is kept. An order displayed at one price can be ranked at a better one (an order that would lock the market is displayed a tick away and executes at the locking price), and its execution carries that price; `l3_queue` takes an execution at a price better than ours as one that never reached us. Without that detail 215,000 executions of later orders looked like queue jumps.
+
+The rule assumes, as every replay of recorded data does, that our order does not change what others do: an execution that reaches it is taken from the recorded aggressor, and the recorded orders behind it still execute as they did.
+
 ## Calibrating against live sessions
 
 `fastmm-data calibrate` fits the `l2_queue` fill model and the simulated latency to journals recorded by `fastmm-live`, and prints the `[backtest]` keys to use:

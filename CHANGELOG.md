@@ -10,6 +10,9 @@ All notable changes are recorded here (Keep a Changelog format).
 - codecs: `ItchL2Bridge` keeps each book's top up to date as it applies messages instead of reading it from the L3 book for every delta.
 
 ### Added
+- backtest: the `itch` data source runs a backtest over a day of Nasdaq TotalView-ITCH, every order of the followed stocks; the engine trades on each book's L2 view and the simulated venue gets the orders themselves.
+- sim: `fill_model = "l3_queue"` takes each order's queue position from order-by-order data: it waits behind the recorded orders that came before it and fills from the executions that reach it.
+- bench: `fastmm-bench-queue-truth` scores `l2_queue` and `l3_queue` against a day of ITCH, where every order's outcome is known.
 - venues: `nasdaq_itch` `max_overflow_levels` sets the L3 overflow store's capacity, 8192 levels per side by default.
 - bench: `fastmm-bench-l3-itch` takes `--max-overflow` and `--from`, reports book errors by kind and the peak overflow levels, and reads files over 4 GiB.
 
@@ -19,6 +22,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - venues: a `nasdaq_itch` book whose capacity refuses an order leaves service alone; the venue no longer resynchronises every book and retakes the snapshot every second without going live.
 - venues: `nasdaq_itch` dates ITCH and OUCH timestamps from midnight US/Eastern, not UTC, and moves to the next day at each Eastern midnight; `exch_ts` was four or five hours early.
 - sim: `fastmm-sim-itch` timestamps count from midnight US/Eastern, as Nasdaq's do.
+- codecs: ITCH P and Q trades carry `TradeMsg::kNoAggressor`, as CME trades without an aggressor do, and `l2_queue` no longer fills a resting order from a print that names no side; Nasdaq sends B for every P trade.
 - venues: a busy Nasdaq stock's open no longer fills the L3 overflow store and resynchronises the feed; the store held a fixed 1024 levels per side.
 
 ## [0.9.0] - 2026-10-24

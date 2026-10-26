@@ -2,6 +2,7 @@
 
 #include "fastmm/backtest/binance_source.hpp"
 #include "fastmm/backtest/csv_source.hpp"
+#include "fastmm/backtest/itch_source.hpp"
 #include "fastmm/backtest/journal_source.hpp"
 #include "fastmm/backtest/tardis_source.hpp"
 
@@ -267,6 +268,28 @@ std::unique_ptr<MdSource> open_tardis(const DataSourceOptions& o) {
   return std::make_unique<TardisDataset>(cfg);
 }
 
+std::unique_ptr<MdSource> open_itch(const DataSourceOptions& o) {
+  o.reject_unknown({"path", "date", "start", "end", "venue", "depth", "max_orders"});
+  ItchSourceConfig cfg;
+  cfg.path = std::string(o.require("path"));
+  cfg.date = std::string(o.get("date"));
+  cfg.venue = VenueId{static_cast<std::uint8_t>(o.get_int("venue", 0))};
+  if (o.has("start")) cfg.start_ns = parse_time_of_day(o.get("start"));
+  if (o.has("end")) cfg.end_ns = parse_time_of_day(o.get("end"));
+  const std::int64_t depth = o.get_int("depth", cfg.depth);
+  if (depth < 1 || depth > 256) bad("'itch': depth must be 1 to 256");
+  cfg.depth = static_cast<std::uint32_t>(depth);
+  const std::int64_t max_orders =
+      o.get_int("max_orders", static_cast<std::int64_t>(cfg.max_orders));
+  if (max_orders < 1) bad("'itch': max_orders must be positive");
+  cfg.max_orders = static_cast<std::size_t>(max_orders);
+  if (o.instruments() == nullptr) bad("'itch': needs the configuration's instruments");
+  for (const Instrument& i : *o.instruments()) {
+    if (i.venue == cfg.venue) cfg.symbols.emplace_back(std::string(i.symbol.view()), i.id);
+  }
+  return std::make_unique<ItchSource>(std::move(cfg));
+}
+
 }  // namespace
 
 void register_builtin_data_sources() {
@@ -321,6 +344,16 @@ void register_builtin_data_sources() {
                       .trades = true,
                       .clock = "exchange time, microseconds"},
              .open = &open_tardis});
+  r.try_add({.name = "itch",
+             .summary = "a day of Nasdaq TotalView-ITCH 5.0, every order (emi.nasdaq.com/ITCH)",
+             .options = "path=<file>  date=<YYYY-MM-DD>  start=<HH:MM>  end=<HH:MM> (New York)  "
+                        "venue=<id>  depth=<levels>  max_orders=<per book>",
+             .positional = {"path"},
+             .caps = {.top_of_book = true,
+                      .depth = true,
+                      .trades = true,
+                      .clock = "exchange time, nanoseconds; every order (l3_queue)"},
+             .open = &open_itch});
 }
 
 std::uint64_t convert_data(std::string_view spec,

@@ -178,6 +178,9 @@ class ChainSource final : public MdSource {
   [[nodiscard]] Timestamp start_ts() const override {
     return sources_.empty() ? Timestamp{} : sources_.front()->start_ts();
   }
+  [[nodiscard]] bool order_by_order() const override {
+    return !sources_.empty() && sources_.front()->order_by_order();
+  }
 
  private:
   std::vector<MdSource*> sources_;
@@ -259,6 +262,12 @@ class MergedSource final : public MdSource {
   [[nodiscard]] static Timestamp time_of(const EventHeader& h) noexcept {
     return h.exch_ts.valid() ? h.exch_ts : h.recv_ts;
   }
+  // Order by order when any input is: each venue's books come from their own input.
+  [[nodiscard]] bool order_by_order() const override {
+    for (const MdSource* s : sources_)
+      if (s->order_by_order()) return true;
+    return false;
+  }
 
  private:
   static constexpr std::size_t kNone = static_cast<std::size_t>(-1);
@@ -275,6 +284,7 @@ class OwnedMergedSource final : public MdSource {
   const EventHeader* next() override { return merged_.next(); }
   void reset() override { merged_.reset(); }
   [[nodiscard]] Timestamp start_ts() const override { return merged_.start_ts(); }
+  [[nodiscard]] bool order_by_order() const override { return merged_.order_by_order(); }
 
  private:
   static std::vector<MdSource*> raw(const std::vector<std::unique_ptr<MdSource>>& v) {

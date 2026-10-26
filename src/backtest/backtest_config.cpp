@@ -446,7 +446,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
 
   sim::SimTransportConfig& t = b.transport;
   const auto fm = parse_fill_model(bt.get_string("fill_model", "matching"));
-  if (!fm) throw ConfigError("backtest.fill_model must be matching | l2_queue");
+  if (!fm) throw ConfigError("backtest.fill_model must be matching | l2_queue | l3_queue");
   t.fill_model = *fm;
   // One value for the fill model and the strategy's estimate of it (ctx.queue_ahead).
   const double c = bt.get_double("queue_conservatism", cfg.engine.queue_conservatism);

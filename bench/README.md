@@ -50,6 +50,13 @@ several of them.
 build/release/bin/bench/fastmm-bench-l3-itch day.itch --top 100 --from 09:30 --check
 ```
 
+For a change to the queue models, `fastmm-bench-queue-truth` scores `l2_queue` and `l3_queue`
+against the same file, where every order's outcome is known.
+
+```bash
+build/release/bin/bench/fastmm-bench-queue-truth day.itch --top 100
+```
+
 ```bash
 ./scripts/bench.sh --preset release-native --cpu 1 --rounds 3
 scripts/bench-e2e.sh --duration 30 --runs 3 --sim-cpu 0 --engine-cpu 1 --net-cpu 3

@@ -107,6 +107,25 @@ inline constexpr std::size_t kMaxQueuedOrders = 4096;
   return Qty{};
 }
 
+// Order-by-order data: what the execution of a recorded order (resting at r_px with arrival place
+// r_prio, executed at exec_px) means for our resting order (side, price, arrival place prio). The
+// aggressor reached our price unless exec_px is better than it for the aggressor (an order ranked
+// at an undisplayed better price). Fills: the aggressor met our order before the recorded one (a
+// better price, or the same price and an earlier place). Ahead: the recorded order stood ahead of
+// ours at our price and its quantity leaves our queue. None: it was behind us or elsewhere.
+enum class L3Reach : std::uint8_t { None, Ahead, Fills };
+[[nodiscard]] constexpr L3Reach l3_execution_reaches(Side side,
+                                                     Price price,
+                                                     std::uint64_t prio,
+                                                     Price r_px,
+                                                     std::uint64_t r_prio,
+                                                     Price exec_px) noexcept {
+  const bool reached = at_or_better(side, price, exec_px);
+  if (reached && (better(side, price, r_px) || (price == r_px && prio < r_prio)))
+    return L3Reach::Fills;
+  return price == r_px && r_prio < prio ? L3Reach::Ahead : L3Reach::None;
+}
+
 // Others' quantity in a displayed level that may include `own` of ours: the difference; nothing
 // when the level is exactly ours; the whole level when it shows less than we have resting there,
 // because then it was published before our order reached it (Binance stamps a bookTicker up to a
@@ -240,12 +259,15 @@ struct QueuedOrder {
   Timestamp placed;  // venue time the order entered the queue (its arrival, or an amend's)
   Timestamp view;    // venue time of the book view `ahead` was first taken from
   Qty crossed;       // opposite quantity at or through the price in the last view (on_cross)
+  // Order-by-order data (on_l3_cancel, on_l3_execute): the order's place in the venue's arrival
+  // sequence, between the recorded orders that came before it and those that came after.
+  std::uint64_t prio;
   InstrumentId instrument;
   Side side;
   std::uint8_t pad_[3];
   [[nodiscard]] constexpr Qty leaves() const noexcept { return qty - cum_qty; }
 };
-static_assert(sizeof(QueuedOrder) == 80 && std::is_trivially_copyable_v<QueuedOrder>);
+static_assert(sizeof(QueuedOrder) == 88 && std::is_trivially_copyable_v<QueuedOrder>);
 
 class QueuePositionModel {
  public:
@@ -328,6 +350,76 @@ class QueuePositionModel {
       if (o.side != side || o.price != px) return;
       o.ahead = queue_after_level_change(o.ahead, old_qty, new_qty, conservatism_bps_);
     });
+  }
+
+  // ---- order-by-order data -------------------------------------------------------------------
+  // With every recorded order visible (TotalView-ITCH), the queue needs no estimate: a level is a
+  // FIFO of orders, each with its place in the arrival sequence (`prio`), and ours sits between the
+  // ones that came before it and the ones that came after (QueuedOrder::prio). `ahead` starts as
+  // the displayed quantity at the price when the order arrives and moves only with the orders in
+  // front: a cancel of one of them takes its quantity off, as does an execution, and nothing behind
+  // us changes it. The L2 view of the same data must not reach the model too (on_level_change,
+  // on_trade): SimTransport under l3_queue applies it to its book only.
+
+  // A recorded order of `prio` at (side, px) lost `qty` to a cancel or a replace.
+  void on_l3_cancel(InstrumentId inst, Side side, Price px, Qty qty, std::uint64_t prio) noexcept {
+    for_each_mut(inst, [&](Handle32, QueuedOrder& o) {
+      if (o.side == side && o.price == px && prio < o.prio)
+        o.ahead = o.ahead > qty ? o.ahead - qty : Qty{};
+    });
+  }
+
+  // A recorded order of `prio` resting at (side, px) executed `qty` at `exec_px` at venue time
+  // `ts`: an aggressor of the other side reached exec_px. Our orders the aggressor meets before it
+  // (a better price, or the same price and an earlier place) take the quantity first, in price and
+  // then arrival priority, as on_trade's do; each F(Handle32, QueuedOrder&, Qty fill, Qty
+  // ahead_before) has cum_qty advanced already. An execution at a price better than ours for the
+  // aggressor never reached us (an order ranked at a better, undisplayed price: one ITCH displays
+  // at the locking price less a tick and executes at the locking price), and only takes the
+  // executed order's quantity out of the queue. Orders placed after `ts` are not reached.
+  template <class F>
+  void on_l3_execute(InstrumentId inst,
+                     Side side,
+                     Price px,
+                     Price exec_px,
+                     Qty qty,
+                     std::uint64_t prio,
+                     Timestamp ts,
+                     F&& f) noexcept {
+    Handle32* const hs = print_order_.get();
+    std::size_t n = 0;
+    for_each_mut(inst, [&](Handle32 h, QueuedOrder& o) {
+      if (o.side != side) return;
+      switch (l3_execution_reaches(side, o.price, o.prio, px, prio, exec_px)) {
+        case L3Reach::Fills:
+          if (ts >= o.placed) hs[n++] = h;
+          break;
+        case L3Reach::Ahead:
+          o.ahead = o.ahead > qty ? o.ahead - qty : Qty{};
+          break;
+        case L3Reach::None:
+          break;
+      }
+    });
+    if (n > 1) {
+      std::sort(hs, hs + n, [&](Handle32 a, Handle32 b) {
+        const QueuedOrder& x = pool_.get(a);
+        const QueuedOrder& y = pool_.get(b);
+        if (x.price != y.price) return better(side, x.price, y.price);
+        return x.prio < y.prio;
+      });
+    }
+    Qty left = qty;
+    for (std::size_t i = 0; i < n && left.is_positive(); ++i) {
+      QueuedOrder& o = pool_.get(hs[i]);
+      const Qty fill = min(left, o.leaves());
+      if (!fill.is_positive()) continue;
+      const Qty ahead_before = o.ahead;
+      o.ahead = Qty{};
+      left -= fill;
+      o.cum_qty += fill;
+      f(hs[i], o, fill, ahead_before);
+    }
   }
 
   // A touch newer than the depth book (QueueTouch).

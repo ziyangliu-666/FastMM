@@ -64,3 +64,10 @@ add_executable(fastmm-bench-l3-itch l3_itch_replay.cpp)
 fastmm_target_defaults(fastmm-bench-l3-itch)
 target_link_libraries(fastmm-bench-l3-itch PRIVATE fastmm::core)
 set_target_properties(fastmm-bench-l3-itch PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin/bench)
+
+# The l2_queue and l3_queue rules scored against a day of TotalView-ITCH, where every order's outcome
+# is known. Needs an ITCH file, so it has no smoke test.
+add_executable(fastmm-bench-queue-truth queue_truth.cpp)
+fastmm_target_defaults(fastmm-bench-queue-truth)
+target_link_libraries(fastmm-bench-queue-truth PRIVATE fastmm::core)
+set_target_properties(fastmm-bench-queue-truth PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin/bench)

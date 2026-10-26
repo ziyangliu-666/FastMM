@@ -412,6 +412,12 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
       source_ = synthetic_.get();
     }
   }
+  if (cfg_.transport.fill_model == sim::FillModel::L3Queue &&
+      (source_ == nullptr || !source_->order_by_order())) {
+    throw std::invalid_argument(
+        "backtest: fill_model l3_queue needs a source that carries every order (itch); "
+        "over L2 data it would see no queue at all");
+  }
   if (cfg_.balances_from_journal) {
     if (recorded == nullptr) {
       throw std::invalid_argument(

@@ -103,6 +103,11 @@ SimTransport::SimTransport(const SimClock& clock,
     link_of_inst_[i.id.value] = &at(index_of[v.value]);
     me_.set_stp(kStrategyAccount, i.id, cfg.venue_config(v).stp);
   }
+  if (cfg.fill_model == FillModel::L3Queue) {
+    l3_orders_.resize(instruments.size());
+    l3_levels_[0].resize(instruments.size());
+    l3_levels_[1].resize(instruments.size());
+  }
 }
 
 bool SimTransport::venue_budget(VenueId v, OrderBudget& out) const noexcept {
@@ -279,7 +284,7 @@ void SimTransport::venue_new(const OutNewOrderMsg& m, Timestamp now) noexcept {
   n.price = m.price;
   n.qty = m.qty;
   n.reduce_only = m.reduce_only != 0;
-  if (cfg_.fill_model == FillModel::L2Queue) {
+  if (queue_mode()) {
     queue_new(n, now);
   } else {
     static_cast<void>(me_.submit(n, now));  // effects arrive through the sink
@@ -290,7 +295,7 @@ void SimTransport::venue_cancel(const OutCancelMsg& m, Timestamp now) noexcept {
   // A cancel of an order the venue does not hold is refused on the link it came in on.
   if (order_venues_ != nullptr && !order_venues_->contains(m.cl_ord_id.value))
     note_order(m.cl_ord_id, link_for(m.hdr));
-  if (cfg_.fill_model == FillModel::L2Queue) {
+  if (queue_mode()) {
     queue_cancel(m.cl_ord_id, m.hdr.instrument, now);
   } else {
     static_cast<void>(me_.cancel(kStrategyAccount, m.cl_ord_id, now));
@@ -305,7 +310,7 @@ void SimTransport::venue_replace(const OutReplaceMsg& m, Timestamp now) noexcept
   if (accounts_ != nullptr &&
       (closed || !accounts_->admit_replace(m.orig_cl_ord_id, m.cl_ord_id, m.price, m.qty))) {
     accounts_->count_refused();
-    if (cfg_.fill_model == FillModel::L2Queue) {
+    if (queue_mode()) {
       queue_cancel(m.orig_cl_ord_id, m.hdr.instrument, now);
     } else {
       static_cast<void>(me_.cancel(kStrategyAccount, m.orig_cl_ord_id, now));
@@ -317,7 +322,7 @@ void SimTransport::venue_replace(const OutReplaceMsg& m, Timestamp now) noexcept
     }
     return;
   }
-  if (cfg_.fill_model == FillModel::L2Queue) {
+  if (queue_mode()) {
     queue_replace(m, now);
   } else {
     static_cast<void>(
@@ -336,7 +341,7 @@ Price SimTransport::sweep_price(InstrumentId id, Side side, Qty qty, Timestamp n
     return left.is_positive();
   };
   const Side opp = opposite(side);
-  if (cfg_.fill_model == FillModel::L2Queue) {
+  if (queue_mode()) {
     for_each_venue_level(mirror_[id.value], touch_[id.value], opp, now, take);
   } else {
     const SimBook::Levels& levels = me_.book(id).levels(opp);
@@ -421,7 +426,7 @@ void SimTransport::on_source_event(const EventHeader& md) noexcept {
       case EventType::BookDelta:
       case EventType::BookSnapshot: {
         const auto& d = msg_cast<BookDeltaMsg>(&md);
-        if (cfg_.fill_model == FillModel::L2Queue) {
+        if (queue_mode()) {
           queue_on_delta(d, now);
         } else {
           mirror_on_delta(d, now);
@@ -429,16 +434,23 @@ void SimTransport::on_source_event(const EventHeader& md) noexcept {
         break;
       }
       case EventType::Trade:
-        if (cfg_.fill_model == FillModel::L2Queue) {
+        if (queue_mode()) {
           queue_on_trade(msg_cast<TradeMsg>(&md), now);
         } else {
           mirror_on_trade(msg_cast<TradeMsg>(&md), now);
         }
         break;
       case EventType::BookTicker:
-        if (cfg_.fill_model == FillModel::L2Queue)
-          queue_on_ticker(msg_cast<BookTickerMsg>(&md), now);
+        if (queue_mode()) queue_on_ticker(msg_cast<BookTickerMsg>(&md), now);
         break;
+      case EventType::OrderAddL3:
+      case EventType::OrderExecL3:
+      case EventType::OrderCancelL3:
+      case EventType::OrderReplaceL3:
+        // The venue's own record of every order; the engine's book is the source's L2 view of it.
+        if (cfg_.fill_model == FillModel::L3Queue) queue_on_l3(md, now);
+        if (md.seq != 0) forward_in_order(nullptr, md.seq, md.recv_ts, now);
+        return;
       default:
         break;
     }
@@ -792,8 +804,16 @@ void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
     return;
   }
   const QueueTouch& touch = touch_[id.value];
-  const Qty ahead = queue_at_placement(
-      level_qty(book, n.side, n.price), n.side, n.price, book, touch, &tape_[id.value]);
+  Qty ahead;
+  if (cfg_.fill_model == FillModel::L3Queue) {
+    // Every recorded order resting at the price came before us.
+    const auto& lv = l3_levels_[static_cast<std::size_t>(n.side)][id.value];
+    const auto it = lv.find(n.price.raw);
+    ahead = it == lv.end() ? Qty{} : it->second;
+  } else {
+    ahead = queue_at_placement(
+        level_qty(book, n.side, n.price), n.side, n.price, book, touch, &tape_[id.value]);
+  }
   const auto h = queue_.place(n.cl_ord_id,
                               order_id,
                               id,
@@ -811,6 +831,7 @@ void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
   // of the order, which has taken it already (on_cross).
   queue_.get(h).cum_qty = cum;
   queue_.get(h).crossed = cum;
+  queue_.get(h).prio = ++l3_seq_;
   note_own(id, n.side, n.price);
 }
 
@@ -861,7 +882,11 @@ void SimTransport::queue_replace(const OutReplaceMsg& m, Timestamp now) noexcept
 void SimTransport::queue_on_delta(const BookDeltaMsg& d, Timestamp now) noexcept {
   QueuePositionModel* const models[] = {&queue_};
   const std::size_t i = d.hdr.instrument.value;
-  queue_apply_book(mirror_[i], d, now, &tape_[i], models);
+  // Under l3_queue the order-by-order events have moved the queues already: the view only updates
+  // the venue's book (and what it crosses, below).
+  const std::span<QueuePositionModel* const> moved =
+      cfg_.fill_model == FillModel::L3Queue ? std::span<QueuePositionModel* const>{} : models;
+  queue_apply_book(mirror_[i], d, now, &tape_[i], moved);
   queue_cross(d.hdr.instrument, now);
 }
 
@@ -870,11 +895,16 @@ void SimTransport::queue_on_ticker(const BookTickerMsg& m, Timestamp now) noexce
   QueueTouch& t = touch_[id.value];
   t = queue_touch(m, [](Side, Price) { return Qty{}; });  // the replayed feed has none of ours
   QueuePositionModel* const models[] = {&queue_};
-  static_cast<void>(queue_apply_touch(mirror_[id.value], id, t, &tape_[id.value], models));
+  const std::span<QueuePositionModel* const> moved =
+      cfg_.fill_model == FillModel::L3Queue ? std::span<QueuePositionModel* const>{} : models;
+  static_cast<void>(queue_apply_touch(mirror_[id.value], id, t, &tape_[id.value], moved));
   queue_cross(id, now);
 }
 
 void SimTransport::queue_on_trade(const TradeMsg& t, Timestamp now) noexcept {
+  // A print without an aggressor names no resting side to take from; under l3_queue the executions
+  // themselves fill (queue_on_l3), and the print is the same execution again.
+  if (!t.has_aggressor() || cfg_.fill_model == FillModel::L3Queue) return;
   const InstrumentId id = t.hdr.instrument;
   queue_.on_trade(id,
                   t.price,
@@ -885,6 +915,96 @@ void SimTransport::queue_on_trade(const TradeMsg& t, Timestamp now) noexcept {
                     queue_fill(h, o, fill, ahead, now);
                   });
   tape_[id.value].add(t, now);
+}
+
+void SimTransport::l3_level_add(InstrumentId id, Side side, Price px, Qty q, bool add) noexcept {
+  auto& lv = l3_levels_[static_cast<std::size_t>(side)][id.value];
+  Qty& level = lv[px.raw];
+  if (add) {
+    level += q;
+  } else if (level > q) {
+    level -= q;
+  } else {
+    lv.erase(px.raw);
+  }
+}
+
+void SimTransport::queue_on_l3(const EventHeader& md, Timestamp now) noexcept {
+  const InstrumentId id = md.instrument;
+  auto& orders = l3_orders_[id.value];
+  ++stats_.l3_events;
+  // Takes `q` (zero: all) off a recorded order that leaves its place (cancel, the old leg of a
+  // replace); the queue behind it moves up.
+  const auto take = [&](std::uint64_t ref, Qty q) {
+    const auto it = orders.find(ref);
+    if (it == orders.end()) {
+      ++stats_.l3_unknown;
+      return;
+    }
+    L3Order& o = it->second;
+    if (q.is_zero() || q > o.qty) q = o.qty;
+    queue_.on_l3_cancel(id, o.side, o.price, q, o.prio);
+    l3_level_add(id, o.side, o.price, q, false);
+    o.qty -= q;
+    if (o.qty.is_zero()) orders.erase(it);
+  };
+  switch (md.type) {
+    case EventType::OrderAddL3: {
+      const auto& m = msg_cast<OrderAddL3Msg>(&md);
+      if (!m.qty.is_positive()) return;
+      orders[m.order_ref] = L3Order{++l3_seq_, m.price, m.qty, m.side};
+      l3_level_add(id, m.side, m.price, m.qty, true);
+      return;
+    }
+    case EventType::OrderExecL3: {
+      const auto& m = msg_cast<OrderExecL3Msg>(&md);
+      const auto it = orders.find(m.order_ref);
+      if (it == orders.end()) {
+        ++stats_.l3_unknown;
+        return;
+      }
+      L3Order& o = it->second;
+      const Qty q = min(m.exec_qty, o.qty);
+      const Price at = m.exec_price.is_positive() ? m.exec_price : o.price;
+      queue_.on_l3_execute(
+          id,
+          o.side,
+          o.price,
+          at,
+          q,
+          o.prio,
+          now,
+          [&](QueuePositionModel::Handle32 h, QueuedOrder& ours, Qty fill, Qty ahead) {
+            queue_fill(h, ours, fill, ahead, now);
+          });
+      l3_level_add(id, o.side, o.price, q, false);
+      o.qty -= q;
+      if (o.qty.is_zero()) orders.erase(it);
+      return;
+    }
+    case EventType::OrderCancelL3: {
+      const auto& m = msg_cast<OrderCancelL3Msg>(&md);
+      take(m.order_ref, m.canceled_qty);
+      return;
+    }
+    case EventType::OrderReplaceL3: {
+      // The replacement joins the back of its level: a new place in the queue.
+      const auto& m = msg_cast<OrderReplaceL3Msg>(&md);
+      const auto it = orders.find(m.old_order_ref);
+      if (it == orders.end()) {
+        ++stats_.l3_unknown;
+        return;
+      }
+      const Side side = it->second.side;
+      take(m.old_order_ref, Qty{});
+      if (!m.qty.is_positive()) return;
+      orders[m.new_order_ref] = L3Order{++l3_seq_, m.price, m.qty, side};
+      l3_level_add(id, side, m.price, m.qty, true);
+      return;
+    }
+    default:
+      return;
+  }
 }
 
 // ---- MatchingSink ------------------------------------------------------------------------------
@@ -1493,8 +1613,7 @@ EventType SimTransport::deliver_next_inbound(InlineFeed& feed) noexcept {
 
 Price SimTransport::venue_mid(InstrumentId id) const noexcept {
   if (id.value >= instruments_.size()) return Price{};
-  if (cfg_.fill_model == FillModel::L2Queue ||
-      (agg_ == nullptr && me_.book(id).depth(Side::Buy) == 0)) {
+  if (queue_mode() || (agg_ == nullptr && me_.book(id).depth(Side::Buy) == 0)) {
     return mirror_[id.value].mid();
   }
   const MatchingEngine::TopOfBook top = me_.top_of_book(id);
@@ -1506,8 +1625,7 @@ Price SimTransport::venue_best(InstrumentId id, Side side) const noexcept {
   if (id.value >= instruments_.size()) return Price{};
   const L2Book<256>& mirror = mirror_[id.value];
   const Level m = side == Side::Buy ? mirror.best_bid() : mirror.best_ask();
-  if (cfg_.fill_model == FillModel::L2Queue ||
-      (agg_ == nullptr && me_.book(id).depth(Side::Buy) == 0)) {
+  if (queue_mode() || (agg_ == nullptr && me_.book(id).depth(Side::Buy) == 0)) {
     return m.price;
   }
   const MatchingEngine::TopOfBook top = me_.top_of_book(id);
