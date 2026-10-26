@@ -5,6 +5,7 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Changed
+- core: the L3 book's overflow store holds its levels in blocks of 64, so a new level deep in the book moves one block, not every level behind it.
 - codecs: `ItchL2Bridge` keeps each book's top up to date as it applies messages instead of reading it from the L3 book for every delta.
 
 ## [0.9.0] - 2026-10-24

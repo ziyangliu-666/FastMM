@@ -366,15 +366,17 @@ namespace {
 // drifting by up to 3 ticks every 20 operations, and 5 % stub quotes far from it. jumpy: the
 // reference price jumps by up to three windows every 50 operations, through zero and below, and
 // the book is cleared now and then.
-void run_oracle(std::uint32_t seed, bool wide, bool jumpy = false) {
+void run_oracle(std::uint32_t seed, bool wide, bool jumpy = false, bool deep = false) {
   CAPTURE(seed);
   CAPTURE(wide);
   CAPTURE(jumpy);
+  CAPTURE(deep);
   std::mt19937 rng(seed);
   Book b(kTick,
          wide ? kCfg
-              : L3BookConfig{
-                    .price_window_ticks = 64, .max_orders = 1U << 12, .max_overflow_levels = 1024});
+              : L3BookConfig{.price_window_ticks = 64,
+                             .max_orders = 1U << 12,
+                             .max_overflow_levels = deep ? 2048U : 1024U});
   Oracle o;
   std::uint64_t next_ref = 1;
   std::vector<std::uint64_t> live;
@@ -385,6 +387,7 @@ void run_oracle(std::uint32_t seed, bool wide, bool jumpy = false) {
   auto draw_price = [&]() -> std::int64_t {
     const std::int64_t p = px_dist(rng);
     if (wide) return p;
+    if (deep && rng() % 2 == 0) return 1 + static_cast<std::int64_t>(rng() % 3000);
     if (rng() % 20 == 0) return (rng() & 1) ? 1 + static_cast<std::int64_t>(rng() % 20) : 5000;
     return p - (jumpy ? 1000 : 0) + centre;
   };
@@ -451,6 +454,145 @@ TEST_CASE("core.l3_book: property test with stub quotes and a drifting market in
 
 TEST_CASE("core.l3_book: property test with a jumping market through negative prices") {
   for (std::uint32_t seed = 1; seed <= 60; ++seed) run_oracle(seed, false, true);
+}
+
+// Half the orders rest anywhere in 3000 ticks around a 64-tick window: the overflow store holds
+// hundreds of levels per side, over many blocks, and new levels land all through it.
+TEST_CASE("core.l3_book: property test with a deep book around a small window") {
+  for (std::uint32_t seed = 1; seed <= 20; ++seed) run_oracle(seed, false, false, true);
+}
+
+namespace {
+// Drives the overflow store and a map with the same operations and compares every answer. A
+// small rank range keeps the store near its capacity, so blocks split, merge and get packed.
+void run_store_oracle(std::size_t capacity, std::int64_t ranks, std::uint32_t seed) {
+  CAPTURE(capacity);
+  CAPTURE(ranks);
+  CAPTURE(seed);
+  using Store = detail::L3LevelStore;
+  Store st(capacity);
+  std::map<std::int64_t, std::int64_t> m;  // rank -> the qty stored in its level
+  std::mt19937 rng(seed);
+  auto rank = [&] {
+    return static_cast<std::int64_t>(rng() % static_cast<std::uint64_t>(ranks)) - ranks / 2;
+  };
+  auto check_all = [&] {
+    REQUIRE(st.size() == m.size());
+    auto it = m.begin();
+    st.visit_up([&](const Store::Entry& e) {
+      REQUIRE(it != m.end());
+      CHECK(e.rank == it->first);
+      CHECK(e.lvl.qty.raw == it->second);
+      ++it;
+    });
+    CHECK(it == m.end());
+    if (!m.empty()) CHECK(st.back().rank == m.rbegin()->first);
+  };
+  std::int64_t stamp = 1;
+  for (int op = 0; op < 20000; ++op) {
+    const std::int64_t r = rank();
+    const auto kind = rng() % 10;
+    if (kind < 5) {
+      L3Level* l = st.find_or_insert(r);
+      const bool present = m.count(r) != 0;
+      if (!present && m.size() == capacity) {
+        CHECK(l == nullptr);
+        continue;
+      }
+      REQUIRE(l != nullptr);
+      if (present) CHECK(l->qty.raw == m[r]);
+      if (!present) CHECK(l->qty.raw == 0);
+      l->qty.raw = stamp;
+      m[r] = stamp++;
+    } else if (kind < 8) {
+      auto it = m.lower_bound(r);
+      if (it == m.end()) continue;
+      st.erase(it->first);
+      m.erase(it);
+    } else {
+      const L3Level* l = st.find(r);
+      const auto it = m.find(r);
+      REQUIRE((l != nullptr) == (it != m.end()));
+      if (l != nullptr) CHECK(l->qty.raw == it->second);
+      const Store::Entry* below = st.below(r);
+      const auto lb = m.lower_bound(r);
+      REQUIRE((below != nullptr) == (lb != m.begin()));
+      if (below != nullptr) CHECK(below->rank == std::prev(lb)->first);
+      // The first few levels below r, best first.
+      auto want = std::make_reverse_iterator(lb);
+      int seen = 0;
+      st.visit_down(r, [&](const Store::Entry& e) {
+        REQUIRE(want != m.rend());
+        CHECK(e.rank == want->first);
+        ++want;
+        return ++seen < 5;
+      });
+      if (seen < 5) CHECK(want == m.rend());
+    }
+    if (op % 500 == 0) check_all();
+    if (op % 7000 == 6999) {  // rebuild from a flat copy, as a recentre does
+      std::vector<Store::Entry> flat;
+      st.visit_up([&](const Store::Entry& e) { flat.push_back(e); });
+      st.assign(flat.data(), flat.size());
+      check_all();
+    }
+  }
+  check_all();
+  for (auto it = m.begin(); it != m.end();) {  // empty it, every other level first
+    st.erase(it->first);
+    it = m.erase(it);
+    if (it != m.end()) ++it;
+  }
+  check_all();
+  while (!m.empty()) {
+    st.erase(m.begin()->first);
+    m.erase(m.begin());
+  }
+  check_all();
+  CHECK((st.find_or_insert(7) != nullptr) == (capacity != 0));
+}
+}  // namespace
+
+// Ascending inserts leave half-full blocks; erasing front to back three levels in four leaves
+// every block a quarter full without merging any (each one's successor is still dense when it
+// shrinks). Levels then pile into one place: every split takes a block, until the pool is empty
+// and a split packs the store first.
+TEST_CASE("core.l3_book: the overflow store packs its blocks when the pool runs out") {
+  constexpr std::int64_t kCap = 640;
+  detail::L3LevelStore st(kCap);
+  std::map<std::int64_t, std::int64_t> m;
+  auto put = [&](std::int64_t r) {
+    L3Level* l = st.find_or_insert(r);
+    REQUIRE(l != nullptr);
+    l->qty.raw = r;
+    m[r] = r;
+  };
+  for (std::int64_t i = 0; i < kCap; ++i) put(1'000'000 * i);
+  CHECK(st.find_or_insert(-1) == nullptr);
+  for (std::int64_t i = 0; i < kCap; ++i) {
+    if (i % 4 == 0) continue;
+    st.erase(1'000'000 * i);
+    m.erase(1'000'000 * i);
+  }
+  for (std::int64_t r = 1; static_cast<std::int64_t>(m.size()) < kCap; ++r) put(r);
+  CHECK(st.find_or_insert(-1) == nullptr);
+  REQUIRE(st.size() == m.size());
+  auto it = m.begin();
+  st.visit_up([&](const detail::L3LevelStore::Entry& e) {
+    CHECK(e.rank == it->first);
+    CHECK(e.lvl.qty.raw == it->second);
+    ++it;
+  });
+  CHECK(it == m.end());
+}
+
+TEST_CASE("core.l3_book: the overflow store answers as an ordered map") {
+  for (const std::size_t capacity : {0U, 1U, 2U, 63U, 64U, 65U, 200U, 1000U}) {
+    for (std::uint32_t seed = 1; seed <= 3; ++seed) {
+      run_store_oracle(capacity, static_cast<std::int64_t>(capacity) + 16, seed);
+      run_store_oracle(capacity, static_cast<std::int64_t>(4 * capacity) + 64, seed);
+    }
+  }
 }
 
 TEST_CASE("core.l3_book: mutations return the price aggregate across window and overflow moves") {

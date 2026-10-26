@@ -242,6 +242,39 @@ static void BM_L3_OverflowAddCancel(benchmark::State& state) {
 }
 BENCHMARK(BM_L3_OverflowAddCancel);
 
+// A deep book: Arg levels per side rest outside the window, spread over 4 x Arg ticks, the way a
+// large-cap stock's book spreads over dollars at the open. Each iteration adds an order at a
+// random price of that range, mostly a new level somewhere inside the overflow store, and
+// cancels it.
+static void BM_L3_DeepOverflowAddCancel(benchmark::State& state) {
+  const std::int64_t levels = state.range(0);
+  auto b = std::make_unique<L3Book>(
+      kTick,
+      L3BookConfig{
+          .price_window_ticks = 1U << 12, .max_orders = 1U << 16, .max_overflow_levels = 16384});
+  Xoshiro256ss rng(5);
+  std::uint64_t next = 1;
+  for (int i = 0; i < 2000; ++i) {
+    const Side s = (i & 1) ? Side::Buy : Side::Sell;
+    const auto off = static_cast<std::int64_t>(rng.uniform(50));
+    b->add(next++, s, px(s == Side::Buy ? 100000 - off : 100001 + off), Qty::from_int(1));
+  }
+  for (std::int64_t i = 0; i < levels; ++i) {
+    b->add(next++, Side::Buy, px(90000 - 4 * i), Qty::from_int(1));
+    b->add(next++, Side::Sell, px(110000 + 4 * i), Qty::from_int(1));
+  }
+  for (auto _ : state) {
+    const std::uint64_t r = rng.next();
+    const Side s = (r & 1) ? Side::Buy : Side::Sell;
+    const auto off = static_cast<std::int64_t>((r >> 8) % static_cast<std::uint64_t>(4 * levels));
+    b->add(next, s, px(s == Side::Buy ? 90000 - off : 110000 + off), Qty::from_int(1));
+    b->cancel(next++);
+    benchmark::DoNotOptimize(b->best_bid());
+  }
+  if (b->recentre_count() != 0) state.SkipWithError("the window moved");
+}
+BENCHMARK(BM_L3_DeepOverflowAddCancel)->Arg(256)->Arg(2048)->Arg(8192);
+
 // Worst case for the window, per operation: a one-sided book (8 levels) whose touch jumps three
 // windows away and back, with 8 orders added and cancelled at each place, so the window follows
 // every few operations. Arg: log2 of the window. The time must not grow with the window; before
