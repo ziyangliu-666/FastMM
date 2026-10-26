@@ -4,7 +4,11 @@
 // book with their cost. --check replays again, untimed, against a std::map book per locate and
 // compares the touch after every message and every level at the end.
 //
-//   fastmm-bench-l3-itch FILE [--window N] [--max-orders N] [--top K] [--check] [--trace SYMBOL]
+//   fastmm-bench-l3-itch FILE [--window N] [--max-orders N] [--max-overflow N] [--top K]
+//                        [--from HH:MM[:SS]] [--check] [--trace SYMBOL]
+//
+// --from applies the messages before that exchange time untimed, so the books are warm when
+// timing starts (a session's open, say).
 //
 // --trace prints the touches and the window after every recentre of SYMBOL's book.
 //
@@ -41,7 +45,7 @@ std::uint64_t be(const unsigned char* p, int n) {
 }
 
 struct Msg {
-  std::uint32_t off;
+  std::uint64_t off;  // a day of ITCH is several GiB
   std::uint16_t len;
   std::uint16_t locate;
 };
@@ -54,6 +58,7 @@ struct Book {
   std::uint64_t recentre_cycles = 0;
   std::uint64_t recentre_max = 0;
   std::uint32_t recentre_msgs = 0;
+  std::size_t peak_overflow = 0;  // most levels one side's overflow store held
 };
 
 // Reference book for --check.
@@ -172,16 +177,17 @@ double cycles_per_ns() {
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    std::fprintf(
-        stderr,
-        "usage: %s FILE [--window N] [--max-orders N] [--top K] [--check] [--trace SYMBOL]\n",
-        argv[0]);
+    std::fprintf(stderr,
+                 "usage: %s FILE [--window N] [--max-orders N] [--max-overflow N] [--top K] "
+                 "[--from HH:MM[:SS]] [--check] [--trace SYMBOL]\n",
+                 argv[0]);
     return 2;
   }
   L3BookConfig cfg{.max_orders = std::size_t{1} << 16};
   std::size_t top = 100;
   bool check = false;
   std::string trace;
+  std::uint64_t from_ns = 0;
   for (int i = 2; i < argc; ++i) {
     const std::string a = argv[i];
     auto num = [&] { return static_cast<std::size_t>(std::strtoull(argv[++i], nullptr, 0)); };
@@ -189,8 +195,19 @@ int main(int argc, char** argv) {
       cfg.price_window_ticks = num();
     } else if (a == "--max-orders" && i + 1 < argc) {
       cfg.max_orders = num();
+    } else if (a == "--max-overflow" && i + 1 < argc) {
+      cfg.max_overflow_levels = num();
     } else if (a == "--top" && i + 1 < argc) {
       top = num();
+    } else if (a == "--from" && i + 1 < argc) {
+      unsigned h = 0;
+      unsigned m = 0;
+      unsigned sec = 0;
+      if (std::sscanf(argv[++i], "%u:%u:%u", &h, &m, &sec) < 2) {
+        std::fprintf(stderr, "--from takes HH:MM[:SS]\n");
+        return 2;
+      }
+      from_ns = ((h * 60ULL + m) * 60ULL + sec) * 1'000'000'000ULL;
     } else if (a == "--trace" && i + 1 < argc) {
       trace = argv[++i];
     } else if (a == "--check") {
@@ -220,7 +237,7 @@ int main(int argc, char** argv) {
     ++total;
     if (m[0] == 'R') symbol[locate].assign(reinterpret_cast<const char*>(m + 11), 8);
     if (is_book_msg(static_cast<char>(m[0]))) {
-      msgs.push_back(Msg{static_cast<std::uint32_t>(o + 2), len, locate});
+      msgs.push_back(Msg{o + 2, len, locate});
       ++per_locate[locate];
     }
     o += 2U + len;
@@ -244,10 +261,26 @@ int main(int argc, char** argv) {
   std::vector<std::uint32_t> lat;
   lat.reserve(msgs.size());
   std::uint64_t booked = 0;
+  std::uint64_t by_kind[8] = {};  // book errors by L3Error
+  auto count_error = [&](Book& bk, L3Error e) {
+    if (e == L3Error::None) return;
+    ++bk.errors;
+    ++by_kind[static_cast<std::size_t>(e) & 7U];
+  };
   for (const Msg& msg : msgs) {
     Book& bk = books[msg.locate];
     if (!bk.l3) continue;
     const unsigned char* m = &data[msg.off];
+    auto note_overflow = [&] {
+      bk.peak_overflow = std::max({bk.peak_overflow,
+                                   bk.l3->overflow_levels(Side::Buy),
+                                   bk.l3->overflow_levels(Side::Sell)});
+    };
+    if (be(m + 5, 6) < from_ns) {  // ITCH timestamp: nanoseconds since midnight
+      count_error(bk, apply(*bk.l3, m));
+      note_overflow();
+      continue;
+    }
     const std::uint64_t r0 = bk.l3->recentre_count();
     _mm_lfence();
     const std::uint64_t c0 = __rdtsc();
@@ -257,7 +290,8 @@ int main(int argc, char** argv) {
     lat.push_back(static_cast<std::uint32_t>(std::min<std::uint64_t>(c, UINT32_MAX)));
     ++bk.msgs;
     ++booked;
-    if (e != L3Error::None) ++bk.errors;
+    count_error(bk, e);
+    note_overflow();
     if (bk.l3->recentre_count() != r0) {
       ++bk.recentre_msgs;
       bk.recentre_cycles += c;
@@ -300,7 +334,10 @@ int main(int argc, char** argv) {
               msgs.size(),
               static_cast<unsigned long long>(booked),
               order.size());
-  std::printf("window %zu ticks, max_orders %zu\n", cfg.price_window_ticks, cfg.max_orders);
+  std::printf("window %zu ticks, max_orders %zu, max_overflow_levels %zu\n",
+              cfg.price_window_ticks,
+              cfg.max_orders,
+              cfg.max_overflow_levels);
   std::printf("ns/msg mean %.1f  p50 %.1f  p90 %.1f  p99 %.1f  p99.9 %.1f  p99.99 %.1f  max %.1f\n",
               ns(sum / static_cast<double>(lat.size())),
               pct(0.5),
@@ -315,6 +352,21 @@ int main(int argc, char** argv) {
               static_cast<unsigned long long>(failures),
               100.0 * static_cast<double>(rc_cycles) / sum,
               static_cast<unsigned long long>(errors));
+  if (errors != 0) {
+    static constexpr const char* kKind[8] = {"",
+                                             "duplicate ref",
+                                             "unknown ref",
+                                             "pool full",
+                                             "out of window",
+                                             "off tick",
+                                             "bad qty",
+                                             ""};
+    std::printf("  errors by kind:");
+    for (std::size_t k = 1; k < 7; ++k)
+      if (by_kind[k] != 0)
+        std::printf(" %s %llu", kKind[k], static_cast<unsigned long long>(by_kind[k]));
+    std::printf("\n");
+  }
   std::vector<std::uint16_t> by_rc = order;
   std::sort(by_rc.begin(), by_rc.end(), [&](auto a, auto b) {
     return books[a].l3->recentre_count() > books[b].l3->recentre_count();
@@ -329,6 +381,16 @@ int main(int argc, char** argv) {
                 ns(static_cast<double>(b.recentre_cycles) / b.recentre_msgs),
                 ns(static_cast<double>(b.recentre_max)));
   }
+
+  // The books whose overflow store came closest to max_overflow_levels: the capacity to size.
+  std::vector<std::uint16_t> by_ov = order;
+  std::sort(by_ov.begin(), by_ov.end(), [&](auto a, auto b) {
+    return books[a].peak_overflow > books[b].peak_overflow;
+  });
+  std::printf("peak overflow levels per side:");
+  for (std::size_t i = 0; i < std::min<std::size_t>(5, by_ov.size()); ++i)
+    std::printf(" %s %zu", books[by_ov[i]].symbol.c_str(), books[by_ov[i]].peak_overflow);
+  std::printf("\n");
 
   if (!check) return errors == 0 ? 0 : 1;
 

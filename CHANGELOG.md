@@ -11,6 +11,7 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ### Added
 - venues: `nasdaq_itch` `max_overflow_levels` sets the L3 overflow store's capacity, 8192 levels per side by default.
+- bench: `fastmm-bench-l3-itch` takes `--max-overflow` and `--from`, reports book errors by kind and the peak overflow levels, and reads files over 4 GiB.
 
 ### Fixed
 - venues: a busy Nasdaq stock's open no longer fills the L3 overflow store and resynchronises the feed; the store held a fixed 1024 levels per side.
