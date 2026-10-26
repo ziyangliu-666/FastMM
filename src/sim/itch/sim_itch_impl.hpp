@@ -254,7 +254,10 @@ struct SimItchServer::Impl final : ItchOutput, ItchPublisher::Client {
   bool ended = false;
   bool opened = false;
   std::int64_t steady_start_ns = 0;
-  std::int64_t itch_ts_start = 0;  // ITCH timestamp (ns since UTC midnight) at steady_start_ns
+  std::int64_t wall_start_ns = 0;  // wall clock at steady_start_ns
+  // ITCH timestamps count from midnight US/Eastern; the day [midnight, next midnight) in wall ns.
+  mutable std::int64_t midnight_ns = 0;
+  mutable std::int64_t next_midnight_ns = 0;
 
   // feed
   codecs::moldudp::Transmitter tx;

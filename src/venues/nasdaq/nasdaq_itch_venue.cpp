@@ -31,14 +31,8 @@ constexpr std::int64_t kServiceIntervalNs = 500'000;   // poll(): receiver and r
 constexpr std::int64_t kSessionTimerNs = 100'000'000;  // SoupBinTCP heartbeats, status
 constexpr std::int64_t kRetryNs = 1'000'000'000;       // GLIMPSE / OUCH reconnects
 constexpr std::int64_t kXdpStatsNs = 1'000'000'000;
-constexpr std::int64_t kNsPerDay = 86'400'000'000'000;
 constexpr std::size_t kLinkRxBytes = std::size_t{1} << 20;
 constexpr std::size_t kLinkTxBytes = std::size_t{1} << 20;
-
-Timestamp utc_midnight() noexcept {
-  const std::int64_t now = wall_now().ns;
-  return Timestamp{now - now % kNsPerDay};
-}
 
 template <class T>
 std::string decimal(T v) {
@@ -108,7 +102,6 @@ NasdaqItchVenue::NasdaqItchVenue(VenueId id, NasdaqItchVenueConfig cfg)
     ouch_ids_ = std::make_unique<ouch50::UserRefMap>(1);
     ouch_encoder_ = std::make_unique<ouch50::OuchEncoder>(*ouch_ids_);
     ouch_decoder_ = std::make_unique<ouch50::OuchDecoder>(ouch_ids_.get(), id_);
-    ouch_decoder_->set_midnight(utc_midnight());
   }
   stats_.feed.state = FeedState::Down;
   stats_.feed.backend = static_cast<std::uint8_t>(cfg_.rx_backend);
@@ -327,7 +320,7 @@ void NasdaqItchVenue::connect(net::Reactor& reactor) {
   rc.request_timeout_ns = cfg_.request_timeout_ns;
   rc.max_packet_bytes = kMaxDatagram;
   rx_ = std::make_unique<Receiver>(rx_handler_, rc);
-  bridge_->set_midnight(utc_midnight());
+  roll_midnight();
   rerequest_buf_.reset(new std::byte[kMaxDatagram]);
   if (!cfg_.rerequest.empty()) {
     net::SockAddr to;
@@ -778,6 +771,7 @@ void NasdaqItchVenue::service(std::int64_t now) noexcept {
         if (!cancel_all_done_.load()) ouch_retry_ns_ = now + kRetryNs;
       }
     }
+    roll_midnight();
     publish_status();
   }
   if ((xdp_ || dpdk_) && now >= next_xdp_stats_ns_) {
@@ -789,6 +783,16 @@ void NasdaqItchVenue::service(std::int64_t now) noexcept {
 
 void NasdaqItchVenue::on_timer(std::int64_t) {
   publish_status();
+}
+
+// ITCH and OUCH timestamps count from midnight US/Eastern of the trading day. The day changes at
+// that midnight, hours after the session's last message (20:00) and before the next one's first.
+void NasdaqItchVenue::roll_midnight() noexcept {
+  const std::int64_t m = codecs::nasdaq::eastern_midnight(wall_now().ns);
+  if (m == midnight_ns_) return;
+  midnight_ns_ = m;
+  bridge_->set_midnight(Timestamp{m});
+  if (ouch_decoder_) ouch_decoder_->set_midnight(Timestamp{m});
 }
 
 // ---- order entry -----------------------------------------------------------------------------

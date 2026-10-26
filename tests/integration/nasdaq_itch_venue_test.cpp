@@ -15,11 +15,13 @@
 #include "../net/netns_test_util.hpp"
 #include "integration_util.hpp"
 
+#include "fastmm/core/time.hpp"
 #include "fastmm/live/session.hpp"
 #include "fastmm/sim/itch/sim_itch_server.hpp"
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <functional>
 #include <map>
 #include <memory>
@@ -210,7 +212,8 @@ class Harness {
   std::uint64_t md_resyncing = 0;
   std::uint64_t md_live = 0;
   std::uint64_t md_trades = 0;
-  std::uint64_t md_stamped = 0;  // deltas with a receive stamp
+  std::uint64_t md_stamped = 0;       // deltas with a receive stamp
+  std::int64_t max_exch_skew_ns = 0;  // |exch_ts - wall clock| over the deltas
   Cycles last_md_t0{};
 
  private:
@@ -233,6 +236,8 @@ class Harness {
               ++md_stamped;
               last_md_t0 = d.hdr.t0_cycles;
             }
+            const std::int64_t skew = d.hdr.exch_ts.ns - wall_now().ns;
+            max_exch_skew_ns = std::max(max_exch_skew_ns, skew < 0 ? -skew : skew);
           }
           for (const Level& l : d.bids()) {
             if (l.qty.is_zero()) {
@@ -323,6 +328,8 @@ TEST_CASE("nasdaq_itch venue: joins mid-stream from GLIMPSE and its books equal 
   CHECK(h.md_deltas > 50);
   CHECK(h.md_stamped == h.md_deltas);
   CHECK(h.md_trades > 0);
+  // ITCH timestamps count from midnight US/Eastern on both sides: exch_ts is the wall clock.
+  CHECK(h.max_exch_skew_ns < 1'000'000'000);
   h.run_for(200);  // the venue publishes its status every 100 ms
   const venues::VenueStatus st = h.venue().status();
   CHECK(st.md == venues::ChannelState::Live);

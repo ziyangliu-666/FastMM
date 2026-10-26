@@ -12,6 +12,7 @@
 // does not fit (negative, too many decimals, overflow) is refused instead of being rounded.
 #include "fastmm/core/fixed_point.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -212,6 +213,30 @@ inline std::size_t format_decimal(char* dst, std::uint64_t v) noexcept {
   } while (v != 0);
   for (std::size_t i = 0; i < n; ++i) dst[i] = tmp[n - 1 - i];
   return n;
+}
+
+// Unix nanoseconds of 00:00 US/Eastern on the Eastern calendar day that contains `unix_ns`:
+// the base of ITCH and OUCH timestamps ("nanoseconds since midnight" of the trading day, in
+// Eastern time). US rules since 2007: daylight time (UTC-4) from 02:00 on the second Sunday of
+// March to 02:00 on the first Sunday of November, standard time (UTC-5) otherwise. A midnight
+// is never inside a change, so it is daylight time on the days after the second Sunday of March
+// up to and including the first Sunday of November.
+[[nodiscard]] constexpr std::int64_t eastern_midnight(std::int64_t unix_ns) noexcept {
+  using namespace std::chrono;
+  constexpr std::int64_t kDay = 86'400'000'000'000;
+  constexpr std::int64_t kHour = 3'600'000'000'000;
+  auto midnight = [](std::int64_t day) {
+    const sys_days d{days{day}};
+    const year y = year_month_day{d}.year();
+    const sys_days dst_start{y / March / Sunday[2]};
+    const sys_days dst_end{y / November / Sunday[1]};
+    return day * kDay + (d > dst_start && d <= dst_end ? 4 : 5) * kHour;
+  };
+  // Local time is 4 or 5 hours behind: the day of (t - 4 h) or the day before.
+  std::int64_t day = unix_ns - 4 * kHour;
+  day = (day >= 0 ? day : day - kDay + 1) / kDay;
+  const std::int64_t m = midnight(day);
+  return unix_ns >= m ? m : midnight(day - 1);
 }
 
 }  // namespace fastmm::codecs::nasdaq

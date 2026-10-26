@@ -561,3 +561,21 @@ TEST_CASE("codecs.itch: a full sink reports overflow") {
   CHECK(dec.stats().overflow == 1);
   CHECK(rec.drain().size() == ok);
 }
+
+TEST_CASE("codecs.itch: timestamps count from midnight US/Eastern, daylight time included") {
+  using nasdaq::eastern_midnight;
+  constexpr std::int64_t kS = 1'000'000'000;
+  // 2019-07-30, daylight time: midnight is 04:00 UTC, from 00:00 to 23:59:59 local.
+  CHECK(eastern_midnight(1'564'488'000 * kS) == 1'564'459'200 * kS);  // 12:00 UTC
+  CHECK(eastern_midnight(1'564'459'200 * kS) == 1'564'459'200 * kS);  // 00:00 local
+  CHECK(eastern_midnight(1'564'459'199 * kS) == 1'564'372'800 * kS);  // 23:59:59 the day before
+  CHECK(eastern_midnight(1'564'545'599 * kS) == 1'564'459'200 * kS);  // 23:59:59 local
+  // 2026-01-15, standard time: 05:00 UTC.
+  CHECK(eastern_midnight(1'768'500'000 * kS) == 1'768'453'200 * kS);
+  // 2026-03-08, the second Sunday of March: its midnight is standard time, the next one not.
+  CHECK(eastern_midnight(1'772'946'000 * kS) == 1'772'946'000 * kS);  // 03-08 00:00 local
+  CHECK(eastern_midnight(1'773'032'400 * kS) == 1'773'028'800 * kS);  // 03-09 01:00 local
+  // 2026-11-01, the first Sunday of November: its midnight is daylight time, the next one not.
+  CHECK(eastern_midnight(1'793'592'000 * kS) == 1'793'505'600 * kS);  // 11-01 23:00 local
+  CHECK(eastern_midnight(1'793'595'600 * kS) == 1'793'595'600 * kS);  // 11-02 00:00 local
+}

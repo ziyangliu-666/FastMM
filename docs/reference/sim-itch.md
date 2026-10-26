@@ -80,7 +80,7 @@ Engine effects become ITCH messages (`ItchPublisher`, `include/fastmm/sim/itch/i
 | a resting order is cancelled, or a replace re-enters it | D |
 | a replace keeps priority (same price, quantity not above leaves), an OUCH partial cancel | X for the reduction; the order reference is kept |
 
-Order reference numbers and match numbers are unique across symbols. Timestamps are nanoseconds since UTC midnight.
+Order reference numbers and match numbers are unique across symbols. Timestamps are nanoseconds since midnight US/Eastern, as on Nasdaq.
 
 Messages go into a `moldudp::Transmitter` whose history is a ring (`TransmitterConfig::overwrite_oldest`); requests for evicted messages are not answered. Datagrams are sent with one `sendmmsg` per line of up to `burst` datagrams, line A first. A datagram dropped on a line is not sent on it; the re-request server still has it. After `heartbeat_ms` without data both lines get a heartbeat.
 

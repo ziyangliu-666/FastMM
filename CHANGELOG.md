@@ -14,6 +14,8 @@ All notable changes are recorded here (Keep a Changelog format).
 - bench: `fastmm-bench-l3-itch` takes `--max-overflow` and `--from`, reports book errors by kind and the peak overflow levels, and reads files over 4 GiB.
 
 ### Fixed
+- venues: `nasdaq_itch` dates ITCH and OUCH timestamps from midnight US/Eastern, not UTC, and moves to the next day at each Eastern midnight; `exch_ts` was four or five hours early.
+- sim: `fastmm-sim-itch` timestamps count from midnight US/Eastern, as Nasdaq's do.
 - venues: a busy Nasdaq stock's open no longer fills the L3 overflow store and resynchronises the feed; the store held a fixed 1024 levels per side.
 
 ## [0.9.0] - 2026-10-24

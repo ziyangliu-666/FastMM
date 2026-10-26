@@ -12,7 +12,6 @@ namespace fastmm::sim::itch {
 
 namespace {
 
-constexpr std::int64_t kNsPerDay = 86'400'000'000'000;
 constexpr std::int64_t kTimerPeriodNs = 100'000'000;
 
 codecs::moldudp::TransmitterConfig transmitter_config(const SimItchConfig& c) {
@@ -45,8 +44,7 @@ Impl::Impl(SimItchConfig c)
   reactor.set_busy_poll(cfg.busy_poll);
   clock.calibrate(milliseconds(20));
   steady_start_ns = net::Reactor::now_ns();
-  const std::int64_t wall = wall_now().ns;
-  itch_ts_start = wall % kNsPerDay;
+  wall_start_ns = wall_now().ns;
   const Timestamp start = sim_now();
   symbols.reserve(cfg.symbols.size());
   for (std::size_t i = 0; i < cfg.symbols.size(); ++i) {
@@ -76,7 +74,13 @@ Impl::~Impl() {
 }
 
 std::uint64_t Impl::itch_ts() const noexcept {
-  return static_cast<std::uint64_t>(itch_ts_start + (net::Reactor::now_ns() - steady_start_ns));
+  const std::int64_t wall = wall_start_ns + (net::Reactor::now_ns() - steady_start_ns);
+  if (wall >= next_midnight_ns || wall < midnight_ns) {
+    midnight_ns = codecs::nasdaq::eastern_midnight(wall);
+    // A day is 23 to 25 hours: 26 hours on is inside the next one.
+    next_midnight_ns = codecs::nasdaq::eastern_midnight(midnight_ns + 26 * 3'600'000'000'000LL);
+  }
+  return static_cast<std::uint64_t>(wall - midnight_ns);
 }
 
 Timestamp Impl::sim_now() const noexcept {

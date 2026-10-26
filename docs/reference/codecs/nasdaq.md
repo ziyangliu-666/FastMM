@@ -28,7 +28,7 @@ OUCH 5.0 (fixed part before Appendage Length, then `Appendage Length(2)` and Tag
 * Price(4) (ITCH, OUCH 4.2 4-byte, OUCH 5.0 8-byte) to engine `Price` (1e-8): multiply by 10 000. Always exact for 4-byte fields; 8-byte fields are range-checked.
 * Price(8) (ITCH MWCB levels) is the engine scale already.
 * Engine price to Price(4) is refused (encoder returns 0) when the price is negative, has more than 4 decimals or does not fit. Share counts must be whole; OUCH enforces `< 1,000,000` and `<= $199,999.9900`.
-* ITCH and OUCH timestamps are nanoseconds since midnight. Decoders set `EventHeader::exch_ts = set_midnight() + timestamp`; the caller supplies the Unix nanoseconds of midnight of the trading day in US/Eastern. `recv_ts` is the `rx_ts` argument and `venue_seq` the value passed to `set_venue_seq()` (the MoldUDP64 / SoupBinTCP sequence).
+* ITCH and OUCH timestamps are nanoseconds since midnight. Decoders set `EventHeader::exch_ts = set_midnight() + timestamp`; the caller supplies the Unix nanoseconds of midnight of the trading day in US/Eastern. `nasdaq::eastern_midnight()` computes it with the US daylight-time rules; the `nasdaq_itch` venue moves it to the next day at each Eastern midnight. `recv_ts` is the `rx_ts` argument and `venue_seq` the value passed to `set_venue_seq()` (the MoldUDP64 / SoupBinTCP sequence).
 
 ## ITCH 5.0
 
