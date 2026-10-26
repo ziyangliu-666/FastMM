@@ -1204,7 +1204,8 @@ class L3Book {
     if ((!has_b || in_window(bb)) && (!has_a || in_window(ba))) return;
     std::int64_t centre = 0;
     if (has_b && has_a) {
-      if (ba - bb < window_ - 2) {
+      // Apart by less than a window, whichever way: a crossed book's touches too.
+      if ((ba > bb ? ba - bb : bb - ba) < window_ - 2) {
         centre = bb + (ba - bb) / 2;
       } else if (in_window(bb) || in_window(ba)) {
         return;  // the touches do not fit in one window: keep the one that is inside

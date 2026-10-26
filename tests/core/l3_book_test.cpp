@@ -307,6 +307,26 @@ TEST_CASE("core.l3_book: clear() returns every order to the pool") {
 
 // The window must not follow a touch that steps out and straight back: on the ITCH sample day
 // each such step cost a recentre, and each recentre moved the whole window (1.5 MiB a side).
+// A book crossed by more than a window (a halt's resumption, an opening cross): its touches do
+// not fit in one window, so the window stays on the bid it holds. Centred between them, as an
+// uncrossed book of that width would not be, it held neither.
+TEST_CASE("core.l3_book: a book crossed by more than a window keeps the touch in its window") {
+  L3Book b(kTick, {.price_window_ticks = 64, .max_orders = 256, .max_overflow_levels = 64});
+  std::uint64_t ref = 1;
+  REQUIRE(b.add(ref++, Side::Buy, px(10000), qt(1)) == L3Error::None);
+  REQUIRE(b.add(ref++, Side::Sell, px(9000), qt(1)) == L3Error::None);  // 1000 ticks under the bid
+  for (int i = 0; i < 200; ++i) {  // trade at the ask, out of the window, until a move is due
+    REQUIRE(b.add(ref, Side::Sell, px(9000), qt(1)) == L3Error::None);
+    REQUIRE(b.cancel(ref++) == L3Error::None);
+  }
+  CHECK(b.recentre_count() == 0);
+  const std::int64_t low = b.window_low().raw / kTick.raw;
+  CHECK(low <= 10000);
+  CHECK(10000 < low + 64);
+  CHECK(b.best_bid() == Level{px(10000), qt(1)});
+  CHECK(b.best_ask() == Level{px(9000), qt(1)});
+}
+
 TEST_CASE("core.l3_book: an order beyond the touch and its cancel move nothing") {
   L3Book b(kTick, {.price_window_ticks = 1U << 12, .max_orders = 1U << 14});
   std::uint64_t ref = 1;
