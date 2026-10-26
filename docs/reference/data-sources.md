@@ -118,7 +118,7 @@ Each followed book is an L3 book (`ItchL2Bridge`, [Nasdaq ITCH](codecs/nasdaq.md
 The books build from the first message of the file. With `start`, the messages before it are applied but not yielded, and the run begins with each book's resting orders in queue order, then each book's snapshot. Exchange time and receive time are both midnight New York (daylight saving time by the rule in force since 2007) plus the message's timestamp; `[backtest] latency_md_us` delays them.
 
 ```bash
-fastmm-backtest --config itch.toml --data "itch:07302019.NASDAQ_ITCH50,start=09:30,end=16:00"
+fastmm-backtest --config configs/backtest-itch.toml --data "itch:07302019.NASDAQ_ITCH50,start=09:30,end=16:00"
 ```
 
 A full day of eight active stocks, every message of the file read and the books built from 04:00, runs in about 11 s on one core.

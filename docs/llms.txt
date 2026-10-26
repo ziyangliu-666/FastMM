@@ -43,6 +43,7 @@ The Markdown source of every page is in the repository under `docs/`: https://gi
 
 - [How FastMM works](https://ziy.bio/FastMM/explanation/how-it-works/)
 - [Benchmarks](https://ziy.bio/FastMM/explanation/benchmarks/): the latency figures and what each one times
+- [Sweep performance](https://ziy.bio/FastMM/explanation/sweep-performance/): what a sweep point costs in a shared pass, against a backtest alone
 - [Backtesting](https://ziy.bio/FastMM/explanation/backtesting/): fill models, markouts, PnL decomposition
 - [Determinism](https://ziy.bio/FastMM/explanation/determinism/)
 

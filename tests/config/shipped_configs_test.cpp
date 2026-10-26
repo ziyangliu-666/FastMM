@@ -80,6 +80,9 @@ std::string check_config(const std::filesystem::path& path) {
     b.duration = seconds(1);
     b.output_dir.clear();
     b.journal_out.clear();
+    // Over the synthetic stream: l3_queue needs the order-by-order data the config is for.
+    if (b.transport.fill_model == sim::FillModel::L3Queue)
+      b.transport.fill_model = sim::FillModel::L2Queue;
     bt::BacktestSession session(b, nullptr);
     const std::unique_ptr<IEngineRunner> runner =
         StrategyRegistry::instance().make(cfg.strategy.name, TransportKind::Sim, session.deps());

@@ -1,0 +1,123 @@
+# FastMM: backtest on a day of Nasdaq TotalView-ITCH, every order of eight stocks
+# (docs/reference/data-sources.md#itch). Download a day from emi.nasdaq.com/ITCH and gunzip it:
+#
+#   ./build/release/bin/fastmm-backtest --config configs/backtest-itch.toml \
+#       --data "itch:07302019.NASDAQ_ITCH50,start=09:30,end=16:00"
+#
+# fill_model = "l3_queue" puts each order behind the recorded orders that came before it at its
+# price and fills it from the executions that reach it.
+
+[engine]
+name = "backtest-itch"
+journal = false
+rng_seed = 1
+max_events_per_step = 64
+crossed_grace_ms = 100
+min_requote_ticks = 1
+min_requote_interval_ms = 0
+min_qty_bps = 8000
+post_only = true
+supports_replace = true
+
+[venues.nasdaq]
+kind = "sim"
+supports_replace = true
+
+[venues.nasdaq.fees]
+maker_bps = -0.2
+taker_bps = 0.3
+
+[[instruments]]
+venue = "nasdaq"
+symbol = "AAPL"
+asset_class = "equity"
+tick = "0.01"
+lot = "1"
+min_qty = "1"
+
+[[instruments]]
+venue = "nasdaq"
+symbol = "MSFT"
+asset_class = "equity"
+tick = "0.01"
+lot = "1"
+min_qty = "1"
+
+[[instruments]]
+venue = "nasdaq"
+symbol = "AMZN"
+asset_class = "equity"
+tick = "0.01"
+lot = "1"
+min_qty = "1"
+
+[[instruments]]
+venue = "nasdaq"
+symbol = "FB"
+asset_class = "equity"
+tick = "0.01"
+lot = "1"
+min_qty = "1"
+
+[[instruments]]
+venue = "nasdaq"
+symbol = "INTC"
+asset_class = "equity"
+tick = "0.01"
+lot = "1"
+min_qty = "1"
+
+[[instruments]]
+venue = "nasdaq"
+symbol = "CSCO"
+asset_class = "equity"
+tick = "0.01"
+lot = "1"
+min_qty = "1"
+
+[[instruments]]
+venue = "nasdaq"
+symbol = "NVDA"
+asset_class = "equity"
+tick = "0.01"
+lot = "1"
+min_qty = "1"
+
+[[instruments]]
+venue = "nasdaq"
+symbol = "TSLA"
+asset_class = "equity"
+tick = "0.01"
+lot = "1"
+min_qty = "1"
+
+[strategy]
+name = "basic_mm"
+
+[strategy.params]
+half_spread_bps = 1.0
+skew_bps_per_unit = 0.5
+quote_qty = 100
+max_inventory = 1000
+requote_threshold_ticks = 1
+pull_on_stale_ms = 0
+levels = 1
+
+[risk]
+max_order_qty = "1000"
+max_order_notional = "500000"
+max_position = "5000"
+max_open_orders = 64
+stp = true
+max_loss = "50000"
+
+[logging]
+level = "warn"
+
+[backtest]
+fill_model = "l3_queue"
+latency_fixed_us = 50
+latency_md_us = 0
+own_orders_in_feed = false
+equity_bar_s = 60
+initial_capital = 1000000
