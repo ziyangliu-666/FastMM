@@ -1,19 +1,31 @@
 # Status file
 
-`fastmm-live` publishes its live state in a memory-mapped file that monitors such as `fastmm-top` read; `fastmm-gateway` publishes its own in the same layout (`kind` 1, the [gateway block](#gateway-block)). Code: `include/fastmm/core/status_segment.hpp`. Usage: [Monitor a session](../how-to/operations/monitor-with-fastmm-top.md), [Run behind a gateway](../how-to/operations/run-behind-a-gateway.md#monitor).
+`fastmm-live` publishes its live state in a memory-mapped file that `fastmm-top` and other monitors read. `fastmm-gateway` publishes its own in the same layout, with `kind` 1 and the [gateway block](#gateway-block). Code: `include/fastmm/core/status_segment.hpp`. Usage: [Monitor a session](../how-to/operations/monitor-with-fastmm-top.md), [Run behind a gateway](../how-to/operations/run-behind-a-gateway.md#monitor).
 
 ## Location and lifetime
 
-- The path is `/dev/shm/fastmm-<engine name>.status`, where the name is `[engine] name`; `fastmm-live --status <path>` chooses another path and `--no-status` turns it off. A gateway's is `/dev/shm/fastmm-<engine name>.gw.status`, with the same flags.
-- The writer (`fastmm-live`'s control thread, the gateway's main thread) creates or truncates the file at startup and rewrites the snapshot every 250 ms. The file stays after exit; the last snapshot shows `stopped` and the final numbers.
-- The engine refreshes the counters and latencies it hands to the control thread every `[engine] latency_publish_ms` (default 1 s).
+| | `fastmm-live` | `fastmm-gateway` |
+|---|---|---|
+| Path | `/dev/shm/fastmm-<[engine] name>.status` | `/dev/shm/fastmm-<[engine] name>.gw.status` |
+| Other path, none | `--status <path>`, `--no-status` | the same flags |
+| Writer | the control thread | the main thread |
+
+- The writer creates or truncates the file at start-up and rewrites the snapshot every 250 ms.
+- The engine refreshes the counters and latencies every `[engine] latency_publish_ms` (default 1 s).
+- The file stays after exit; the last snapshot shows `stopped` and the final numbers.
 
 ## Reading it safely
 
-The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The writer makes the counter odd, writes the snapshot, then makes it even again. A reader copies the snapshot when the counter is even and unchanged across the copy, and retries otherwise; it never blocks the writer.
+The file holds an 8-byte sequence counter followed by one `StatusSnapshot`.
 
-- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 24) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
-- The layout is internal ([Public API](public-api.md)); read it with `fastmm-top` from the same build.
+1. The writer makes the counter odd, writes the snapshot, then makes it even again.
+2. A reader copies the snapshot and keeps it when the counter was even and unchanged across the copy; otherwise it retries.
+
+`magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 24) sit at the same offsets in every version. The layout is internal ([Public API](public-api.md)): read it with `fastmm-top` from the same build. Another version is refused:
+
+```text
+<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)
+```
 
 ## Snapshot fields
 
@@ -32,7 +44,7 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The 
 | `orders_sent`, `cancels_sent`, `replaces_sent` | u64 | order messages sent |
 | `fills` | u64 | executions |
 | `risk_rejects`, `venue_rejects` | u64 | orders refused by the pre-trade checks, by a venue |
-| `estimated_fills`, `estimates_pending`, `estimates_forgotten` | u64 | fills booked from a cumulative quantity no fill message reported, at the order's price with no fee; the orders whose estimate no execution has named yet; estimates whose order the OMS forgot before one did, so that an execution replayed for it later is booked again ([Executions the private stream never delivered](venues.md#executions-the-private-stream-never-delivered)) |
+| `estimated_fills`, `estimates_pending`, `estimates_forgotten` | u64 | fills booked from a cumulative quantity no fill message reported, at the order's price with no fee; the orders whose estimate no execution has named yet; estimates whose order the OMS forgot before one did, so that an execution replayed for it later is booked again ([Execution replay](venues/connector-behaviour.md#execution-replay)) |
 | `store_enabled` | u8 | 1 while a `[storage]` backend records the session (0: `backend = "none"`, a dry run, a warm standby before it takes over) |
 | `store_rows`, `store_errors`, `store_dropped` | u64 | rows the backend wrote, writes that failed, and records the engine dropped because the ring to the store was full. Either of the last two means a restart restores from an incomplete record ([Storage](storage.md#what-a-backend-guarantees)) |
 | `risk_reject_reasons`, `venue_reject_reasons` | 6 x {u64 count, u8 reason} | the most frequent `RejectReason`s, most frequent first; count 0 marks an unused entry |
@@ -52,13 +64,42 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The 
 | `latency` | 7 x {count, p50_ns, p99_ns, p999_ns, max_ns} | engine latency intervals, below |
 | `venues` | 8 x venue entry | below |
 | `underlyings` | 8 x underlying entry | `[risk.underlying]`, in the order of the configuration's base assets: `name` (char[16], empty for an unused entry), `known` (u8: 0 while an inverse contract with a position has no mark), `net_raw` (i64, base units, signed), `max_net_raw` (i64, the limit applied now, 0 none) |
-| `balance_count`, `balances` | u32, 32 x balance entry | the balance table ([Balance check](../explanation/risk-model.md#balance-check)); a gateway's is the account's over every strategy: `asset` (char[12]), `venue` (u8, index into `venues`), `account` (u8: the venue's account-wide margin), `known` (u8: the venue has reported it), `free_raw`, `locked_raw`, `total_raw`, `equity_raw`, `maintenance_raw` (i64, asset units), `as_of_ns` (i64, venue time of the last report) |
-| `perp_count`, `perps` | u32, 32 x perp entry | the venues' mark, index and funding per derivative that has reported ([Perpetuals](strategy-api.md#perpetuals)); a gateway's is the account's: `symbol` (char[24]), `venue` (u8), `valued_at_mark` (u8: the position is valued at the mark now), `mark_stale`, `funding_stale` (u8), `mark_raw`, `index_raw` (i64), `funding_rate` (f64, per interval), `funding_interval_ns`, `next_funding_ns` (venue time, 0 continuous), `open_interest_raw` (contracts), `mark_age_ns`, `funding_age_ns` (-1 never) (i64), `reports` (u64) |
+| `balance_count`, `balances` | u32, 32 x balance entry | the balance table ([below](#balance-entry)); a gateway's is the account's over every strategy |
+| `perp_count`, `perps` | u32, 32 x perp entry | mark, index and funding per derivative that has reported ([below](#perp-entry)); a gateway's is the account's |
 | `quote_count`, `quotes` | u32, 256 x quote entry | the quote table, one entry per instrument in the table's order ([below](#quote-entry)) |
 | `metric_count`, `metrics` | u32, 32 x {name char[24], value f64} | the numbers the strategy publishes with `ctx.metric`, in the order it first named them |
 | `gateway` | gateway block | `kind` 1 only, zero otherwise ([below](#gateway-block)) |
 
 A `fastmm-top` session is `STALE` when `state` is running and `updated_ns` is more than 3 s old.
+
+### Balance entry
+
+The balance table of the [balance check](../explanation/risk-model.md#balance-check).
+
+| Field | Type | Meaning |
+|---|---|---|
+| `asset` | char[12] | the asset |
+| `venue` | u8 | index into `venues` |
+| `account` | u8 | 1: the venue's account-wide margin row |
+| `known` | u8 | the venue has reported it |
+| `free_raw`, `locked_raw`, `total_raw`, `equity_raw`, `maintenance_raw` | i64 | asset units |
+| `as_of_ns` | i64 | venue time of the last report |
+
+### Perp entry
+
+The venue's view of a derivative ([Perpetuals](strategy-api.md#perpetuals)).
+
+| Field | Type | Meaning |
+|---|---|---|
+| `symbol`, `venue` | char[24], u8 | the instrument and its venue's index |
+| `valued_at_mark` | u8 | the position is valued at the mark now |
+| `mark_stale`, `funding_stale` | u8 | the value is stale |
+| `mark_raw`, `index_raw` | i64 | prices |
+| `funding_rate` | f64 | per interval |
+| `funding_interval_ns`, `next_funding_ns` | i64 | venue time; 0 for continuous funding |
+| `open_interest_raw` | i64 | contracts |
+| `mark_age_ns`, `funding_age_ns` | i64 | -1 never |
+| `reports` | u64 | messages received |
 
 ### Kill flags
 
@@ -132,7 +173,7 @@ Side entry:
 
 ### Multicast feed
 
-The `feed` entry of a `nasdaq_itch` venue ([Venue connectors](venues.md#nasdaq-totalview-itch-nasdaq_itch)); counters are cumulative for the session.
+The `feed` entry of a `nasdaq_itch` venue ([Nasdaq TotalView-ITCH](venues/nasdaq-itch.md)); counters are cumulative for the session.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -152,7 +193,16 @@ The `feed` entry of a `nasdaq_itch` venue ([Venue connectors](venues.md#nasdaq-t
 
 ## Gateway block
 
-A gateway (`kind` 1) fills the header (`pid`, times, `state`, `dry_run`, `engine_name`, `venue_count`, `venues`), `kill_flags` (bit 0 while the account is killed), `kill_reason`, `kill_latched` (the kill file records the trip, which needs `[gateway] max_loss`), and `realized_pnl_raw`, `unrealized_pnl_raw`, `fees_raw`, `pnl_carry_raw` with the account's. The engine counters and latencies stay zero.
+A gateway (`kind` 1) fills these snapshot fields; the engine counters and latencies stay zero:
+
+| Fields | Gateway meaning |
+|---|---|
+| `pid`, times, `state`, `dry_run`, `engine_name`, `venue_count`, `venues` | as for `fastmm-live` |
+| `kill_flags` | bit 0 while the account is killed |
+| `kill_reason`, `kill_latched` | the account's; latching needs `[gateway] max_loss` |
+| `realized_pnl_raw`, `unrealized_pnl_raw`, `fees_raw`, `pnl_carry_raw` | the account's |
+
+The gateway block:
 
 | Field | Type | Meaning |
 |---|---|---|

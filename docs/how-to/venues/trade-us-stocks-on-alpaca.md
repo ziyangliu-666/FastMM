@@ -1,6 +1,6 @@
 # Trade US stocks on Alpaca
 
-`configs/alpaca-paper.toml` runs `basic_mm` on SPY with an Alpaca paper account: market data from the free IEX stream, orders over Alpaca's REST API, order states and fills from its `trade_updates` stream. What the connector does and the venue's rules: [Venue connectors](../../reference/venues.md#alpaca-us-stocks-alpaca).
+`configs/alpaca-paper.toml` runs `basic_mm` on SPY with an Alpaca paper account: market data from the free IEX stream, orders over Alpaca's REST API, order states and fills from its `trade_updates` stream. What the connector does and the venue's rules: [Venue connectors](../../reference/venues/alpaca.md).
 
 ## 1. Keys
 

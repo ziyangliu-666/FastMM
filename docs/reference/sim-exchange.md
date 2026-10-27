@@ -67,7 +67,7 @@ The default generator places its touch 2990 ticks (29.90 USDT) from a slowly mov
 
 ## What is implemented
 
-Request and response formats are those `BinanceVenue` uses ([What a Binance-compatible simulator must implement](venues.md#what-a-binance-compatible-simulator-must-implement)).
+Request and response formats are those `BinanceVenue` uses ([What a Binance-compatible simulator must implement](venues/binance-spot.md#what-a-binance-compatible-simulator-must-implement)).
 
 ### REST
 
@@ -172,7 +172,7 @@ Not implemented:
 * The events `balanceUpdate`, `listStatus`, `externalLockUpdate` and `eventStreamTerminated`.
 * Self-trade prevention is EXPIRE_MAKER only. Commission is always charged in the quote asset. There is no BNB discount.
 * Rate limits are not per IP: one weight window for the whole server and one order-count window for the account. A 418 ban only happens when a test asks for one (`ban_next_requests`), and there is no connection weight and no `X-MBX-ORDER-COUNT-*` on the WS API (counts are in `rateLimits`).
-* The legacy listenKey stream is kept ([venues.md](venues.md#binance-spot)).
+* The legacy listenKey stream is kept ([venues.md](venues/binance-spot.md)).
 * The ack delay applies to WS API responses only. REST answers are synchronous.
 * Order ids start at 1 for every run. Cancelled and filled orders are forgotten, so querying them answers `-2013`. Their executions are kept: `myTrades` answers from a trade log that lives for the whole run.
 * `myTrades` charges IP weight 20 (5 with `orderId`, which the connector does not send), `commissionAsset` is always the quote asset, and trade ids are the matching engine's, so they are shared with the public trade stream and skip over the generator's own matches.

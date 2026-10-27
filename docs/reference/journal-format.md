@@ -1,8 +1,12 @@
 # Journal format
 
-The `.fmj` journal records every event a session's engine consumed, in consumption order, with the engine clock, plus a copy of every order message it sent. Format version 5; readers also open versions 1 to 4. The decision and its history are in [ADR-0010](../adr/0010-fmj-journal-format.md); the code is `include/fastmm/core/journal.hpp`.
+The `.fmj` journal records every event a session's engine consumed, in consumption order and with the engine clock, plus a copy of every order message it sent. Format version 5; readers also open versions 1 to 4. Code: `include/fastmm/core/journal.hpp`; design: [ADR-0010](../adr/0010-fmj-journal-format.md).
 
-All integers are little-endian. Prices, quantities and notionals are raw fixed-point `int64` (1e-8), timestamps are `int64` nanoseconds since the Unix epoch.
+| Value | Encoding |
+|---|---|
+| integers | little-endian |
+| prices, quantities, notionals | raw fixed-point `int64` (1e-8) |
+| timestamps | `int64` nanoseconds since the Unix epoch |
 
 ## File layout
 
@@ -18,43 +22,51 @@ block  := block header (64 B) | message* (byte_len bytes)
 
 - `header_bytes` in the header is the offset of the first block.
 - Blocks are at most 1 MiB (`block_bytes`); a message never straddles two blocks.
-- A clean shutdown appends a trailer: an empty block with flag bit 0 set. Without it the file was not closed cleanly; a reader drops a tail block whose checksum or length does not match.
-- `JournalReader::complete()` is true only for a file that ends in a trailer with no block discarded. `fastmm-replay` refuses an incomplete file unless `--allow-incomplete` is given: its outbound stream stops short of what the session sent.
+- A clean shutdown appends a trailer: an empty block with flag bit 0 set.
+- A reader drops a tail block whose checksum or length does not match.
+- A file is complete when it ends in a trailer with no block discarded (`JournalReader::complete()`).
+- `fastmm-replay` refuses an incomplete file unless given `--allow-incomplete`.
 
 ## Durability
 
-`[engine] journal_sync` chooses how far a write is pushed. The journal batches into 1 MiB blocks, so no record is durable at the instant the engine writes it.
+`[engine] journal_sync` chooses how far a write is pushed. Records are batched into 1 MiB blocks, so none is durable the instant the engine writes it.
 
 | `journal_sync` | Every 100 ms | A record survives | Costs |
 |---|---|---|---|
 | `async` (default) | nothing: the kernel writes the page cache back | this process dying, as soon as its block is written | nothing measurable |
 | `fdatasync` | `fdatasync()` | power loss, once it is more than one tick old | one write-back of the dirty pages per tick |
 
-A clean `stop()` always writes the trailer, truncates the preallocated tail away and `fdatasync()`s, in both modes.
+A clean stop always writes the trailer, truncates the preallocated tail and calls `fdatasync()`, in both modes.
 
-The writer thread `pwrite`s each block; the file is never mapped into the process. The kernel's write-back of a shared mapping's dirty pages, and every remap as the file grows, would send a TLB-flush interrupt to each CPU the process runs on, the engine's included.
+The writer thread writes each block with `pwrite`; the file is never memory-mapped, so its write-back sends no TLB-flush interrupt to the engine's CPU.
 
-Extents are reserved with `posix_fallocate`: a full filesystem fails when the next 64 MiB extent is reserved, ahead of the writes that would fill it. `JournalFileWriter::failed()` latches that and every other write error, and `fastmm-live` polls it: a journal that cannot be written trips the kill switch, cancels everything and exits with code 5. `sessions.journal_complete` in the [store](storage.md) records whether the file was closed cleanly.
+Space is reserved in 64 MiB extents with `posix_fallocate`, so a full disk fails at the reservation, before the writes. A write error trips the kill switch: `fastmm-live` cancels everything and exits with code 5. `sessions.journal_complete` in the [store](storage.md) records whether the file was closed cleanly.
 
 ## Rotation and retention
 
-`[engine] journal_max_bytes` rolls the file over when it reaches that size; 0 (the default) writes one file per session. A part only ends between blocks, so no message straddles two files. The first part keeps the configured name and the rest get a number before the extension:
+`[engine] journal_max_bytes` rolls the file over at that size; 0, the default, writes one file per session. A part ends between blocks. The first part keeps the configured name and the rest get a number before the extension:
 
 ```text
 runs/mm1-1709510400123456789.fmj      part 0
 runs/mm1-1709510400123456789.1.fmj    part 1
 ```
 
-Each part is a complete journal: it repeats the header, the instrument table, the configuration and the parameter table, and carries the same `session_id`. Sequence numbers and the engine clock continue across parts: a later part's header holds the engine clock its first `kEngineTime` delta continues from, so the part reads on its own (a part written before 2026-10-23 has none, and its engine times before its first `EngineTime` record are wrong). The backtest's `journal:` source reads the parts of a session as one stream, given the first ([data sources](data-sources.md#journal)); `fastmm-replay` verifies a session journal one part at a time; the [store](storage.md) records every part of a session in `session_journals`.
+Each part is a complete journal with the same `session_id`: it repeats the header, instruments, configuration and parameter table. Sequence numbers and the engine clock continue across parts, and a later part's header holds the clock it continues from (`engine_clock_ns`).
 
-`[engine] journal_retention_days` deletes `*.fmj` files in `[engine] journal_dir` that were last written more than that many days ago, once, when a session starts; 0 (the default) keeps everything. Only the `.fmj` extension is removed, and a file it cannot remove is skipped with a warning.
+| Reader | Parts |
+|---|---|
+| backtest `journal:` source | reads a session's parts as one stream, given the first ([data sources](data-sources.md#journal)) |
+| `fastmm-replay` | verifies one part at a time |
+| [store](storage.md) | lists every part in `session_journals` |
+
+`[engine] journal_retention_days` deletes `*.fmj` files in `journal_dir` last written more than that many days ago, once at session start. 0, the default, keeps everything; a file that cannot be removed is skipped with a warning.
 
 ## Header
 
 | Offset | Size | Field | Meaning |
 |---:|---:|---|---|
 | 0 | 4 | `magic` | `FMJ1` |
-| 4 | 4 | `version` | 4 (1 to 3 for old files) |
+| 4 | 4 | `version` | 5 (1 to 4 for old files) |
 | 8 | 4 | `header_bytes` | offset of the first block |
 | 12 | 4 | `instrument_count` | instruments that follow the header |
 | 16 | 8 | `session_id` | session identifier |
@@ -69,7 +81,7 @@ Each part is a complete journal: it repeats the header, the instrument table, th
 | 80 | 32 | `strategy` | strategy name, NUL-padded |
 | 112 | 2 | `session_epoch` | client order id epoch (v2) |
 | 114 | 1 | `quoting_enabled` | 0 for a dry run behind a gateway; a dry run of its own quotes on paper (v2) |
-| 115 | 1 | `header_flags` | bit 0: the three session fields above are valid (v2); bit 1: the engine replaced quotes per venue (without it, a replay replaces only if every traded venue could, as the engine did then); bit 2: the session's venue feeds showed its own orders (a backtest with `[backtest] own_orders_in_feed`, whose market data are as recorded from format 5 on, our quantity in `OwnLevels` records; a live session's always do); bit 3: `engine_clock_ns` is valid (a part after the first) |
+| 115 | 1 | `header_flags` | bits below |
 | 116 | 4 | `config_bytes` | length of the configuration text; 0 = none (v2) |
 | 120 | 8 | `replace_venues` | bit v set when venue v traded with cancel-replace (v2) |
 | 128 | 4 | `config_crc32c` | CRC32C of the configuration text (v2) |
@@ -83,6 +95,13 @@ Each part is a complete journal: it repeats the header, the instrument table, th
 | 160 | 8 | `engine_clock_ns` | with bit 3 of `header_flags`: the engine clock at the end of the previous part, which this part's first `kEngineTime` delta continues from |
 | 168 | 84 | `reserved` | zero |
 | 252 | 4 | `crc32c` | CRC32C of bytes 0 to 251 |
+
+| `header_flags` bit | Set when |
+|---:|---|
+| 0 | the three session fields above are valid (v2) |
+| 1 | the engine replaced quotes per venue; without it, a replay replaces only if every traded venue could |
+| 2 | the venue feeds showed the session's own orders: always live; in a backtest with `[backtest] own_orders_in_feed`, our quantity is in `OwnLevels` records (format 5) |
+| 3 | `engine_clock_ns` is valid (a part after the first) |
 
 The configuration is `Config::effective_toml()`: the configuration after command-line overrides (`--strategy`, `--param`) as deterministic TOML, without `api_key`, `api_secret` and `api_passphrase`, zero-padded to a multiple of 64 bytes. The instrument records are `fastmm::Instrument` (128 bytes).
 
@@ -133,7 +152,31 @@ Every message starts with the 64-byte `EventHeader`; its total length (`len`) is
 | 5 | `kDropped` | an outbound copy the transport did not accept |
 | 6, 7 | `kTruncatedBids`, `kTruncatedAsks` | a book delta whose side kept only the levels nearest the touch of a longer venue update; a book drops its levels behind the last one carried |
 
-Message layouts are the structs in `include/fastmm/core/messages.hpp` (`EventType` in `core/enums.hpp`): book snapshots and deltas, trades, book tickers, option tickers, L3 order adds, executions, cancels and replaces, order acks, rejects, cancel acks and rejects, fills, expiries, positions, timers, control commands, connection states, reconciliation records, latency samples, outbound orders, parameter updates, funding payments (`FundingMsg`, 128 bytes: the signed amount in the settlement asset at offset 64, the venue's funding id, the asset, and flag bit 0 when it came from the venue's history) balances (`BalanceMsg`, 128 bytes: free, locked, total, equity and maintenance at offsets 64 to 96, the asset at 104, flags at 113: bit 0 snapshot, bit 1 snapshot end, bit 2 account-wide margin), money that entered or left an account other than by its trades and funding (`AccountFlowMsg`, type 31, 128 bytes, format v4: the signed amount at 64, positive in, the asset at 72, the venue's id of it at 81; `venue` is the account, `exch_ts` the venue's time; Binance Spot reports it as `balanceUpdate`, Binance USDⓈ-M as the `bc` of an `ACCOUNT_UPDATE` that is not for an order or a funding payment), our quantity at the prices of a book as a backtest's simulated feed shows it (`OwnLevelsMsg`, type 32, format v5: the layout of a book delta, each level our quantity at its price from then on, zero for none), and a venue's mark, index and funding (`PerpStateMsg`, 128 bytes: mark and index price at 64 and 72, the funding rate (f64, per interval) at 80, the interval (ns) at 88, the next funding time at 96, open interest at 104, and at 112 the fields it carries: bit 0 mark, bit 1 index, bit 2 funding, bit 3 open interest).
+Message layouts are the structs in `include/fastmm/core/messages.hpp`; `EventType` is in `core/enums.hpp`.
+
+| `type` | Message | Layout from offset 64 |
+|---:|---|---|
+| 1, 2 | `BookDelta`, `BookSnapshot` | price levels |
+| 3 | `BookTicker` | best bid and ask |
+| 4 | `Trade` | [below](#trades) |
+| 5 to 10 | `OrderAck`, `OrderReject`, `OrderCancelAck`, `OrderCancelReject`, `OrderFill`, `OrderExpired` | order events |
+| 11 | `PositionUpdate` | a venue's position |
+| 12 | `Timer` | byte 68 (`engine`) = 1: the engine's `max_param_age_ms` deadline, not a strategy timer |
+| 13, 14, 15 | `Control`, `ConnectionState`, `Reconcile` | control commands, channel states, reconciliation records |
+| 16 | `LatencySample` | latency stamps |
+| 17, 18, 19 | `OutNewOrder`, `OutCancel`, `OutReplace` | copies of sent orders; the `[ab]` arm at 92 (`OutNewOrder`) and 144 (`OutReplace`): 0 none, k + 1 arm k |
+| 20 to 23 | `OrderAddL3`, `OrderExecL3`, `OrderCancelL3`, `OrderReplaceL3` | L3 order book events |
+| 24 | `OptionTicker` | mark, implied volatilities, greeks |
+| 25 | `EngineTime` | [Engine clock](#engine-clock) |
+| 26 | `ParamUpdate` | [Parameter updates](#parameter-updates) |
+| 27 | `Funding` (128 B) | signed amount in the settlement asset at 64, the venue's funding id, the asset; flag bit 0: from the venue's history |
+| 28 | `Balance` (128 B) | free, locked, total, equity, maintenance at 64 to 96; asset at 104; flags at 113: bit 0 snapshot, bit 1 snapshot end, bit 2 account-wide margin |
+| 29 | `PerpState` (128 B) | mark at 64, index at 72, funding rate (f64, per interval) at 80, interval (ns) at 88, next funding time at 96, open interest at 104; fields carried at 112: bit 0 mark, 1 index, 2 funding, 3 open interest |
+| 30 | `StrategyState` | [Strategy state](#strategy-state) |
+| 31 | `AccountFlow` (128 B, v4) | signed amount at 64, positive in; asset at 72; the venue's id at 81; `venue` is the account, `exch_ts` the venue's time |
+| 32 | `OwnLevels` (v5) | a book delta's layout: our quantity at each price from then on, zero for none |
+
+`AccountFlow` is money in or out of an account other than by trades and funding. Binance Spot reports it as `balanceUpdate`; Binance USDⓈ-M as the `bc` of an `ACCOUNT_UPDATE` that is not for an order or funding.
 
 ## Trades
 
@@ -145,7 +188,7 @@ A `Trade` message (`TradeMsg`) is 128 bytes: price at offset 64, quantity at 72,
 | 1 | 1 | `len` | bytes of `bytes` in use: 8 for an account, the address's length (20 on Hyperliquid) |
 | 2 | 30 | `bytes` | an account as a little-endian `uint64`; an address as its raw bytes, first byte first |
 
-`hdr.len` tells the two apart, so the format version did not change: a journal written before parties existed reads as trades that name nobody, and an older reader steps over the 64 bytes it does not know.
+`hdr.len` tells the two sizes apart. A journal without parties reads as trades that name nobody, and an older reader skips the extra 64 bytes.
 
 ## Engine clock
 
@@ -153,7 +196,6 @@ A `Trade` message (`TradeMsg`) is 128 bytes: price at offset 64, quantity at 72,
 - An `EngineTime` message (128 bytes) holds the absolute engine clock in `engine_ts` (offset 64) with `kind` (offset 72): 0 `Sync` before an event whose delta does not fit in int32 ns (a gap of more than 2.1 s) or whose predecessor was lost, 1 `Start`, 2 `Finish`.
 - The engine clock may step backwards (TSC recalibration); replay sets the simulated clock to it.
 - Sequence numbers count `EngineTime` records too.
-- A `Timer` message with byte 68 (`engine`) set to 1 is the engine's `max_param_age_ms` deadline, not a strategy timer.
 
 ## Strategy state
 
@@ -166,10 +208,21 @@ A `StrategyState` message (type 30, 128 bytes followed by its bytes, padded to 6
 | 76 | 4 | `offset` | where this record's bytes go in the part |
 | 80 | 4 | `bytes` | bytes after the 128-byte head, at most 16384 |
 | 84 | 1 | `kind` | 0 `Restored`: the bytes the strategy was handed to `restore()` at the start; 1 `Snapshot`: a checkpoint |
-| 85 | 1 | `part` | 0 the strategy's bytes; 1 positions, 24 bytes each: instrument id (u32), venue (u8), 3 pad, quantity and average price (fixed point, i64); 2 (v4) open orders, 32 bytes each: client order id (u64), instrument id (u32), the account's venue id (u8), side, `OrderState` and order flags (u8 each), price and quantity left (fixed point, i64) |
+| 85 | 1 | `part` | 0 the strategy's bytes, 1 positions, 2 open orders (v4); below |
 | 86 | 1 | `flags` | bit 0 (`Restored`): the strategy took the bytes |
 
-The engine writes the `Restored` state (its strategy part only) once, after `on_start`, when `[strategy] state_file` held something. A checkpoint is a `Snapshot` of all three parts: every `[engine] checkpoint_s` ([Configuration](configuration.md#engine)), and at a warm standby's take-over, right after the `TakeOver` control record, with the state it restored. A strategy that keeps no state writes no bytes in part 0. A checkpoint of format v3 has no part 2. `recv_ts` is the engine time it was taken at; the records of one state are written back to back. `fastmm-replay` stages the strategy bytes of the checkpoint after each `TakeOver` for the take-over to restore.
+| `part` | Entry | Fields |
+|---:|---:|---|
+| 0 | | the strategy's bytes; none for a strategy that keeps no state |
+| 1 | 24 B | instrument id (u32), venue (u8), 3 pad, quantity and average price (fixed point, i64) |
+| 2 | 32 B | client order id (u64), instrument id (u32), the account's venue id (u8), side, `OrderState` and order flags (u8 each), price and quantity left (fixed point, i64) |
+
+| `kind` | Written | Parts |
+|---|---|---|
+| `Restored` | once, after `on_start`, when `[strategy] state_file` held something | 0 |
+| `Snapshot` | every `[engine] checkpoint_s` ([Configuration](configuration.md#engine)), and at a warm standby's take-over right after the `TakeOver` record | 0, 1, 2 (v3: 0, 1) |
+
+`recv_ts` is the engine time of the state, and its records are written back to back. `fastmm-replay` stages the strategy bytes of the checkpoint after each `TakeOver` for the take-over to restore.
 
 ## Parameter updates
 
@@ -186,13 +239,22 @@ A `ParamUpdate` message (448 bytes) is an engine input with new strategy paramet
 | 144 | 40 | `source` | who asked for it (`fastmm-ctl param --source`), NUL-terminated; empty when not given |
 | 192 | 256 | `value` | `int64` each: the raw value |
 
-`origin`, `arm` and `source` sit in bytes that were padding before, so a journal written before them reads with origin 0, no arm and an empty source. The order messages carry the arm their order was sent under in a byte that was padding as well: `OutNewOrder` at offset 92, `OutReplace` at 144 (0 none, k + 1 arm k).
+An older journal reads with origin 0, no arm and an empty source.
 
-A raw value is the value of an `int` or `bool`, raw fixed point for `decimal` and `bps` (1 bp = 10000), nanoseconds for `ms` and the IEEE-754 bits of a `double`. Replay maps each field through the parameter table to the replaying strategy's parameter with the same name and type, and drops a field that has none.
+| Parameter type | Raw value |
+|---|---|
+| `int`, `bool` | the value |
+| `decimal`, `bps` | raw fixed point (1 bp = 10000) |
+| `ms` | nanoseconds |
+| `double` | the IEEE-754 bits |
+
+Replay maps each field by name and type to the replaying strategy's parameter, and drops a field that has none.
 
 ## Tools
 
-- `python3 tools/journal_dump.py <file.fmj> [--first 20] [--type OrderFill] [--no-crc]` prints the header, instruments, parameter table, events and a count per type.
-- `python3 tools/pnl_report.py <file.fmj>` computes fills, fees and PnL ([Journals, replay and PnL](../how-to/operations/journals-replay-pnl.md)).
-- `fastmm-replay --journal <file.fmj> --verify` replays it ([Determinism](../explanation/determinism.md)); `--allow-incomplete` replays a file the writer never closed.
-- `fastmm-pnl` and `fastmm.open_store()` answer the same questions from the [store](storage.md), which is written alongside the journal and needs no replay.
+| Command | Does |
+|---|---|
+| `python3 tools/journal_dump.py <file.fmj> [--first 20] [--type OrderFill] [--no-crc]` | prints the header, instruments, parameter table, events and a count per type |
+| `python3 tools/pnl_report.py <file.fmj>` | fills, fees and PnL ([Journals, replay and PnL](../how-to/operations/journals-replay-pnl.md)) |
+| `fastmm-replay --journal <file.fmj> --verify` | replays and verifies it ([Determinism](../explanation/determinism.md)); `--allow-incomplete` for a file never closed |
+| `fastmm-pnl`, `fastmm.open_store()` | the same questions from the [store](storage.md), with no replay |

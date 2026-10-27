@@ -1,22 +1,28 @@
 # Storage
 
-The store holds what a session traded as rows a query can answer: fills, orders and their terminal state, position snapshots, per-day and per-session PnL, kill events and session metadata. It survives a restart and is read without replaying a journal. Code: `include/fastmm/store/`, `src/store/`.
-
-Two records, two jobs:
+The store keeps what a session traded as rows a query can answer: fills, orders, positions, PnL, funding, rejects, kill events and parameter changes. It survives a restart and is read without replaying a journal. Code: `include/fastmm/store/`, `src/store/`.
 
 | | Journal (`.fmj`) | Store |
 |---|---|---|
 | Holds | every event the engine consumed and every message it sent, byte for byte | the interpreted result: fills, orders, positions, PnL, kill events |
-| Answers | "does this session reproduce exactly?" (`fastmm-replay`) | "what did I trade yesterday?" (`fastmm-pnl`, `fastmm.open_store`) |
-| Written by | `JournalFileWriter` on the `fm-journal` thread | a storage backend on the `fm-store` thread |
-| Loss policy | a full ring trips the kill switch: replay needs every event | a full ring drops the record and counts it |
-| Authority | yes | no: every row is derivable from the journal, though no tool rebuilds one |
+| Answers | does this session reproduce? (`fastmm-replay`) | what did I trade yesterday? (`fastmm-pnl`, `fastmm.open_store`) |
+| Written on | the `fm-journal` thread | the `fm-store` thread, by a backend |
+| A full ring | trips the kill switch: replay needs every event | drops the record and counts it |
+| Authority | yes | no: every row is derivable from the journal |
 
-Prices, quantities and PnL are raw fixed-point `int64` (1e-8) in the columns whose name ends in `_raw`; timestamps are `int64` nanoseconds since the Unix epoch in the columns whose name ends in `_ns`. `day` is the UTC day of the row's timestamp, denormalised so a day query needs no date arithmetic.
+Column conventions:
+
+| Suffix or name | Meaning |
+|---|---|
+| `*_raw` | price, quantity or PnL as raw fixed-point `int64` (1e-8) |
+| `*_ns` | `int64` nanoseconds since the Unix epoch |
+| `day` | the UTC day of the row's timestamp |
+| `venue_id` | the venue's place in the session's `[venues.*]` order; another session may give the id to another account |
+| `account` | the `[venues.<name>]` of the row; group by it across sessions, not by `venue_id` |
 
 ## Configuration
 
-`[storage]` is free-form, like `[sim]` and `[backtest]`: the central schema (`include/fastmm/config/schema.hpp`) knows no key in it, and each backend reads its own.
+`[storage]` is free-form: the central schema knows none of its keys, and each backend reads its own.
 
 ```toml
 [storage]
@@ -30,41 +36,55 @@ kill_on_failure = false   # trip the kill switch when a write fails or a record 
 |---|---|---|
 | `backend` | all | backend name, or `none` (default `sqlite`) |
 | `ring_bytes` | all | bytes of the ring the engine writes records into, a power of two (default 4194304) |
-| `kill_on_failure` | all | `fastmm-live`: trip the kill switch (`StoreFailure`) on every new failed write or dropped record (default false) |
+| `kill_on_failure` | all | `fastmm-live` trips the kill switch (`StoreFailure`) on each new failed write or dropped record (default false) |
 | `path` | sqlite | store file (default `<journal_dir>/<engine name>.db`) |
 
-`backend = "none"` allocates no ring and starts no thread, and the engine's `RecordWriter` is disabled. A backend that cannot be opened stops the session before it trades, with exit code 3.
+`backend = "none"` allocates no ring and starts no thread. A backend that cannot be opened stops the session before it trades, with exit code 3.
 
 ## How a record reaches the store
 
-```text
-engine thread --RecordWriter--> MsgRing --fm-store thread--> Backend --> rows
+```mermaid
+flowchart LR
+  E[engine thread] -- record --> R[(SPSC ring)]
+  R -- fm-store thread --> B[backend]
+  B --> T[(tables)]
+  C[control thread] -- session metadata --> B
 ```
 
-The engine copies a trivially copyable record into an SPSC ring, as it writes the journal: no allocation, no syscall, no wait. `StoreThread` drains the ring, batches up to 512 records into one backend transaction, and sleeps 2 ms when the ring is empty. Records are `include/fastmm/core/record_stream.hpp`:
+The engine copies each record into the ring without allocating, calling the kernel or waiting. The store thread batches up to 512 records into one backend transaction and sleeps 2 ms when the ring is empty. The control thread writes the session rows and the instrument table directly.
 
 | Record | Written when | Carries |
 |---|---|---|
-| `FillRecord` (256 B) | every execution, and every quantity the engine books from a `cum_qty` jump | price, quantity, booked quantity, fee and fee asset, liquidity, venue order id, exec id, the venue's time of the trade (`RecordHeader::exch_ts`), and the position it left behind |
-| `OrderRecord` (192 B) | every OMS state change | the whole `Order`: state, previous state, price, quantity, filled quantity, reject reason |
-| `PositionRecord` (192 B) | after every fill, after a venue position snapshot, and once per instrument at `finish()` | the instrument's position and the portfolio totals |
-| `FundingRecord` (192 B) | every funding payment the engine books | amount, asset, venue funding id, the venue's time, and the instrument's position, realized PnL and funding after it |
-| `ReplayedRecord` (64 B) | a reconciliation of a venue begins with the venue's executions complete (its execution replay ended whole) | the venue; every execution it made until then is in the records before this one |
-| `KillRecord` (128 B) | every kill switch trip, global or per venue | the reason, the flag word and the PnL at the time |
-| `RejectRecord` (256 B) | every order the pre-trade checks or its venue refused, repeats folded (below) | the account, instrument, side, whether it only reduced the position, the reason, the limit or side that refused it (`RejectSource`) and the account's budget then: the `[risk]` bucket's tokens and each order window's count against what the connector admits |
-| `LimitsRecord` (320 B) | every `fastmm-ctl limits` the engine applies | the `[risk]` limits and `check_balance` before and after, or one underlying's `max_net`, and whether `--force` turned a limit off |
-| `ParamRecord` (448 B) | every strategy parameter update the engine applies | the update's target instrument, origin (control socket or the strategy's own publisher), source, publisher sequence number and its (field, raw value) pairs, as the `ParamUpdate` carried them ([Journal format](journal-format.md#parameter-updates)) |
+| `FillRecord` | every execution, and every quantity booked from a `cum_qty` jump | price, quantity, booked quantity, fee, liquidity, ids, the venue's trade time and the position after it |
+| `OrderRecord` | every OMS state change | the whole order: state, previous state, price, quantity, filled quantity, reject reason |
+| `PositionRecord` | after every fill, after a venue position snapshot, and per instrument at the end | the instrument's position and the portfolio totals |
+| `FundingRecord` | every funding payment booked | amount, asset, venue funding id and time, the position and its PnL after it |
+| `ReplayedRecord` | a venue's reconciliation begins after a whole execution replay | the venue: its executions until then are all stored |
+| `KillRecord` | every kill switch trip, global or per venue | reason, flag word, PnL |
+| `RejectRecord` | every refused order, repeats folded ([rejects](#rejects)) | account, instrument, side, reason, what refused it, the budget then |
+| `LimitsRecord` | every `fastmm-ctl limits` applied | the `[risk]` limits before and after, and whether `--force` turned one off |
+| `ParamRecord` | every strategy parameter update applied | target, origin, source, publisher sequence and the (field, raw value) pairs ([Journal format](journal-format.md#parameter-updates)) |
 
-Session metadata (`session_open`, `session_close`, the instrument table) is written by the control thread, not through the ring.
+The record layouts are in `include/fastmm/core/record_stream.hpp`.
 
 ## What a backend guarantees
 
-- Ordering: Records arrive on one thread in the order the engine made them; `seq` is strictly increasing within a session.
-- At most once: A record the ring dropped, or a batch the process died inside of, is gone. A backend must not invent one. Records carry keys (session id plus `seq`, and a venue exec id on a fill) so re-ingesting the same record is a no-op.
-- No back pressure: The store never signals the engine. A ring that fills drops records on the engine side and counts them in `EngineStats::records_dropped`; the count is logged at shutdown and stored in `sessions.records_dropped`. A backend that fails counts the error, logs the first one and keeps going. The journal is the authority for anything lost, but a restart restores positions from the store, so `fastmm-live` logs the first failure or drop as an ERROR, publishes the counts (`store_errors`, `store_dropped` in the [status file](status-file.md), `fastmm_store_errors_total` and `fastmm_store_records_dropped_total` in the metrics, alert `FastMMStoreFailing`), and with `kill_on_failure = true` trips the kill switch.
-- No exceptions across the interface and no `abort()`.
+| Guarantee | Meaning |
+|---|---|
+| Ordering | records arrive on one thread in the engine's order; `seq` increases within a session |
+| At most once | a dropped record, or a batch the process died inside, is gone; keys (session id and `seq`, a fill's exec id) make re-ingesting a record a no-op |
+| No back pressure | the store never signals the engine; a full ring drops records and counts them |
+| No exceptions | none cross the interface, and no `abort()` |
 
-`fastmm-live` logs the totals when a session ends:
+A failed write is counted and the first one logged; the backend keeps going. A restart restores positions from the store, so `fastmm-live` treats a loss as an error:
+
+| Where | What |
+|---|---|
+| log | the first failure or drop, as ERROR; the totals at shutdown |
+| [status file](status-file.md) | `store_errors`, `store_dropped` |
+| metrics | `fastmm_store_errors_total`, `fastmm_store_records_dropped_total`, alert `FastMMStoreFailing` |
+| `sessions.records_dropped` | the drops of the session |
+| `kill_on_failure = true` | trips the kill switch |
 
 ```text
 store: 1284 record(s) in 37 batch(es), 1284 row(s), 0 error(s), 0 dropped
@@ -74,14 +94,16 @@ store: 1284 record(s) in 37 batch(es), 1284 row(s), 0 error(s), 0 dropped
 
 The SQLite backend opens the file with `journal_mode=WAL` and `synchronous=NORMAL`, and checkpoints every 256 pages.
 
-- A committed batch survives the process dying (a crash, `SIGKILL`, an `abort()`): the write-ahead log is in the page cache and the next open replays it.
-- A batch the process died inside of is rolled back whole: no partial batch is ever visible.
-- Power loss can cost the batches written since the last checkpoint. `synchronous=FULL` would fsync the log on every commit; the journal already holds every record, so the store does not pay for it.
-- A reader never blocks the writer and never sees a half-written batch: `fastmm-pnl` and a notebook can query a store while the session writes it.
+| Event | What survives |
+|---|---|
+| the process dies (crash, `SIGKILL`, `abort()`) | every committed batch: the next open replays the write-ahead log |
+| the process dies inside a batch | nothing of that batch: it rolls back whole |
+| power loss | the batches up to the last checkpoint; the journal holds the rest |
+| a reader during a session | a reader never blocks the writer or sees half a batch |
 
 ## Schema
 
-Version 12 (`kSqliteSchemaVersion`). The SQL is `src/store/sqlite_schema.cpp`, one migration step per version; an existing store is migrated in place at open, and a store written by a newer FastMM is refused with the version it holds. Before it migrates an existing store, the backend copies it to `<path>.v<version>.bak` (`VACUUM INTO`, logged), the version it had; a copy already there is kept.
+The schema is version 12, in `src/store/sqlite_schema.cpp`. An older store is migrated in place when opened, after a copy to `<path>.v<version>.bak`. A store from a newer FastMM is refused with the version it holds.
 
 ### sessions
 
@@ -93,187 +115,290 @@ One row per session, written at start and completed at shutdown.
 | `engine`, `strategy` | `[engine] name` and the strategy that ran |
 | `session_epoch` | client order id epoch of this session |
 | `started_ns`, `started_day`, `stopped_ns` | start, its UTC day, and stop; `stopped_ns` is null when the process did not shut down |
-| `version`, `build` | `FASTMM_VERSION_STRING` and the build info |
-| `config_hash`, `config_toml` | the effective configuration (secrets omitted) and its hash, as in the journal header |
-| `host`, `pid`, `dry_run`, `pnl_carry_raw` | where it ran, and the net PnL carried in from earlier sessions |
-| `clean_shutdown` | 1 when `session_close` ran; 0 means the process was killed |
-| `exit_code`, `kill_reason`, `kill_latched` | how it ended; a clean shutdown asks for the kill switch itself, so `kill_reason` is then `Requested` |
+| `version`, `build` | FastMM version and build info |
+| `config_hash`, `config_toml` | the effective configuration, secrets omitted, and its hash, as in the journal header |
+| `host`, `pid`, `dry_run` | where and how it ran |
+| `pnl_carry_raw` | the net PnL carried in from earlier sessions |
+| `clean_shutdown` | 1 when the session closed; 0 when the process was killed |
+| `exit_code`, `kill_reason`, `kill_latched` | how it ended; a clean shutdown trips the kill switch itself, so `kill_reason` is `Requested` |
 | `journal_complete`, `journal_bytes` | whether the journal was closed cleanly, and its size over every part |
-| `events`, `orders_sent`, `cancels_sent`, `replaces_sent`, `fills`, `risk_rejects`, `venue_rejects` | the runner's counters |
-| `records_dropped` | store records the ring could not take: the rows below are incomplete by that many |
+| `events`, `orders_sent`, `cancels_sent`, `replaces_sent`, `fills`, `risk_rejects`, `venue_rejects` | the session's counters |
+| `records_dropped` | records the ring could not take: the other tables miss that many |
 | `realized_raw`, `unrealized_raw`, `fees_raw` | the session's final PnL |
-| `funding_raw` | the part of `realized_raw` that is funding; null for sessions from before version 4 |
-
-A row's venue is `venue_id`, its place in the session's `[venues.*]` order, and the same id can name another account in another session (a venue added to a pool moves the others). Since version 10 the rows that sum across sessions also carry `account`, the venue's name: group by it, not by `venue_id`. A fill's `account` is the account it executed on (a pool member); an instrument's, a position's and a `pnl_daily` row's is the instrument's own venue (the pool's primary), which holds the position. The migration fills it in for older rows from `session_venues` (`#<id>` where a session recorded no names).
+| `funding_raw` | the part of `realized_raw` that is funding (version 4) |
+| `param_refreshes` | strategy parameter updates that changed nothing and wrote no row |
 
 ### session_journals
 
-`(session_id, part, path)`: the journal parts the session wrote, in order.
+| Column | Meaning |
+|---|---|
+| `session_id`, `part`, `path` | the journal parts the session wrote, in order |
 
 ### session_venues
 
-`(session_id, venue_id, name, replayed_seq)`: the `[venues.<name>]` behind each `venue_id` of the session, so a restart finds its venues by name. Version 3; sessions recorded before it have none. `replayed_seq` (version 6) is the `seq` of the last `ReplayedRecord` of the venue: 0 while the session has not got past an execution replay there, null for a session recorded before version 6.
+| Column | Meaning |
+|---|---|
+| `session_id`, `venue_id`, `name` | the `[venues.<name>]` behind each `venue_id`, so a restart finds its venues by name (version 3) |
+| `replayed_seq` | `seq` of the venue's last `ReplayedRecord`; 0 while the session had not finished an execution replay there (version 6) |
 
 ### instruments
 
-`(session_id, instrument_id)` and the instrument as the session loaded it: `venue_id`, `symbol`, `base`, `quote`, `settlement_ccy`, `asset_class`, `inverse`, `tick_raw`, `lot_raw`, `multiplier_raw`, and (version 10) `account`. Per session, because a restart may load different reference data.
+One row per `(session_id, instrument_id)`, as the session loaded it: a restart may load different reference data.
+
+| Column | Meaning |
+|---|---|
+| `venue_id`, `account` | its venue; `account` from version 10 |
+| `symbol`, `base`, `quote`, `settlement_ccy`, `asset_class`, `inverse` | what it is |
+| `tick_raw`, `lot_raw`, `multiplier_raw` | its grid and contract size |
 
 ### fills
 
-One row per execution, keyed `(session_id, seq)`, with a unique index on `(session_id, instrument_id, side, exec_id)` for the rows that have one: an execution is the venue's id of it on one instrument and side, as the OMS keys it. Before version 5 the index was `(session_id, exec_id)`, and a second venue or symbol using the same number, or the other half of a self-trade, lost its row; the migration replaces the index and cannot bring those rows back (the journal has them).
+One row per execution, keyed `(session_id, seq)`. A unique index on `(session_id, instrument_id, side, exec_id)` stops an execution being stored twice in a session.
 
 | Column | Meaning |
 |---|---|
-| `ts_ns`, `day`, `symbol`, `venue_id`, `instrument_id` | when (the engine's clock), what and where |
-| `exch_ns` | the venue's time of the trade, in the venue's clock; 0 for a synthetic fill, a connector that reports none, and rows from before version 3 |
-| `cl_ord_id`, `venue_order_id`, `exec_id` | the ids the venue and FastMM know it by |
-| `side`, `liquidity` | `Buy`/`Sell`, `Maker`/`Taker`/`Unknown` |
-| `price_raw`, `qty_raw`, `booked_qty_raw` | the execution, and the quantity the position moved by (a base-asset fee is deducted) |
+| `ts_ns`, `day`, `symbol`, `venue_id`, `instrument_id` | when on the engine clock, what and where |
+| `exch_ns` | the venue's time of the trade; 0 for a synthetic fill or a venue that reports none |
+| `cl_ord_id`, `venue_order_id`, `exec_id` | the ids FastMM and the venue know it by |
+| `side`, `liquidity` | `Buy`/`Sell`; `Maker`/`Taker`/`Unknown` |
+| `price_raw`, `qty_raw` | the execution |
+| `booked_qty_raw` | what the position moved by: less a base-asset fee, less what an estimate already moved |
 | `cum_qty_raw`, `leaves_qty_raw` | the order after it |
-| `fee_raw`, `fee_amount_raw`, `fee_asset` | the fee booked in the settlement currency, the amount the venue reported, and its asset (`quote`, `base`, `other`; an `other` fee is reported but not booked) |
+| `fee_raw`, `fee_amount_raw`, `fee_asset` | the fee booked in the settlement currency, the venue's amount, and its asset (`quote`, `base`, `other`; `other` is not booked) |
 | `position_qty_raw`, `position_avg_px_raw`, `position_realized_raw`, `position_fees_raw` | the instrument's position after this fill |
-| `synthetic` | 1 for a quantity the engine booked from a `cum_qty` jump, at the order's own price and with no fee |
-| `late` | 1 for a fill that arrived after the order was already terminal |
-| `account` | the `[venues.<name>]` it executed on (version 10) |
-| `named_qty_raw` | on a synthetic fill, how much of it executions have named since; on an execution, how much of it named an estimate (version 10) |
-| `arm` | the `[ab]` arm its order was sent under, by name; NULL outside a test (version 12) |
+| `synthetic` | 1 for an estimate: quantity booked from a `cum_qty` jump at the order's price, with no fee |
+| `late` | 1 for a fill that arrived after its order was terminal |
+| `account` | the `[venues.<name>]` it executed on, a pool member included (version 10) |
+| `named_qty_raw` | on an estimate, how much executions have named since; on an execution, how much of it named an estimate (version 10) |
+| `arm` | the `[ab]` arm its order was sent under; NULL outside a test (version 12) |
 
-A synthetic fill is an estimate: the venue reported filled quantity (a cancel ack, an expiry, a reconciliation snapshot) before the execution behind it arrived, so the engine booked it at the order's price. When the execution comes, it corrects the estimate's price and fee instead of moving the position again: its `booked_qty_raw` excludes the `named_qty_raw` the estimate already moved. Both rows stay. Summing the table therefore counts an execution whole and a synthetic fill for `qty_raw - named_qty_raw`, the part still estimated; anything else counts the named quantity twice (on Binance spot a cancel ack often overtakes the fill). Rows from before version 10 are backfilled from `booked_qty_raw`.
+An estimate's execution corrects its price and fee without moving the position again. Both rows stay, so sum quantity this way:
+
+| Row | Counts |
+|---|---|
+| `synthetic = 0` | `qty_raw` |
+| `synthetic = 1` | `qty_raw - named_qty_raw`, the part still estimated |
 
 ### fill_repeats
 
-Version 10. An execution the engine booked a second time in a session that had already stored it: the store refused the row (the unique index above) and writes it here instead, keyed `(session_id, seq)` with the `seq` of the refused fill record, with `account`, `instrument_id`, `symbol`, `side`, `exec_id`, `price_raw`, `qty_raw`, `booked_qty_raw` and `first_seq`, the stored row's. The position and the PnL the engine recorded after it count the execution twice; `fills` does not. Older sessions are backfilled from their position records: a change of position with no fill or funding record before it that one stored execution explains (side, quantity, and the price the change implies within a tick).
+An execution the engine booked a second time in a session that had stored it (version 10). The position and PnL the engine recorded count it twice; `fills` does not.
+
+| Column | Meaning |
+|---|---|
+| `session_id`, `seq` | the refused fill record |
+| `account`, `instrument_id`, `symbol`, `side`, `exec_id` | the execution |
+| `price_raw`, `qty_raw`, `booked_qty_raw` | as in `fills` |
+| `first_seq` | `seq` of the row `fills` holds |
+
+Sessions from before version 10 are backfilled from their position records.
 
 ### funding
 
-One row per perpetual funding payment the engine booked, keyed `(session_id, seq)`, with a unique index on `(session_id, instrument_id, funding_id)`. Version 4.
+One row per funding payment booked, keyed `(session_id, seq)`, unique on `(session_id, instrument_id, funding_id)` (version 4). Funding is realized PnL, so every `realized_raw` includes it.
 
 | Column | Meaning |
 |---|---|
-| `ts_ns`, `day`, `symbol`, `venue_id`, `instrument_id` | when (the engine's clock), on what, where |
+| `ts_ns`, `day`, `symbol`, `venue_id`, `instrument_id` | when on the engine clock, on what, where |
 | `exch_ns` | the venue's time of the payment |
 | `funding_id` | the venue's id of it (Binance `tranId`, Bybit `execId`) |
-| `amount_raw`, `asset` | the payment in the settlement currency: negative paid, positive received |
-| `position_qty_raw`, `position_realized_raw`, `position_funding_raw` | the position it was paid on, and the instrument's realized PnL and funding after it |
-| `replayed` | 1 when it came from the venue's history rather than its private stream |
-
-Funding is realized PnL (not a fee), so it is inside every `realized_raw` below; the `funding_raw` columns say how much of it.
+| `amount_raw`, `asset` | in the settlement currency: negative paid, positive received |
+| `position_qty_raw`, `position_realized_raw`, `position_funding_raw` | the position paid on, and the instrument's realized PnL and funding after it |
+| `replayed` | 1 when it came from the venue's history, not its private stream |
 
 ### orders
 
-One row per order, keyed `(session_id, cl_ord_id)`, updated in place: the row holds the last state the session saw and `updates` counts how many changes it went through. `terminal` is 1 for `Filled`, `Canceled`, `Rejected`, `Expired` and `Replaced`; the `open_orders` view selects the rest.
-
-`Replaced` is the store's own state, not an `OrderState`: a cancel-replace to a new client order id renames the order in place, so the id it superseded never reports a terminal state of its own. Its row keeps the price and quantity it had and is closed when the replacement is acked. Without it every replaced quote would read as still open.
-
-A fill that arrives after its order ended (the cancel ack overtook the execution) updates the row's `cum_qty` and, when it completes the order, its state: `Canceled` becomes `Filled`.
-
-`arm` (version 12) is the `[ab]` arm the order was last sent or replaced under, by name; NULL outside a test.
-
-### positions
-
-One row per position snapshot, keyed `(session_id, seq)`: `qty_raw`, `avg_px_raw`, `realized_raw`, `unrealized_raw`, `fees_raw`, `gross_traded_raw`, `fills`, the portfolio totals `total_realized_raw`, `total_unrealized_raw`, `total_fees_raw`, `pnl_carry_raw`, (version 4) `funding_raw` and `total_funding_raw`, and (version 10) `account`.
-
-### kill_events
-
-One row per trip, keyed `(session_id, seq)`: `scope` (`global` or `venue`), `venue_id` (-1 for a global trip), `reason` ([`KillReason`](errors.md#kill-reasons)), `kill_flags` and the PnL at the time.
-
-### pnl_daily
-
-One row per `(session_id, day, instrument_id)`, maintained as position records arrive.
+One row per order, keyed `(session_id, cl_ord_id)` and updated in place with the last state seen.
 
 | Column | Meaning |
 |---|---|
-| `realized_raw`, `fees_raw`, `gross_traded_raw`, `fills`, `funding_raw` | the change within that UTC day, not a running total (`funding_raw`, version 4, is part of `realized_raw`) |
-| `unrealized_raw`, `qty_raw` | the last snapshot of the day: a mark, not a flow |
-| `symbol`, `settlement_ccy` | denormalised from `instruments` |
+| `updates` | state changes the order went through |
+| `terminal` | 1 for `Filled`, `Canceled`, `Rejected`, `Expired` and `Replaced`; the `open_orders` view lists the rest |
+| `arm` | the `[ab]` arm it was last sent or replaced under; NULL outside a test (version 12) |
 
-A change that straddles midnight lands on the day of the snapshot that reports it. Realised PnL and fees of instruments that settle in different currencies must not be added: group by `settlement_ccy` ([the risk model](../explanation/risk-model.md) says why).
+`Replaced` is the store's own state. A cancel-replace renames the order to a new client id, so the old id never reports a terminal state; its row closes when the replacement is acked.
+
+A fill that arrives after its order ended updates the row's `cum_qty` and, when it completes the order, turns `Canceled` into `Filled`.
+
+### positions
+
+One row per position snapshot, keyed `(session_id, seq)`.
+
+| Column | Meaning |
+|---|---|
+| `qty_raw`, `avg_px_raw` | the position |
+| `realized_raw`, `unrealized_raw`, `fees_raw`, `funding_raw` | its PnL; `funding_raw` from version 4 |
+| `gross_traded_raw`, `fills` | traded so far |
+| `total_realized_raw`, `total_unrealized_raw`, `total_fees_raw`, `total_funding_raw`, `pnl_carry_raw` | the portfolio totals |
+| `account` | the instrument's venue, the pool's primary (version 10) |
+
+### kill_events
+
+One row per trip, keyed `(session_id, seq)`.
+
+| Column | Meaning |
+|---|---|
+| `scope` | `global` or `venue` |
+| `venue_id` | -1 for a global trip |
+| `reason` | the [`KillReason`](errors.md#kill-reasons) |
+| `kill_flags` | the flag word |
+| PnL columns | the PnL at the time |
+
+### pnl_daily
+
+One row per `(session_id, day, instrument_id)`, maintained as position records arrive. These are the engine's own books.
+
+| Column | Meaning |
+|---|---|
+| `realized_raw`, `fees_raw`, `gross_traded_raw`, `fills`, `funding_raw` | the change within that UTC day; `funding_raw` is part of `realized_raw` |
+| `unrealized_raw`, `qty_raw` | the day's last snapshot |
+| `symbol`, `settlement_ccy`, `account` | from `instruments` |
+
+A change that straddles midnight lands on the day of the snapshot that reports it. Do not add PnL across settlement currencies: group by `settlement_ccy` ([Risk model](../explanation/risk-model.md)).
 
 ### param_schema, param_updates, param_values
 
-Version 8. The strategy parameters over time: what each session started with and every update the engine applied, so the values in effect at any moment can be read back without the journal.
+The strategy parameters over time: the starting set and every update applied (version 8).
 
-| Table | Rows |
+| Table | One row per | Columns |
+|---|---|---|
+| `param_schema` | `(session_id, field)` | `name`, `type` (`int`, `double`, `bool`, `decimal`, `bps`, `ms`) |
+| `param_updates` | `(session_id, seq)` | `ts_ns`, `instrument_id`, `symbol`, `origin`, `source`, `publish_seq`, `fields`, `changed`, `complete`, `arm` |
+| `param_values` | `(session_id, seq, name)` | `value` as text, `raw` (NULL when not known), `changed` |
+
+`param_updates` columns:
+
+| Column | Meaning |
 |---|---|
-| `param_schema` | one per `(session_id, field)`: the session's parameter table, `name` and `type` (`int`, `double`, `bool`, `decimal`, `bps`, `ms`), by the field index a `ParamRecord` names |
-| `param_updates` | one per `(session_id, seq)`: `seq` 0 is the set the session started with (`origin` `initial`, `complete` 1 when it holds every parameter, defaults included; 0 when the strategy brings its own publisher and only the configured ones are known), then one per update with the record's `seq`, `ts_ns` (when the engine applied it), `instrument_id` and `symbol` (NULL for every instrument), `origin` (`control`, `ab` or `strategy`), `source` (`fastmm-ctl param --source`, `ab:<test>` for the `[ab]` test), `publish_seq`, how many `fields` it carried and how many `changed`, and (version 12) the `arm` it put its instruments in: the arm's name, `''` out of the test, NULL for an update that is not the test's |
-| `param_values` | one per `(session_id, seq, name)`: the `value` as the parameter formats it, its `raw` value (NULL when not known) and `changed` against the value before it in that scope |
+| `seq` | 0 for the starting set, else the record's `seq` |
+| `origin` | `initial`, `control`, `ab` or `strategy` |
+| `source` | `fastmm-ctl param --source`, or `ab:<test>` |
+| `complete` | on `seq` 0: 1 when every parameter is known, 0 when the strategy brings its own publisher |
+| `instrument_id`, `symbol` | the target; NULL for every instrument |
+| `fields`, `changed` | values carried, values changed |
+| `arm` | the arm the update put its instruments in, `''` out of the test, NULL when not the test's (version 12) |
 
-A control or `[ab]` update is stored whole, unchanged values included: someone asked for it, or it records an arm assignment. An update of the strategy's own publisher keeps only the values that changed, and one that changed nothing writes no row: `sessions.param_refreshes` counts those. An update to every instrument replaces what single instruments had.
+A control or `[ab]` update is stored whole. A strategy publisher's update keeps only changed values and writes nothing when none changed. An update to every instrument replaces what single instruments had.
 
 ### rejects
 
-Version 9. One row per refused order the engine recorded, keyed `(session_id, seq)`: `ts_ns`, `account` (the `[venues.<name>]` the order went to or was routed to), `instrument_id`, `symbol`, `side`, `kind` (`new` or `replace`), `reduces` (with the open orders on its side it only took the position towards zero), `reduce_only`, `reason` ([`RejectReason`](errors.md)), `source`, `count`, `price_raw`, `qty_raw`, `cl_ord_id` (a venue's refusal), `venue_code` and `text` (the venue's), and the budget the engine saw: `budget_known`, `paused`, `tokens` (the `[risk]` bucket's, NULL with the limit off), `token_wait_us`, and `orders_10s_used`/`orders_10s_admits`, `orders_1m_*`, `orders_1d_*`, `weight_*` (0 admits: the window is not known).
+One row per refused order, keyed `(session_id, seq)` (version 9).
+
+| Column | Meaning |
+|---|---|
+| `ts_ns`, `account`, `instrument_id`, `symbol`, `side` | when, where the order went, what |
+| `kind` | `new` or `replace` |
+| `reduces`, `reduce_only` | the order only moved the position towards zero; it was flagged reduce-only |
+| `reason` | the [`RejectReason`](errors.md) |
+| `source` | what refused it (below) |
+| `count` | refusals folded into the row; `SUM(count)` is exact |
+| `price_raw`, `qty_raw`, `cl_ord_id` | the order; `cl_ord_id` on a venue's refusal |
+| `venue_code`, `text` | the venue's code and text |
+| `budget_known`, `paused`, `tokens`, `token_wait_us` | the budget the engine saw; `tokens` is NULL with the limit off |
+| `orders_10s_used`, `orders_10s_admits`, `orders_1m_*`, `orders_1d_*`, `weight_*` | each window's count and cap; 0 admits means the window is not known |
 
 | `source` | Refused by |
 |---|---|
-| `risk` | a pre-trade check other than the rate limits (`reason` says which) |
+| `risk` | a pre-trade check other than the rate limits |
 | `risk_bucket` | the `[risk] orders_per_sec` bucket, shared by every account |
 | `account_paused` | the account's connector is paused (429, 418) |
-| `account_orders_10s`, `account_orders_1m`, `account_orders_1d` | the account's order window at the connector's cap, as the engine counts it ([account pools](configuration.md#account-pools)) |
-| `venue_local` | the connector's own limiter, before sending (`text` names the window: `local rate limit: orders 10s`) |
-| `venue` | the venue (`venue_code`, `text`) |
+| `account_orders_10s`, `account_orders_1m`, `account_orders_1d` | the account's order window at the connector's cap ([account pools](configuration.md#account-pools)) |
+| `venue_local` | the connector's own limiter; `text` names the window |
+| `venue` | the venue |
 
-Refusals of the same instrument, side, account, reason, source and flags (`reduces`, `reduce_only`) within 100 ms of the last row recorded for them are counted, not written one by one: `count` is 1 plus those folded into the row, so `SUM(count)` is exact per account. A count no further refusal follows is written with the next once-a-second publication, or at the end of the session. The budget of a folded row is the one at the row's time.
+Refusals with the same instrument, side, account, reason, source and flags within 100 ms of the row are folded into it. A pending count is written at the next once-a-second publication or at the session's end.
 
 ### ab_arms
 
-Version 12. One row per arm of the session's `[ab]` test, keyed `(session_id, arm)`: `arm` its index (arm 0 is the control), `test` the test's `name`, `name` the arm's, and `params` the arm's parameters as `name=value` separated by spaces (empty: the configured ones). `fastmm-pnl fills` and `orders` show each row's arm; the markouts and the paired comparison need the journal's mids ([Run an A/B test](../how-to/strategies/ab-test.md#read-it-out)).
+One row per arm of the session's `[ab]` test, keyed `(session_id, arm)` (version 12). `fastmm-pnl fills` and `orders` show each row's arm; markouts need the journal ([Run an A/B test](../how-to/strategies/ab-test.md#read-it-out)).
+
+| Column | Meaning |
+|---|---|
+| `arm` | its index; 0 is the control |
+| `test`, `name` | the test's and the arm's names |
+| `params` | the arm's parameters as space-separated `name=value`; empty for the configured ones |
 
 ### limit_changes
 
-Version 11. One row per `[risk]` key a `fastmm-ctl limits` changed, keyed `(session_id, seq, key)`: `ts_ns` and `day` (when the engine applied it), `key` (`max_loss`, `check_balance`, `underlying.BTC.max_net`), `before` and `after` as `[risk]` writes them, and `forced` (1: `--force`, the command turned a limit off). A command that named only the values the session had is one row with an empty `key`. `fastmm-pnl limit-changes` lists them.
+One row per `[risk]` key a `fastmm-ctl limits` changed, keyed `(session_id, seq, key)` (version 11). `fastmm-pnl limit-changes` lists them.
+
+| Column | Meaning |
+|---|---|
+| `ts_ns`, `day` | when the engine applied it |
+| `key` | `max_loss`, `check_balance`, `underlying.BTC.max_net`; empty when the command changed nothing |
+| `before`, `after` | the values as `[risk]` writes them |
+| `forced` | 1 when `--force` turned a limit off |
 
 ### Views
 
 | View | Rows |
 |---|---|
 | `reject_summary` | `day`, `account`, `symbol`, `side`, `reduces`, `reason`, `source` and `rejects`, the summed `count` |
-| `param_history` | `param_updates` joined with `param_values`: one row per value of every update, with its session, time, scope, origin and source |
-| `pnl_by_day` | `day`, `account`, `symbol`, `settlement_ccy`, `realized_raw`, `funding_raw`, `fees_raw`, `net_raw`, `gross_traded_raw`, `fills`, summed over sessions: the engine's books (`fastmm-pnl pnl --books`) |
+| `param_history` | `param_updates` joined with `param_values`: one row per value of every update |
+| `pnl_by_day` | `day`, `account`, `symbol`, `settlement_ccy`, `realized_raw`, `funding_raw`, `fees_raw`, `net_raw`, `gross_traded_raw`, `fills`, summed over sessions (`fastmm-pnl pnl --books`) |
 | `pnl_by_currency` | the same by `day` and `settlement_ccy` |
 | `open_orders` | `orders` with `terminal = 0` |
 
 ## Writing a backend
 
-A backend implements `fastmm::store::Backend` (`include/fastmm/store/backend.hpp`) and, to be queryable, `fastmm::store::Reader` (`include/fastmm/store/reader.hpp`), then registers two factories before a session starts:
+1. Implement `fastmm::store::Backend` (`include/fastmm/store/backend.hpp`) and, to be queryable, `fastmm::store::Reader` (`include/fastmm/store/reader.hpp`).
+2. Register both factories from your `main`, before `run_live`; nothing registers itself, and the name `none` is reserved:
 
-```cpp
-fastmm::store::StoreRegistry::instance().add("clickhouse", &make_ch_backend, &make_ch_reader);
-```
+    ```cpp
+    fastmm::store::StoreRegistry::instance().add("clickhouse", &make_ch_backend, &make_ch_reader);
+    ```
 
-Nothing registers itself: the linker drops a static library's self-registering object. `fastmm::store::register_builtin_backends()` adds the ones FastMM ships; an out-of-tree backend calls `add()` from its own `main` before `run_live`. The name `none` is reserved.
+3. Read your keys in `Backend::open` from `BackendOptions`: the `[storage]` section verbatim, `[engine] name` and `[engine] journal_dir`.
 
-`Backend::open` receives a `BackendOptions` holding the `[storage]` section verbatim, `[engine] name` and `[engine] journal_dir`: a backend parses its own keys from `GenericSection` and nothing is added to the central schema. Everything the interface calls runs off the engine thread and may allocate.
-
-The call order is `open`, `session_open`, `instruments`, then `begin` / records / `commit` repeatedly, then `session_close` and `close`. A `Reader` opens the same store read-only and answers `sessions`, `fills`, `orders`, `pnl`, `funding`, `positions` and `recovery`; every query takes the same `QueryFilter` and returns string rows.
+`fastmm::store::register_builtin_backends()` adds the backends FastMM ships. Every call runs off the engine thread and may allocate, in this order: `open`, `session_open`, `instruments`, then `begin`, records and `commit` repeatedly, then `session_close` and `close`. A `Reader` opens the store read-only and answers `sessions`, `fills`, `orders`, `pnl`, `funding`, `positions` and `recovery`; each query takes a `QueryFilter` and returns string rows.
 
 ## Recovery at start-up
 
-`fastmm-live` reads the store before the first session thread starts and logs what the previous session of the same `[engine] name` left behind: its PnL, whether it shut down cleanly, the kill state, the journal parts, the last position per instrument, and every order that was still open at its last record. `fastmm-pnl recover --engine <name>` prints the same thing.
+`fastmm-live` reads the store before any session thread starts and logs what the previous session of the same `[engine] name` left: its PnL, clean shutdown or not, kill state, journal parts, last position per instrument and its open orders. `fastmm-pnl recover --engine <name>` prints the same.
 
-With `[engine] restore_position` the session also carries the last position per venue and symbol over and books what happened while it was down from the venue's trade history ([What survives a restart](../how-to/operations/running-in-production.md#restarts)). The position is the last record the store holds for that venue and symbol: a position row or a fill (each fill row carries the position it left, so a crash that kept a fill but not the position row after it loses nothing), from the newest session of the engine that recorded one. A session that crashed before recording anything about a venue leaves the earlier session's record in force. Where each venue's replay starts (`Recovery::venue_resume`, passed to `Venue::resume_executions`, and in the attach request behind a gateway):
+```mermaid
+flowchart LR
+  S[read store] --> L[log the previous session]
+  L --> P{restore_position?}
+  P -- yes --> R[restore last position per venue and symbol]
+  P -- no --> C
+  R --> C[replay each venue's executions from its resume point]
+  C --> O[open-order snapshot]
+  O --> Q[quoting on]
+```
 
-- In the venue's clock: From `exch_ns` of the venue's last stored fill or funding payment (in the newest session that stored one), less 1 s, skipping the trade ids and funding ids (as `funding:<id>`) stored from there on. The funding replay starts there too, so a payment made while nothing ran is booked by the next session and one the store holds is not booked again. Both ends are venue time, so the host's clock does not enter. The 1 s covers a venue publishing executions out of trade-time order (other symbols, a batch), which is milliseconds.
-- The ids skipped are those of every session of the engine, not of the session the start comes from: a session killed seconds after it started stores only what its own replay booked, and the next replay's window still reaches what the sessions before it stored.
-- The start is where the record is known to be whole: the last fill stored up to the newest session that got past its own replay on the venue (`replayed_seq` > 0; a session recorded before version 6 counts when it placed an order there, which none does before the venue has reconciled, or shut down cleanly). A session after that one died while its replay was still reading and can hold a fill newer than one the replay had not reached (an order left resting filled meanwhile): its fills are skipped as known, and the start is no later than the earliest of their last ones. When no session ever got past its replay, the start is no later than where the sessions began (the last bullet).
-- At most 128 ids a venue: When more stored fills fall in that second, the start moves later, past the oldest millisecond that does not fit whole, and the session logs it: an id left out would be booked twice.
-- Binance Spot and USDⓈ-M resume each symbol at the trade id after the highest one stored up to that same session (`fromId`, `Venue::resume_trade_ids`), with no overlap, and skip the ids above it that the sessions after it stored (`Venue::resume_known_trade_ids`). A venue no session got past its replay on has no such id and replays by time. In-process only: a gateway's venue is shared, and it filters another attachment's replay for this one by time and ids.
-- A store from before version 3 starts from the engine clock as before: 10 s before the session's last fill, skipping the ids of the 20 s before it.
-- A venue with no stored fill replays from the start of the newest session that shut down cleanly, else of the oldest session of the engine, less 10 s (engine clock): a fill of a session that died before storing it, or one made while nothing ran, is booked.
+With `[engine] restore_position` the session carries over the last position per venue and symbol ([What survives a restart](../how-to/operations/running-in-production.md#restarts)). The position is the newest stored row for that venue and symbol, a position row or a fill: each fill row carries the position it left.
 
-Until every venue that replays executions has finished its first reconciliation (the replay, then the open-order snapshot), the engine sends no order and quoting stays off: the positions are not complete before that, and an order sized, hedged or risk-checked on them could double a hedge or pass a limit. New orders are refused with `NotReconciled`; the log says `every venue has reconciled its orders and executions since the start` when it ends.
+Until every venue that replays executions has finished its first reconciliation, the engine sends no order and new orders are refused with `NotReconciled`. The log says `every venue has reconciled its orders and executions since the start` when it ends.
 
-A store that holds a venue execution or funding payment in more than one session (by venue, symbol, side and the venue's id) was written by a restart that booked it twice. The check reads two indexes on the ids (`fills_exec_any`, `funding_id_any`, version 7) in id order and touches no table row unless an id repeats (0.14 s for a million fills; a store not yet migrated is grouped whole, 1.7 s). The start-up summary logs each one as an error (the first 32) with their count, and `fastmm-pnl duplicates` lists them; the rows are not changed. The positions and PnL stored by the sessions holding the copies count them twice, and a position restored from such a session is wrong until the venue reports its own.
+### Where a venue's replay starts
 
-The open orders the recovery lists are the ones FastMM last saw open; the venue may have cancelled, filled or expired them since. The position is FastMM's view at the last record; the venue's view arrives with the reconciliation.
+The resume point goes to the connector's execution replay, and in the attach request behind a gateway.
 
-The loss budget `[risk] max_loss` is carried across restarts by the kill-state file (`include/fastmm/core/session_state.hpp`), not by the store: it is read before any store is opened, so a session with `backend = "none"` still carries it.
+| Case | Replay starts |
+|---|---|
+| a fill or funding payment stored | the venue time of the last one, less 1 s, skipping the trade and funding ids stored from there on, by every session of the engine |
+| a later session died during its replay | no later than the earliest of that session's last fills; its fills are skipped as known |
+| more than 128 ids in that second | later, past the oldest millisecond that does not fit, with a log line |
+| Binance Spot and USDⓈ-M, in process | per symbol at the trade id after the highest stored (`fromId`), skipping higher ids stored since |
+| no stored fill | the start of the newest clean session, else the oldest session, less 10 s |
+| a store from before version 3 | 10 s before the session's last fill, skipping the ids of the 20 s before it |
+
+The last fill counts from the newest session that finished its replay on the venue (`replayed_seq` > 0). The 1 s margin covers a venue publishing executions slightly out of trade-time order. Behind a gateway the venue is shared, and the gateway filters the replay by time and ids.
+
+### Duplicates
+
+A venue execution or funding payment stored in more than one session was booked twice by a restart. The start-up summary logs each one as an error (the first 32) with their count; `fastmm-pnl duplicates` lists them. Rows are not changed. The positions and PnL of the sessions holding the copies count them twice, until the venue reports its own position.
+
+The open orders the recovery lists are those FastMM last saw open; the venue's view arrives with the reconciliation. The `[risk] max_loss` budget is carried by the kill-state file (`include/fastmm/core/session_state.hpp`), so it survives with `backend = "none"`.
 
 ## Tools
 
-- `fastmm-pnl pnl` (`Reader::pnl`, `Store.pnl()`) recomputes each day's PnL from `fills`, at average cost, by the account holding the position and symbol, the position carried from one session to the next by that account's name: an execution counts once (a copy another session stored, a repeat in `fill_repeats`), a synthetic fill only for what no execution named. `pnl_daily` is the engine's own books, from its position records: they count a repeat twice from the moment the engine booked it. The output says both (`net`, `books_net`) and how many estimates are still open; `--books` prints `pnl_daily` alone, as before version 10.
-- `fastmm-pnl ledger` reads `fills` as one row per execution across sessions (by engine, venue name, symbol, side and exec id; a synthetic fill is its own), with its copies and flags; `fastmm-pnl order --order <id>` joins `orders`, `rejects` and `fills` for one client order ([Query what you traded](../how-to/operations/query-trading-records.md#the-economic-ledger)). Both are queries over the tables above, not tables of their own.
-- `fastmm-pnl` ([command lines](cli.md), [the daily questions](../how-to/operations/query-trading-records.md)).
-- `fastmm.open_store(path)` returns pandas DataFrames ([Python API](python-api.md)).
-- `sqlite3 runs/mm1.db` for anything the two do not cover; the schema above is the contract.
+| Tool | Answers |
+|---|---|
+| `fastmm-pnl pnl` | each day's PnL recomputed from `fills` at average cost per account and symbol: an execution once, an estimate only for what no execution named; prints `net` and the engine's `books_net` |
+| `fastmm-pnl pnl --books` | `pnl_daily` alone, which counts a repeat twice |
+| `fastmm-pnl ledger` | one row per execution across sessions, with its copies and flags ([Query what you traded](../how-to/operations/query-trading-records.md#the-economic-ledger)) |
+| `fastmm-pnl order --order <id>` | `orders`, `rejects` and `fills` of one client order |
+| `fastmm-pnl` | the other daily questions ([command lines](cli.md), [Query what you traded](../how-to/operations/query-trading-records.md)) |
+| `fastmm.open_store(path)` | pandas DataFrames ([Python API](python-api.md)) |
+| `sqlite3 runs/mm1.db` | anything else; the schema above is the contract |

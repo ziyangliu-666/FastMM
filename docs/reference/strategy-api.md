@@ -1,15 +1,17 @@
 # Strategy API
 
-Code blocks come from [`tests/docs/strategy_api_doc_test.cpp`](../../tests/docs/strategy_api_doc_test.cpp) (ctest `docs.strategy_api`). The headers are listed in [Public API](public-api.md); `#include "fastmm/strategy.hpp"` brings in everything a strategy header needs.
+The C++ interface a strategy implements and the engine context it calls. `#include "fastmm/strategy.hpp"` brings in everything; the headers are listed in [Public API](public-api.md).
+
+Every code block on this page is compiled by [`tests/docs/strategy_api_doc_test.cpp`](../../tests/docs/strategy_api_doc_test.cpp) (ctest `docs.strategy_api`).
 
 ## Strategy class
 
-A strategy is a default-constructible class with a static `name()` and a static `schema()` (concept `StrategyLike`). `StrategyBase<Params>` provides `schema()` and the parameters:
+A strategy is a default-constructible class with a static `name()` and a static `schema()`: the concept `StrategyLike`. `StrategyBase<Params>` provides `schema()` and the parameters.
 
 | Member of `StrategyBase<Params>` | Meaning |
 |---|---|
-| `params() -> const Params&` | the current parameters; read-only |
-| `configure(const ParamMap&) -> std::optional<std::string>` | applies `name -> value` strings, runs `validate()`, returns the first error; on error the parameters are unchanged. Startup only |
+| `params() -> const Params&` | the current parameters, read-only |
+| `configure(const ParamMap&) -> std::optional<std::string>` | applies `name -> value` strings and runs `validate()`; returns the first error and leaves the parameters unchanged. Startup only |
 | `describe_params() -> std::string` | `name=value` pairs that parse back to the same values |
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#verify -->
@@ -18,11 +20,11 @@ static_assert(StrategyLike<AllHooks>);
 static_assert(verify_strategy<AllHooks>());
 ```
 
-`verify_strategy<S>()` checks every hook with stand-in context and book types, so the check runs in the strategy header instead of when an engine is built.
+`verify_strategy<S>()` checks every hook against stand-in context and book types, so a wrong hook fails in the strategy header.
 
 ## Hooks
 
-Hooks are public member functions; every hook is optional:
+Hooks are public member functions, and every hook is optional.
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#hooks -->
 ```cpp
@@ -70,71 +72,105 @@ void on_risk_reject(auto& /*ctx*/, const RiskReject& r) noexcept {
 
 | Hook | Called |
 |---|---|
-| `on_start(ctx)` | once, before the first event; `ctx.quoting_enabled()` is true in a dry run, whose orders are on paper |
-| `on_stop(ctx)` | once, when the engine finishes; quotes are not pulled here, shutdown's cancel-all does that |
-| `on_book(ctx, id, book)` | after a snapshot or delta is applied, the position is marked and risk has seen the mid; the book may be invalid (empty or crossed) |
+| `on_start(ctx)` | once, before the first event; `ctx.quoting_enabled()` is true in a dry run, whose orders stay on paper |
+| `on_stop(ctx)` | once, when the engine finishes; shutdown's cancel-all pulls the quotes |
+| `on_book(ctx, id, book)` | after a snapshot or delta is applied, the position marked and risk updated; the book may be invalid (empty or crossed) |
 | `on_book_ticker(ctx, id, m)` | a top-of-book update without depth |
 | `on_trade(ctx, id, m)` | a public trade |
 | `on_option_ticker(ctx, id, m)` | an option's mark, implied volatilities and greeks ([Options](options.md)) |
-| `on_fill(ctx, fill)` | one of our executions, after the position and fees are updated and before the `on_order_update` of the same execution |
+| `on_fill(ctx, fill)` | one of our executions, after position and fees are updated, before that execution's `on_order_update` |
 | `on_order_update(ctx, u)` | an OMS state change of one of our orders, including the end of a reconciliation |
 | `on_timer(ctx, id, tag)` | a timer from `ctx.every` or `ctx.once` fired |
-| `on_connection(ctx, m)` | a venue channel changed state; for any state other than `Live` the engine has already pulled that venue's quotes and, on the market-data channel, cleared its books |
-| `on_quoting(ctx, enabled)` | `ctx.quoting_enabled()` changed ([below](#on_quoting)) |
-| `on_params(ctx)` | a parameter update was applied; `params()` holds the new values ([Parameter updates](#parameter-updates)) |
-| `on_balance(ctx, m)` | a venue reported one asset of the account ([Balances](#balances)); `ctx.balance` already holds it |
-| `on_perp_state(ctx, id, m)` | a venue's mark, index or funding of a derivative arrived ([Perpetuals](#perpetuals)); `ctx.mark` and `ctx.funding` already hold it |
-| `on_risk_reject(ctx, r)` | the engine's own risk check refused a new order or replace ([below](#on_risk_reject)); nothing was sent |
-| `on_batch_end(ctx)` | once after the events that were waiting when the strategy called `ctx.request_batch_end()` ([below](#on_batch_end)) |
+| `on_connection(ctx, m)` | a venue channel changed state; off `Live`, the venue's quotes are already pulled and, for market data, its books cleared |
+| `on_quoting(ctx, enabled)` | `ctx.quoting_enabled()` changed ([on_quoting](#on_quoting)) |
+| `on_params(ctx)` | a parameter update was applied and `params()` holds the new values ([Parameter updates](#parameter-updates)) |
+| `on_balance(ctx, m)` | a venue reported one asset of the account; `ctx.balance` already holds it ([Balances](#balances)) |
+| `on_perp_state(ctx, id, m)` | a derivative's mark, index or funding arrived; `ctx.mark` and `ctx.funding` already hold it ([Perpetuals](#perpetuals)) |
+| `on_risk_reject(ctx, r)` | the engine's own risk check refused a new order or replace, and nothing was sent ([on_risk_reject](#on_risk_reject)) |
+| `on_batch_end(ctx)` | once, after the events waiting when the strategy called `ctx.request_batch_end()` ([on_batch_end](#on_batch_end)) |
 
-Rules:
+One input event runs through the hooks in this order:
 
-- Hooks return `void`. `auto& ctx` and `template <class Ctx> void on_x(Ctx& ctx, ...)` are the same. Hooks run inside `noexcept` engine code; declare them `noexcept`.
-- Instrument-scoped hooks (`on_book`, `on_book_ticker`, `on_trade`, `on_option_ticker`, `on_perp_state`, `on_fill`) fire only for instruments in the table, so `ctx.book(id)` and `ctx.instrument(id)` are valid in them.
-- `on_fill` fires for every execution on an instrument in the table, including late fills (the order was already terminal) and fills for ids the OMS does not know. Fills on other instruments are counted in `EngineStats::unknown_instrument_fills`.
-- Hooks must not block, allocate on every event or read anything that is not an engine input (the system clock, `std::random_device`, files); see [Determinism](../explanation/determinism.md).
+```mermaid
+flowchart TD
+  E[input event] --> S[engine updates book, position, OMS]
+  S --> H[the event's hook]
+  H --> R[on_risk_reject, one per refused order]
+  R --> Q[on_quoting, if quoting_enabled changed]
+  Q --> N{input rings empty<br/>and batch end requested?}
+  N -- yes --> B[on_batch_end]
+  N -- no --> E
+```
+
+| Rule | |
+|---|---|
+| Signature | hooks return `void`; `auto& ctx` and `template <class Ctx> void on_x(Ctx& ctx, ...)` are the same |
+| `noexcept` | hooks run inside `noexcept` engine code; declare them `noexcept` |
+| Instrument scope | `on_book`, `on_book_ticker`, `on_trade`, `on_option_ticker`, `on_perp_state` and `on_fill` fire only for instruments in the table, so `ctx.book(id)` and `ctx.instrument(id)` are valid in them |
+| Every fill | `on_fill` also fires for late fills and for ids the OMS does not know; fills on instruments outside the table are counted in `EngineStats::unknown_instrument_fills` |
+| Determinism | no blocking, no allocation per event, no input the engine does not see: system clock, `std::random_device`, files ([Determinism](../explanation/determinism.md)) |
 
 ### on_quoting
 
-`set_quotes` is ignored while quoting is disabled: an operator pull (`PullQuotes`), the kill switch, a reconciliation, or parameters older than `max_param_age_ms` ([Parameter updates](#parameter-updates)). A dry run quotes: its orders are acknowledged on paper and never sent. `on_quoting(ctx, enabled)` reports changes, so a strategy can requote as soon as quoting is back.
+`set_quotes` is ignored while quoting is disabled. `on_quoting(ctx, enabled)` reports each change, so a strategy can requote as soon as quoting is back.
 
-- The engine compares `ctx.quoting_enabled()` before and after each event, fired timer and `on_start`, and calls the hook after the triggering hook has returned and all flags are final. At the end of a reconciliation that is after the engine has placed the quotes it paused, so a requote from `on_quoting` replaces them.
-- It never fires from inside a context call: a kill switch tripped by `set_quotes` or `send` is reported after the hook that made the call returns.
+Quoting is disabled by an operator pull (`PullQuotes`), the kill switch, a reconciliation, or parameters older than `max_param_age_ms` ([Parameter updates](#parameter-updates)). A lost connection does not disable it; `on_connection` reports that. A dry run quotes, and its orders are acknowledged on paper.
+
+- The engine compares `ctx.quoting_enabled()` before and after each event, fired timer and `on_start`, and calls the hook once all flags are final.
+- At the end of a reconciliation the hook fires after the paused quotes are placed again, so a requote from it replaces them.
+- It never fires from inside a context call: a kill switch tripped by `set_quotes` or `send` is reported after the calling hook returns.
 - It does not fire for the initial state; `on_start` reads `ctx.quoting_enabled()`.
-- A lost connection does not change `quoting_enabled()`; `on_connection` reports it.
 
 ### on_batch_end
 
-`ctx.request_batch_end()` from any hook asks for one `on_batch_end(ctx)` call once the engine has handled the events waiting in its input rings: the rings are empty, or the step's `max_events_per_step` is used up. Requests before the call make one call. Work a burst would repeat for every event goes there: a strategy that requotes on each balance report marks the instruments in `on_balance` and requotes them once at the batch end. A request from inside `on_batch_end` makes one more call, after the step's timers or at the next step.
+`ctx.request_batch_end()` from any hook asks for one `on_batch_end(ctx)` once the engine has handled the events waiting in its input rings. That is when the rings are empty or the step's `max_events_per_step` is used up.
 
+Use it for work a burst would repeat per event. A strategy that requotes on each balance report marks the instruments in `on_balance` and requotes them once here.
+
+- Several requests before the call make one call. A request from inside `on_batch_end` makes one more call, after the step's timers or at the next step.
 - The engine journals each call, so a replay calls it after the same event.
 - Orders sent from it carry the receive time (T0) of the event that asked last.
-- `[engine] feed_budget_per_ring` sets how many events the engine takes from one input ring before the next ring's turn; 1 interleaves an account's order events with the market data.
+- `[engine] feed_budget_per_ring` sets how many events the engine takes from one input ring before the next ring's turn; 1 interleaves an account's order events with market data.
 
 ### on_risk_reject
 
-A `send`, `replace` or `set_quotes` the `[risk]` limits refuse sends nothing: `send` and `replace` return the `RejectReason`, `set_quotes` returns true (the quote manager keeps the level for the next requote) and the engine counts and logs the reject. `on_risk_reject(ctx, const RiskReject& r)` reports each one to the strategy: `instrument`, `side`, `type`, `reason`, `price`, `qty`, `user_tag` (a quote's tag is the `QuoteManager`'s), `replace` with `order` (the id a replace would have changed; invalid for a new order), and `time`.
+An order the `[risk]` limits refuse is not sent. `send` and `replace` return the `RejectReason`; `set_quotes` returns true and the quote manager keeps the level for the next requote. The engine counts and logs the reject, and `on_risk_reject(ctx, r)` reports it.
 
-- It is delivered after the hook that asked has returned, in the order the rejects happened, together with `on_quoting` ([above](#on_quoting)); never from inside the context call that was refused.
-- An order refused again from inside `on_risk_reject` is reported in a further round, a few rounds at most: the queue holds 64 rejects per event, and what does not fit is counted in `EngineStats::risk_reject_notices_dropped`.
-- A strategy without the hook pays nothing: the queue is compiled out with it.
-- Venue rejects are not risk rejects: an order the venue refused comes back through `on_order_update` with `OrderState::Rejected`.
+| `RiskReject` field | Meaning |
+|---|---|
+| `instrument`, `side`, `type`, `price`, `qty` | the refused order |
+| `reason` | the `RejectReason` |
+| `user_tag` | the order's tag; a quote's tag is the `QuoteManager`'s |
+| `replace`, `order` | whether it was a replace, and the id it would have changed (invalid for a new order) |
+| `time` | engine time of the reject |
+
+- Rejects are delivered after the calling hook returns, in the order they happened, together with `on_quoting`.
+- An order refused again from inside `on_risk_reject` is reported in a further round, a few rounds at most. The queue holds 64 rejects per event; overflow is counted in `EngineStats::risk_reject_notices_dropped`.
+- A strategy without the hook pays nothing: the queue is compiled out.
+- An order the venue refused is not a risk reject: it arrives in `on_order_update` with `OrderState::Rejected`.
 
 ### Signature checks
 
-The engine checks each hook name when it is compiled. A member with a hook's name whose call does not compile stops the build, one error per hook:
+The engine checks each hook name at compile time. A member with a hook's name whose call does not compile stops the build, one error per hook:
 
 ```text
 error: static assertion failed: fastmm: on_trade has the wrong signature or is not public; expected void on_trade(auto& ctx, InstrumentId id, const TradeMsg& m)
 ```
 
-- Likely misspellings (`on_fills`, `on_trades`, `on_order_book`, `on_tick`, `on_bbo`, `on_order`, `on_execution`, `on_disconnect`, `onBook`, ...) produce the warning `fastmm: on_fills is not a hook; did you mean on_fill?`, an error with `FASTMM_WERROR`. Silence it with `static constexpr bool fastmm_allow_near_miss_names = true;` in the strategy.
-- Limits: a `final` class is only call-checked, so a wrong signature is silently not called; a hook that is ambiguous across two bases is reported as a wrong signature; a hook with a deduced (`auto`) return type must not be checked with `verify_strategy`; private hooks are rejected, also with `friend`; implicit argument conversions are accepted.
-- `Engine::start()` logs the implemented hooks: `strategy first_mm hooks: start book fill timer connection quoting`.
+| Case | Result |
+|---|---|
+| likely misspelling: `on_fills`, `on_trades`, `on_order_book`, `on_tick`, `on_bbo`, `on_order`, `on_execution`, `on_disconnect`, `onBook`, ... | warning `fastmm: on_fills is not a hook; did you mean on_fill?`, an error with `FASTMM_WERROR`; silence it with `static constexpr bool fastmm_allow_near_miss_names = true;` |
+| a `final` class | only call-checked: a wrong signature is not called and not reported |
+| a hook ambiguous across two bases | reported as a wrong signature |
+| a hook with a deduced (`auto`) return type | must not be checked with `verify_strategy` |
+| a private hook, also with `friend` | rejected |
+| implicit argument conversions | accepted |
+
+`Engine::start()` logs the implemented hooks: `strategy first_mm hooks: start book fill timer connection quoting`.
 
 ## Context
 
-`ctx` is a `StrategyContext<Engine>`, a non-owning view of the engine:
+`ctx` is a `StrategyContext<Engine>`, a non-owning view of the engine.
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#context -->
 ```cpp
@@ -193,31 +229,37 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().rng()), Xoshiro256ss&>);
 | Method | Notes |
 |---|---|
 | `now()` | the engine clock of the current event; virtual time in backtests and replay |
-| `instrument(id)`, `instruments()`, `contains(id)` | the instrument table; iterate `instruments()` for all instruments |
-| `venue_name(venue)` | the venue's name in the configuration (`[venues.<name>]`), which log lines put before a symbol as `venue:symbol` |
-| `book(id)` | the L2 book of an instrument ([Book](#book)) |
-| `position(id)` | `qty` (signed, base units), average price, realised PnL (funding included) and fees of one instrument, in its settlement currency |
-| `portfolio()` | `realized`, `unrealized`, `fees` and `net` (realised + unrealised - fees) over all instruments, in the `[accounting]` reporting currency when one is set; a loop, not for every event |
-| `set_quotes(id, q)` | the desired ladder; the quote manager sends the difference to the working orders. Returns false when the quotes were ignored: quoting disabled or instrument not in the table |
+| `instrument(id)`, `instruments()`, `contains(id)` | the instrument table; iterate `instruments()` for all of them |
+| `venue_name(venue)` | the venue's `[venues.<name>]` name, which log lines print as `venue:symbol` |
+| `book(id)` | the instrument's L2 book ([Book](#book)) |
+| `position(id)` | signed `qty` in base units, average price, realised PnL with funding, and fees, in the settlement currency |
+| `portfolio()` | `realized`, `unrealized`, `fees` and `net` over all instruments, in the `[accounting]` reporting currency when set; a loop, not for every event |
+| `set_quotes(id, q)` | the desired ladder; the quote manager sends the difference. False when ignored: quoting disabled or instrument not in the table |
 | `pull_quotes(id)`, `pull_all_quotes()` | cancel the quotes of one or every instrument |
-| `working_quote(id, side, level)` | the open order in a quote slot (level 0 is closest to the mid), or `nullptr` |
-| `send(req)` | a direct order, risk-checked and journaled. Fails with the `RejectReason` of a risk check, the OMS or the kill switch; `InvalidTag` when `user_tag` lies in the quote manager's range |
+| `working_quote(id, side, level)` | the open order in a quote slot, level 0 nearest the mid, or `nullptr` |
+| `send(req)` | a direct order, risk-checked and journaled; fails with the `RejectReason` of risk, the OMS or the kill switch |
 | `cancel(id)`, `replace(id, px, qty)` | direct order management; cancels are always allowed |
-| `order(id)` | an open order, or `nullptr` once it is terminal; valid until the next context call |
+| `order(id)` | an open order, or `nullptr` once terminal; valid until the next context call |
 | `open_qty(id, side)` | unfilled quantity of our open orders on one side, quotes included |
 | `oms()` | read-only order management state |
-| `every(period, tag)`, `once(delay, tag)` | timers; `on_timer` receives the id and tag. They fire in engine time and are journaled. An invalid id once the wheel holds 1016 timers: its last 8 slots are for the engine's own |
+| `every(period, tag)`, `once(delay, tag)` | timers in engine time, journaled; `on_timer` gets the id and tag. Invalid id once 1016 timers exist: the wheel keeps 8 slots for the engine |
 | `cancel_timer(id)` | false when the timer no longer exists |
-| `watch(id, on)`, `quiet_book(id, lo, hi)`, `quiet_book(id)` | which market data calls the hooks: `watch(id, false)` stops `on_book`, `on_book_ticker`, `on_trade` and `on_option_ticker` for an instrument (its book stays current); `quiet_book` calls `on_book` only once the mid is at or beyond `lo` or `hi`, or the book is invalid, until `quiet_book(id)`. A strategy that declares what it ignores runs faster in a sweep ([Many runs in one pass](../explanation/backtesting.md#many-runs-in-one-pass)) and gives the same result |
-| `quoting_enabled()`, `killed()`, `venue_killed(venue)` | quoting state, the global kill switch and one venue's kill switch (new orders to that venue are refused and `set_quotes` ignores its instruments) |
-| `note_quote(id, side, reason, budget = {})` | why the strategy asks what it asks on a side (`"inventory_cap"`, `"model_off"`; empty: none, up to 23 bytes) and the budget it gave the side, for the quote table of `fastmm-top` ([Monitoring](../how-to/operations/monitor-with-fastmm-top.md)); kept until the next note on the side |
-| `metric(name, value)` | publishes a number by name (a budget split, a model state) in the status file, `fastmm-top` and `fastmm_strategy_metric`; the first 32 names, up to 23 bytes each |
-| `request_stop()` | sets the engine's stop flag: a backtest ends after the current engine step; replay always drains the journal |
-| `trip_kill(reason)` | trips the global kill switch with a `KillReason`: quoting stops, quotes are pulled and every working order is cancelled |
+| `watch(id, on)` | `watch(id, false)` stops `on_book`, `on_book_ticker`, `on_trade` and `on_option_ticker` for an instrument; its book stays current |
+| `quiet_book(id, lo, hi)`, `quiet_book(id)` | calls `on_book` only once the mid reaches `lo` or `hi` or the book turns invalid; the one-argument form ends it |
+| `quoting_enabled()`, `killed()`, `venue_killed(venue)` | quoting state, the global kill switch, one venue's kill switch |
+| `note_quote(id, side, reason, budget = {})` | why the strategy quotes a side as it does, up to 23 bytes, and its budget, for `fastmm-top`'s quote table ([Monitoring](../how-to/operations/monitor-with-fastmm-top.md)) |
+| `metric(name, value)` | publishes a named number in the status file, `fastmm-top` and `fastmm_strategy_metric`; first 32 names, 23 bytes each |
+| `request_stop()` | sets the stop flag: a backtest ends after the current step; replay always drains the journal |
+| `trip_kill(reason)` | trips the global kill switch: quoting stops and every working order is cancelled |
 | `rng()` | a `Xoshiro256ss` seeded from `[engine] rng_seed`, identical in replay |
-| `own_qty(id, side, px)`, `own_qty(id, side, px, at)`, `best_ex_self(id, side)`, `queue_ahead(order_id)`, `order_times(order_id)` | our own orders as the market sees them ([Execution view](#execution-view)) |
+| `own_qty`, `best_ex_self`, `queue_ahead`, `order_times` | our own orders as the market sees them ([Execution view](#execution-view)) |
 
-`set_quotes` applies hysteresis (`[engine] min_requote_ticks`, `min_requote_interval_ms`), skips orders awaiting a venue response and uses replace where the venue supports it. A direct order returns a `Result`:
+- `send` returns `InvalidTag` when `user_tag` lies in the quote manager's range.
+- A venue whose kill switch is engaged refuses new orders, and `set_quotes` ignores its instruments.
+- `watch` and `quiet_book` give the same result and run faster in a sweep ([Many runs in one pass](../explanation/backtesting.md#many-runs-in-one-pass)).
+- `set_quotes` applies hysteresis (`[engine] min_requote_ticks`, `min_requote_interval_ms`), skips orders awaiting a venue response, and replaces where the venue supports it.
+
+A direct order returns a `Result`:
 
 ```cpp
 auto id = ctx.send(NewOrderRequest::limit(inst.id, Side::Buy, px, qty).post_only());
@@ -234,14 +276,61 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().venue_health(VenueId{})), Venu
 static_assert(std::same_as<decltype(lvalue<Ctx>().order_budget(VenueId{})), OrderBudget>);
 ```
 
-| Method | Returns |
-|---|---|
-| `fees(id)` | `FeeRates`: `maker_cbps`, `taker_cbps` (1 cbps = 0.01 bps; positive is a fee, negative a rebate), `maker_bps()`, `taker_bps()`, `fee(notional, liquidity)`. The instrument's `maker_bps` / `taker_bps`, else its venue's `[venues.<x>.fees]`; with `fetch_fees` the account's own rates ([Binance Spot](venues.md#fee-rates)). A backtest charges these rates; a live venue reports the commission of each fill itself |
-| `risk_headroom(id)` | `RiskHeadroom`: what each `[risk]` limit still admits on the instrument now, computed from the inputs the next check uses; an order of exactly a room passes that check and one lot more is refused. `order_tokens` (rate limiter), `open_orders`, `max_order_qty`, `max_order_notional`, `buy_qty` / `sell_qty` (`max_position`, open orders on that side counted, rounded down to the lot), `underlying_buy_qty` / `underlying_sell_qty` (`[risk.underlying]` max_net over the underlying's instruments, in this instrument's contracts; 0 while an inverse contract of it has no mark), `gross_notional`, `net_buy_notional` / `net_sell_notional` (exposure an order may open), `exposure_buy_notional` / `exposure_sell_notional` (those two caps as the notional of one buy / sell on this instrument in its settlement currency, converted at the rate the check uses; on the side that reduces the position, the close at the mid is added, and is all that is left while the currency's rate is unknown, 0 on the other side), `loss_budget` (`max_loss` plus net PnL; the kill switch trips at 0). A limit that is off reads `RiskHeadroom::kUnlimited` or the type's `max()`. Notionals are in the reporting currency with `[accounting]`. `fastmm-gateway`'s account guards are not included |
-| `venue_health(venue)` | `VenueHealthView`: `feed_lag` (`recv_ts - exch_ts` of the venue's latest market-data message with a venue time), `feed_lag_base` (its minimum over the last 8 s), `feed_lag_excess`, `ack_rtt` and `ack_rtt_smoothed` (engine time from sending a new order to consuming its first ack; smoothed as `srtt += (rtt - srtt) / 8`), `md_updated`, `ack_updated`, sample counts, `gate_engagements` and `gated` ([Feed-lag gate](../explanation/risk-model.md#feed-lag-gate)). Zero before the first sample |
-| `order_budget(venue)` | `OrderBudget` (`core/order_budget.hpp`): `local_tokens`, the orders the `[risk] orders_per_sec` bucket admits now (`kUnlimited` with the limit off), and `local_wait_ns`, the time until it admits the next one (0 while it admits one now: a strategy refused `RateLimit` waits this long instead of resending on every event); the venue's own counts as `RateWindow`s (`window_ms`, `used`, `limit`, `cap`, `known()`, `remaining()`; `cap` is where the connector's rate limiter stops sending, 90 % of `limit`, and `remaining()` counts up to it): `orders_10s`, `orders_1m`, `orders_1d` (Binance `ORDERS` per 10 s, minute and day, the count the venue last reported plus the orders sent since, those the connector has not taken yet included) and `weight` (request weight over the venue's shortest window: 6000 a minute on Binance Spot, 2400 on USDⓈ-M); `venue_paused` while the connector sends nothing (429 `Retry-After`, 418); `venue_known`; `orders_remaining()`, the least of them |
+| Method | Returns | Journaled |
+|---|---|---|
+| `fees(id)` | `FeeRates` | yes |
+| `risk_headroom(id)` | `RiskHeadroom`: what each `[risk]` limit still admits on the instrument | yes |
+| `venue_health(venue)` | `VenueHealthView`: feed lag and order round trip | yes |
+| `order_budget(venue)` | `OrderBudget`: the local rate limiter and the venue's own order counts | only `local_tokens` |
 
-The first three are computed from journaled inputs, so replay returns the same values. `venue_health` costs one lookup; `risk_headroom` does the work of a risk check. While the feed-lag gate holds a venue, `set_quotes` on its instruments returns false. `order_budget`'s venue fields are the connector's latest publication from its own thread (its rate limiter, `venues/rate_limiter.hpp`, published with its status and after each response that carried the venue's counts), not journaled: a backtest, a replay and a strategy attached to `fastmm-gateway` see `venue_known == false` and every window unlimited; only `local_tokens` is deterministic.
+`fees(id)` is the instrument's `maker_bps` / `taker_bps`, else its venue's `[venues.<x>.fees]`. With `fetch_fees` it is the account's own rates ([Binance Spot](venues/binance-spot.md#fee-rates)). A backtest charges these; a live venue reports each fill's commission itself.
+
+| `FeeRates` | Meaning |
+|---|---|
+| `maker_cbps`, `taker_cbps` | rates in centi-bps (1 cbps = 0.01 bps); positive is a fee, negative a rebate |
+| `maker_bps()`, `taker_bps()` | the same in bps |
+| `fee(notional, liquidity)` | the fee on a notional |
+
+`risk_headroom(id)` uses the inputs the next risk check uses: an order of exactly a room passes, one lot more is refused. A limit that is off reads `RiskHeadroom::kUnlimited` or the type's `max()`. Notionals are in the reporting currency with `[accounting]`. `fastmm-gateway`'s account guards are not included.
+
+| `RiskHeadroom` field | Room left under |
+|---|---|
+| `order_tokens` | the rate limiter, `orders_per_sec` |
+| `open_orders` | `max_open_orders` on the instrument |
+| `max_order_qty`, `max_order_notional` | the per-order limits |
+| `buy_qty`, `sell_qty` | `max_position`, with that side's open orders counted, rounded down to the lot |
+| `underlying_buy_qty`, `underlying_sell_qty` | `[risk.underlying]` `max_net` over the underlying's instruments, in this instrument's contracts; 0 while an inverse contract of it has no mark |
+| `gross_notional` | the gross notional cap |
+| `net_buy_notional`, `net_sell_notional` | the net exposure an order may open |
+| `exposure_buy_notional`, `exposure_sell_notional` | those caps as one order's notional here, in the settlement currency; see below |
+| `loss_budget` | `max_loss` plus net PnL; the kill switch trips at 0 |
+| `balance_buy_qty`, `balance_sell_qty` | `balance_room` at the book's mid ([Balances](#balances)) |
+
+On the side that reduces the position, `exposure_*_notional` adds the close at the mid. While the currency's rate is unknown that close is all that is left, and the other side reads 0.
+
+| `VenueHealthView` field | Meaning |
+|---|---|
+| `feed_lag` | `recv_ts - exch_ts` of the venue's latest market-data message with a venue time |
+| `feed_lag_base`, `feed_lag_excess` | the minimum lag over the last 8 s, and the lag above it |
+| `ack_rtt`, `ack_rtt_smoothed` | engine time from sending a new order to its first ack; smoothed as `srtt += (rtt - srtt) / 8` |
+| `md_updated`, `ack_updated`, sample counts | when each was last sampled |
+| `gate_engagements`, `gated` | the [feed-lag gate](../explanation/risk-model.md#feed-lag-gate); while it holds a venue, `set_quotes` on its instruments returns false |
+
+All fields are zero before the first sample. `venue_health` costs one lookup; `risk_headroom` costs a risk check.
+
+| `OrderBudget` field | Meaning |
+|---|---|
+| `local_tokens` | orders the `[risk] orders_per_sec` bucket admits now; `kUnlimited` with the limit off |
+| `local_wait_ns` | time until the bucket admits the next order, 0 if it admits one now; a strategy refused `RateLimit` waits this long |
+| `orders_10s`, `orders_1m`, `orders_1d` | the venue's order counts per 10 s, minute and day: its last report plus the orders sent since |
+| `weight` | request weight over the venue's shortest window: 6000 a minute on Binance Spot, 2400 on USDⓈ-M |
+| `venue_paused` | the connector sends nothing: a 429 `Retry-After` or a 418 |
+| `venue_known` | the connector has published counts |
+| `orders_remaining()` | the least of the windows |
+
+Each window is a `RateWindow`: `window_ms`, `used`, `limit`, `cap`, `known()`, `remaining()`. `cap` is where the connector stops sending, 90 % of `limit`, and `remaining()` counts up to it.
+
+The venue fields come from the connector's thread and are not journaled. A backtest, a replay and a strategy attached to `fastmm-gateway` see `venue_known == false` and every window unlimited.
 
 ### Balances
 
@@ -259,16 +348,24 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().balances_live()), bool>);
 
 | Method | Returns |
 |---|---|
-| `balance(venue, asset)` | `Balance`: `free`, `locked`, `total` (the venue's last report moved by this engine's orders and fills since; [Balance check](../explanation/risk-model.md#balance-check)), `equity` and `maintenance` as reported, `as_of` (the report's venue time), `known` (false until the venue reports the asset, and for an asset no instrument of the venue uses). Amounts are in the asset |
-| `margin(venue)` | `Margin`: `available`, `initial`, `maintenance`, `equity`, `wallet`, `asset`: the venue's account-wide margin where it reports one (`account` true, usually valued in USD), else the settlement asset of its first derivative |
-| `balance_room(id, side, px)` | the largest quantity of `id` on `side` at `px` the balance covers, rounded down to the lot: a spot buy's quote with the taker fee, a spot sell's base, a derivative's initial margin; `Qty::max()` while the venue has not reported that balance. What this instrument's open orders on that side hold is not counted as room |
+| `balance(venue, asset)` | `Balance` of one asset, amounts in the asset |
+| `margin(venue)` | `Margin`: `available`, `initial`, `maintenance`, `equity`, `wallet`, `asset` |
+| `balance_room(id, side, px)` | the largest quantity of `id` the balance covers at `px`, rounded down to the lot; `Qty::max()` until the venue reports that balance |
 | `balances_live()` | a venue has reported balances; before that nothing is estimated or checked |
 
-`RiskHeadroom::balance_buy_qty` / `balance_sell_qty` are `balance_room` at the book's mid.
+| `Balance` field | Meaning |
+|---|---|
+| `free`, `locked`, `total` | the venue's last report, moved by this engine's orders and fills since ([Balance check](../explanation/risk-model.md#balance-check)) |
+| `equity`, `maintenance` | as reported |
+| `as_of` | the report's venue time |
+| `known` | false until the venue reports the asset, and for an asset no instrument of the venue uses |
+
+- `margin` is the venue's account-wide margin where it reports one: `account` is true, usually valued in USD. Otherwise it is the settlement asset of the venue's first derivative.
+- `balance_room` counts a spot buy's quote with the taker fee, a spot sell's base and a derivative's initial margin. This instrument's open orders on that side do not count as room.
 
 ### Account pools
 
-Several accounts of one exchange behind one venue (`[venues.<x>] pool_of`, [Account pools](configuration.md#account-pools)): the instruments, books, tickers and positions are the primary's; each member has its own `balance()`, `margin()` and `order_budget()` under its own venue id.
+Several accounts of one exchange behind one venue: `[venues.<x>] pool_of` ([Account pools](configuration.md#account-pools)). Instruments, books, tickers and positions are the primary's. Each member has its own `balance()`, `margin()` and `order_budget()` under its own venue id.
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#pool -->
 ```cpp
@@ -285,12 +382,35 @@ static_assert(std::same_as<decltype(NewOrderRequest::account), VenueId>);
 
 | Method | Returns |
 |---|---|
-| `pool(primary)` | `PoolMembers`: the accounts that take orders for the venue's instruments, the primary first (`size()`, `operator[]`, `contains(venue)`, iterable); just the venue itself without a pool |
+| `pool(primary)` | `PoolMembers`, primary first: `size()`, `operator[]`, `contains(venue)`, iterable; the venue alone without a pool |
 | `pool_primary(venue)` | the venue whose instruments `venue` takes orders for: its primary, or itself |
-| `account_usable(venue)` | the automatic routing would send to it now: its order link is live and its kill switch is not engaged |
-| `balance_room(id, side, px, account)` | `balance_room` on one account of the pool. The three-argument form is what one usable account can hold: the largest over the members of its room (a sell: its free base; a buy: its free quote at the price) plus its own open orders on the side, less `open_qty(id, side)`, the total over every account, and never below zero. `fit_to_balance` (room plus `open_qty`) therefore cuts a ladder to what one account covers, and a quote resting on one account is not resized by another's balance; `balance(member, asset)` shows each account |
+| `account_usable(venue)` | automatic routing would send to it now: order link live, kill switch not engaged |
+| `balance_room(id, side, px, account)` | `balance_room` on one account of the pool |
 
-A new order goes to one account and stays there: `Order::venue`, the `OmsUpdate` and `Fill` events (their `msg->hdr.venue`) and the store's rows carry the member's id, and `cancel` / `replace` follow it. `NewOrderRequest::account` (`.account(venue)` on the builder) names the account; it must be the primary or one of its members, else `send` fails with `InvalidAccount`. Without one the engine picks: for a spot buy the usable members whose free quote covers the notional, for a spot sell those whose free base covers the quantity (every usable member for a derivative), and among them, skipping those whose connector is paused or would refuse the order (an order window at its `cap`), the one with the most of the 10 s window left (`order_budget(member).orders_10s.remaining()`), then of the daily one. The orders sent to an account since its connector last published count against it, so the orders of one burst spread over the pool. Ties take turns: the search starts after the account the last automatic choice with a known budget went to. A backtest without window limits knows no budget and sends everything the balances allow to the primary. When no member covers the order it goes to the primary, which refuses it as the venue does. An order whose account (named, or the primary when no account with window room covers it) has a window at its cap or a paused connector is refused by `send` with `RateLimit`, without reaching the connector. Cancels count in no order window. A member whose order link is down, or whose kill switch is engaged, gets no new orders; a kill of the primary stops the pool. Quotes (`set_quotes`) are routed the same way, one order at a time.
+The three-argument `balance_room` on a pool is what one usable account can hold:
+
+- the largest room over the members, a sell's free base or a buy's free quote at the price,
+- plus that member's own open orders on the side,
+- less `open_qty(id, side)` over every account, never below zero.
+
+`fit_to_balance` therefore cuts a ladder to what one account covers. A quote resting on one account is not resized by another's balance.
+
+An order goes to one account and stays there. `Order::venue`, `OmsUpdate` and `Fill` (`msg->hdr.venue`) and the store's rows carry the member's id; `cancel` and `replace` follow it.
+
+`NewOrderRequest::account`, or `.account(venue)` on the builder, names the account. It must be the primary or a member, else `send` fails with `InvalidAccount`. Without one the engine picks:
+
+1. Candidates: usable members whose free quote covers a spot buy's notional, or whose free base covers a spot sell. Every usable member for a derivative.
+2. Skip members whose connector is paused or has an order window at its `cap`.
+3. Take the one with most of the 10 s window left (`order_budget(member).orders_10s.remaining()`), then of the daily window.
+4. Ties take turns, starting after the account the last automatic choice went to.
+5. No member covers the order: it goes to the primary, which refuses it as the venue does.
+
+- Orders sent to an account since its connector last published count against it, so one burst spreads over the pool.
+- `send` refuses with `RateLimit`, without reaching the connector, an order whose account has a window at its cap or a paused connector.
+- Cancels count in no order window.
+- A member with its order link down or kill switch engaged gets no new orders; a kill of the primary stops the pool.
+- `set_quotes` routes the same way, one order at a time.
+- A backtest without window limits knows no budget and sends what the balances allow to the primary.
 
 ### Perpetuals
 
@@ -309,40 +429,87 @@ static_assert(std::same_as<decltype(lvalue<const FundingView>().over(Duration{})
 
 | Method | Returns |
 |---|---|
-| `mark(id)`, `index(id)` | `RefPrice`: the venue's mark or index price of a derivative (`PerpStateMsg`, [venues](venues.md#mark-index-and-funding)), `at` (engine time it arrived), `stale` (older than `[accounting] stale_mark_ms`, or never reported), `usable()` (reported and not stale) |
-| `funding(id)` | `FundingView`: `rate` (per `interval`, a decimal; positive: longs pay shorts), `interval`, `next` (venue time of the next payment; zero when funding is continuous), `at`, `stale` (against `stale_funding_ms`), `usable()`, `over(d)` (the rate over a holding time `d`: `rate * d / interval`) |
-| `perp_state(id)` | `const PerpRow&`: every field as last reported, open interest included, with the time each arrived and no staleness applied |
+| `mark(id)`, `index(id)` | `RefPrice` of a derivative ([venues](venues/connector-behaviour.md#mark-index-and-funding)) |
+| `funding(id)` | `FundingView` |
+| `perp_state(id)` | `const PerpRow&`: every field as last reported, open interest included, with arrival times and no staleness applied |
 
-A venue that publishes mark, index and funding on separate channels (OKX) sends one message per channel; `PerpStateMsg::fields` names what a message carries and the table keeps the rest. With `[accounting] mark = "venue"` (the default) a position whose instrument has a fresh mark is valued at it ([Valuation](../explanation/risk-model.md#valuation-at-the-venue-mark)); `on_book` then no longer moves its unrealized PnL. `fit_to_balance(ctx, id, inst, q)` (`strategies/quoting.hpp`) cuts a `DesiredQuotes` ladder to what the balance covers, the side's resting orders counted as room, and drops a level under the lot, `min_qty` or `min_notional`; `basic_mm` and `lead_mm` use it.
+| `RefPrice` field | Meaning |
+|---|---|
+| `price` | the venue's mark or index price |
+| `at` | engine time it arrived |
+| `stale` | older than `[accounting] stale_mark_ms`, or never reported |
+| `usable()` | reported and not stale |
+
+| `FundingView` field | Meaning |
+|---|---|
+| `rate` | per `interval`, a decimal; positive means longs pay shorts |
+| `interval` | the funding period |
+| `next` | venue time of the next payment; zero when funding is continuous |
+| `at`, `stale`, `usable()` | as for `RefPrice`, against `stale_funding_ms` |
+| `over(d)` | the rate over a holding time `d`: `rate * d / interval` |
+
+- `PerpStateMsg::fields` names what a message carries; a venue with separate channels (OKX) sends one message per channel and the table keeps the rest.
+- With `[accounting] mark = "venue"`, the default, a position with a fresh mark is valued at it ([Valuation](../explanation/risk-model.md#valuation-at-the-venue-mark)); `on_book` then no longer moves its unrealised PnL.
+- `fit_to_balance(ctx, id, inst, q)` in `strategies/quoting.hpp` cuts a `DesiredQuotes` ladder to what the balance covers. The side's resting orders count as room, and a level under the lot, `min_qty` or `min_notional` is dropped.
 
 ## Execution view
 
-The engine derives these from the order events and the market data it journals, so a replay reproduces them.
+Our own orders as the venue's feed shows them, derived from journaled order events and market data, so a replay reproduces them.
 
 | Method | Returns |
 |---|---|
-| `own_qty(id, side, px)`, `own_qty(id, side, px, at)` | our resting quantity that the venue's feed shows at `px`, as of the book's last update or of venue time `at` (a `BookTicker`'s `hdr.exch_ts`). An order counts from its ack's venue time to its end's (cancel ack, last fill, expiry, a reconciliation that no longer lists it; with whole-millisecond venue times to the end of that millisecond), less its fills, so a depth update stamped before our cancel still includes it. 0 in the simulator |
-| `best_ex_self(id, side)` | the book's best `Level` on one side with `own_qty` taken out; a level that was only ours is skipped; `Level{}` when none is left |
-| `queue_ahead(order_id)` | `std::optional<Qty>`: the estimated quantity resting ahead of an open order at its price; `nullopt` before its ack and once it is terminal |
-| `order_times(order_id)` | `const OrderTimes*` of an open order, `nullptr` once terminal: `sent` (engine clock), `venue_ack` (the ack's `exch_ts`, whole ms on Binance; 0 when the venue gives none), `local_ack` (the ack's `recv_ts`). After a replace they describe the replacement from its ack on. `OmsUpdate::times` carries them in `on_order_update`, the terminal update included, and through `Fill::update` in `on_fill` |
+| `own_qty(id, side, px)`, `own_qty(id, side, px, at)` | our resting quantity the feed shows at `px`, as of the book's last update or venue time `at`; 0 in the simulator |
+| `best_ex_self(id, side)` | the best `Level` on one side with `own_qty` taken out; `Level{}` when none is left |
+| `queue_ahead(order_id)` | `std::optional<Qty>`: the estimated quantity ahead of an open order at its price; `nullopt` before its ack and once terminal |
+| `order_times(order_id)` | `const OrderTimes*` of an open order, `nullptr` once terminal |
 
-Whether a venue's feed shows our orders is a transport property (`own_in_feed(venue)`): yes for `LiveTransport`, for the replay of a live journal (one with a TSC calibration) and for a backtest with `[backtest] own_orders_in_feed`, whose simulated venue sends our quantity as `OwnLevels` messages that the engine shows in its book.
+- `own_qty` counts an order from its ack's venue time to its end's, less its fills. The end is a cancel ack, last fill, expiry or a reconciliation that drops it.
+- With whole-millisecond venue times, an order counts to the end of that millisecond. A depth update stamped before our cancel still includes it.
+- `at` is typically a `BookTicker`'s `hdr.exch_ts`. `best_ex_self` skips a level that was only ours.
 
-`queue_ahead` runs the `l2_queue` fill model's queue model ([`core/queue_model.hpp`](../../include/fastmm/core/queue_model.hpp)) on the market data the strategy sees, with `[engine] queue_conservatism` (`[backtest] queue_conservatism` in a backtest):
+| `OrderTimes` field | Meaning |
+|---|---|
+| `sent` | engine clock at send |
+| `venue_ack` | the ack's `exch_ts`, whole ms on Binance; 0 when the venue gives none |
+| `local_ack` | the ack's `recv_ts` |
+
+After a replace they describe the replacement from its ack on. `OmsUpdate::times` carries them in `on_order_update`, the terminal update included, and `Fill::update` in `on_fill`.
+
+Whether a venue's feed shows our orders is `own_in_feed(venue)`:
+
+| Transport | Feed shows our orders |
+|---|---|
+| `LiveTransport` | yes |
+| replay of a live journal, one with a TSC calibration | yes |
+| backtest with `[backtest] own_orders_in_feed` | yes: the simulated venue sends our quantity as `OwnLevels` |
+| other backtests | no |
+
+### Queue position
+
+`queue_ahead` runs the `l2_queue` fill model's [queue model](../../include/fastmm/core/queue_model.hpp) on the market data the strategy sees. Its conservatism is `[engine] queue_conservatism`, or `[backtest] queue_conservatism` in a backtest.
 
 | Event | Quantity ahead |
 |---|---|
-| ack | the displayed quantity at the price less `own_qty`; at the touch of a newer book ticker, the touch's quantity less ours; 0 better than that touch; either less what the trades printed since took from the level |
-| depth delta at the price | a shrink from `old` to `new` takes `(old - new) * ahead / old * (1 - conservatism)`, where `old` is less what the trades since the last update took; a level that goes away leaves 0; a snapshot caps it at the level |
-| trade at the price | consumed first; a trade through the price leaves 0 (and fills the print's quantity: the aggressor would have taken that much from us before reaching the deeper level). One print is shared by our orders on its side in price priority, best for the aggressor first: each gets what the better ones left, after our maker fills at the print's venue time (live, the print carries them) |
-| book ticker newer than the depth (venue update id when both carry one, else venue time) | 0 for an order priced better than its touch; at most the touch's quantity less ours for an order at the touch |
+| ack | the displayed quantity at the price less `own_qty`, less what trades since took from the level |
+| ack at the touch of a newer book ticker | the touch's quantity less ours; 0 for a price better than that touch |
+| depth delta at the price | a shrink from `old` to `new` takes `(old - new) * ahead / old * (1 - conservatism)`, `old` net of trades since the last update |
+| level removed | 0 |
+| snapshot | capped at the level |
+| trade at the price | consumed first |
+| trade through the price | 0, and the order fills the print's quantity |
+| book ticker newer than the depth | 0 for an order better than its touch; at most the touch's quantity less ours at the touch |
 | replace ack | kept at the same price and no more than the leaves; otherwise as for an ack |
 
-A level that shows less than we have resting at its price was published before our order reached it, and all of it counts as others' quantity. The engine tracks queues from the strategy's first `queue_ahead` call, so a strategy that never calls it pays one load per book update and trade; an order already resting at that call starts at the back of its level as the book then shows it. Call it in `on_start` to cover every order from its ack. With `fill_model = "l2_queue"` and no latency the value equals the fill model's ([`tests/sim/exec_view_test.cpp`](../../tests/sim/exec_view_test.cpp)); with latency the simulated venue sees the market before the strategy does. A replay handles events in arrival order, `fastmm-data fill-check` in venue-time order: on a 3 h Binance Spot session the replayed estimate at the ack equals fill-check's for 2077 of 2079 orders, on a session that joined existing levels for 1639 of 1726.
+- One print is shared by our orders on its side in price priority, best for the aggressor first. Each gets what the better ones left, after our maker fills at the print's venue time.
+- "Newer" compares venue update ids when both messages carry one, else venue times.
+- A level showing less than we rest at its price was published before our order arrived; all of it counts as others' quantity.
+- Tracking starts at the first `queue_ahead` call. An order already resting then starts at the back of its level. Call it in `on_start` to cover every order from its ack.
+- With `fill_model = "l2_queue"` and no latency the value equals the fill model's ([`tests/sim/exec_view_test.cpp`](../../tests/sim/exec_view_test.cpp)). With latency the simulated venue sees the market before the strategy does.
+- A replay handles events in arrival order, `fastmm-data fill-check` in venue-time order, so the two can differ.
 
 ## Hedge executor
 
-`HedgeExecutor` (`strategies/hedge_executor.hpp`, in `fastmm/strategy.hpp`) is a member a strategy owns: it hedges the positions of source instruments with IOC orders on hedge instruments, fails over between them and de-risks ([Hedge with HedgeExecutor](../how-to/strategies/hedge-executor.md)).
+`HedgeExecutor` (`strategies/hedge_executor.hpp`) is a member a strategy owns. It hedges the positions of source instruments with IOC orders on hedge instruments, fails over between them and de-risks ([Hedge with HedgeExecutor](../how-to/strategies/hedge-executor.md)).
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#hedge -->
 ```cpp
@@ -366,19 +533,21 @@ static_assert(std::same_as<decltype(lvalue<const HedgeExecutor>().status(lvalue<
 
 | Method | Does |
 |---|---|
-| `reset()`, `add_source(id)`, `add_hedge(id, tolerance)` | name the legs (at most 4 of each), hedges in order of preference; false when full |
-| `start(ctx, config)` | checks the legs (configured, linear, each once) and starts; false, logged, otherwise |
-| `set_config(config)`, `set_tolerance(i, tolerance)`, `set_target(qty)`, `restart()` | new parameters, a new net target in base units, a halt cleared |
-| `on_fill`, `on_order_update`, `on_book`, `on_timer`, `on_connection`, `on_balance`, `update` | the strategy's hooks forwarded; the `bool` ones return whether the event concerned a leg or one of its orders |
+| `reset()`, `add_source(id)`, `add_hedge(id, tolerance)` | name the legs, at most 4 of each, hedges in order of preference; false when full |
+| `start(ctx, config)` | checks the legs (configured, linear, each once) and starts; false and logged otherwise |
+| `set_config(config)`, `set_tolerance(i, tolerance)` | new parameters |
+| `set_target(qty)` | a new net target in base units |
+| `restart()` | clears a halt |
+| `on_fill`, `on_order_update`, `on_book`, `on_timer`, `on_connection`, `on_balance`, `update` | the strategy's hooks forwarded; the `bool` ones return whether the event concerned a leg or its orders |
 | `residual(ctx)` | sources plus hedges minus the target, base units |
 | `can_hedge(ctx)` | some hedge instrument can take a hedge now and hedging is not halted |
-| `why(ctx, i, now)` | `Reason` hedge instrument `i` is not usable: `Down`, `Killed`, `NoBook`, `Stale`, `Gated`, `Benched`, or `Usable` |
+| `why(ctx, i, now)` | the `Reason` hedge `i` is not usable: `Down`, `Killed`, `NoBook`, `Stale`, `Gated`, `Benched`, or `Usable` |
 | `held()`, `halted()`, `derisking()`, `state()`, `status(ctx)`, `stats()` | monitoring ([Monitor it](../how-to/strategies/hedge-executor.md#monitor-it)) |
 | `hedge_order(inst, residual, bid, ask, tolerance, tag)` | static: the IOC that brings `residual` towards zero on `inst`, or none under its lot, `min_qty` or `min_notional` |
 
 ## Book
 
-`on_book` receives the engine's `L2Book`; any type modelling `BookView` has the same read API:
+`on_book` receives the engine's `L2Book`. Any type modelling `BookView` has the same read API.
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#book -->
 ```cpp
@@ -395,7 +564,7 @@ static_assert(std::same_as<decltype(lvalue<const Book>().is_valid()), bool>);
 | `level(side, i)`, `depth(side)`, `top<N>(side)` | levels from the touch outwards |
 | `qty_at_or_better(side, px)`, `price_for_qty(side, qty)` | depth queries |
 | `is_valid()` | both sides present and not crossed |
-| `seq()`, `last_update()` | the venue sequence number and venue time (`exch_ts`, else receive time) of the last update |
+| `seq()`, `last_update()` | venue sequence number and venue time of the last update; receive time without a venue time |
 
 ## Fill
 
@@ -423,16 +592,17 @@ static_assert(std::same_as<decltype(Fill::msg), const OrderFillMsg*>);
 | `instrument`, `side` | the order's, else the fill message's |
 | `price`, `qty` | this execution |
 | `position_delta` | signed change of the position; differs from `qty` when the commission is charged in the base asset |
-| `fee`, `fee_converted` | fee in the settlement currency as booked; `fee_converted` is false when the commission was in a third asset (for example BNB) and not booked |
+| `fee` | fee in the settlement currency as booked |
+| `fee_converted` | false when the commission was in a third asset, such as BNB, and not booked |
 | `liquidity` | `Maker`, `Taker` or `Unknown` |
-| `known` | the id matched an order; `update->order` holds its snapshot (for an order that was already terminal: id, instrument, side, state and filled quantity) |
-| `late` | the order was already terminal when the fill arrived |
+| `known` | the id matched an order; `update->order` holds its snapshot |
+| `late` | the order was already terminal when the fill arrived; its snapshot has id, instrument, side, state and filled quantity |
 | `order_done` | the order reached a terminal state with this fill |
-| `update`, `msg` | the OMS update (non-null when `known`) and the raw `OrderFillMsg` |
+| `update`, `msg` | the OMS update, non-null when `known`, and the raw `OrderFillMsg` |
 
 ## Messages
 
-The messages hooks receive are fixed-size, trivially copyable structs (`core/messages.hpp`):
+Hooks receive fixed-size, trivially copyable structs from `core/messages.hpp`.
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#messages -->
 ```cpp
@@ -470,13 +640,38 @@ static_assert(std::same_as<decltype(PerpStateMsg::next_funding), Timestamp>);
 static_assert(std::same_as<decltype(PerpStateMsg::fields), std::uint8_t>);
 ```
 
-- Every message starts with an `EventHeader`: `type`, `venue`, `instrument`, `exch_ts` (venue event time) and `recv_ts` (receive time), plus `seq` and flags.
-- `TradeMsg::aggressor` is the taker's side.
-- `TradeMsg::parties()` is who bought and who sold, where the venue publishes it, and null otherwise: Hyperliquid names both wallet addresses (`PartyIdKind::Address`, 20 bytes in `raw()`), Lighter both account indexes (`PartyIdKind::Account`, `account()`). The ids are copied as the venue sends them. A trade that carries them is 192 bytes (`hdr.len`), the `TradeParties` after the 128-byte message, so copy `*m.parties()` rather than the `TradeMsg`: a copied `TradeMsg` does not include them.
-- `OptionTickerMsg`: `mark_price` is in the instrument's price unit, `underlying_price` and `index_price` in the underlying's quote currency, implied volatilities are annualised decimals (0.312 is 31.2 %), greeks are the venue's; NaN marks a field the venue did not send.
-- `ConnectionStateMsg::state` is `Disconnected`, `Connecting`, `Live`, `Stale`, `Resyncing` or `Dead`; `channel` is 0 for market data and 1 for the order and user stream; `reason_code` is venue-specific.
-- `OmsUpdate` carries the order snapshot after the transition (`order`), the previous state (`prev`), and `known`, `changed` and `terminal` flags.
-- `BalanceMsg`: one asset of a venue's account as the venue reports it, absolute amounts in `asset` at `exch_ts`: `free`, `locked`, `total`, `equity`, `maintenance` (for a derivative: available margin, initial margin in use, wallet balance, wallet plus unrealised PnL, maintenance margin). Flags: `kSnapshot` (part of a full snapshot), `kSnapshotEnd` (its last message; an asset it did not name holds nothing), `kAccount` (the account-wide margin).
+| Message | Notes |
+|---|---|
+| `EventHeader` | starts every message: `type`, `venue`, `instrument`, `exch_ts` (venue event time), `recv_ts` (receive time), `seq` and flags |
+| `TradeMsg` | `aggressor` is the taker's side |
+| `TradeMsg::parties()` | who bought and who sold where the venue publishes it, else null; see below |
+| `OptionTickerMsg` | `mark_price` in the instrument's price unit; `underlying_price` and `index_price` in the underlying's quote currency; IVs annualised decimals (0.312 is 31.2 %); the venue's greeks; NaN for a field not sent |
+| `ConnectionStateMsg` | `state`: `Disconnected`, `Connecting`, `Live`, `Stale`, `Resyncing` or `Dead`; `channel` 0 market data, 1 order and user stream; `reason_code` venue-specific |
+| `OmsUpdate` | `order` (snapshot after the transition), `prev` (the previous state), and the flags `known`, `changed`, `terminal` |
+| `BalanceMsg` | one asset of a venue account as reported, absolute amounts in `asset` at `exch_ts`; see below |
+
+Trade parties:
+
+| Venue | `PartyIdKind` | Read with |
+|---|---|---|
+| Hyperliquid | `Address`, both wallet addresses | `raw()`, 20 bytes |
+| Lighter | `Account`, both account indexes | `account()` |
+
+A trade with parties is 192 bytes (`hdr.len`): the `TradeParties` follow the 128-byte message. A copied `TradeMsg` does not include them, so copy `*m.parties()`.
+
+| `BalanceMsg` field | Spot | Derivative |
+|---|---|---|
+| `free` | free | available margin |
+| `locked` | locked | initial margin in use |
+| `total` | total | wallet balance |
+| `equity` | total | wallet plus unrealised PnL |
+| `maintenance` | 0 | maintenance margin |
+
+| `BalanceMsg` flag | Meaning |
+|---|---|
+| `kSnapshot` | part of a full snapshot |
+| `kSnapshotEnd` | the snapshot's last message; an asset it did not name holds nothing |
+| `kAccount` | the account-wide margin |
 
 ## Parameters
 
@@ -508,15 +703,15 @@ struct AllHooksParams {
 | `FASTMM_PARAM_BPS(name, ...)` | `Ratio` | `bps` | basis points, exact, up to 4 decimals |
 | `FASTMM_PARAM_MS(name, ...)` | `Duration` | `ms` | whole milliseconds; bounds are `Duration`s |
 
-- The arguments are the field name, default, minimum, maximum and a description; `FASTMM_PARAMS(Self)` comes first. At most 128 parameters.
+- Arguments: field name, default, minimum, maximum, description. `FASTMM_PARAMS(Self)` comes first; at most 128 parameters.
 - `decimal`, `bps` and `ms` values are parsed as decimal text, never through a double; exponents are accepted ([Fixed point](fixed-point.md#parsing-and-formatting)).
 - Ranges are checked on the typed value: `parameter 'quote_qty': value 1000.5 outside [0, 1000]`.
-- A strategy whose parameters name instruments can declare `std::optional<std::string> check_instruments(const InstrumentTable&) const`; it runs after `configure()`, before the engine is built, and an error stops the session the way a bad parameter does. `lead_mm` uses it for its `target`, `leader` and `fx` indices.
+- `std::optional<std::string> check_instruments(const InstrumentTable&) const` checks parameters that name instruments. It runs after `configure()`, before the engine is built; an error stops the session. `lead_mm` uses it.
 - The schema drives configuration checks, `--list-strategies`, `--param key=value` and `fastmm.strategies()` in Python.
 
 ### Parameters per instrument
 
-`StrategyBase<Params>` keeps one parameter set for every instrument. With `ParamScope::PerInstrument` it also keeps a set per instrument, and `params(id)` reads the instrument's:
+`StrategyBase<Params, ParamScope::PerInstrument>` keeps a parameter set per instrument besides the shared one, and `params(id)` reads the instrument's.
 
 ```cpp
 class MyMM : public StrategyBase<MyParams, ParamScope::PerInstrument> {
@@ -524,34 +719,57 @@ class MyMM : public StrategyBase<MyParams, ParamScope::PerInstrument> {
 };
 ```
 
-- `params()` is the set every instrument starts from: the configuration and the updates that named no instrument. `params(id)` is that set with the updates that named `id` on top. For a `Shared` strategy (the default) `params(id)` is `params()`.
-- Its publisher takes updates for one instrument: `fastmm-ctl param --instrument`, and an `[ab]` test that gives instruments different arms ([Run an A/B test](../how-to/strategies/ab-test.md)). A `Shared` strategy refuses both.
-- A parameter the strategy reads through `params()` only, or only in `on_start`, does not change per instrument; read it through `params(id)` where it should.
-- `basic_mm` and `avellaneda_stoikov` are `PerInstrument`.
+| | `Shared` (default) | `PerInstrument` |
+|---|---|---|
+| `params()` | the configuration plus every update | the configuration plus updates that named no instrument |
+| `params(id)` | same as `params()` | `params()` plus the updates that named `id` |
+| updates for one instrument (`fastmm-ctl param --instrument`, an `[ab]` test with per-instrument arms) | refused | taken |
+
+- A parameter read only through `params()`, or only in `on_start`, does not vary per instrument.
+- `basic_mm` and `avellaneda_stoikov` are `PerInstrument`. A/B tests: [Run an A/B test](../how-to/strategies/ab-test.md).
 
 ## Parameter updates
 
-A running engine takes new parameter values as an input event. `ParamPublisher` (`fastmm/strategies/param_publisher.hpp`) builds the event on another thread and pushes it into a ring of the engine's feed; in a backtest, `sim::ParamSchedule` (`fastmm/sim/param_schedule.hpp`) delivers events at simulated times through `bt::BacktestSession::set_param_schedule`.
+A running engine takes new parameter values as an input event. `ParamPublisher` (`fastmm/strategies/param_publisher.hpp`) builds the event on another thread and pushes it into a ring of the engine's feed.
 
 ```cpp
 ParamPublisher pub(ParamSink::to_ring(ring), strategy.params());
 bool sent = pub.publish({{"half_spread_bps", "7.5"}, {"quote_qty", "0.02"}});
 ```
 
-- `publish(values, inst)` parses each value with the parameter's type and range into a copy of the parameters, then runs `validate()`. An unknown name, a name given twice, a value that does not parse or is out of range, a failed `validate()` and more than 32 values throw `std::invalid_argument`; nothing is sent then.
+In a backtest, `sim::ParamSchedule` (`fastmm/sim/param_schedule.hpp`) delivers updates at simulated times through `bt::BacktestSession::set_param_schedule`.
+
+- `publish(values, inst)` parses each value into a copy of the parameters and runs `validate()`. Nothing is sent if it throws `std::invalid_argument`.
+- It throws for an unknown name, a name given twice, a value that does not parse or is out of range, a failed `validate()` and more than 32 values.
 - It returns false when the ring is full or after `close()`; the engine never waits for the publisher.
-- The copy starts from the parameters passed to the constructor and follows every update that was sent. An update names no instrument and applies to all, or with `ParamScope::PerInstrument` may name one ([above](#parameters-per-instrument)).
-- The engine assigns all values of an update at one event, journals it and then calls `on_params(ctx)`. Parameters the update does not name keep their values.
-- `[strategy] max_param_age_ms` (0, the default, is off) disables quoting before the first update and whenever none was applied for that long in engine time: the engine pulls the quotes, `set_quotes` returns false and `on_quoting(false)` fires. The next update fires `on_quoting(true)`.
-- Replay applies the journaled updates at the same events and matches their fields to the strategy's parameters by name ([Journal format](journal-format.md#parameter-updates)).
+- The copy starts from the constructor's parameters and follows every update sent. An update applies to all instruments, or with `PerInstrument` may name one.
+- The engine assigns an update's values at one event, journals it, then calls `on_params(ctx)`. Parameters it does not name keep their values.
+- `[strategy] max_param_age_ms` (0, off, by default) disables quoting before the first update and when none arrived for that long in engine time. The quotes are pulled and `on_quoting(false)` fires; the next update fires `on_quoting(true)`.
+- Replay applies the journaled updates at the same events, matched to the parameters by name ([Journal format](journal-format.md#parameter-updates)).
 
 ## State across sessions
 
-A strategy that keeps something worth more than one session (an online model, learned sizes) gives the engine its bytes: `std::string_view state()` returns them (the engine copies them at once) and `bool restore(std::string_view)` takes bytes saved before, false when they are not its own. Both or neither; the signatures are checked at registration like the hooks. The format is the strategy's; a version prefix is worth having.
+A strategy can carry bytes from one session to the next, such as an online model. It implements both or neither:
 
-With `[strategy] state_file` set, the engine calls `restore` once, after `on_start` and before the first event, with the file's contents (no file is a first start; an unreadable one is a configuration error), and takes `state()` every `state_interval_s` (300 by default) of engine time and at the end, never from inside another hook. The live session and the backtest write the bytes to the file atomically (a temporary file, then a rename) off the engine thread. A backtest's end state is what the next backtest, or a live session, starts from. The points of a sweep, the folds of a walk-forward and the arms of an `[ab]` branch test all restore the file as it was when they began and none writes it back, so they stay comparable; a replay of a journal neither reads nor writes the file, so it sees the session as the journal recorded it.
+| Member | Does |
+|---|---|
+| `std::string_view state()` | returns the bytes; the engine copies them at once |
+| `bool restore(std::string_view)` | takes bytes saved before; false when they are not its own |
 
-A warm standby (`fastmm-live --standby`) is the exception: it runs on market data before the session it replaces has written the file for the last time, so `restore` comes once it takes over, after `on_start` and the market data it warmed up on ([Hand over a running session](../how-to/operations/hand-over-a-session.md#warm-standby)).
+The signatures are checked at registration like the hooks. The format is the strategy's; a version prefix helps.
+
+With `[strategy] state_file` set:
+
+| Run | Reads the file | Writes it |
+|---|---|---|
+| live session, backtest | `restore` once, after `on_start`, before the first event | `state()` every `state_interval_s` (300 s) of engine time and at the end |
+| warm standby (`fastmm-live --standby`) | `restore` when it takes over, after warming up ([Hand over a running session](../how-to/operations/hand-over-a-session.md#warm-standby)) | as a live session, from takeover |
+| sweep points, walk-forward folds, `[ab]` arms | the file as it was when they began | never |
+| replay of a journal | never | never |
+
+- No file is a first start; an unreadable file is a configuration error.
+- `state()` is never called from inside another hook. Writes are atomic, a temporary file then a rename, off the engine thread.
+- A backtest's end state is what the next backtest or live session starts from.
 
 ## Fixed-point helpers
 
@@ -585,11 +803,11 @@ static_assert(
 static_assert(std::convertible_to<LimitOrder, NewOrderRequest>);
 ```
 
-`NewOrderRequest::limit(id, side, px, qty)` builds a GTC limit order. [Fixed point](fixed-point.md) has the types, literals, rounding rules, quoting helpers and ranges.
+`NewOrderRequest::limit(id, side, px, qty)` builds a GTC limit order. Types, literals, rounding rules, quoting helpers and ranges: [Fixed point](fixed-point.md).
 
 ## Test harness
 
-`fastmm::sim::StrategyHarness<S>` (`fastmm/testing/strategy_harness.hpp`, in `fastmm::sim`) runs a strategy in a real `Engine<S, SimClock, SimTransport, InlineFeed>` against a simulated venue on virtual time. Each call runs the engine until it is idle:
+`fastmm::sim::StrategyHarness<S>` (`fastmm/testing/strategy_harness.hpp`) runs a strategy in a real engine against a simulated venue on virtual time. Each call runs the engine until it is idle.
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#harness -->
 ```cpp
@@ -627,19 +845,19 @@ h.engine().finish();  // on_stop
 
 | Call | Effect |
 |---|---|
-| `StrategyHarness<S>(params, options)` | configures the strategy (`std::invalid_argument` on a bad value) and starts the engine; `HarnessOptions` sets instruments, `EngineConfig`, latency (100 µs each way) and start time |
+| `StrategyHarness<S>(params, options)` | configures the strategy and starts the engine; `std::invalid_argument` on a bad value. `HarnessOptions` sets instruments, `EngineConfig`, latency (100 µs each way) and start time |
 | `book(bid, ask[, size, id])` | a one-level snapshot each side; prices as strings or `Price` |
 | `trade(px, qty, aggressor[, id])` | a public trade |
-| `fill(side[, qty, id])` | a taker at the venue fills our best working order on `side` (all of it when `qty` is 0), then advances by the ack latency; false when there is none |
+| `fill(side[, qty, id])` | a taker fills our best working order on `side`, all of it when `qty` is 0, then time advances by the ack latency; false when there is none |
 | `disconnect([channel, venue])`, `reconnect(...)` | a `ConnectionStateMsg`; channel 0 is market data |
-| `pull_quotes()`, `resume_quotes()` | operator control, `on_quoting(false)` and `on_quoting(true)` |
-| `publish(values)` | a parameter update for all instruments at the current time: the parameters change, then `on_params` runs; `std::invalid_argument` when a publisher would reject it |
+| `pull_quotes()`, `resume_quotes()` | operator control: `on_quoting(false)`, `on_quoting(true)` |
+| `publish(values)` | a parameter update for all instruments now, then `on_params`; `std::invalid_argument` when a publisher would reject it |
 | `push(msg.hdr)` | any other message at the current time |
 | `advance(duration)` | moves virtual time: orders reach the venue, acks and fills return, timers fire |
 | `working_orders([id])` | our working orders, bids then asks, best first |
 | `engine()`, `strategy()`, `now()`, `instrument()`, `price(s)`, `quantity(s)` | access and conversions |
 
-The default instrument is BTCUSDT on venue 0 with a tick of 0.01 and a lot of 0.001. The harness allocates and is single-threaded.
+The default instrument is BTCUSDT on venue 0, tick 0.01, lot 0.001. The harness allocates and is single-threaded.
 
 ## Registration
 
@@ -651,13 +869,21 @@ void register_strategies(StrategyRegistry& r) {
 static_assert(std::same_as<decltype(&register_strategies), StrategyModule>);
 ```
 
-- `register_strategy<S>(r)` adds the Sim, Replay and Live factories of `S`. The file that calls it includes `fastmm/strategies/factories.hpp`, which compiles the three engines; without it the link fails and names the missing factory.
-- A strategy library exports one such function (`StrategyModule`); apps pass it to `fastmm::cli::live`, `backtest` or `replay`. The built-in strategies are always registered first.
-- Registering the same function twice is a no-op; a name registered by different code throws `StrategyConflict` (the command lines exit with code 3).
+- `register_strategy<S>(r)` adds the Sim, Replay and Live factories of `S`. Its file includes `fastmm/strategies/factories.hpp`, which compiles the three engines; without it the link fails naming the factory.
+- A strategy library exports one such function, a `StrategyModule`; apps pass it to `fastmm::cli::live`, `backtest` or `replay`. Built-in strategies are registered first.
+- Registering the same function twice does nothing. A name registered by different code throws `StrategyConflict`, and the command lines exit with code 3.
 - `bt::run_backtest<S>(cfg, source)` and `StrategyHarness<S>` need no registration.
 
 Build setups: [Register a strategy](../how-to/strategies/register-a-strategy.md).
 
 ## Logging
 
-`FASTMM_LOG_TRACE`, `FASTMM_LOG_DEBUG`, `FASTMM_LOG_INFO`, `FASTMM_LOG_WARN` and `FASTMM_LOG_ERROR` take a fmt format string (`FASTMM_LOG_INFO("filled {} @ {}", qty, px)`); `Price`, `Qty`, `Side` and the enums format directly. Records go through a per-thread ring to a background thread; when the ring is full the record is dropped and counted. A line carries the wall-clock time live and the simulated time in a backtest or a replay, the moment in the data it was written at. Logs are not journaled: strategy logic must not depend on them.
+`FASTMM_LOG_TRACE`, `FASTMM_LOG_DEBUG`, `FASTMM_LOG_INFO`, `FASTMM_LOG_WARN` and `FASTMM_LOG_ERROR` take a fmt format string; `Price`, `Qty`, `Side` and the enums format directly.
+
+```cpp
+FASTMM_LOG_INFO("filled {} @ {}", qty, px);
+```
+
+- Records go through a per-thread ring to a background thread; a full ring drops the record and counts it.
+- A line carries wall-clock time live, and simulated time in a backtest or replay.
+- Logs are not journaled, so strategy logic must not depend on them.

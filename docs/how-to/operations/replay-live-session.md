@@ -11,7 +11,7 @@ Add to the session's configuration:
 checkpoint_s = 300
 ```
 
-Every 300 s of engine time the journal gets the strategy's `state()` (for a strategy that keeps state), the positions and the open orders ([Journal format](../../reference/journal-format.md#strategy-state)). The journal also holds what a backtest reads back besides the market: the session's own orders with their send, venue and receive times, the balances its venues reported, money moved in or out of its accounts outside the engine ([Venues](../../reference/venues.md#balances)) and the parameter changes it received.
+Every 300 s of engine time the journal gets the strategy's `state()` (for a strategy that keeps state), the positions and the open orders ([Journal format](../../reference/journal-format.md#strategy-state)). The journal also holds what a backtest reads back besides the market: the session's own orders with their send, venue and receive times, the balances its venues reported, money moved in or out of its accounts outside the engine ([Venues](../../reference/venues/connector-behaviour.md#balances)) and the parameter changes it received.
 
 ## Backtest from a checkpoint
 

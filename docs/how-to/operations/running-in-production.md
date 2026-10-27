@@ -45,7 +45,7 @@ On Binance USDⓈ-M, if the countdown cannot be refreshed for a whole window whi
 
 ## Missed fills
 
-Every connector with order entry replays the account's executions before each open-orders snapshot and once a minute while connected, and books what the private stream missed with the venue's price and fee ([Executions the private stream never delivered](../../reference/venues.md#executions-the-private-stream-never-delivered)).
+Every connector with order entry replays the account's executions before each open-orders snapshot and once a minute while connected, and books what the private stream missed with the venue's price and fee ([Executions the private stream never delivered](../../reference/venues/connector-behaviour.md#execution-replay)).
 
 A replay can fail: the query errors, is rate limited, or returns a full page. Until the connector's retry succeeds, that reconciliation is an estimate: a partial fill it reports is booked at the order's own price with no fee (`EngineStats::estimated_reconciles`), and an order it drops with quantity still working is counted in `EngineStats::unresolved_orders` and logged, because the position may be short by that much.
 
@@ -87,7 +87,7 @@ The [store](../../reference/storage.md) next to the journal behaves the same way
 | Case | What happens | Where it bites |
 |---|---|---|
 | Two settlement currencies | with `[accounting]`, the totals, `max_loss` and the exposure caps are converted to `reporting_currency` at the mid of each currency's FX source; an order that adds exposure in a currency without a current rate is refused (`FxRateUnknown`). Without it, `fastmm-live` refuses `max_loss` on a mixed table and warns | the rate is the source's mid, not what the venue would convert at; a stale source keeps PnL at its last rate; a currency whose rate was never known is left out of the totals ([Configuration](../../reference/configuration.md#accounting)) |
-| Perpetual funding | booked as realized PnL of the instrument, in its settlement currency, once per venue id: Binance USDⓈ-M from `GET /fapi/v1/income` (triggered by the funding `ACCOUNT_UPDATE`, and swept every minute), Bybit linear from `execType` `Funding` executions (stream and `execution/list`). It counts against `max_loss` like a fill; the store's `funding` table and `funding_raw` columns say how much of realized it is | booked up to a minute late when the stream event is missed; Deribit perpetual funding is not booked ([Venues](../../reference/venues.md#funding)) |
+| Perpetual funding | booked as realized PnL of the instrument, in its settlement currency, once per venue id: Binance USDⓈ-M from `GET /fapi/v1/income` (triggered by the funding `ACCOUNT_UPDATE`, and swept every minute), Bybit linear from `execType` `Funding` executions (stream and `execution/list`). It counts against `max_loss` like a fill; the store's `funding` table and `funding_raw` columns say how much of realized it is | booked up to a minute late when the stream event is missed; Deribit perpetual funding is not booked ([Venues](../../reference/venues/deribit.md#funding)) |
 | Commission in a third asset | the fee is set to zero and left out of fees and positions, with one WARN line per session | BNB-discounted Binance fees make the engine under-report its costs ([Troubleshooting](troubleshooting.md#orders-and-reconciliation)) |
 | Cross-instrument risk | position limits are per instrument; `max_loss` and the exposure caps are the only portfolio-wide limits | a hedged pair and two outright positions look the same to the per-instrument limits |
 
@@ -253,6 +253,6 @@ With `spin_mode = "adaptive"` the threads sleep when idle and the starvation ris
 - `nasdaq_itch` order entry exists for `fastmm-sim-itch` (`order_entry = "sim_ouch"`).
 - Deribit's open-order reconciliation is skipped whole if any currency's request errors, until the next reconnect.
 - The OMS deduplicates executions in a 4096-entry window. A replay longer than that, as a Nasdaq SoupBinTCP re-login from sequence 1 can produce, would double-book.
-- Items the connectors could not confirm against a live venue are listed on [Venue connectors](../../reference/venues.md#open-questions-verify-in-the-code).
+- Items the connectors could not confirm against a live venue are listed on [Venue connectors](../../reference/venues.md#capabilities).
 
 Next: [Operations runbook](runbook.md) for first deploy, daily checks and incidents.

@@ -206,6 +206,19 @@ nav:
           - reference/status-file.md
       - Venues and protocols:
           - reference/venues.md
+          - reference/venues/connector-behaviour.md
+          - reference/venues/binance-spot.md
+          - reference/venues/binance-usdm.md
+          - reference/venues/bybit.md
+          - reference/venues/okx.md
+          - reference/venues/gate.md
+          - reference/venues/hyperliquid.md
+          - reference/venues/lighter.md
+          - reference/venues/gemini.md
+          - reference/venues/coinbase.md
+          - reference/venues/deribit.md
+          - reference/venues/alpaca.md
+          - reference/venues/nasdaq-itch.md
           - reference/sim-exchange.md
           - reference/sim-itch.md
           - reference/options.md

@@ -74,7 +74,7 @@ The reason is in the log (`kill switch engaged (<reason>, flags=<hex>)`), in `fa
 | `OrderRingOverflow` | the engine did not drain a venue's order events fast enough; exit code 5 | raise `[engine] order_ring_bytes`; check that the engine thread is pinned and not starved |
 | `OrderIdsExhausted` | the session's 32-bit client order id sequence ran out | restart |
 | `StrategyError` | a Python hot hook raised, called `ctx.fail` or produced a non-finite value | reproduce it in a backtest from the session's journal |
-| `FeedLost` | a `nasdaq_itch` feed could not rebuild its books | check `glimpse_url`, the recovery buffer size and the line's packet loss ([Venue connectors](../../reference/venues.md#startup-and-recovery)) |
+| `FeedLost` | a `nasdaq_itch` feed could not rebuild its books | check `glimpse_url`, the recovery buffer size and the line's packet loss ([Venue connectors](../../reference/venues/nasdaq-itch.md#startup-and-recovery)) |
 | `GatewayMaxLoss`, `GatewayOperator` | `fastmm-gateway` tripped the account: `[gateway] max_loss`, or `fastmm-ctl --gateway <name> kill` | see [Run behind a gateway](run-behind-a-gateway.md) |
 | `StoreFailure` | the store failed a write or dropped records and `[storage] kill_on_failure = true` | the first `store:` ERROR names the SQLite error; check the disk and the store file. Dropped records: raise `[storage] ring_bytes`. The store now misses rows, so the next start restores from an incomplete record: compare its restored position with the venue's |
 

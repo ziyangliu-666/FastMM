@@ -62,7 +62,7 @@ python -m fastmm run strategy:MyMm --config sim.toml --duration 60s
 - [Your first market maker](tutorials/first-strategy/README.md): a C++ strategy from its header to Binance Demo, in nine steps.
 - [Quote on one venue, hedge on another](how-to/strategies/xmm.md): run `xmm` on Binance Demo.
 - [Run on a testnet or Binance Demo](how-to/operations/run-on-testnet.md): keys, a dry run and a first keyed session.
-- [Account pools](reference/venues.md#account-pools): several accounts of one exchange behind one venue.
+- [Account pools](reference/venues/connector-behaviour.md#account-pools): several accounts of one exchange behind one venue.
 - [Run in production](how-to/operations/running-in-production.md): what to set before a keyed session runs unattended.
 - [Low-latency TCP](how-to/operations/low-latency-tcp.md): busy polling, and OpenOnload or XLIO for order entry.
 - [How FastMM works](explanation/how-it-works.md): the engine thread, the path of one event and what it guarantees.

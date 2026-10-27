@@ -2,7 +2,7 @@
 
 Status: accepted (2026-09); not implemented (the symbols and files below are the plan, not the code); market data amended by [ADR-0015](0015-multicast-market-data.md)
 
-Amendment (2026-10-27): the Alpaca connector of section 8 is implemented on its own, without the engine changes of sections 2 to 7 ([Venue connectors](../reference/venues.md#alpaca-us-stocks-alpaca)). Equities trade on the existing $0.01 tick, without sessions, statuses, buying power or share-based fees; the venue's refusals (wash trade, short sale with a buy open) reach the strategy as rejects, and a restart takes the position from `GET /v2/positions`. The keys are `ALPACA_API_KEY` and `ALPACA_API_SECRET`. The paper account accepts no short sale while a buy of the symbol is open, so quoting from flat is one-sided there.
+Amendment (2026-10-27): the Alpaca connector of section 8 is implemented on its own, without the engine changes of sections 2 to 7 ([Venue connectors](../reference/venues/alpaca.md)). Equities trade on the existing $0.01 tick, without sessions, statuses, buying power or share-based fees; the venue's refusals (wash trade, short sale with a buy open) reach the strategy as rejects, and a restart takes the position from `GET /v2/positions`. The keys are `ALPACA_API_KEY` and `ALPACA_API_SECRET`. The paper account accepts no short sale while a buy of the symbol is open, so quoting from flat is one-sided there.
 
 FastMM trades US-listed stocks on IEX data: first in backtests from IEX HIST, then in paper trading through Alpaca to validate the connector, then two-sided market making through Interactive Brokers with directed routing.
 

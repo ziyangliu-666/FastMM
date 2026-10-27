@@ -1,6 +1,6 @@
 # Receive a multicast feed
 
-A `nasdaq_itch` venue receives TotalView-ITCH 5.0 over MoldUDP64 multicast on two lines, A and B, and builds its books from a GLIMPSE snapshot ([Venue connectors](../../reference/venues.md#nasdaq-totalview-itch-nasdaq_itch)). Design: [ADR-0015](../../adr/0015-multicast-market-data.md).
+A `nasdaq_itch` venue receives TotalView-ITCH 5.0 over MoldUDP64 multicast on two lines, A and B, and builds its books from a GLIMPSE snapshot ([Venue connectors](../../reference/venues/nasdaq-itch.md)). Design: [ADR-0015](../../adr/0015-multicast-market-data.md).
 
 ## 1. Configure the venue
 

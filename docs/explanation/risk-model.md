@@ -92,7 +92,7 @@ The first message 100 ms after the last late one releases the gate, and the stra
 
 Check 21 refuses an order that the account's free balance on its venue does not cover. The engine keeps one balance row per venue and asset: the base and quote of each spot instrument, the settlement asset of each derivative, and an account row for venues that report account-wide margin.
 
-Connectors report balances as snapshots after every reconciliation and at start-up, plus the private stream's updates where the venue has one ([Venues](../reference/venues.md#balances)). In a backtest the simulated venue sends them ([Backtesting](backtesting.md#balances)). The reports are journaled, so a replay rebuilds the same rows.
+Connectors report balances as snapshots after every reconciliation and at start-up, plus the private stream's updates where the venue has one ([Venues](../reference/venues/connector-behaviour.md#balances)). In a backtest the simulated venue sends them ([Backtesting](backtesting.md#balances)). The reports are journaled, so a replay rebuilds the same rows.
 
 Between reports the engine moves each row with its own order events:
 
@@ -171,7 +171,7 @@ The inverse flag comes from Deribit reference data, not from the configuration. 
 
 ## Valuation at the venue mark
 
-With `[accounting] mark = "venue"`, the default, a derivative position is valued at the venue's published mark price while the mark is younger than `stale_mark_ms` (15 s by default). Liquidations and the venue's own unrealised PnL use the same mark ([Venues](../reference/venues.md#mark-index-and-funding)).
+With `[accounting] mark = "venue"`, the default, a derivative position is valued at the venue's published mark price while the mark is younger than `stale_mark_ms` (15 s by default). Liquidations and the venue's own unrealised PnL use the same mark ([Venues](../reference/venues/connector-behaviour.md#mark-index-and-funding)).
 
 The mark sets the unrealised PnL, the net PnL `max_loss` measures and the exposure the notional caps sum. A new mark revalues the position and checks `max_loss` at once; book updates do not move it. When the mark goes stale, the next book update values the position at the mid, logged and counted, until a fresh mark arrives.
 

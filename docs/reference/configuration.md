@@ -220,7 +220,7 @@ One transfer at a time per pool, and at most one per `min_interval_s` and `max_p
 
 Every transfer has a client id (`fm` + the primary's venue id + the time in base 36 + a counter) and is written to `state_file` before it is sent. A process that stops with a transfer unanswered asks the venue for it by that id when it starts again, before it plans anything; a transfer the venue has no record of after `timeout_s` failed. Each step (planned, sent, done, failed, timed out) is logged and reaches the engine as a `ControlCommand::Transfer` message (`ControlTransferMsg`), which the journal records; `tools/journal_dump.py` prints them. The status file and fastmm-top's Prometheus endpoint carry the counters (`fastmm_treasury_*`).
 
-The primary's connector carries the transfers out and must have internal transfers (`VenueCapabilities::internal_transfer`; Binance Spot and USDⓈ-M do, with `transfer_api_key_env`, see [Venues](venues.md#internal-transfers)); each account's connector names its account (`sub_account_email`). The treasury runs on a thread of its own (`fm-treasury`) and does not run in a dry run of the whole session or in a strategy attached to fastmm-gateway. A backtest runs every enabled treasury on simulated time against the pool's simulated accounts (`[backtest.venues.<member>.balances]`): it looks at the venue's free amounts every `interval_s`, a transfer is carried out `[backtest] transfer_latency_ms` after it is sent (`sim::SimTreasuryPort`), the engine hears the new balances on each account's link, and nothing is written to `state_file`. The run stays deterministic; the result counts the transfers (`BacktestResult::treasury`, `"treasury"` in `summary.json`, a line in the summary table) and `transfers.csv` lists them.
+The primary's connector carries the transfers out and must have internal transfers (`VenueCapabilities::internal_transfer`; Binance Spot and USDⓈ-M do, with `transfer_api_key_env`, see [Venues](venues/connector-behaviour.md#internal-transfers)); each account's connector names its account (`sub_account_email`). The treasury runs on a thread of its own (`fm-treasury`) and does not run in a dry run of the whole session or in a strategy attached to fastmm-gateway. A backtest runs every enabled treasury on simulated time against the pool's simulated accounts (`[backtest.venues.<member>.balances]`): it looks at the venue's free amounts every `interval_s`, a transfer is carried out `[backtest] transfer_latency_ms` after it is sent (`sim::SimTreasuryPort`), the engine hears the new balances on each account's link, and nothing is written to `state_file`. The run stays deterministic; the result counts the transfers (`BacktestResult::treasury`, `"treasury"` in `summary.json`, a line in the summary table) and `transfers.csv` lists them.
 
 ### Connectors
 
@@ -347,7 +347,7 @@ configuration (a dry run, `order_entry = "none"`, missing credentials).
 
 #### `coinbase_advanced`
 
-Coinbase Advanced Trade spot, production only (`testnet = false`): `api_key` is the CDP key name and `api_secret` its EC private key ([Venue connectors](venues.md#coinbase-advanced-trade-spot)).
+Coinbase Advanced Trade spot, production only (`testnet = false`): `api_key` is the CDP key name and `api_secret` its EC private key ([Venue connectors](venues/coinbase.md#advanced-trade)).
 
 <!-- BEGIN config-keys venue:coinbase_advanced -->
 | Key | Type | Required | Meaning |
@@ -364,7 +364,7 @@ Coinbase Advanced Trade spot, production only (`testnet = false`): `api_key` is 
 
 #### `coinbase_exchange`
 
-Coinbase Exchange spot; the third credential is the generic `api_passphrase`, and `testnet = true` (the default) selects the sandbox hosts ([Venue connectors](venues.md#coinbase-exchange-spot)).
+Coinbase Exchange spot; the third credential is the generic `api_passphrase`, and `testnet = true` (the default) selects the sandbox hosts ([Venue connectors](venues/coinbase.md#exchange)).
 
 <!-- BEGIN config-keys venue:coinbase_exchange -->
 | Key | Type | Required | Meaning |
@@ -408,7 +408,7 @@ Coinbase Exchange spot; the third credential is the generic `api_passphrase`, an
 USDT-margined swaps, quantities in contracts, and spot pairs, quantities in the base coin. The
 third credential is the generic `api_passphrase`, `testnet = true` (the default) selects demo
 trading, and `region` the site the account is registered on
-([Venue connectors](venues.md#okx-v5-usdt-margined-swaps-and-spot)).
+([Venue connectors](venues/okx.md)).
 
 <!-- BEGIN config-keys venue:okx -->
 | Key | Type | Required | Meaning |
@@ -433,7 +433,7 @@ trading, and `region` the site the account is registered on
 
 USDT-settled perpetual futures on Gate, quantities in contracts, single position mode; one
 WebSocket URL serves the public channels, the private channels and the order API
-([Venue connectors](venues.md#gate-usdt-perpetual-futures-gate_usdt)).
+([Venue connectors](venues/gate.md)).
 
 <!-- BEGIN config-keys venue:gate_usdt -->
 | Key | Type | Required | Meaning |
@@ -455,7 +455,7 @@ WebSocket URL serves the public channels, the private channels and the order API
 
 #### `gemini`
 
-Perpetuals and spot on the WebSocket API. The URLs default to the sandbox hosts and `testnet` must match the hosts; `api_key` is an account-scoped key with a time-based nonce ([Venue connectors](venues.md#gemini-perpetuals-and-spot)).
+Perpetuals and spot on the WebSocket API. The URLs default to the sandbox hosts and `testnet` must match the hosts; `api_key` is an account-scoped key with a time-based nonce ([Venue connectors](venues/gemini.md)).
 
 <!-- BEGIN config-keys venue:gemini -->
 | Key | Type | Required | Meaning |
@@ -472,7 +472,7 @@ Perpetuals and spot on the WebSocket API. The URLs default to the sandbox hosts 
 
 #### `hyperliquid`
 
-Perpetuals on the main dex and the builder-deployed (HIP-3) dexes, such as xyz's US equities (`xyz:NVDA`). `api_key` is the account's address and `api_secret` the signing key: an agent wallet the account approved, or the account's own. `testnet` must be `false` for mainnet ([Venue connectors](venues.md#hyperliquid-perpetuals-hyperliquid)).
+Perpetuals on the main dex and the builder-deployed (HIP-3) dexes, such as xyz's US equities (`xyz:NVDA`). `api_key` is the account's address and `api_secret` the signing key: an agent wallet the account approved, or the account's own. `testnet` must be `false` for mainnet ([Venue connectors](venues/hyperliquid.md)).
 
 <!-- BEGIN config-keys venue:hyperliquid -->
 | Key | Type | Required | Meaning |
@@ -499,7 +499,7 @@ Perpetuals on the main dex and the builder-deployed (HIP-3) dexes, such as xyz's
 
 #### `lighter`
 
-Lighter (zkLighter) perpetuals. `api_key` is the account index, `api_secret` the API key's private key (80 hex digits) and `api_key_index` the slot it is registered in; `testnet = true` selects the testnet hosts and chain id 300 ([Venue connectors](venues.md#lighter-perpetuals-lighter)).
+Lighter (zkLighter) perpetuals. `api_key` is the account index, `api_secret` the API key's private key (80 hex digits) and `api_key_index` the slot it is registered in; `testnet = true` selects the testnet hosts and chain id 300 ([Venue connectors](venues/lighter.md)).
 
 <!-- BEGIN config-keys venue:lighter -->
 | Key | Type | Required | Meaning |
@@ -862,7 +862,7 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `initial_state` | string | `"state_file"` | Where the strategy's starting state comes from: `state_file` reads `[strategy] state_file` when set; `journal` takes the data journal's: the state the recorded session restored at its start, else its first state snapshot, with the positions of that snapshot, or with the positions the session restored and reconciled before its first order ([Backtesting](../explanation/backtesting.md#starting-from-the-live-sessions-state)); `none` starts the strategy fresh. `journal` needs a journal as the data source |
 | `params_from_journal` | bool | `false` | The data journal's parameter updates reach the strategy at the times the recorded session received them, their fields mapped by name and type onto the strategy's schema (as `fastmm-replay` maps them); the data source must be a journal |
 | `start_at` | number or string | none | Unix time in seconds, or a UTC time (`"2026-10-20T08:00:00Z"`), that trading starts at: with `initial_state = "journal"` at the last checkpoint of the data journal at or before it, whose state the strategy restores, else at this time. Before it the run reads the data and the engine refuses orders (`NotReconciled`); then every venue reconciles with the start positions ([Backtesting](../explanation/backtesting.md#starting-inside-a-live-session)) |
-| `balances_from_journal` | bool | `false` | Each venue's account starts from the balances the journal recorded for it: its first snapshot, or with `start_at` its account as the venue last reported it when trading starts (every asset at its total; account-wide margin rows are left out); a venue without one keeps `[backtest.balances]`. From then on the account follows the session's account events: each recorded flow of money in or out (`AccountFlow`, [Venues](venues.md#balances)) at its time, a withdrawal at most what the run has free, and a full snapshot whenever the session's connector refreshed the account. A pool whose treasury the run simulates moves its own money: the recorded flows of its accounts are left out. The data source must be one journal |
+| `balances_from_journal` | bool | `false` | Each venue's account starts from the balances the journal recorded for it: its first snapshot, or with `start_at` its account as the venue last reported it when trading starts (every asset at its total; account-wide margin rows are left out); a venue without one keeps `[backtest.balances]`. From then on the account follows the session's account events: each recorded flow of money in or out (`AccountFlow`, [Venues](venues/connector-behaviour.md#balances)) at its time, a withdrawal at most what the run has free, and a full snapshot whenever the session's connector refreshed the account. A pool whose treasury the run simulates moves its own money: the recorded flows of its accounts are left out. The data source must be one journal |
 | `latency_from_journal` | bool | `false` | The simulated venues follow the latencies the data journal's own messages had: an order or cancel takes the time a live one sent at about the same moment on the same account took to reach the venue (the one of the same instrument within 2 ms, else the nearest within 20 ms), a reply the time the nearest live reply took to come back, wherever that is more than 1 ms longer than the model's draw. Quiet moments keep the model; a burst, when the venue's gateway and its replies slow down, gets what the session got ([Backtesting](../explanation/backtesting.md#starting-inside-a-live-session)). The data source must be a journal |
 
 Command-line flags of `fastmm-backtest` (`--data`, `--strategy`, `--param key=value`, `--seed`, `--duration`, `--out`, `--journal-out`) override these values ([Command lines](cli.md#fastmm-backtest)).

@@ -1,6 +1,6 @@
 # Run on a testnet or Binance Demo
 
-FastMM ships configs for eight practice environments: Binance Spot Demo Mode, Binance USDⓈ-M futures Demo Trading, the Binance Spot testnet, the Bybit v5 testnet (spot and linear perpetuals), OKX demo trading, the Coinbase Exchange sandbox and the Deribit testnet. Coinbase Advanced Trade, the API of individual Coinbase accounts, has no practice environment ([Venue connectors](../../reference/venues.md#coinbase-advanced-trade-spot)). Two more run `xmm` across two of them. The two Binance Demo environments share one set of keys; each other environment has its own. None of them accepts live-exchange keys.
+FastMM ships configs for eight practice environments: Binance Spot Demo Mode, Binance USDⓈ-M futures Demo Trading, the Binance Spot testnet, the Bybit v5 testnet (spot and linear perpetuals), OKX demo trading, the Coinbase Exchange sandbox and the Deribit testnet. Coinbase Advanced Trade, the API of individual Coinbase accounts, has no practice environment ([Venue connectors](../../reference/venues/coinbase.md#advanced-trade)). Two more run `xmm` across two of them. The two Binance Demo environments share one set of keys; each other environment has its own. None of them accepts live-exchange keys.
 
 Before a longer session, read [Kill switch and shutdown](kill-switch-and-shutdown.md).
 
@@ -68,7 +68,7 @@ The shipped configs raise `stale_ms` for quiet feeds ([Venue connectors](../../r
 - Endpoints (from `configs/binance-usdm-demo.toml`): streams `wss://demo-fstream.binance.com` (`/public`, `/market`, `/private`), WebSocket API `wss://testnet.binancefuture.com/ws-fapi/v1`, REST `https://demo-fapi.binance.com`.
 - Contract: the BTCUSDT perpetual, tick 0.10, lot 0.0001, minimum notional 50 USDT. The config quotes 0.001 BTC about 1 bps from mid with `max_position = "0.003"` and `max_loss = "20"`.
 - Fees: 2 bps maker and 4 bps taker, charged in USDT (`GET /fapi/v1/commissionRate` on the Demo account).
-- Leverage and margin mode are account settings: the log shows them at startup; the connector does not change them. Funding payments are booked from the income history ([Venues](../../reference/venues.md#positions-and-reconciliation)).
+- Leverage and margin mode are account settings: the log shows them at startup; the connector does not change them. Funding payments are booked from the income history ([Venues](../../reference/venues/binance-usdm.md#reconciliation-and-fills)).
 - After a session, flatten any remaining position with a reduce-only order.
 
 ### Binance Spot testnet
@@ -79,7 +79,7 @@ The shipped configs raise `stale_ms` for quiet feeds ([Venue connectors](../../r
 
 ### Gate USDT perpetual futures
 
-`configs/gate-usdt.toml` points at production (`wss://fx-ws.gateio.ws/v4/ws/usdt`, `https://fx-api.gateio.ws`); Gate's futures TestNet is `wss://ws-testnet.gate.com/v4/ws/futures/usdt` and `https://fx-api-testnet.gateio.ws`, with keys from the "Futures TestNet APIKeys" tab (production keys are refused there). `FASTMM_GATE_API_KEY` / `FASTMM_GATE_API_SECRET`; the account must be in single position mode and hold USDT in its futures account ([Venue connectors](../../reference/venues.md#gate-usdt-perpetual-futures-gate_usdt)).
+`configs/gate-usdt.toml` points at production (`wss://fx-ws.gateio.ws/v4/ws/usdt`, `https://fx-api.gateio.ws`); Gate's futures TestNet is `wss://ws-testnet.gate.com/v4/ws/futures/usdt` and `https://fx-api-testnet.gateio.ws`, with keys from the "Futures TestNet APIKeys" tab (production keys are refused there). `FASTMM_GATE_API_KEY` / `FASTMM_GATE_API_SECRET`; the account must be in single position mode and hold USDT in its futures account ([Venue connectors](../../reference/venues/gate.md)).
 
 ### Hyperliquid perpetuals
 
@@ -103,7 +103,7 @@ The shipped configs raise `stale_ms` for quiet feeds ([Venue connectors](../../r
 - Keys: create a system-generated (HMAC) API key on the Bybit testnet site (testnet.bybit.com, API Management) with spot trading permission.
 - Endpoints (from `configs/bybit-testnet.toml`): public `wss://stream-testnet.bybit.com/v5/public/spot`, trade `wss://stream-testnet.bybit.com/v5/trade`, private `wss://stream-testnet.bybit.com/v5/private` (derived from `ws_url` when `ws_private_url` is not set), REST `https://api-testnet.bybit.com`.
 - Config: `supports_replace = false`: quotes are replaced with cancel and new, because Bybit does not document whether amend `qty` includes the filled quantity. `recv_window_ms = 5000`, `stale_ms = 10000`.
-- Linear perpetuals: `configs/bybit-linear-testnet.toml` sets `category = "linear"` and the public stream `wss://stream-testnet.bybit.com/v5/public/linear`. The key needs contract trading permission and USDT in the unified account. The symbol must be in one-way position mode: in hedge mode `fastmm-live` exits 3 at start-up. Not run against the testnet yet ([Venue connectors](../../reference/venues.md#linear-perpetuals)).
+- Linear perpetuals: `configs/bybit-linear-testnet.toml` sets `category = "linear"` and the public stream `wss://stream-testnet.bybit.com/v5/public/linear`. The key needs contract trading permission and USDT in the unified account. The symbol must be in one-way position mode: in hedge mode `fastmm-live` exits 3 at start-up. Not run against the testnet yet ([Venue connectors](../../reference/venues/bybit.md#linear-perpetuals)).
 
 ### OKX demo trading
 
@@ -113,14 +113,14 @@ The shipped configs raise `stale_ms` for quiet feeds ([Venue connectors](../../r
 - Units: quantities are contracts. One BTC-USDT-SWAP contract is 0.01 BTC; the config quotes 0.1 contracts (0.001 BTC). On demo the tick is 0.01 and `instIdCode` differs from production; both come from `GET /api/v5/public/instruments` with the demo header.
 - Config: `supports_replace = false` until amend has been seen on the demo; `dead_mans_switch_s = 60` arms `cancel-all-after` (whether demo trading honours it is not documented).
 - Spot: `configs/okx-spot-demo.toml` quotes BTC-USDT at the minimum size (0.00002 BTC) for an account registered on my.okx.com (`region = "eea"`: REST `https://eea.okx.com`, WebSocket `wss://wseeapap.okx.com:8443`). Any account mode trades spot, the spot mode included; keys only work on the domain of the site they were made on. Quantities are BTC.
-- Status: spot ran on the demo (orders, fills, a kill -9 and restart, a clean stop; 2026-09-30). For swaps the public stream was run against the demo and production hosts; orders and the private channels are covered by a scripted fake exchange only ([Venue connectors](../../reference/venues.md#okx-v5-usdt-margined-swaps-and-spot)).
+- Status: spot ran on the demo (orders, fills, a kill -9 and restart, a clean stop; 2026-09-30). For swaps the public stream was run against the demo and production hosts; orders and the private channels are covered by a scripted fake exchange only ([Venue connectors](../../reference/venues/okx.md)).
 
 ### Coinbase Exchange sandbox
 
 - Keys: sign up at <https://public.sandbox.exchange.coinbase.com> (an account of its own; a coinbase.com login does not work there), then create an API key with the View and Trade permissions. The sandbox shows the secret once and asks for a passphrase: key, secret and passphrase are the three credentials. Add fake funds to the profile in the same interface.
 - Endpoints (from `configs/coinbase-sandbox.toml`): feed `wss://ws-feed-public.sandbox.exchange.coinbase.com` (market data, and the user channel on a second connection), REST `https://api-public.sandbox.exchange.coinbase.com` (`testnet = true`). The connector refuses a sandbox host with `testnet = false` and a production host with `testnet = true`.
 - The sandbox lists a subset of the production products; its books are thin and do not follow production prices, so the config quotes 50 bps from the mid.
-- Status: the public feed ran against the sandbox and production; orders and the user channel are covered by a scripted fake exchange only ([Venue connectors](../../reference/venues.md#coinbase-exchange-spot)).
+- Status: the public feed ran against the sandbox and production; orders and the user channel are covered by a scripted fake exchange only ([Venue connectors](../../reference/venues/coinbase.md#exchange)).
 
 ### Deribit testnet
 
@@ -128,7 +128,7 @@ The shipped configs raise `stale_ms` for quiet feeds ([Venue connectors](../../r
 - Endpoints (from `configs/deribit-testnet.toml`): WebSocket `wss://test.deribit.com/ws/api/v2` for market data and, on a second connection, authentication and orders; REST `https://test.deribit.com/api/v2` for reference data and the kill-switch `private/cancel_all_by_instrument`.
 - Instruments expire. The shipped config quotes `BTC-25DEC26-*` options with `options_mm`; after that date reference data fails to load (exit 4). Replace the `[[instruments]]` with live names from `public/get_instruments?currency=BTC&kind=option`.
 - Config: `stale_ms = 15000` and `dead_ms = 35000`, above the heartbeat interval (`heartbeat_interval_s = 10`, the minimum). `matching_engine_rate` and `matching_engine_burst` rate-limit order requests locally; set them to your account tier. Option prices are in BTC, so the `[risk]` notional limits are BTC amounts.
-- Status: the private payloads follow Deribit's published schemas and a scripted fake exchange, not recorded traffic ([Venue connectors](../../reference/venues.md#open-questions-verify-in-the-code)).
+- Status: the private payloads follow Deribit's published schemas and a scripted fake exchange, not recorded traffic ([Venue connectors](../../reference/venues.md#capabilities)).
 
 ## 4. Dry run
 

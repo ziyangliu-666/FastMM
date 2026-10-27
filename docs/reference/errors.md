@@ -1,6 +1,6 @@
 # Errors and exit codes
 
-Exit codes, reject reasons, kill reasons and venue error actions. Log messages with their causes and fixes are in [Troubleshooting](../how-to/operations/troubleshooting.md).
+Exit codes, reject reasons, kill reasons and venue error actions. Log messages with causes and fixes: [Troubleshooting](../how-to/operations/troubleshooting.md).
 
 ## Exit codes
 
@@ -8,23 +8,23 @@ Each program defines its own exit codes. `1` from `fastmm-live` means the proces
 
 ### fastmm-live
 
-"Orders cancelled" is the cancel-all the control thread runs over REST at shutdown; `cancel_all FAILED` turns any code into 5 ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md#reading-the-last-lines)).
+"Orders cancelled" is the REST cancel-all at shutdown. `cancel_all FAILED` turns any code into 5 ([reading the last lines](../how-to/operations/kill-switch-and-shutdown.md#reading-the-last-lines)).
 
 | Code | Meaning | Orders cancelled | Restart without a human |
 |---:|---|---|---|
 | 0 | stopped by `--duration`, SIGINT, SIGTERM or `fastmm-ctl stop` with `cancel_all ok`; also after a kill with `on_kill = "stay"`; `--help`, `--version`, `--list-strategies` | yes | yes |
 | 2 | bad command line; an unset `${VAR}` in `[venues.*]` | nothing started | no: fix the invocation |
-| 3 | the configuration, strategy or a parameter does not load, a session with keys sets no `[risk]` position or loss limit (`allow_unlimited`), a `[storage]` backend is unknown or cannot be opened, or a venue refuses a setting of the account (Bybit linear in hedge mode) | nothing started | no: fix the config or the account |
+| 3 | the configuration, strategy or a parameter does not load; a session with keys has no `[risk]` position or loss limit (`allow_unlimited`); a `[storage]` backend is unknown or cannot open; a venue refuses an account setting, such as Bybit linear in hedge mode | nothing started | no: fix the config or the account |
 | 4 | a venue's reference data failed to load, or `--gateway` could not attach | nothing started | retry once; a repeat means the venue or the network |
-| 5 | `cancel_all FAILED`, the journal cannot be opened or written (a full filesystem trips the kill switch), an order-event ring overflowed, the gateway closed the attachment, the engine thread stalled (`[engine] stall_ms`, after a cancel-all), or an uncaught error | not certain | no: check the venue for open orders first |
-| 6 | the engine tripped the kill switch itself, `on_kill = "exit"`, `cancel_all ok`; or, at start, a `max_loss` trip is latched in `[engine] kill_file`, or the kill file is missing and the store's newest session ended on one (nothing started) | yes | no: find the kill reason in the log; a latched trip needs `--clear-kill` |
-| 7 | a Python strategy's slow tier failed, `cancel_all ok` (`python -m fastmm run` and `fastmm.run_live`; `fastmm-live` never returns it) | yes | no: fix the slow method |
-| 8 | another process holds the instance lock (`[engine] instance_lock`), or `--takeover` failed: the holder refused or did not answer the handoff, or kept the lock past `handoff_timeout_ms` | nothing started | no: another session trades this engine ([Hand over a running session](../how-to/operations/hand-over-a-session.md)) |
-| 9 | the state a restart carries over is gone or wrong: `[engine] epoch_file` is missing while the store holds sessions, or the store's newest session booked executions twice into a position its venue does not report | nothing started | no: [A start refuses the state it carries over](../how-to/operations/runbook.md#a-start-refuses-the-state-it-carries-over) |
+| 5 | `cancel_all FAILED`; the journal cannot be opened or written; an order-event ring overflowed; the gateway closed the attachment; the engine thread stalled past `[engine] stall_ms`; an uncaught error | not certain | no: check the venue for open orders first |
+| 6 | the engine tripped the kill switch with `on_kill = "exit"` and `cancel_all ok`; or, at start, a latched `max_loss` trip in `[engine] kill_file`, or no kill file while the store's newest session ended on one | yes; at start nothing started | no: find the kill reason in the log; a latched trip needs `--clear-kill` |
+| 7 | a Python strategy's slow tier failed, `cancel_all ok`; returned by `python -m fastmm run` and `fastmm.run_live` only | yes | no: fix the slow method |
+| 8 | another process holds `[engine] instance_lock`, or `--takeover` failed: the holder refused, did not answer, or kept the lock past `handoff_timeout_ms` | nothing started | no: another session trades this engine ([hand over](../how-to/operations/hand-over-a-session.md)) |
+| 9 | the carried-over state is gone or wrong: `[engine] epoch_file` is missing while the store holds sessions, or the newest session booked executions twice | nothing started | no: [a start refuses the state it carries over](../how-to/operations/runbook.md#a-start-refuses-the-state-it-carries-over) |
 
-A restart after 5, 6, 7 or 9 is a decision for a person; the systemd unit does not make it ([Deploy](../how-to/operations/deploy.md#run-under-systemd)). What a restarted session carries over: [Run in production](../how-to/operations/running-in-production.md#restarts).
+The systemd unit does not restart after 5, 6, 7 or 9 ([Deploy](../how-to/operations/deploy.md#run-under-systemd)). What a restart carries over: [Run in production](../how-to/operations/running-in-production.md#restarts).
 
-`fastmm-gateway` uses the same codes: 0, 2, 3 (also an invalid `[gateway]` limit or a refused account setting), 4 (reference data), 5 (`cancel_all FAILED` or an uncaught error), and 6 when its kill file holds a latched `[gateway] max_loss` trip at start.
+`fastmm-gateway` uses codes 0, 2, 3, 4, 5 and 6 with the same meanings. Code 3 also covers an invalid `[gateway]` limit; 6 is a latched `[gateway] max_loss` trip at start.
 
 ### The other programs
 
@@ -37,15 +37,21 @@ A restart after 5, 6, 7 or 9 is a decision for a person; the systemd unit does n
 | 4 | the market data cannot be read | — | cannot listen on a port | cannot open a socket | — |
 | 5 | the run failed | — | — | — | — |
 
-`fastmm-data`: 2 bad command line, 3 bad config, 4 the market data cannot be read, 5 the output cannot be written. `fastmm-pnl`: 2 bad command line or a store that cannot be opened, 3 `recover` found no session. `fastmm-ctl`: 1 the session answered `error`, 2 bad command line, 3 no session answered.
+| Code | `fastmm-data` | `fastmm-pnl` | `fastmm-ctl` |
+|---:|---|---|---|
+| 1 | — | — | the session answered `error` |
+| 2 | bad command line | bad command line, or the store cannot be opened | bad command line |
+| 3 | bad config | `recover` found no session | no session answered |
+| 4 | the market data cannot be read | — | — |
+| 5 | the output cannot be written | — | — |
 
 ## Reject reasons
 
-`RejectReason` (`include/fastmm/core/enums.hpp`). A reject means the order was not sent, or the venue refused it; nothing else changed. The strategy sees the reason in the `Result` of `ctx.send`; the engine counts them per reason and shows them in `fastmm-top` and the shutdown summary.
+`RejectReason` (`include/fastmm/core/enums.hpp`): the order was not sent, or the venue refused it, and nothing else changed. The strategy reads it in the `Result` of `ctx.send`. `fastmm-top` and the shutdown summary count rejects per reason.
 
 ### Pre-trade checks (engine)
 
-Checked in the order listed, which is not numeric order; the first failure decides. A limit of `0` or omitted turns its check off ([Risk model](../explanation/risk-model.md)). These rejects never reach the venue.
+Checked in the order listed, not numeric order; the first failure decides. A limit of `0` or omitted turns its check off ([Risk model](../explanation/risk-model.md)). These orders never reach the venue.
 
 | # | Name | Setting | Clears when |
 |---:|---|---|---|
@@ -55,17 +61,17 @@ Checked in the order listed, which is not numeric order; the first failure decid
 | 4 | `InvalidTick` | `tick` | the strategy rounds prices with `inst.round_price` |
 | 5 | `InvalidLot` | `lot`, `min_qty`, `max_qty` | the strategy rounds quantities with `inst.round_qty` |
 | 6 | `BelowMinNotional` | `min_notional` | the order is larger |
-| 7 | `StaleMarketData` | `[risk] stale_md_ms` | the book updates (its age is measured on the engine clock from when the engine applied it) |
-| 20 | `FeedLag` | `[risk] max_feed_lag_ms` | 100 ms pass without a market-data message of the venue later than its baseline by more than the limit; IOC, FOK and market orders and orders that only reduce the position are not refused ([Feed-lag gate](../explanation/risk-model.md#feed-lag-gate)) |
+| 7 | `StaleMarketData` | `[risk] stale_md_ms` | the book updates; age is on the engine clock from when it applied the update |
+| 20 | `FeedLag` | `[risk] max_feed_lag_ms` | 100 ms pass with no venue message lagging past the limit; IOC, FOK, market and position-reducing orders pass ([feed-lag gate](../explanation/risk-model.md#feed-lag-gate)) |
 | 8 | `PriceCollar` | `[risk] price_collar_bps`, or the venue's own price band (Binance `PERCENT_PRICE`, USDⓈ-M -4131, OKX 51006) | the mid moves to the price, or the price moves to the mid |
 | 9 | `FatFinger` | `[risk] fat_finger_bps` | a trade prints nearer the price |
 | 10 | `MaxOrderQty` | `[risk] max_order_qty` | the order is smaller |
 | 11 | `MaxOrderNotional` | `[risk] max_order_notional` | the order is smaller |
 | 12 | `MaxPosition` | `[risk] max_position` | the position or the same-side open orders shrink |
-| 19 | `FxRateUnknown` | `[accounting]` | the source of the order's settlement currency has a valid book that updated within `[accounting] stale_fx_ms`; an order that only takes its instrument's position towards zero is not refused |
+| 19 | `FxRateUnknown` | `[accounting]` | the settlement currency's source book updates within `[accounting] stale_fx_ms`; position-reducing orders pass |
 | 17 | `MaxGrossNotional` | `[risk] max_gross_notional` | the portfolio's \|position\| shrinks, or the order only takes its instrument's position towards zero (what goes past zero counts) |
 | 18 | `MaxNetNotional` | `[risk] max_net_notional` | the signed sum moves back, or the order only takes its instrument's position towards zero |
-| 22 | `UnderlyingMarkUnknown` | `[risk.underlying]` | every inverse contract of the underlying with a position or open orders (and the order's own, if inverse) has a valid book no older than `stale_md_ms` |
+| 22 | `UnderlyingMarkUnknown` | `[risk.underlying]` | every inverse contract of the underlying with a position or open orders has a book no older than `stale_md_ms` |
 | 21 | `MaxUnderlyingNet` | `[risk.underlying.<BASE>] max_net` | the underlying's position or same-side open orders shrink, or the order brings the net towards zero |
 | 23 | `BalanceShort` | `[risk] check_balance` | the venue reports more free balance, or our orders on that asset end or fill ([Balance check](../explanation/risk-model.md#balance-check)) |
 | 13 | `MaxOpenOrders` | `[risk] max_open_orders` | an order of that instrument terminates |
@@ -86,8 +92,8 @@ Cancels skip every check, including the kill switch.
 | 36 | `TransportFull` | the connector's outbound or REST queue was full; the message was dropped |
 | 37 | `NotReconciled` | never produced by the current code |
 | 38 | `InvalidTag` | `ctx.send` used a `user_tag` inside the quote manager's reserved range |
-| 39 | `OrderTableFull` | the connector's table of the orders it has sent (7168 working orders and replaces in flight, over every strategy behind a gateway) was full; the order was not sent |
-| 40 | `InvalidAccount` | `NewOrderRequest::account` named a venue that is neither the instrument's nor a member of its pool (`[venues.<x>] pool_of`); refused locally |
+| 39 | `OrderTableFull` | the connector's table of sent orders was full: 7168 working orders and replaces in flight, over every strategy behind a gateway |
+| 40 | `InvalidAccount` | `NewOrderRequest::account` named a venue outside the instrument's pool (`[venues.<x>] pool_of`) |
 
 ### Gateway
 
@@ -101,15 +107,15 @@ A strategy attached to `fastmm-gateway` gets these back from the gateway's accou
 | 51 | `GatewayAccountKilled` | `[gateway] max_loss` tripped the account's kill switch |
 | 52 | `GatewayGrossNotional` | `[gateway] max_gross_notional`: the account's positions at the marks plus what this order opens; the part of it that takes its instrument's position towards zero passes |
 | 53 | `GatewayNetNotional` | `[gateway] max_net_notional`: the same for the signed sum |
-| 54 | `GatewayFxRateUnknown` | `[accounting]`: the order adds to exposure in a currency whose source has no valid book in the gateway, or none that updated within `[accounting] stale_fx_ms` |
-| 55 | `GatewayUnderlyingNet` | `[gateway.underlying.<BASE>] max_net`: the account's net position in the base asset over every venue, with the orders working on the order's side and this one, would move further past the limit |
-| 56 | `GatewayUnderlyingMarkUnknown` | `[gateway.underlying]`: an inverse contract of the underlying with a position or working orders has no valid book in the gateway, or none newer than `[risk] stale_md_ms` |
+| 54 | `GatewayFxRateUnknown` | `[accounting]`: the order adds exposure in a currency whose source book is missing or older than `[accounting] stale_fx_ms` |
+| 55 | `GatewayUnderlyingNet` | `[gateway.underlying.<BASE>] max_net`: the account's net in the base asset over every venue, with same-side working orders and this one, would move further past the limit |
+| 56 | `GatewayUnderlyingMarkUnknown` | `[gateway.underlying]`: an inverse contract with a position or working orders has no book newer than `[risk] stale_md_ms` |
 | 57 | `GatewaySelfTrade` | `[gateway.shared]`: the order would trade with a resting order of another attached strategy on the same instrument |
 | 58 | `GatewayBalanceShort` | `[gateway] check_balance`: the account's balance on the venue, less the orders of every attached strategy, does not cover the order |
 
 ### Venue-originated
 
-The connectors map each venue's error codes onto these (`*_error_map.hpp` per venue; the code tables are on [Venue connectors](venues.md)).
+Each connector maps its venue's error codes onto these; the code tables are on each venue's page under [Venue connectors](venues.md).
 
 | Value | Name | Transient | What to do |
 |---:|---|---|---|
@@ -121,7 +127,7 @@ The connectors map each venue's error codes onto these (`*_error_map.hpp` per ve
 
 ## Kill reasons
 
-`KillReason` (`include/fastmm/core/enums.hpp`), the first reason each kill-switch bit was set for. `fastmm-top` shows it next to the state and per venue; the status file carries it in `kill_reason`.
+`KillReason` (`include/fastmm/core/enums.hpp`) is the first reason each kill-switch bit was set for. `fastmm-top` shows it per venue; the status file carries it in `kill_reason`.
 
 | Value | Name | Scope | `on_kill` applies | First thing to check |
 |---:|---|---|---|---|
@@ -140,9 +146,9 @@ The connectors map each venue's error codes onto these (`*_error_map.hpp` per ve
 | 12 | `DeadMansSwitchLost` | one venue | when it is the last venue | the venue refused the countdown refresh for a whole window |
 | 13 | `GatewayMaxLoss` | every venue | yes | the gateway's account: `[gateway] max_loss` over every strategy |
 | 14 | `GatewayOperator` | every venue | yes | an operator's `kill` on the gateway's control socket |
-| 15 | `StoreFailure` | global | yes | the store failed a write or dropped records, with `[storage] kill_on_failure = true`: the disk, the store file, `[storage] ring_bytes` |
+| 15 | `StoreFailure` | global | yes | with `[storage] kill_on_failure = true`, a failed or dropped store write: the disk, the store file, `[storage] ring_bytes` |
 
-A running session's kill switch is cleared by `fastmm-ctl unkill` or SIGHUP; with `on_kill = "exit"` the process has already exited. A latched `max_loss` trip refuses the next start (exit 6) until `--clear-kill`. What each reason does to quoting and orders: [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md).
+`fastmm-ctl unkill` or SIGHUP clears a running session's kill switch. A latched `max_loss` trip refuses the next start (exit 6) until `--clear-kill`. What each reason does to orders: [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md).
 
 ## Venue actions
 
@@ -165,7 +171,7 @@ A running session's kill switch is cleared by `fastmm-ctl unkill` or SIGHUP; wit
 
 | Symptom | Meaning |
 |---|---|
-| `trailer MISSING` | the session did not shut down cleanly; events before the damaged block are still readable. `fastmm-replay` refuses such a file without `--allow-incomplete` |
+| `trailer MISSING` | the session did not shut down cleanly; events before the damaged block are readable; `fastmm-replay` needs `--allow-incomplete` |
 | a CRC failure on a block | the block is damaged; `--no-crc` reads past it |
 | `replay MISMATCH` | the replayed order stream differs from the recorded one; only the first difference means anything ([Determinism](../explanation/determinism.md)) |
 | a what-if warning | `--config` or `--strategy` differs from the recording, so a match is not expected |

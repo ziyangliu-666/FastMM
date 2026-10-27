@@ -1,6 +1,6 @@
 # Market-data sources
 
-A backtest reads its market data through a named source. `fastmm-backtest --data <spec>`, `[backtest] source` and `run_backtest(data=...)` all resolve the same spec through one registry. A new source is one file plus a registration; the configuration schema does not change.
+A backtest reads market data through a named source. `fastmm-backtest --data <spec>`, `[backtest] source` and `run_backtest(data=...)` resolve the same spec through one registry.
 
 ```bash
 ./build/release/bin/fastmm-data list
@@ -12,7 +12,13 @@ A backtest reads its market data through a named source. `fastmm-backtest --data
 <name>[:<arg>[,<arg>...]]      arg := <key>=<value> | <positional>
 ```
 
-Only the first `:` separates the name, so a value may contain one (`start=09:30`). Arguments without an `=` fill the source's positional options in order. A bare path with a known extension works too: `--data runs/session.fmj` is `--data journal:runs/session.fmj`.
+| Rule | Example |
+|---|---|
+| Only the first `:` separates the name, so a value may contain one | `start=09:30` |
+| An argument without `=` fills the source's next positional option | `binance:BTCUSDT,2024-03-27` |
+| A bare path with a known extension names its source | `runs/session.fmj` is `journal:runs/session.fmj` |
+| Specs separated by `;` are merged by event time, ties to the earlier spec | several venues in one run |
+| An unknown option is an error that lists the source's options | |
 
 ```bash
 --data synthetic
@@ -20,17 +26,12 @@ Only the first `:` separates the name, so a value may contain one (`start=09:30`
 --data binance:symbol=BTCUSDT,date=2024-03-27,start=13:00,end=14:00
 --data tardis:binance-futures,BTCUSDT,2026-09-01
 --data ~/.cache/fastmm/data/btcusdt-2024-03-27.fmj
-```
-
-An unknown option is an error naming the ones the source takes.
-
-Several specs separated by `;` are merged by event time, ties going to the earlier spec; this is how feeds of several venues run together ([Backtesting](../explanation/backtesting.md#several-venues)). Python takes a list as well.
-
-```bash
 --data "binance:BTCUSDT,2024-03-27,venue=0; csv:bybit-btcusdt.csv,venue=1"
 ```
 
-A run logs a warning at its end for each configured instrument the data had no events for, and for events that name an instrument id the configuration lacks.
+Python takes a list of specs as well. Merging feeds of several venues: [Backtesting](../explanation/backtesting.md#several-venues).
+
+At the end of a run, a warning names each configured instrument the data had no events for, and counts events for instrument ids the configuration lacks.
 
 ## What each source carries
 
@@ -43,49 +44,87 @@ A run logs a warning at its end for each configured instrument the data had no e
 | `tardis` | yes | yes | yes | exchange time, µs |
 | `itch` | yes | yes, and every order | yes | exchange time, ns |
 
-The queue model sets an order's queue position from the displayed quantity at its price, so a source without depth says nothing about any price except the touch: an order resting one tick behind the best quote is modelled as alone at its price and fills as soon as a trade reaches it. On such a source, fills behind the touch are optimistic ([Backtesting](../explanation/backtesting.md#model-assumptions)).
+Without depth, an order one tick behind the touch is modelled as alone at its price, so its fills are optimistic ([model assumptions](../explanation/backtesting.md#model-assumptions)).
 
 ## `journal`
 
-The market data of an `.fmj` journal: book deltas and snapshots, trades and tickers, as recorded, in recorded order. `fastmm-data convert` writes one from any source.
+The market data of an `.fmj` journal, as recorded and in recorded order: book deltas and snapshots, trades and tickers. `fastmm-data convert` writes one from any source.
 
 | Option | Default | Meaning |
 |---|---|---|
 | `path` (1st positional) | — | The journal |
 | `strip_own` | `false` | Take the recording session's own resting orders out of the depth and tickers |
-| `parts` | `true` | After `x.fmj`, read the session's later parts `x.1.fmj`, `x.2.fmj`, ... as one stream |
-| `remap` | `true` | Give the events the ids and venues of the configuration's instruments of the same symbol; a symbol the configuration lacks is dropped. `false` keeps the recorded ids |
+| `parts` | `true` | After `x.fmj`, read the later parts `x.1.fmj`, `x.2.fmj`, ... as one stream; `0` reads one file |
+| `remap` | `true` | Give events the ids and venues of the configuration's instruments of the same symbol; `false` keeps the recorded ids |
 
-A session recorded with `[engine] journal_max_bytes` is several files ([Journal format](journal-format.md#rotation-and-retention)), each a complete journal that repeats the header, the instrument table and the configuration. `journal:x.fmj` reads the parts after `x.fmj` in order, until one is missing, as one stream; the repeated prologues are not events, so nothing plays twice. The sequence numbers continue across parts: a part whose first does not follow the previous part's last (a part missing in between, or the previous one cut short) is read anyway, with a warning in the log and in the run's report. A file numbered like the next part but recorded by another session is an error. `parts=0` reads the one file. Do not also list the parts in `--data "x.fmj;x.1.fmj"`: `x.fmj` already reads `x.1.fmj`, so the merge would play it twice (with `parts=0` on each, the merge comes to the same order as the chain, but holds every file open at once). `fastmm-replay` over a market-data journal reads the parts the same way; over a session journal it verifies one part at a time.
+### Parts
 
-A journal numbers its instruments as the recording session did: a journal converted with a two-instrument configuration and read with a one-instrument one, or two recordings of different instrument sets merged (`--data "journal:a.fmj;journal:b.fmj"`), would put events on the wrong instrument. `remap` renumbers each event to the instrument of the same symbol in the backtest's configuration (the recording's venue first, else any venue listing the symbol) and sets its venue to that instrument's; an event whose symbol the configuration lacks is dropped, and the run's report counts them. What the backtest reads of the session itself (positions, checkpoints, recorded latencies, balances and flows) is renumbered the same way: an account's venue becomes the configured venue of the first mapped instrument the journal lists on it, and a venue with none keeps its id. A configuration that numbers every instrument of the journal as the journal does leaves the events as they are. A recorded snapshot deeper than a source builds itself (256 levels a side) is copied whole. Remap runs after `strip_own` and needs the instrument table: a spec opened without one refuses `remap=1`.
+A session recorded with `[engine] journal_max_bytes` is several complete journals ([rotation](journal-format.md#rotation-and-retention)). `journal:x.fmj` reads them in order until one is missing.
 
-A live session's journal holds the venue's feed, which shows the session's own orders. A backtest over it sees them as someone else's liquidity: a strategy that improves the best bid improves on its own live bid. `strip_own=1` subtracts from each book level what the session had resting at that price at the message's venue time, from the journal's own order events (ack to cancel ack or last fill, venue time); a level left with nothing is deleted. An order that went out before the journal's first record (a part from the middle of a session) is known from the first reconciliation that lists it, with what it had left, and is taken out from the start until it ends. A throttled depth update that still shows an order already cancelled is stripped as of its own time, so the leftover does not come back. A ticker whose best bid or ask was only ours is dropped: the ticker cannot tell the next level, and the depth book carries the top. Public trades are kept, our own fills included: the aggressor existed either way and, without our order, would have traded with the next order at that price. The book tickers a backtest's simulated venue sent for its own orders (journal format 4 and older) are dropped too. The run's report ends with a line counting the levels and tickers changed. A backtest's journal from format 5 on records the market data as recorded, our quantity in its own `OwnLevels` records, which no source reads: the option leaves it as it is. It refuses a journal whose session never saw its orders in the feed: one without a TSC calibration (not live) and without header bit 2 (a backtest with `own_orders_in_feed = false`, or older).
+* Repeated prologues are not events, so nothing plays twice.
+* A part whose first sequence number does not follow the previous part's last is read, with a warning in the log and the report.
+* A file numbered as the next part but recorded by another session is an error.
+* Do not list the parts yourself (`"x.fmj;x.1.fmj"`): `x.fmj` already reads `x.1.fmj`, so it would play twice.
+* `fastmm-replay` reads a market-data journal's parts the same way, and verifies a session journal one part at a time.
+
+### `remap`
+
+A journal numbers instruments as the recording session did. Read with another configuration, or merged with a recording of other instruments, its events would land on the wrong instrument.
+
+| Case | Result |
+|---|---|
+| Symbol in the configuration | the instrument of that symbol, the recording's venue first, else any venue listing it |
+| Symbol not in the configuration | event dropped, counted in the run's report |
+| Positions, checkpoints, latencies, balances and flows | renumbered the same way; an account takes the venue of the first mapped instrument on it |
+| Configuration numbers instruments as the journal does | events unchanged |
+| Recorded snapshot deeper than 256 levels a side | copied whole |
+
+`remap` runs after `strip_own` and needs the instrument table; a spec opened without one refuses `remap=1`.
+
+### `strip_own`
+
+A live journal's feed shows the session's own orders, so a backtest over it would quote against its own live bid. `strip_own=1` removes them:
+
+| Data | Treatment |
+|---|---|
+| Book level | minus what the session had resting at that price at the message's venue time; a level left empty is deleted |
+| Order sent before the journal's first record | known from the first reconciliation that lists it, removed from the start |
+| Throttled depth update still showing a cancelled order | stripped as of its own time |
+| Ticker whose best bid or ask was only ours | dropped; the depth book carries the top |
+| Public trades, our fills included | kept |
+| Book tickers a backtest's simulated venue sent (journal format 4 and older) | dropped |
+
+The run's report ends with a line counting the levels and tickers changed. A backtest journal from format 5 records our quantity in separate `OwnLevels` records, so the option leaves it unchanged. It refuses a journal whose session never saw its orders in the feed: no TSC calibration (not live) and no header bit 2.
 
 ## `binance`
 
-Daily dumps from [data.binance.vision](https://data.binance.vision): `bookTicker` (best bid and ask after every change) and `aggTrades` (every trade, aggregated per aggressing order and price). Fetch them with `python3 -m fastmm.data fetch` ([How-to](../how-to/backtesting/binance-public-data.md)).
+Daily dumps from [data.binance.vision](https://data.binance.vision): `bookTicker` (best bid and ask after every change) and `aggTrades` (trades aggregated per aggressing order and price). Fetch them with `python3 -m fastmm.data fetch` ([how-to](../how-to/backtesting/binance-public-data.md)).
 
 | Option | Default | Meaning |
 |---|---|---|
 | `symbol` (1st positional) | — | `BTCUSDT` |
 | `date` (2nd positional) | — | `YYYY-MM-DD`; or `from=` and `to=` for a range |
-| `market` | `um` | `um` USDⓈ-M futures, `spot` (trades only: the archive has no spot book) |
+| `market` | `um` | `um` USDⓈ-M futures, or `spot` (trades only) |
 | `dir` | `$FASTMM_DATA_HOME` | Cache root |
 | `book` / `trades` | `true` (`book`: `false` for `spot`) | Which streams to read |
 | `start` / `end` | whole days | `HH:MM[:SS]` or `YYYY-MM-DDTHH:MM[:SS]`, UTC |
 | `clock` | `transaction` | `transaction` (matching engine) or `event` (stream publication) |
 | `inst` / `venue` | resolved by symbol | Instrument and venue id the events carry |
 
-`bookTicker` exists for USDⓈ-M futures between 2023-05-16 and 2024-03-30 and nowhere else; the archive stopped publishing it. `aggTrades` runs to yesterday for both markets.
+| Dataset | Available |
+|---|---|
+| `bookTicker` | USDⓈ-M futures, 2023-05-16 to 2024-03-30 only |
+| `aggTrades` | USDⓈ-M and spot, to yesterday |
 
-Decoding: the first update becomes a one-level `BookSnapshot`, every later one a `BookDelta` carrying only what changed (a price move is the old level deleted and the new one added). Rows that repeat the previous top of book with a new update id produce nothing. Both files stamp milliseconds, so a trade and the book update it caused routinely share a timestamp; the merge puts the trade first, so it consumes the queue before the level is recorded as smaller.
+* The first update becomes a one-level `BookSnapshot`; each later one a `BookDelta` of what changed.
+* A row that repeats the previous top of book produces nothing.
+* A trade and the book update it caused often share a millisecond; the trade goes first.
 
-Licence: The datasets are [CC BY-NC-SA 4.0](https://data.binance.vision/Binance_Vision-Terms_of_Use.pdf) (Binance Vision Dataset Terms, clause 3.1). Clause 4.1 allows "algorithmic historical backtesting for purely personal non-production research"; clause 4.2 forbids using them for "live proprietary trading execution"; clause 4.5 requires any redistributed derivative to keep the same licence and attribute Binance Vision. No sample ships in this repository: ShareAlike and the non-commercial clause are incompatible with an MIT tree.
+Licence: [CC BY-NC-SA 4.0](https://data.binance.vision/Binance_Vision-Terms_of_Use.pdf). Clause 4.1 allows personal non-production backtesting, clause 4.2 forbids live proprietary trading use, and clause 4.5 keeps the licence on derivatives. No sample ships in this repository.
 
 ## `tardis`
 
-Normalized datasets from [datasets.tardis.dev](https://datasets.tardis.dev): `incremental_book_L2` (a full book snapshot then one row per level change) and `trades`. The first day of every month is free for every exchange and symbol; any other day needs `$TARDIS_API_KEY`.
+Normalised datasets from [datasets.tardis.dev](https://datasets.tardis.dev): `incremental_book_L2` (a snapshot, then one row per level change) and `trades`. The first day of each month is free; other days need `$TARDIS_API_KEY`.
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -95,46 +134,55 @@ Normalized datasets from [datasets.tardis.dev](https://datasets.tardis.dev): `in
 | `dir` | `$FASTMM_DATA_HOME` | Cache root |
 | `book` / `trades` | `true` | Which datasets to read |
 | `start` / `end` | whole days | `HH:MM[:SS]` or a full timestamp, UTC |
-| `clock` | `exchange` | `exchange` (the venue's own stamp) or `local` (collector receipt) |
+| `clock` | `exchange` | `exchange` (the venue's stamp) or `local` (collector receipt) |
 | `inst` / `venue` | resolved by symbol | Instrument and venue id the events carry |
 
-Snapshots are truncated to the 256 best levels per side (`RowAssembler`); a delta with more rows on a side goes out as several messages of the same timestamp. Rows sharing a timestamp form one message; the feed has no update id. With `start`, the book rows before it are applied to a book that goes out as one `BookSnapshot` stamped with the first row at or after `start`, so the run starts on the book the day had then.
+* Snapshots keep the 256 best levels a side; a larger delta goes out as several messages with one timestamp.
+* Rows sharing a timestamp form one message; the feed has no update id.
+* With `start`, earlier rows build the book, which goes out as one `BookSnapshot` at the first row at or after `start`.
 
-Licence: The [Tardis terms](https://docs.tardis.dev/legal/terms-of-service) grant a perpetual licence to keep and use downloaded data, including free samples (clause 9.4), for internal, research or personal use. Clause 9.2 forbids redistributing the raw data; only derived data aggregated to 10 minutes or coarser may be passed on.
+Licence: the [Tardis terms](https://docs.tardis.dev/legal/terms-of-service) allow keeping and using downloaded data for internal, research or personal use (clause 9.4). Raw data may not be redistributed; only aggregates of 10 minutes or coarser (clause 9.2).
 
 ## `itch`
 
-A day of Nasdaq TotalView-ITCH 5.0: every displayed order, added, executed, cancelled and replaced, in the order the matching engine handled it. NASDAQ publishes full days at [emi.nasdaq.com/ITCH](https://emi.nasdaq.com/ITCH/Nasdaq%20ITCH/); gunzip the file first (a day is about 8.6 GB, read through a memory map).
+A day of Nasdaq TotalView-ITCH 5.0: every displayed order added, executed, cancelled and replaced, in matching-engine order. Nasdaq publishes days at [emi.nasdaq.com/ITCH](https://emi.nasdaq.com/ITCH/Nasdaq%20ITCH/); gunzip the file first (about 8.6 GB a day, memory-mapped).
 
 | Option | Default | Meaning |
 |---|---|---|
 | `path` (1st positional) | — | The file, a 2-byte big-endian length before each message |
-| `date` | from the file name | `YYYY-MM-DD`; NASDAQ's names start `MMDDYYYY` |
+| `date` | from the file name | `YYYY-MM-DD`; Nasdaq's names start `MMDDYYYY` |
 | `start` / `end` | the whole file | `HH:MM[:SS]`, New York time |
-| `venue` | `0` | The venue whose instruments the source follows, matched by symbol |
+| `venue` | `0` | The venue whose instruments the source follows, by symbol |
 | `depth` | `64` | Levels per side in the engine's book, 1 to 256 |
 | `max_orders` | `262144` | Resting orders per book |
 
-Each followed book is an L3 book (`ItchL2Bridge`, [Nasdaq ITCH](codecs/nasdaq.md)). The engine trades on its L2 view: one `BookDelta` per book for the messages of one ITCH timestamp, a `Trade` for every printable execution at its execution price, and the P and Q trades with `TradeMsg::kNoAggressor`, since ITCH does not say which side they took. The simulated venue also gets the order-by-order events themselves (`OrderAddL3`, `OrderExecL3`, `OrderCancelL3`, `OrderReplaceL3`), which the engine never sees. Under `fill_model = "l3_queue"` they give each of our orders its place in its level's queue ([Backtesting](../explanation/backtesting.md#the-queue-from-every-order)); under `l2_queue` the venue ignores them.
+| Event | What the engine and the simulated venue get |
+|---|---|
+| Messages of one ITCH timestamp | one `BookDelta` per followed book, from its [L3 book](codecs/nasdaq.md#l3-book) |
+| Printable execution | a `Trade` at the execution price |
+| P and Q trades | a `Trade` with `TradeMsg::kNoAggressor` |
+| Add, execute, cancel, replace | `OrderAddL3` and the like, to the simulated venue only |
 
-The books build from the first message of the file. With `start`, the messages before it are applied but not yielded, and the run begins with each book's resting orders in queue order, then each book's snapshot. Exchange time and receive time are both midnight New York (daylight saving time by the rule in force since 2007) plus the message's timestamp; `[backtest] latency_md_us` delays them.
+Under `fill_model = "l3_queue"` the order events give each of our orders its place in its level's queue ([Backtesting](../explanation/backtesting.md#the-queue-from-every-order)); `l2_queue` ignores them.
+
+Books build from the file's first message. With `start`, earlier messages are applied but not yielded, and the run begins with each book's resting orders, then its snapshot. Times are midnight New York plus the message timestamp; `[backtest] latency_md_us` delays them.
 
 ```bash
 fastmm-backtest --config configs/backtest-itch.toml --data "itch:07302019.NASDAQ_ITCH50,start=09:30,end=16:00"
 ```
 
-A full day of eight active stocks, every message of the file read and the books built from 04:00, runs in about 11 s on one core.
+A full day of eight active stocks, books built from 04:00, runs in about 11 s on one core.
 
 ## Others considered
 
-| Source | Why not (yet) |
+| Source | Status |
 |---|---|
-| IEX HIST DEEP pcap | Free, no registration, redistributable with the attribution line in the [HIST data terms](https://www.iex.io/legal/hist-data-terms), aggregated depth at every price level back to 2016. It needs a pcap reader and an IEX-TP/DEEP decoder, which [ADR-0014](../adr/0014-us-equities.md) plans; daily files are over 10 GB gzipped |
-| Kaiko | No free tier; data is licensed per enterprise agreement |
+| IEX HIST DEEP pcap | Free and redistributable with [attribution](https://www.iex.io/legal/hist-data-terms), depth back to 2016; needs a pcap reader and IEX-TP/DEEP decoder ([ADR-0014](../adr/0014-us-equities.md)) |
+| Kaiko | No free tier; licensed per enterprise agreement |
 
 ## Adding a source
 
-One file and one registration. The source parses its own options, so nothing is added to `include/fastmm/config/schema.hpp`.
+A source is one file and one registration; it parses its own options, so the configuration schema does not change.
 
 ```cpp
 #include "fastmm/backtest/data_registry.hpp"
@@ -160,13 +208,24 @@ void register_my_source() {
 }
 ```
 
-`MySource` implements `fastmm::sim::MdSource`: `next()` yields `BookSnapshot` / `BookDelta` / `Trade` / `BookTicker` messages in non-decreasing time order and returns `nullptr` at the end, `reset()` rewinds, `start_ts()` reports the first event's time. `CsvLineReader` (`backtest/binance_source.hpp`) streams a file too large to hold in memory, and `RowAssembler` (`backtest/data_source.hpp`) turns a row stream into messages. `ChainSource` concatenates days and `MergedSource` merges streams by time, lower index first on a tie.
+| `MdSource` member | Does |
+|---|---|
+| `next()` | yields `BookSnapshot`, `BookDelta`, `Trade` or `BookTicker` in non-decreasing time; `nullptr` at the end |
+| `reset()` | rewinds |
+| `start_ts()` | the first event's time |
 
-The capabilities are what `fastmm-data list` prints. Call the registration before opening data: from an app's `main`, or from `register_builtin_data_sources()` for a source in this tree.
+| Helper | Use |
+|---|---|
+| `CsvLineReader` (`backtest/binance_source.hpp`) | streams a file too large for memory |
+| `RowAssembler` (`backtest/data_source.hpp`) | turns rows into messages |
+| `ChainSource` | concatenates days |
+| `MergedSource` | merges streams by time, lower index first on a tie |
+
+`fastmm-data list` prints the capabilities. Call the registration before opening data: from an app's `main`, or from `register_builtin_data_sources()` for a source in this tree.
 
 ## Packing a source for replay
 
-Decoding text is the slow part of a run. `fastmm-data convert` writes any spec `--data` takes, several merged with `;` included, to an `.fmj` journal ([Journal format](journal-format.md)), which replays the same events with no parsing:
+`fastmm-data convert` writes any `--data` spec, merged ones included, to an `.fmj` journal ([Journal format](journal-format.md)), which replays the same events without parsing text.
 
 ```bash
 ./build/release/bin/fastmm-data convert --config configs/backtest-binance.toml \
@@ -175,4 +234,4 @@ Decoding text is the slow part of a run. `fastmm-data convert` writes any spec `
     --data ~/.cache/fastmm/data/btcusdt-2024-03-27.fmj
 ```
 
-On 30 minutes of BTCUSDT `bookTicker` + `aggTrades` (252,760 events) that is 0.77 s from the CSVs against 0.06 s from the journal, with identical results and the same outbound hash. The journal is not smaller than the CSV. From Python: `fastmm.convert_data(spec, out, config)`.
+On 30 minutes of BTCUSDT (252,760 events) the run takes 0.06 s from the journal against 0.77 s from the CSVs, with identical results. The journal is not smaller than the CSV. From Python: `fastmm.convert_data(spec, out, config)`.
