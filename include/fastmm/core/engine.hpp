@@ -256,6 +256,8 @@ class Engine {
   // not pay for page faults or cold i-cache.
   void warm_up() noexcept {
     oms_.warm_up();
+    timers_.warm_up();
+    if (own_ != nullptr) own_->warm_up();
     Logger::instance().attach_current_thread();
     alignas(64) std::byte buf[BookDeltaMsg::size_for(8, 8)];
     for (const Instrument& inst : instruments_) {

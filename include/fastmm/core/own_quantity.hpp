@@ -84,6 +84,8 @@ class OwnQuantity {
 
   // Makes room for instruments [0, n) so that order events do not allocate (the engine, at start).
   void prepare(std::size_t instruments);
+  // Touches every order slot, so that a new order takes no page fault (Engine::warm_up).
+  void warm_up() noexcept;
 
   // Our resting quantity at (inst, side, px) at venue time t.
   [[nodiscard]] Qty own_at(InstrumentId inst, Side side, Price px, Timestamp t) const noexcept;

@@ -85,6 +85,8 @@ class TimerWheel {
     return live(id) && pool_.get(Handle<Timer>{index_of(id)}).active;
   }
   [[nodiscard]] std::size_t size() const noexcept { return pool_.size(); }
+  // Touches every timer slot, so that adding a timer takes no page fault.
+  void warm_up() noexcept { pool_.warm_up(); }
 
   // Fires every timer with expiry <= now, in slot order. F(TimerId, std::uint64_t user_data).
   template <class F>

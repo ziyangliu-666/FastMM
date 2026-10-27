@@ -103,6 +103,10 @@ void OwnQuantity::prepare(std::size_t instruments) {
     static_cast<void>(segs(InstrumentId{static_cast<std::uint32_t>(i)}));
 }
 
+void OwnQuantity::warm_up() noexcept {
+  lives_->warm_up();
+}
+
 OwnQuantity::~OwnQuantity() = default;
 
 std::vector<OwnQuantity::Segment>& OwnQuantity::segs(InstrumentId id) {
