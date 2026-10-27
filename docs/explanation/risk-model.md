@@ -6,17 +6,6 @@ Every new order and every replace passes a fixed list of checks before it leaves
 
 The checks run on the engine thread, after the strategy decides and before the OMS records the order. Quotes from the quote manager and orders from `ctx.send` take the same path.
 
-```mermaid
-flowchart LR
-    S[Strategy] --> Q[Quote manager]
-    S --> C[ctx.send]
-    Q --> R{Risk checks}
-    C --> R
-    R -- pass --> O[OMS] --> V[Venue]
-    R -- refuse --> X[RejectReason to the strategy]
-    S -. cancels skip the checks .-> O
-```
-
 A refused order is never sent. The strategy sees the `RejectReason` in the `Result` of `ctx.send`, or a quote that does not appear. The engine counts rejects per reason in `fastmm-top` and the shutdown summary, and logs at most one line per reason every 10 s.
 
 Cancels skip the checks, also after the kill switch has tripped, so a strategy or the engine can always reduce what is in the market.

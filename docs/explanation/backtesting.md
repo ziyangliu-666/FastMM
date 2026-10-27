@@ -2,16 +2,6 @@
 
 `fastmm-backtest` prints the net PnL, where it came from, and what each fill was worth afterwards. Read the decomposition and the markouts before the net PnL: a passive quoter can show positive spread capture and positive net PnL while losing on every fill.
 
-```mermaid
-flowchart LR
-    data[(Recorded or<br/>synthetic market)] --> order[Venue-time order]
-    order --> venue[Simulated venue<br/>books, queues, fills]
-    venue -- market data,<br/>after latency --> engine[Engine and strategy]
-    engine -- orders,<br/>after latency --> venue
-    venue -- acks, fills,<br/>balances --> engine
-    engine --> out[Summary, markouts,<br/>fills.csv, journal]
-```
-
 ## Model assumptions
 
 The simulated venue models latency and book mechanics. It assumes four things about the market:
@@ -223,15 +213,6 @@ A derivative's free margin counts the position's unrealised PnL at the recorded 
 <video class="fastmm-video" autoplay loop muted playsinline preload="metadata" poster="../../assets/anim/backtest-sweep.jpg" src="../../assets/anim/backtest-sweep.mp4"></video>
 
 Under the queue fill models the recorded market does not depend on our orders. A sweep's points, a walk-forward's folds and the arms of an `[ab]` test therefore share one pass over the data. Each point still gets the result its own backtest would: the same fills, orders, equity bars, markouts and outbound hash.
-
-```mermaid
-flowchart LR
-    data[(Recorded data)] --> reader[One reader thread:<br/>venue-time order]
-    reader --> p1[Pass on thread 1<br/>venue and engine books]
-    reader --> p2[Pass on thread 2<br/>venue and engine books]
-    p1 --> r1[Runs 1 to 128]
-    p2 --> r2[Runs 129 to 256]
-```
 
 | Shared by the runs of a pass | Kept per run |
 |---|---|
