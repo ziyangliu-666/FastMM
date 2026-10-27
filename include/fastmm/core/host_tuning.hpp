@@ -65,6 +65,9 @@ struct SlowIdleState {
 [[nodiscard]] std::vector<SlowIdleState> slow_idle_states(int max_exit_us,
                                                           const std::string& sys_root = "/sys");
 
+// {0, 1, 2, 3, 6} -> "0-3,6", for sorted CPUs.
+[[nodiscard]] std::string cpu_ranges(const std::vector<int>& cpus);
+
 // "0-3,6" -> {0, 1, 2, 3, 6}; nullopt when malformed. An empty or blank list is empty.
 [[nodiscard]] std::optional<std::vector<int>> parse_cpu_list(std::string_view list);
 

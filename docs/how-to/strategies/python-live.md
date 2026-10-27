@@ -59,7 +59,7 @@ PYTHONPATH=examples/python/strategies \
 
 ## Keep other threads off the engine's core
 
-1. Pin the engine thread with `[engine] cpu` (and `net_cpus` for the venue threads). Before `on_start`, the calling thread moves to the other CPUs, so the slow thread and the threads `on_start` starts inherit them; when the session starts, every other thread of the process moves too, and the log says `thread affinity: <n> thread(s) of this process moved to CPUs <list>`.
+1. Pin the engine thread with `[engine] cpu` (and `net_cpus` for the venue threads). Before `on_start`, the calling thread moves to the other CPUs, so the slow thread and the threads `on_start` starts inherit them; when the session starts, every other thread of the process moves too ([Cores](../operations/running-in-production.md#cores)).
 2. Set thread-count variables before Python starts, for example `OPENBLAS_NUM_THREADS=2 python my_session.py`; numpy reads them when it loads. `python -m fastmm run` sets `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS` and `MKL_NUM_THREADS` to 1 unless they are set.
 3. Start worker processes with `multiprocessing.set_start_method("forkserver")` or `"spawn"`: a child forked during a session cannot run a session or publish parameters.
 

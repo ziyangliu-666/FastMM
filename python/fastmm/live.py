@@ -63,12 +63,12 @@ def _duration_ns(duration: Union[None, str, int, float]) -> int:
     return ns
 
 
-def _confine_calling_thread(reserved: Any) -> None:
+def _confine_calling_thread(spare: Any) -> None:
     """Moves the calling thread off the CPUs the session pins, so threads it starts from here on (the
     slow thread, threads started in on_start, their BLAS pools) inherit that."""
-    if not reserved or not hasattr(os, "sched_getaffinity"):
+    if not spare or not hasattr(os, "sched_getaffinity"):
         return
-    allowed = os.sched_getaffinity(0) - set(reserved)
+    allowed = os.sched_getaffinity(0) & set(spare)
     if allowed:
         os.sched_setaffinity(0, allowed)
 
@@ -238,7 +238,7 @@ def _run_live(strategy: Any, config: Union[str, "os.PathLike[str]"],
     else:  # parameters only: the engine does not feed the channel
         channel = live.SlowChannel(symbols, 2, 2, slow_runner.SNAPSHOT_INTERVAL_NS)
 
-    _confine_calling_thread(section["reserved_cpus"])
+    _confine_calling_thread(section["spare_cpus"])
     thread: Optional[_SlowThread] = None
     if runner is not None:
         try:

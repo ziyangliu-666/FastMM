@@ -107,6 +107,8 @@ std::vector<int> msi_irqs(const fs::path& device) {
   return out;
 }
 
+}  // namespace
+
 std::string cpu_ranges(const std::vector<int>& cpus) {
   std::string out;
   for (std::size_t i = 0; i < cpus.size();) {
@@ -119,8 +121,6 @@ std::string cpu_ranges(const std::vector<int>& cpus) {
   }
   return out;
 }
-
-}  // namespace
 
 std::optional<std::vector<int>> parse_cpu_list(std::string_view list) {
   std::vector<int> out;

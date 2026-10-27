@@ -2,7 +2,8 @@
 // strategies, against the in-process simulator: a HotStrategy with a hook written in C, its
 // parameter ring and journal metadata, a failing hook (exit code 6), the watchdog (exit code 7), a
 // slow channel fed by the engine and watched by slow_tier_watchdog, the restored signal handlers,
-// confine_threads and net_cpu_shared, and an engine stuck in a hook ([engine] stall_ms, exit 5).
+// spare_cpus, confine_threads and net_cpu_shared, and an engine stuck in a hook ([engine] stall_ms,
+// exit 5).
 #include "integration_util.hpp"
 #include "process_util.hpp"
 
@@ -375,7 +376,29 @@ TEST_CASE("live session: the slow-tier watchdog notices a slow thread that ended
   CHECK_FALSE(live::thread_alive(tid.load()));
 }
 
-TEST_CASE("live session: confine_threads moves every thread off the reserved CPUs") {
+TEST_CASE("live session: spare_cpus keeps the other threads off the pinned CPUs") {
+  using V = std::vector<int>;
+  const V four{0, 1, 2, 3};
+  // Nothing pinned, or nothing pinned among the allowed CPUs: unchanged.
+  CHECK(live::spare_cpus(four, -1, V{}) == four);
+  CHECK(live::spare_cpus(four, -1, V{-1, -1}) == four);
+  CHECK(live::spare_cpus(V{0, 2}, 1, V{3}) == V{0, 2});
+  // The engine's and the network threads' CPUs, repeated or not.
+  CHECK(live::spare_cpus(four, 1, V{}) == V{0, 2, 3});
+  CHECK(live::spare_cpus(four, 1, V{2, -1}) == V{0, 3});
+  CHECK(live::spare_cpus(four, -1, V{2, 2}) == V{0, 1, 3});
+  CHECK(live::spare_cpus(four, 1, V{1}) == V{0, 2, 3});
+  // Hot threads on every CPU: off the engine's alone.
+  CHECK(live::spare_cpus(four, 1, V{2, 0, 0, 0, 0, 3}) == V{0, 2, 3});
+  CHECK(live::spare_cpus(V{1, 2}, 1, V{2}) == V{2});
+  // Nothing left: the engine's CPU is the only one, or the network threads cover all and the
+  // engine is not pinned.
+  CHECK(live::spare_cpus(V{1}, 1, V{}).empty());
+  CHECK(live::spare_cpus(four, -1, V{0, 1, 2, 3}).empty());
+  CHECK(live::spare_cpus(V{}, 1, V{2}).empty());
+}
+
+TEST_CASE("live session: confine_threads moves every thread to the given CPUs") {
   cpu_set_t original;
   CPU_ZERO(&original);
   REQUIRE(sched_getaffinity(0, sizeof original, &original) == 0);
@@ -383,8 +406,11 @@ TEST_CASE("live session: confine_threads moves every thread off the reserved CPU
     MESSAGE("skipped: fewer than 2 CPUs");
     return;
   }
-  int first = 0;
-  while (!CPU_ISSET(static_cast<std::size_t>(first), &original)) ++first;
+  std::vector<int> allowed;
+  for (int c = 0; c < CPU_SETSIZE; ++c) {
+    if (CPU_ISSET(static_cast<std::size_t>(c), &original)) allowed.push_back(c);
+  }
+  const int first = allowed.front();
 
   std::atomic<pid_t> helper_tid{0};
   std::atomic<bool> stop{false};
@@ -394,23 +420,22 @@ TEST_CASE("live session: confine_threads moves every thread off the reserved CPU
   });
   REQUIRE(wait_until([&] { return helper_tid.load() != 0; }, 1000));
 
-  CHECK(live::confine_threads(std::vector<int>{-1}).cpus.empty());  // nothing reserved
-  const live::ConfineResult r = live::confine_threads(std::vector<int>{first});
+  CHECK(live::process_cpus() == allowed);
+  CHECK_FALSE(live::confine_threads(std::vector<int>{-1}).error.empty());  // no CPU
+  const std::vector<int> spare = live::spare_cpus(allowed, first, std::vector<int>{});
+  const live::ConfineResult r = live::confine_threads(spare);
   CHECK(r.error.empty());
   CHECK(r.threads >= 2);
-  CHECK(std::find(r.cpus.begin(), r.cpus.end(), first) == r.cpus.end());
   cpu_set_t mask;
   CPU_ZERO(&mask);
   REQUIRE(sched_getaffinity(helper_tid.load(), sizeof mask, &mask) == 0);
   CHECK_FALSE(CPU_ISSET(static_cast<std::size_t>(first), &mask));
   CHECK(CPU_COUNT(&mask) == CPU_COUNT(&original) - 1);
+  CHECK(live::process_cpus() == spare);
 
-  // Every CPU of the (confined) process reserved: nothing changes.
-  std::vector<int> all;
-  for (int c = 0; c < CPU_SETSIZE; ++c) {
-    if (CPU_ISSET(static_cast<std::size_t>(c), &original)) all.push_back(c);
-  }
-  CHECK_FALSE(live::confine_threads(all).error.empty());
+  // A thread pinned to the excluded CPU counts in the union.
+  REQUIRE(sched_setaffinity(helper_tid.load(), sizeof original, &original) == 0);
+  CHECK(live::process_cpus() == allowed);
 
   stop = true;
   helper.join();

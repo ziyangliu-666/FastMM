@@ -143,15 +143,6 @@ struct SignalGuard {
   ~SignalGuard() { restore_signal_handlers(); }
 };
 
-std::string cpu_list(const std::vector<int>& cpus) {
-  std::string s;
-  for (const int c : cpus) {
-    if (!s.empty()) s += ',';
-    s += std::to_string(c);
-  }
-  return s;
-}
-
 // Run-to-completion ([engine] threading = "single"): the engine thread runs the venue's network
 // loop between engine steps (inline_poll). Market data reaches the engine as soon as the venue
 // commits it to the md ring (inline_drain, the md sink's drain hook), and the engine's orders go
@@ -1944,19 +1935,9 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   }
 
   // ---- threads --------------------------------------------------------------------------
-  if (opts.confine_other_threads) {
-    std::vector<int> reserved{cfg.engine.cpu};
-    reserved.insert(reserved.end(), cfg.engine.net_cpus.begin(), cfg.engine.net_cpus.end());
-    const ConfineResult confined = confine_threads(reserved);
-    if (!confined.error.empty()) {
-      FASTMM_LOG_WARN("{}", std::string_view(confined.error));
-    } else if (!confined.cpus.empty()) {
-      const std::string cpus = cpu_list(confined.cpus);
-      FASTMM_LOG_INFO("thread affinity: {} thread(s) of this process moved to CPUs {}",
-                      confined.threads,
-                      std::string_view(cpus));
-    }
-  }
+  // Single: the engine thread runs the network loop and net_cpus is ignored.
+  confine_other_threads(
+      cfg.engine.cpu, single ? std::span<const int>{} : std::span<const int>(cfg.engine.net_cpus));
   log_topology(cfg, single, slots);
   // Threads started from here on (journal, network, engine) inherit the timer slack.
   if (cfg.engine.timer_slack_ns > 0) {

@@ -22,6 +22,7 @@
 #include "fastmm/live/sd_notify.hpp"
 #include "fastmm/live/session.hpp"
 #include "fastmm/live/shutdown_guard.hpp"
+#include "fastmm/live/thread_affinity.hpp"
 #include "fastmm/live/venue_slot.hpp"
 #include "fastmm/venues/registry.hpp"
 #include "fastmm/venues/symbology.hpp"
@@ -3588,6 +3589,7 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
     return gateway.command(request);
   };
   const GatewaySignals signals;
+  confine_other_threads(-1, cfg.engine.net_cpus);
   start_net_threads(slots, cfg, -1);
   FASTMM_LOG_INFO(
       "fastmm-gateway: {} venue(s), {} instrument(s), dry_run={}, net={}, orders_per_sec={}, "

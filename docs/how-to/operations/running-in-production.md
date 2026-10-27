@@ -140,6 +140,8 @@ The `[engine]` keys below are off by default. One the process lacks the permissi
 
 ### Cores
 
+Before its hot threads start, `fastmm-live` moves every other thread of the process (journal, store, audit, log, control, DNS resolution) off the CPUs in `[engine] cpu` and `net_cpus`; when those are all the CPUs the process may use, off `cpu` alone. Threads started later inherit the mask. The log shows `thread affinity: <n> thread(s) of this process moved to CPUs <list>`. `fastmm-gateway` does the same for `net_cpus`.
+
 `fastmm-live` logs a topology check before its threads start (`topology:` lines, `core/host_tuning.hpp`). The first line names each hot thread (the engine, then one network thread per `[venues.*]` section) with its CPU, the physical cores and logical CPUs online, and the CPUs the process's other threads may use. A warning follows for each of these:
 
 | Warning | Why it costs latency |

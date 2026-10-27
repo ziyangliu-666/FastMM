@@ -1,8 +1,7 @@
 #pragma once
-// confine_threads(): keeps a process's other threads off the CPUs a live session pins (ADR-0013,
-// section 3). fastmm_live._live calls it through LiveOptions::confine_other_threads before the
-// engine and venue threads start, so Python, numpy and BLAS threads do not share the engine's
-// core; threads started later inherit the mask.
+// Keeps a process's other threads off the CPUs its hot threads are pinned to. run_live and
+// fastmm-gateway call confine_other_threads before the hot threads start; threads started later
+// inherit the mask, and the resolver helpers take the main thread's (leave_pinned_cpus).
 #include <cstddef>
 #include <span>
 #include <string>
@@ -10,15 +9,27 @@
 
 namespace fastmm::live {
 
+// The CPUs the other threads may use: `allowed` minus the engine's and the network threads' CPUs
+// (a negative entry is not pinned). When those cover `allowed`, `allowed` minus the engine's CPU
+// alone, the thread a preemption costs most. `allowed` itself when none of them is in it; empty
+// when nothing is left.
+[[nodiscard]] std::vector<int> spare_cpus(std::span<const int> allowed,
+                                          int engine_cpu,
+                                          std::span<const int> net_cpus);
+
+// The CPUs a thread of this process may use: the union of their affinities.
+[[nodiscard]] std::vector<int> process_cpus();
+
 struct ConfineResult {
   std::size_t threads = 0;  // threads whose affinity was set
-  std::vector<int> cpus;    // the CPUs they may use; empty when nothing changed
-  std::string error;        // why nothing changed although CPUs were reserved
+  std::string error;
 };
 
-// Sets the affinity of every thread in /proc/self/task to the calling thread's CPUs minus
-// `reserved` (negative entries are ignored). Without a reserved CPU nothing changes. When every CPU
-// is reserved nothing changes and `error` says so. A thread that exits meanwhile is skipped.
-[[nodiscard]] ConfineResult confine_threads(std::span<const int> reserved);
+// Sets the affinity of every thread in /proc/self/task to `cpus`. A thread that exits meanwhile
+// is skipped.
+[[nodiscard]] ConfineResult confine_threads(std::span<const int> cpus);
+
+// confine_threads(spare_cpus(process_cpus(), ...)) and a log line; nothing when no CPU is pinned.
+void confine_other_threads(int engine_cpu, std::span<const int> net_cpus);
 
 }  // namespace fastmm::live

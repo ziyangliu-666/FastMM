@@ -28,6 +28,7 @@
 #include "fastmm/live/live_backend.hpp"
 #include "fastmm/live/session.hpp"
 #include "fastmm/live/slow_watchdog.hpp"
+#include "fastmm/live/thread_affinity.hpp"
 #include "fastmm/strategies/hot_params.hpp"
 #include "fastmm/strategies/hot_strategy.hpp"
 #include "fastmm/strategies/slow_channel.hpp"
@@ -41,6 +42,7 @@
 #include <cstdio>
 #include <exception>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -134,12 +136,10 @@ py::dict load_config(const std::string& path, bool allow_inline_secrets) {
   out["warnings"] = cfg.warnings;
   out["orders_per_sec"] = cfg.risk_limits().orders_per_sec;
   out["max_param_age_ms"] = cfg.strategy.max_param_age_ms;
-  py::list reserved;
-  if (cfg.engine.cpu >= 0) reserved.append(cfg.engine.cpu);
-  for (const int c : cfg.engine.net_cpus) {
-    if (c >= 0) reserved.append(c);
-  }
-  out["reserved_cpus"] = reserved;
+  out["spare_cpus"] = live::spare_cpus(
+      live::process_cpus(),
+      cfg.engine.cpu,
+      cfg.single_threaded() ? std::span<const int>{} : std::span<const int>(cfg.engine.net_cpus));
   return out;
 }
 
@@ -274,7 +274,6 @@ py::tuple run(const std::string& path,
         error = strategy->error();
       };
       opts.strategy = &ls;
-      opts.confine_other_threads = true;
       if (slow) opts.watchdog = live::slow_tier_watchdog(ch, slow_tid);
       try {
         rc = live::run_live(cfg, opts);
@@ -351,7 +350,7 @@ void bind_session(py::module_& m) {
         py::arg("path"),
         py::arg("allow_inline_secrets") = false,
         "Internal: {'strategy', 'params', 'instruments', 'warnings', 'orders_per_sec', "
-        "'max_param_age_ms', 'reserved_cpus'} of a live configuration. Raises ValueError when it "
+        "'max_param_age_ms', 'spare_cpus'} of a live configuration. Raises ValueError when it "
         "does not load.");
   m.def(
       "run",
