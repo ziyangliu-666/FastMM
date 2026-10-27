@@ -57,6 +57,8 @@ def test_extract_handles_zip_and_gzip(tmp_path):
     with gzip.open(cache.root / "z" / "g.csv.gz", "wt") as fh:
         fh.write(BOOK_TICKER)
     assert cache.extract("z/g.csv.gz").read_text() == BOOK_TICKER
+    # The archives go once unpacked: the unpacked file is what a fetch looks for.
+    assert sorted(p.name for p in (cache.root / "z").iterdir()) == ["d.csv", "g.csv"]
 
 
 def test_archive_keys_match_the_layout_the_decoder_reads():

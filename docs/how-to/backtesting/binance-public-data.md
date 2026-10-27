@@ -17,7 +17,7 @@ python3 python/fastmm/data/__main__.py fetch --symbol BTCUSDT --date 2024-03-27
 
 It needs only the Python standard library, so it runs before the bindings are built. With the wheel installed it is `python3 -m fastmm.data fetch --symbol BTCUSDT --date 2024-03-27`.
 
-It downloads `bookTicker` and `aggTrades` from [data.binance.vision](https://data.binance.vision), checks each file against the SHA-256 the archive publishes next to it, and unpacks them into `$FASTMM_DATA_HOME` (default `~/.cache/fastmm/data`). A partial download resumes. One day of BTCUSDT is 207 MB of ZIP and 1.5 GB unpacked; `python3 -m fastmm.data ls` shows what the cache holds.
+It downloads `bookTicker` and `aggTrades` from [data.binance.vision](https://data.binance.vision), checks each file against the SHA-256 the archive publishes next to it, and unpacks them into `$FASTMM_DATA_HOME` (default `~/.cache/fastmm/data`). A partial download resumes, and a ZIP is deleted once unpacked. One day of BTCUSDT is a 207 MB download and 1.5 GB unpacked; `python3 -m fastmm.data ls` shows what the cache holds.
 
 Pick a date between 2023-05-16 and 2024-03-30. The archive published futures `bookTicker` only in that window and nothing since, so those are the days with a book. Trades run to yesterday.
 

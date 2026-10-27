@@ -6,7 +6,7 @@ the C++ side finds a file from its key alone.
 
     cache = Cache()
     cache.download(url, key, sha256=digest)   # resumes a partial file, verifies, then renames
-    cache.extract(key)                        # unzip next to the archive
+    cache.extract(key)                        # unpack next to the archive, then delete it
 
 Root: ``$FASTMM_DATA_HOME``, else ``$XDG_CACHE_HOME/fastmm/data``, else
 ``~/.cache/fastmm/data`` (``fastmm::bt::default_data_dir()`` agrees).
@@ -145,7 +145,8 @@ class Cache:
         return dest
 
     def extract(self, key: str, *, force: bool = False) -> Path:
-        """Unpack a cached ``.zip`` (one member) or ``.gz`` next to it, and return the file."""
+        """Unpack a cached ``.zip`` (one member) or ``.gz`` next to it, delete the archive, and
+        return the file. A fetch skips a day whose unpacked file is in the cache."""
         archive = self.path(key)
         if key.endswith(".gz"):
             dest = archive.with_suffix("")
@@ -155,6 +156,7 @@ class Cache:
             with gzip.open(archive, "rb") as src, open(tmp, "wb") as out:
                 shutil.copyfileobj(src, out, _CHUNK)
             tmp.replace(dest)
+            archive.unlink()
             return dest
         with zipfile.ZipFile(archive) as zf:
             members = [m for m in zf.namelist() if not m.endswith("/")]
@@ -167,6 +169,7 @@ class Cache:
             with zf.open(members[0]) as src, open(tmp, "wb") as out:
                 shutil.copyfileobj(src, out, _CHUNK)
         tmp.replace(dest)
+        archive.unlink()
         return dest
 
 
