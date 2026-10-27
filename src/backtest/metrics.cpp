@@ -257,8 +257,11 @@ Metrics compute_metrics(const EquityRows& equity,
     const double sd = var > 0.0 ? std::sqrt(var) : 0.0;
     m.sharpe_bar = sd > 0.0 ? mean / sd : 0.0;
     const double bars_per_year = 365.0 * 86400.0 * 1e9 / static_cast<double>(in.bar.ns);
-    m.sharpe_annualized =
-        m.duration_s >= kMinAnnualizedDurationS ? m.sharpe_bar * std::sqrt(bars_per_year) : nan;
+    // A day of data ends a fraction of a bar before the next day begins: within one bar is a day.
+    const double bar_s = static_cast<double>(in.bar.ns) / 1e9;
+    m.sharpe_annualized = m.duration_s + bar_s > kMinAnnualizedDurationS
+                              ? m.sharpe_bar * std::sqrt(bars_per_year)
+                              : nan;
     m.max_drawdown = dec(max_dd);
     if (in.initial_capital > 0.0) m.max_drawdown_pct = m.max_drawdown / in.initial_capital;
     m.inventory_mean = inv_sum / dn;
@@ -292,6 +295,18 @@ Metrics compute_metrics(const EquityRows& equity,
   std::uint64_t through_touch = 0;
   std::vector<std::int64_t> queue_ahead;
 
+  // The net position moves only at fills, so its peak is reached at one: walk them from the
+  // position before the first bar's fills.
+  if (n > 0) {
+    std::int64_t pos = equity.position[0];
+    for (std::size_t i = 0; i < fills.size() && fills.ts[i] <= equity.ts[0]; ++i)
+      pos -= fills.side[i] == 0 ? fills.qty[i] : -fills.qty[i];
+    for (std::size_t i = 0; i < fills.size(); ++i) {
+      pos += fills.side[i] == 0 ? fills.qty[i] : -fills.qty[i];
+      m.inventory_max = std::max(m.inventory_max, std::fabs(dec(pos)));
+    }
+  }
+
   for (std::size_t i = 0; i < fills.size(); ++i) {
     const bool taker = fills.liquidity[i] == static_cast<std::uint8_t>(Liquidity::Taker);
     if (taker) {
@@ -316,8 +331,10 @@ Metrics compute_metrics(const EquityRows& equity,
     if (fills.queue_ahead.size() == fills.size() && fills.queue_ahead[i] >= 0)
       queue_ahead.push_back(fills.queue_ahead[i]);
 
-    // At the touch / behind it / through it, against the venue book at the fill.
-    if (fills.best_bid.size() == fills.size() && fills.best_ask.size() == fills.size()) {
+    // Where a resting order was against the venue book at its fill: at the touch, inside it,
+    // behind it, or through it (the opposite touch had reached its price: the market moved
+    // through the order). A taker fill crosses by definition, so only maker fills are placed.
+    if (!taker && fills.best_bid.size() == fills.size() && fills.best_ask.size() == fills.size()) {
       const std::int64_t own = buy ? fills.best_bid[i] : fills.best_ask[i];
       const std::int64_t opp = buy ? fills.best_ask[i] : fills.best_bid[i];
       const bool crossed = opp > 0 && (buy ? fills.price[i] >= opp : fills.price[i] <= opp);
@@ -394,8 +411,8 @@ Metrics compute_metrics(const EquityRows& equity,
   FillQuality& fq = m.fill_quality;
   fq.realized_spread_quote = dec(capture_raw);
   fq.realized_spread_bps = bps_of(capture_raw, capture_notional_raw);
-  if (m.fills > 0) {
-    const auto dn = static_cast<double>(m.fills);
+  if (m.maker_fills > 0) {
+    const auto dn = static_cast<double>(m.maker_fills);
     fq.at_touch_share = static_cast<double>(at_touch) / dn;
     fq.inside_touch_share = static_cast<double>(inside_touch) / dn;
     fq.behind_touch_share = static_cast<double>(behind_touch) / dn;

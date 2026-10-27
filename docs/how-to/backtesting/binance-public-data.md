@@ -65,7 +65,7 @@ The run above, `basic_mm` on BTCUSDT perpetual, 2024-03-27, `l2_queue` fills wit
   realized / unrealized / fees   -148.8768 / 0.9549 / 351.1302
   fills (maker / taker)          12529 (12529 / 0)
   spread captured (bps)          0.032
-  fills at / inside / behind / through 70.9% / 3.7% / 8.2% / 17.1%
+  maker fills at / inside / behind / through 70.9% / 3.7% / 8.2% / 17.1%
   volume base / quote            24.99800 / 1755650.99
 
 where the PnL came from (quote currency, 1755650.99 traded notional)

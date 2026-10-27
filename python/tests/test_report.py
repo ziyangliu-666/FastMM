@@ -168,3 +168,22 @@ def test_session_report_keeps_a_book_per_instrument(tmp_path):
     assert run.symbol == "AAAUSDT"
     assert run.equity["mid"][-1] == pytest.approx(101.0)
     assert any("2 instruments traded" in n for n in run.notes)
+
+
+def test_markouts_split_the_legs_and_name_them():
+    """A run that quotes on one venue and hedges on another shows each leg, by venue and symbol."""
+    def bucket(bps, fills):
+        return {"markout_bps": bps, "capture_bps": 0.5, "adverse_selection_bps": 0.5 - bps,
+                "fills": fills}
+
+    run = report_module.Run("backtest", "xmm", "nowhere")
+    run.metrics = {"net_pnl": 0.0, "fills": 30}
+    run.instruments = ["bybit:SOLUSDT", "binance_usdm:SOLUSDT"]
+    run.markouts = [{"label": "1s", "excluded_fills": 0, "total": bucket(0.18, 30),
+                     "buy": bucket(0.1, 15), "sell": bucket(0.2, 15),
+                     "maker": bucket(-1.22, 20), "taker": bucket(2.9, 10),
+                     "instrument": [bucket(-1.22, 20), bucket(2.9, 10)]}]
+    html = report_module.render_html(run)
+    assert "&emsp;maker</td><td>\u22121.220" in html
+    assert "&emsp;bybit:SOLUSDT</td><td>\u22121.220" in html
+    assert "&emsp;binance_usdm:SOLUSDT</td><td>+2.900" in html

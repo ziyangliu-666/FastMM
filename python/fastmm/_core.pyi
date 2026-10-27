@@ -394,6 +394,11 @@ class BacktestResult:
         Fill columns (zero-copy numpy views).
         """
     @property
+    def instruments(self) -> list[str]:
+        """
+        Each instrument as 'venue:symbol', indexed by instrument id.
+        """
+    @property
     def md_events(self) -> int:
         """
         Market-data messages delivered to the engine.

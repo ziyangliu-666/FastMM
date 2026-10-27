@@ -58,7 +58,7 @@ The horizons come from `[backtest] markout_horizons_s` (default `"1,10,60"` seco
 
 Because the excluded fills differ per horizon, `capture` is recomputed over the same fills as the markout of that horizon, so the two columns of one row are comparable.
 
-Markouts are reported per instrument, per side, per liquidity flag and in total, in quote currency and in bps of traded notional, in the CLI summary, in `summary.json` (`markouts`), from Python (`result.markouts()`, `fastmm.markout_frame(result)`) and per fill in `fills.csv` (`mid_1s`, `mid_10s`, `mid_1m`). One backtest covers one strategy, so the total is that strategy's markout; a sweep gives one result per point.
+Markouts are reported per instrument, per side, per liquidity flag and in total, in quote currency and in bps of traded notional, in the CLI summary, in `summary.json` (`markouts`), from Python (`result.markouts()`, `fastmm.markout_frame(result)`) and per fill in `fills.csv` (`mid_1s`, `mid_10s`, `mid_1m`). The total of a strategy that hedges adds the hedge's crossing orders to its quotes: the summary prints a `maker` and a `taker` row under the total when a run has both, and a row per instrument, named `venue:symbol`, when more than one traded.
 
 `tools/pnl_report.py` computes the same markouts from a recorded session journal, marking against the `BookTicker` stream. A journal recorded without top-of-book updates (`[sim] book_ticker = false`) has no mid to mark against and the report says so.
 
@@ -67,8 +67,8 @@ Markouts are reported per instrument, per side, per liquidity flag and in total,
 | Metric | Meaning |
 |---|---|
 | realised spread | `signed qty * (mid at fill − price)` over the traded notional, in bps: the same quantity the markout starts from |
-| fills at / inside / behind / through | Where the fill price sat relative to the venue's best quote on that side at the fill: equal, better (the order improved it), worse, or at or beyond the opposite quote |
-| quotes filled / placed | Share of new orders that got at least one fill, their replacements' fills included, which is not the same as `fill ratio` (fills per order) |
+| maker fills at / inside / behind / through | Where a resting order's price sat against the venue's book when it filled: at the best quote on its side, better (the order improved it), worse, or at or beyond the opposite quote. Through is a fill the opposite side of the book came to, which the [model](#model-assumptions) gives a resting order the market moved through; such fills are the most adversely selected |
+| orders filled / sent | New orders that got at least one fill, their replacements' fills included; `fills per order` counts every fill, so an order filled in pieces takes it above 1 |
 | time to fill | Venue arrival of a new order to its first fill or its replacements', p50 / p90 / p99 |
 | queue ahead at fill | Displayed quantity still ahead of the order when it filled. `fill_model = "l2_queue"` only; the matching engine fills from the front of the queue, so it has no such number |
 
@@ -214,8 +214,8 @@ The latency model draws every message's delay from one distribution, while a ven
   fills (maker / taker)          147 (147 / 0)
   spread captured (bps)          0.008
   realized spread (bps of notional) 0.008
-  fills at / inside / behind / through 6.8% / 30.6% / 60.5% / 2.0%
-  quotes filled / placed         105 / 365 (28.8%)
+  maker fills at / inside / behind / through 6.8% / 30.6% / 60.5% / 2.0%
+  orders filled / sent           105 / 365 (28.8%)
   time to fill p50/p90/p99       44.1 / 271.8 / 1100.2 ms
   queue ahead at fill p50/p90    0.00000 / 0.00102
 
@@ -242,8 +242,8 @@ markout per fill (mid at fill + horizon vs the fill price; bps of notional)
   net pnl                        -27.0083
   fills (maker / taker)          467 (467 / 0)
   realized spread (bps of notional) 0.002
-  fills at / inside / behind / through 78.4% / 0.0% / 0.0% / 0.0%
-  quotes filled / placed         456 / 762 (59.8%)
+  maker fills at / inside / behind / through 78.4% / 0.0% / 0.0% / 0.0%
+  orders filled / sent           456 / 762 (59.8%)
   queue ahead at fill p50/p90    n/a (the matching fill model has no queue position)
 
 where the PnL came from (quote currency, 27014.99 traded notional)

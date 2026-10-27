@@ -115,6 +115,8 @@ struct BacktestResult {
   std::string strategy;
   ParamMap params;
   std::uint64_t seed = 0;
+  // Each instrument as `venue:symbol`, by id (empty in results built by hand).
+  std::vector<std::string> instruments;
   FillRows fills;
   EquityRows equity;
   OrderRows orders;

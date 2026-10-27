@@ -58,6 +58,7 @@ class Run:
         self.metrics: Dict[str, Any] = {}
         self.decomposition: Optional[Dict[str, float]] = None
         self.markouts: List[Dict[str, Any]] = []
+        self.instruments: List[str] = []  # "venue:symbol" by instrument id
         self.equity: Dict[str, List[float]] = {}
         self.fills: Dict[str, List[Any]] = {}
         self.params: Rows = []
@@ -87,6 +88,7 @@ def read_run_dir(path: PathLike, config: Optional[PathLike] = None) -> Run:
     run.metrics = {k: v for k, v in summary.items() if not isinstance(v, (dict, list))}
     run.decomposition = summary.get("pnl_decomposition")
     run.markouts = summary.get("markouts") or []
+    run.instruments = list(summary.get("instruments") or [])
     run.params = [(k, str(v)) for k, v in (summary.get("params") or {}).items()]
     run.equity = _read_equity_csv(os.path.join(d, "equity.csv"))
     run.fills = _read_fills_csv(os.path.join(d, "fills.csv"))
@@ -117,6 +119,7 @@ def from_result(result: Any, source: str = "in-memory result") -> Run:
         "fills": stats["fills"],
     }
     run.markouts = list(result.markouts())
+    run.instruments = list(result.instruments)
     run.params = [(k, str(v)) for k, v in dict(result.params).items()]
     scale = 1e-8
     e = result.equity
@@ -1069,6 +1072,24 @@ def _markout_section(run: Run) -> str:
             _fmt_int(total["fills"]),
             _fmt_int(h["excluded_fills"]),
         ))
+        # The resting orders and the crossing ones (a hedge) apart, then each instrument.
+        parts = []
+        if h["maker"]["fills"] and h["taker"]["fills"]:
+            parts += [("maker", h["maker"]), ("taker", h["taker"])]
+        legs = [(k, b) for k, b in enumerate(h.get("instrument") or []) if b["fills"]]
+        if len(legs) > 1:
+            parts += [(run.instruments[k] if k < len(run.instruments) else f"instrument {k}", b)
+                      for k, b in legs]
+        for name, b in parts:
+            rows.append((
+                f"&emsp;{_esc(name)}",
+                _fmt_num(b["markout_bps"], 3, plus=True),
+                _fmt_num(b["capture_bps"], 3, plus=True),
+                _fmt_num(b["adverse_selection_bps"], 3, plus=True),
+                "", "",
+                _fmt_int(b["fills"]),
+                "",
+            ))
     if not rows:
         return ""
     table = _table(
@@ -1096,7 +1117,7 @@ def _fill_quality_section(run: Run) -> str:
     behind = run.get("behind_touch_share") or 0.0
     through = run.get("through_touch_share") or 0.0
     left = [
-        '<p class="chart-title">where the quote was when it filled</p>',
+        '<p class="chart-title">where the resting orders were when they filled</p>',
         _stacked_bar([("at the touch", at_touch, "tone1"), ("inside it", inside, "tone4"),
                       ("behind it", behind, "tone2"), ("through it", through, "tone3")]),
         '<p class="chart-title">time from quote to fill</p>',
@@ -1109,10 +1130,10 @@ def _fill_quality_section(run: Run) -> str:
     ]
     rows: List[Tuple[str, str]] = [
         ("realized spread", f"{_fmt_num(run.get('realized_spread_bps'), 3)} bps of notional"),
-        ("quotes placed", _fmt_int(run.get("quotes_placed"))),
-        ("quotes filled", f"{_fmt_int(run.get('quotes_filled'))} "
+        ("orders sent", _fmt_int(run.get("quotes_placed"))),
+        ("orders filled", f"{_fmt_int(run.get('quotes_filled'))} "
                           f"({_fmt_pct(run.get('fill_rate_per_quote'))})"),
-        ("fill ratio", _fmt_num(run.get("fill_ratio"), 3)),
+        ("fills per order", _fmt_num(run.get("fill_ratio"), 3)),
         ("spread captured", f"{_fmt_num(run.get('spread_captured_bps'), 3)} bps"),
     ]
     if run.get("queue_ahead_p50") is not None:
@@ -1125,8 +1146,10 @@ def _fill_quality_section(run: Run) -> str:
         rows.append(("queue ahead at fill", "not tracked by this fill model"))
     return (
         "<section><h2>Fill quality</h2>"
-        '<p class="lede">Whether the fills came from resting at the touch or from the market '
-        "coming through the quote, and how long a quote waited for them.</p>"
+        '<p class="lede">Where each resting order was when it filled: at the touch, inside or '
+        "behind it, or through it, when the opposite side of the book had already reached its "
+        "price and the market moved through the order. And how long an order waited for its "
+        "first fill.</p>"
         f'<div class="grid2"><div>{"".join(left)}</div><div>{_kv_table(rows)}</div></div>'
         "</section>")
 

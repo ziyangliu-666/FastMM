@@ -33,8 +33,8 @@ The report names the instrument's assets and lists the strategy parameters when 
 | key figures | fills and their maker/taker split, traded notional, fees paid, quote uptime, max drawdown, Sharpe per bar |
 | equity and inventory | equity (realized + unrealized, less fees) and the net position on one time axis, with the worst drawdown marked, the inventory limit drawn as a threshold, and a strip showing when both sides were quoted |
 | where the PnL came from | the `pnl_decomposition` of `summary.json`: gross spread capture, mid drift after the fills, fees, rebates, and what is left unexplained ([Economics](../explanation/economics.md)) |
-| markouts | the venue mid at each horizon against the fill price, in bps of notional, per horizon and split buy/sell, with the fills each horizon excluded ([Backtesting](../explanation/backtesting.md)) |
-| fill quality | at the touch / inside it / behind it / through it, time from quote to fill (p50, p90, p99), realized spread, quotes placed and filled, queue position at the fill |
+| markouts | the venue mid at each horizon against the fill price, in bps of notional, per horizon and split buy/sell, with the fills each horizon excluded; under each horizon the maker and taker fills when there are both, and each instrument when more than one traded ([Backtesting](../explanation/backtesting.md#markouts)) |
+| fill quality | where the resting orders were when they filled (at the touch, inside it, behind it, through it), time from order to fill (p50, p90, p99), realized spread, orders sent and filled, queue position at the fill |
 | quotes, rejects and fills | orders, cancels, replaces, rejects, outbound messages, market-data events, tick-to-order latency, and when the fills arrived |
 | configuration | the strategy parameters, the run settings (seed, window, markout horizons, outbound hash) and the effective configuration |
 

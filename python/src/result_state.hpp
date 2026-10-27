@@ -261,6 +261,8 @@ inline std::string to_bytes(const bt::BacktestResult& r) {
   for (const auto& h : r.metrics.markouts) markout_scalars(w, h);
   w.count(r.slow_methods.size());
   for (const auto& s : r.slow_methods) slow_method(w, s);
+  w.count(r.instruments.size());
+  for (const auto& s : r.instruments) w.str(s);
   treasury_scalars(w, r.treasury);
   w.count(r.treasury.transfers.size());
   for (const auto& t : r.treasury.transfers) transfer(w, t);
@@ -293,6 +295,8 @@ inline bt::BacktestResult from_bytes(std::string_view in) {
   for (auto& h : r.metrics.markouts) markout_scalars(rd, h);
   r.slow_methods.resize(rd.count(8));
   for (auto& s : r.slow_methods) slow_method(rd, s);
+  r.instruments.resize(rd.count(8));
+  for (auto& s : r.instruments) rd.str(s);
   treasury_scalars(rd, r.treasury);
   r.treasury.transfers.resize(rd.count(16));
   for (auto& t : r.treasury.transfers) transfer(rd, t);

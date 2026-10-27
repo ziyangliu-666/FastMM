@@ -681,6 +681,9 @@ void bind_backtest(py::module_& m) {
       "scale); to_pandas() converts them.")
       .def_readonly("strategy", &BacktestResult::strategy)
       .def_readonly("seed", &BacktestResult::seed)
+      .def_readonly("instruments",
+                    &BacktestResult::instruments,
+                    "Each instrument as 'venue:symbol', indexed by instrument id.")
       .def_property_readonly(
           "params",
           [](const BacktestResult& r) { return string_map(r.params); },

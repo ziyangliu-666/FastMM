@@ -246,3 +246,56 @@ TEST_CASE("backtest.analytic: known fills on an L2 tape give exact PnL and fees"
   CHECK(r.orders.size() >= 3);
   CHECK(r.orders.venue_ts[0] == seconds(1).ns + microseconds(200).ns);
 }
+
+TEST_CASE("backtest.metrics: the inventory peak between bars, maker fills' place, a day of data") {
+  const std::int64_t unit = kFixedScale;
+  EquityRows eq;
+  // 60 s bars over 86,399.99 s of data: the last bar is the run's end, 10 ms short of a day.
+  const std::int64_t start = seconds(1'700'000'000).ns;
+  const std::int64_t end = start + seconds(86'400).ns - milliseconds(10).ns;
+  for (std::int64_t t = start + seconds(60).ns; t < end; t += seconds(60).ns) eq.ts.push_back(t);
+  eq.ts.push_back(end);
+  for (std::size_t i = 0; i < eq.ts.size(); ++i) {
+    eq.realized.push_back(static_cast<std::int64_t>(i % 3) * unit);
+    eq.unrealized.push_back(0);
+    eq.fees.push_back(0);
+    eq.position.push_back(0);
+    eq.mid.push_back(100 * unit);
+    eq.quoted.push_back(3);
+  }
+  // Inside the second bar: bought 3 and sold them again. Every bar sees a flat position.
+  FillRows fills;
+  auto add_fill = [&](std::int64_t ts, std::int8_t side, const char* price, Liquidity liq) {
+    fills.ts.push_back(ts);
+    fills.instrument.push_back(0);
+    fills.side.push_back(side);
+    fills.price.push_back(px(price).raw);
+    fills.qty.push_back(unit);
+    fills.fee.push_back(0);
+    fills.cl_ord_id.push_back(1);
+    fills.liquidity.push_back(static_cast<std::uint8_t>(liq));
+    fills.mid.push_back(100 * unit);
+    fills.best_bid.push_back(px("99.99").raw);
+    fills.best_ask.push_back(px("100.01").raw);
+  };
+  const std::int64_t t = start + seconds(70).ns;
+  add_fill(t, 0, "99.99", Liquidity::Maker);       // at the touch
+  add_fill(t + 1, 0, "100.01", Liquidity::Maker);  // the ask had come to the resting bid
+  add_fill(t + 2, 0, "100.02", Liquidity::Taker);  // crossed: not placed
+  add_fill(t + 3, 1, "100.02", Liquidity::Taker);
+  add_fill(t + 4, 1, "100.02", Liquidity::Taker);
+  add_fill(t + 5, 1, "100.02", Liquidity::Taker);
+  MetricsInputs in;
+  in.bar = seconds(60);
+  const Metrics m = compute_metrics(eq, fills, OrderRows{}, in);
+
+  CHECK(m.duration_s == doctest::Approx(86'399.99));
+  CHECK(std::isfinite(m.sharpe_annualized));
+  CHECK(m.inventory_max == doctest::Approx(3.0));
+  CHECK(m.fill_quality.at_touch_share == doctest::Approx(0.5));
+  CHECK(m.fill_quality.through_touch_share == doctest::Approx(0.5));
+
+  // A whole bar short of a day is not a day.
+  eq.ts.back() -= seconds(60).ns;
+  CHECK(std::isnan(compute_metrics(eq, fills, OrderRows{}, in).sharpe_annualized));
+}

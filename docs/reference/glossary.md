@@ -20,7 +20,7 @@
 | **epoch** | see *session epoch* |
 | **fill** | an execution of one of our orders; `on_fill` receives a `Fill` |
 | **funding** | a perpetual's periodic payment between longs and shorts; booked as realized PnL of the instrument, not as a fee (`EventType::Funding`) |
-| **fill ratio** | fills divided by new orders sent, reported by `fastmm-backtest` |
+| **fill ratio** | fills divided by new orders sent (`fill_ratio`, the summary's `fills per order`); an order filled in pieces counts each fill |
 | **fixed point** | integers with an implied scale: `Price`, `Qty` and `Notional` count units of 1e-8 ([Fixed point](fixed-point.md)) |
 | **gateway** | `fastmm-gateway`, a process that holds the venue sessions and the account's risk for up to 16 strategies attached over shared memory ([Run behind a gateway](../how-to/operations/run-behind-a-gateway.md)) |
 | **harness** | `StrategyHarness<S>`, a real engine with a simulated venue for unit tests |

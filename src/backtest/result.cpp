@@ -144,17 +144,17 @@ std::string BacktestResult::summary_table() const {
   row("fills (maker / taker)", fmt::format("{} ({} / {})", m.fills, m.maker_fills, m.taker_fills));
   row("orders / cancels / replaces", fmt::format("{} / {} / {}", m.orders, m.cancels, m.replaces));
   row("rejects", fmt::format("{}", m.rejects));
-  row("fill ratio", fmt::format("{:.4f}", m.fill_ratio));
+  row("fills per order", fmt::format("{:.4f}", m.fill_ratio));
   row("spread captured (bps)", fmt::format("{:.3f}", m.spread_captured_bps));
   row("realized spread (bps of notional)",
       fmt::format("{:.3f}", m.fill_quality.realized_spread_bps));
-  row("fills at / inside / behind / through",
+  row("maker fills at / inside / behind / through",
       fmt::format("{:.1f}% / {:.1f}% / {:.1f}% / {:.1f}%",
                   m.fill_quality.at_touch_share * 100.0,
                   m.fill_quality.inside_touch_share * 100.0,
                   m.fill_quality.behind_touch_share * 100.0,
                   m.fill_quality.through_touch_share * 100.0));
-  row("quotes filled / placed",
+  row("orders filled / sent",
       fmt::format("{} / {} ({:.1f}%)",
                   m.fill_quality.quotes_filled,
                   m.fill_quality.quotes_placed,
@@ -230,9 +230,14 @@ std::string BacktestResult::summary_table() const {
 
   if (!m.markouts.empty()) {
     s += "\nmarkout per fill (mid at fill + horizon vs the fill price; bps of notional)\n";
+    // The first column fits the instruments' names (`venue:symbol`) under a horizon.
+    std::size_t w = 8;
+    if (instruments.size() > 1)
+      for (const std::string& name : instruments) w = std::max(w, name.size() + 2);
     fmt::format_to(std::back_inserter(s),
-                   "  {:<8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8} {:>8}\n",
+                   "  {:<{}} {:>10} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8} {:>8}\n",
                    "horizon",
+                   w,
                    "markout",
                    "mo bps",
                    "capture",
@@ -243,9 +248,10 @@ std::string BacktestResult::summary_table() const {
                    "no mid");
     for (const MarkoutHorizon& h : m.markouts) {
       fmt::format_to(std::back_inserter(s),
-                     "  {:<8} {:>10.4f} {:>10.4f} {:>10.4f} {:>10.4f} {:>10.4f} {:>8} {:>8} "
+                     "  {:<{}} {:>10.4f} {:>10.4f} {:>10.4f} {:>10.4f} {:>10.4f} {:>8} {:>8} "
                      "{:>8}\n",
                      h.label(),
+                     w,
                      h.total.markout_quote(),
                      h.total.markout_bps(),
                      h.total.capture_quote(),
@@ -256,31 +262,45 @@ std::string BacktestResult::summary_table() const {
                      h.excluded_no_mid);
       if (h.total.fills == 0) continue;  // nothing measured at this horizon
       fmt::format_to(std::back_inserter(s),
-                     "  {:<8} {:>10.4f} {:>10.4f} {:>10.4f} {:>10.4f}\n",
+                     "  {:<{}} {:>10.4f} {:>10.4f} {:>10.4f} {:>10.4f}\n",
                      "  buy",
+                     w,
                      h.buy.markout_quote(),
                      h.buy.markout_bps(),
                      h.buy.capture_quote(),
                      h.buy.capture_bps());
       fmt::format_to(std::back_inserter(s),
-                     "  {:<8} {:>10.4f} {:>10.4f} {:>10.4f} {:>10.4f}\n",
+                     "  {:<{}} {:>10.4f} {:>10.4f} {:>10.4f} {:>10.4f}\n",
                      "  sell",
+                     w,
                      h.sell.markout_quote(),
                      h.sell.markout_bps(),
                      h.sell.capture_quote(),
                      h.sell.capture_bps());
+      const auto row_of = [&](std::string_view name, const MarkoutBucket& b) {
+        fmt::format_to(std::back_inserter(s),
+                       "    {:<{}} {:>10.4f} {:>10.4f} {:>10.4f} {:>10.4f} {:>10.4f} {:>8}\n",
+                       name,
+                       w - 2,
+                       b.markout_quote(),
+                       b.markout_bps(),
+                       b.capture_quote(),
+                       b.capture_bps(),
+                       b.adverse_selection_bps(),
+                       b.fills);
+      };
+      // The resting orders and the ones that crossed (a hedge) apart, when there are both.
+      if (h.maker.fills > 0 && h.taker.fills > 0) {
+        row_of("maker", h.maker);
+        row_of("taker", h.taker);
+      }
+      std::size_t traded = 0;
+      for (const MarkoutBucket& b : h.instrument) traded += b.fills > 0 ? 1 : 0;
+      if (traded < 2) continue;  // one instrument: the total already says it
       for (std::size_t k = 0; k < h.instrument.size(); ++k) {
         if (h.instrument[k].fills == 0) continue;
-        if (h.instrument.size() <= 1) break;  // one instrument: the total already says it
-        fmt::format_to(std::back_inserter(s),
-                       "  {:<8} {:>10.4f} {:>10.4f} {:>10.4f} {:>10.4f} {:>10.4f} {:>8}\n",
-                       fmt::format("  #{}", k),
-                       h.instrument[k].markout_quote(),
-                       h.instrument[k].markout_bps(),
-                       h.instrument[k].capture_quote(),
-                       h.instrument[k].capture_bps(),
-                       h.instrument[k].adverse_selection_bps(),
-                       h.instrument[k].fills);
+        row_of(k < instruments.size() ? std::string_view(instruments[k]) : std::string_view("?"),
+               h.instrument[k]);
       }
     }
     s += "  a positive markout means the mid kept moving your way after the fill; a capture that\n"
@@ -310,6 +330,11 @@ std::string BacktestResult::summary_json() const {
     fmt::format_to(std::back_inserter(s), "  \"{}\": \"{}\",\n", k, json_escape(v));
   };
   str("strategy", strategy);
+  s += "  \"instruments\": [";
+  for (std::size_t i = 0; i < instruments.size(); ++i)
+    fmt::format_to(
+        std::back_inserter(s), "{}\"{}\"", i == 0 ? "" : ", ", json_escape(instruments[i]));
+  s += "],\n";
   s += "  \"params\": {";
   bool first = true;
   for (const auto& [k, v] : params) {

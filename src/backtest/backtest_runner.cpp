@@ -933,6 +933,13 @@ BacktestResult BacktestSession::end(std::string_view strategy_name) {
   r.strategy = std::string(strategy_name);
   r.params = cfg_.params;
   r.seed = cfg_.seed;
+  r.instruments.resize(cfg_.instruments.size());
+  for (const Instrument& i : cfg_.instruments) {
+    const std::size_t v = i.venue.value;
+    r.instruments[i.id.value] =
+        (v < cfg_.venue_names.size() ? cfg_.venue_names[v] : "venue " + std::to_string(v)) + ":" +
+        std::string(i.symbol.view());
+  }
   r.fills = std::move(impl_->fills);
   r.orders = std::move(impl_->orders);
   r.equity = std::move(impl_->equity);

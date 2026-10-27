@@ -52,7 +52,7 @@ backtest first_mm  seed=7  md_events=18478  steps=20023  wall=0.01s
   realized / unrealized / fees   0.0067 / 0.0000 / 27.0150
   fills (maker / taker)          467 (467 / 0)
   orders / cancels / replaces    762 / 316 / 0
-  inventory mean / |mean| / max  -0.00025 / 0.00172 / 0.00387
+  inventory mean / |mean| / max  -0.00025 / 0.00172 / 0.00400
   outbound messages / sha256     1078 / f29af3d82986f7e18291c51a7d46503cf3097cfff09a22f2068e1f60c29f5deb
 ...
 where the PnL came from (quote currency, 27014.99 traded notional)

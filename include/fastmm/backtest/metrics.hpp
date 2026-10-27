@@ -47,10 +47,12 @@ struct FillQuality {
   // fills that had a venue mid. This is the realised spread: what markouts start from.
   double realized_spread_bps = 0.0;
   double realized_spread_quote = 0.0;
-  double at_touch_share = 0.0;       // fills at the venue's best price on our side
-  double inside_touch_share = 0.0;   // fills at a better price than the touch (it improved it)
-  double behind_touch_share = 0.0;   // fills at a worse price than the touch
-  double through_touch_share = 0.0;  // fills at or beyond the opposite touch (aggressive)
+  // Shares of the maker fills, by where the order was against the venue book at the fill.
+  double at_touch_share = 0.0;      // at the venue's best price on our side
+  double inside_touch_share = 0.0;  // at a better price than the touch (it improved it)
+  double behind_touch_share = 0.0;  // at a worse price than the touch
+  // At or beyond the opposite touch: the market had moved through the resting order.
+  double through_touch_share = 0.0;
   // Venue arrival of a new order to its first fill. Only orders that filled are counted.
   std::uint64_t time_to_fill_p50_ns = 0;
   std::uint64_t time_to_fill_p90_ns = 0;
@@ -74,7 +76,7 @@ struct Metrics {
   double fees = 0.0;
   double final_position = 0.0;  // base units, summed over instruments
   double sharpe_bar = 0.0;      // mean / sample stdev of per-bar equity changes
-  // sharpe_bar * sqrt(bars per 365-day year); NaN for runs shorter than
+  // sharpe_bar * sqrt(bars per 365-day year); NaN for runs more than one bar shorter than
   // kMinAnnualizedDurationS, where the scaling turns noise into four-digit values.
   double sharpe_annualized = 0.0;
   double max_drawdown = 0.0;  // largest fall of equity from its peak, quote currency, >= 0
@@ -93,7 +95,7 @@ struct Metrics {
   double volume_quote = 0.0;
   double inventory_mean = 0.0;      // over bars
   double inventory_abs_mean = 0.0;  // over bars
-  double inventory_max = 0.0;       // max |position| over bars
+  double inventory_max = 0.0;       // max |position| at any fill or bar
   double quote_uptime = 0.0;        // fraction of bars with both a bid and an ask resting
   std::uint64_t bars = 0;
   double duration_s = 0.0;
