@@ -9,11 +9,15 @@
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/oms.hpp"
+#include "fastmm/core/own_quantity.hpp"
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/risk.hpp"
 #include "fastmm/strategies/basic_mm.hpp"
 #include "fastmm/strategies/param_publisher.hpp"
 
+#include <array>
+#include <charconv>
+#include <cstring>
 #include <memory>
 #include <vector>
 
@@ -190,6 +194,162 @@ TEST_CASE("hotpath.noalloc: risk check, OMS lifecycle, quote manager, journal, l
   }
   const std::byte* p = ring.try_peek();
   CHECK(p != nullptr);
+}
+
+// OwnQuantity follows every order event of a venue whose feed shows our orders. An instrument
+// requoted for longer than the retention holds thousands of orders' quantity, the oldest forgotten
+// as it goes, all without allocating.
+TEST_CASE("hotpath.noalloc: OwnQuantity follows a busy instrument's orders") {
+  auto own = std::make_unique<OwnQuantity>();
+  own->warm_up();
+  const Timestamp t0{seconds(1000).ns};
+  const auto at = [&](std::uint64_t ms, std::int64_t us) {
+    return t0 + Duration{(static_cast<std::int64_t>(ms) * 1'000'000) + (us * 1'000)};
+  };
+  Qty shown;
+  {
+    NoAllocScope guard(true);
+    for (std::uint64_t i = 1; i <= 12'000; ++i) {
+      const Side side = (i % 2) == 0 ? Side::Buy : Side::Sell;
+      const Price price = px(side == Side::Buy ? "99.90" : "100.10");
+      OutNewOrderMsg n{};
+      init_header(n, EventType::OutNewOrder, InstrumentId{0}, VenueId{0});
+      n.cl_ord_id = ClientOrderId{i};
+      n.side = side;
+      n.price = price;
+      n.qty = qt("0.01");
+      n.type = OrderType::Limit;
+      n.tif = TimeInForce::Gtc;
+      own->on_outbound(n.hdr);
+      OrderAckMsg a{};
+      init_header(a, EventType::OrderAck, InstrumentId{0}, VenueId{0});
+      a.cl_ord_id = n.cl_ord_id;
+      a.hdr.exch_ts = a.hdr.recv_ts = at(i, 0);
+      own->on_inbound(a.hdr);
+      OrderFillMsg f{};
+      init_header(f, EventType::OrderFill, InstrumentId{0}, VenueId{0});
+      f.cl_ord_id = n.cl_ord_id;
+      std::array<char, 24> id{};
+      const auto [end, ec] = std::to_chars(id.data(), id.data() + id.size(), i);
+      f.exec_id.assign(std::string_view(id.data(), static_cast<std::size_t>(end - id.data())));
+      f.qty = qt("0.004");
+      f.cum_qty = qt("0.004");
+      f.leaves_qty = qt("0.006");
+      f.hdr.exch_ts = f.hdr.recv_ts = at(i, 200);
+      own->on_inbound(f.hdr);
+      OrderCancelAckMsg c{};
+      init_header(c, EventType::OrderCancelAck, InstrumentId{0}, VenueId{0});
+      c.cl_ord_id = n.cl_ord_id;
+      c.hdr.exch_ts = c.hdr.recv_ts = at(i, 1'500);  // rests past the next order's ack
+      own->on_inbound(c.hdr);
+      shown = own->own_at(InstrumentId{0}, side, price, at(i, 300));
+    }
+  }
+  CHECK(shown == qt("0.006"));
+  CHECK(own->own_at(InstrumentId{0}, Side::Buy, px("99.90"), at(11'998, 100)) == qt("0.01"));
+  CHECK(own->own_at(InstrumentId{0}, Side::Buy, px("99.90"), at(1'000, 100)).is_zero());
+}
+
+// A transport whose venue's feed shows our orders and that acknowledges each order and cancel it
+// is sent, once the test hands them back (respond()).
+struct EchoTransport {
+  static constexpr std::size_t kMax = 32;
+  std::array<std::array<std::byte, 256>, kMax> out{};
+  std::size_t n = 0;
+  std::size_t sent = 0;
+  bool send(const EventHeader& m) noexcept {
+    if (n < kMax && m.len <= out[n].size()) std::memcpy(out[n++].data(), &m, m.len);
+    ++sent;
+    return true;
+  }
+  std::size_t send(std::span<const EventHeader* const> b) noexcept {
+    for (const EventHeader* m : b) static_cast<void>(send(*m));
+    return b.size();
+  }
+  bool supports_replace(VenueId) const noexcept { return false; }
+  bool own_in_feed(VenueId) const noexcept { return true; }
+  // Acks for what was sent, at venue time `t`, into `feed`.
+  void respond(InlineFeed& feed, Timestamp t) noexcept {
+    for (std::size_t i = 0; i < n; ++i) {
+      const auto* h = reinterpret_cast<const EventHeader*>(out[i].data());
+      if (h->type == EventType::OutNewOrder) {
+        OrderAckMsg a{};
+        init_header(a, EventType::OrderAck, h->instrument, h->venue);
+        a.cl_ord_id = reinterpret_cast<const OutNewOrderMsg*>(h)->cl_ord_id;
+        a.venue_order_id = "1";
+        a.hdr.exch_ts = a.hdr.recv_ts = t;
+        static_cast<void>(feed.push(a.hdr));
+      } else if (h->type == EventType::OutCancel) {
+        OrderCancelAckMsg c{};
+        init_header(c, EventType::OrderCancelAck, h->instrument, h->venue);
+        c.cl_ord_id = reinterpret_cast<const OutCancelMsg*>(h)->cl_ord_id;
+        c.hdr.exch_ts = c.hdr.recv_ts = t;
+        static_cast<void>(feed.push(c.hdr));
+      }
+    }
+    n = 0;
+  }
+};
+
+// The order path of a live venue: every requote's cancels and new orders acknowledged, the engine
+// following our quantity in the venue's feed (OwnQuantity) for hundreds of orders.
+TEST_CASE("hotpath.noalloc: engine requotes on a venue whose feed shows our orders") {
+  InstrumentTable table;
+  Instrument inst = make_inst();
+  inst.venue = VenueId{0};
+  REQUIRE(table.add(inst));
+  SimClock clock{Timestamp{seconds(1000).ns}};
+  EchoTransport transport;
+  InlineFeed feed{1 << 20};
+  BasicMM strategy;
+  REQUIRE_FALSE(strategy.configure(
+      {{"half_spread_bps", "10"}, {"quote_qty", "0.01"}, {"max_inventory", "0.05"}}));
+  EngineConfig cfg;
+  cfg.risk.max_order_qty = qt("1");
+  cfg.risk.max_position = qt("1");
+  cfg.risk.max_open_orders = 8;
+  cfg.risk.orders_per_sec = 1'000'000;
+  cfg.quotes.min_requote_interval = Duration{};
+  using E = Engine<BasicMM, SimClock, EchoTransport, InlineFeed>;
+  auto engine = std::make_unique<E>(cfg, table, clock, transport, feed, strategy);
+  engine->warm_up();
+  engine->start();
+  REQUIRE(engine->own_quantity() != nullptr);
+  // A snapshot each time: the touch moves without the book crossing.
+  auto push_book = [&](const char* bid, const char* ask) {
+    std::byte* p = feed.reserve(BookDeltaMsg::size_for(1, 1));
+    REQUIRE(p != nullptr);
+    auto* d = reinterpret_cast<BookDeltaMsg*>(p);
+    init_header(
+        *d, EventType::BookSnapshot, InstrumentId{0}, VenueId{0}, BookDeltaMsg::size_for(1, 1));
+    d->hdr.flags |= EventHeader::kSnapshot;
+    d->hdr.exch_ts = d->hdr.recv_ts = clock.now();
+    d->bid_count = d->ask_count = 1;
+    d->levels()[0] = Level{px(bid), qt("5")};
+    d->levels()[1] = Level{px(ask), qt("5")};
+    feed.commit();
+  };
+  push_book("100.00", "100.02");
+  while (engine->step() > 0) {
+  }
+  {
+    NoAllocScope guard(true);
+    for (int round = 0; round < 400; ++round) {
+      clock.advance(milliseconds(1));
+      push_book(round % 2 == 0 ? "100.10" : "100.00", round % 2 == 0 ? "100.12" : "100.02");
+      while (engine->step() > 0) {
+      }
+      // The cancels' acks send the new orders; their acks leave both quotes working.
+      for (int pass = 0; pass < 3 && transport.n > 0; ++pass) {
+        transport.respond(feed, clock.now());
+        while (engine->step() > 0) {
+        }
+      }
+    }
+  }
+  CHECK(transport.sent > 1'000);
+  CHECK(engine->stats().risk_rejects == 0);
+  CHECK(engine->oms().open_count() == 2);
 }
 
 TEST_CASE("hotpath.noalloc: engine step on BookDelta with BasicMM") {

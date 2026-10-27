@@ -232,7 +232,6 @@ class Engine {
     }
     if (own_venues_ != 0) {
       own_ = std::make_unique<OwnQuantity>();
-      own_->prepare(instruments_.size());
       own_shown_ = std::make_unique<OwnShown[]>(instruments_.size());
     }
     risk_.set_underlying(cfg.underlying);

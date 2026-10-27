@@ -4,6 +4,7 @@
 #include <charconv>
 #include <limits>
 #include <string_view>
+#include <unordered_map>
 
 namespace fastmm {
 
@@ -98,31 +99,36 @@ OwnQuantity::OwnQuantity(bool keep_all, Duration retention)
   scratch_.reserve(kMaxOpenOrders);
 }
 
-void OwnQuantity::prepare(std::size_t instruments) {
-  for (std::size_t i = 0; i < instruments; ++i)
-    static_cast<void>(segs(InstrumentId{static_cast<std::uint32_t>(i)}));
-}
-
 void OwnQuantity::warm_up() noexcept {
   lives_->warm_up();
 }
 
 OwnQuantity::~OwnQuantity() = default;
 
-std::vector<OwnQuantity::Segment>& OwnQuantity::segs(InstrumentId id) {
-  if (id.value >= by_inst_.size()) {
-    by_inst_.resize(id.value + 1U);
-    if (!keep_all_) {
-      for (std::vector<Segment>& v : by_inst_) v.reserve(64);
-    }
+template <class F>
+void OwnQuantity::for_each_segment(const Life& s, F&& f) noexcept {
+  if (!s.acked || !s.resting) return;
+  const std::int64_t start = s.ack.ts.ns;
+  const std::int64_t stop = s.stop;
+  if (stop <= start) return;
+  std::int64_t from = start;
+  Qty leaves = s.qty;
+  for (std::uint32_t i = 0; i < s.nfills; ++i) {
+    const std::int64_t at = std::clamp(s.fills[i].at.ts.ns, start, stop);
+    if (at > from && leaves.is_positive()) f(from, at, leaves);
+    from = std::max(from, at);
+    leaves = less(leaves, s.fills[i].qty);
   }
-  return by_inst_[id.value];
+  if (stop > from && leaves.is_positive()) f(from, stop, leaves);
 }
 
 bool OwnQuantity::empty() const noexcept {
   if (index_) return index_->starts.empty();
-  return std::all_of(
-      by_inst_.begin(), by_inst_.end(), [](const std::vector<Segment>& v) { return v.empty(); });
+  bool none = dropped_.empty();
+  lives_->for_each([&](Handle<Life>, const Life& s) {
+    for_each_segment(s, [&](std::int64_t, std::int64_t, Qty) { none = false; });
+  });
+  return none;
 }
 
 OwnQuantity::Life* OwnQuantity::find(ClientOrderId id) noexcept {
@@ -131,9 +137,14 @@ OwnQuantity::Life* OwnQuantity::find(ClientOrderId id) noexcept {
 }
 
 OwnQuantity::Life* OwnQuantity::add(const Life& l) noexcept {
-  if (Life* s = find(l.id)) {
-    *s = l;
-    return s;
+  if (const Handle<Life>* h = by_id_->find(l.id)) {
+    Life& s = lives_->get(*h);
+    if (s.inst != l.inst) {
+      by_inst_.clear(InstBits::bucket(s.inst.value), h->idx);
+      by_inst_.set(InstBits::bucket(l.inst.value), h->idx);
+    }
+    s = l;
+    return &s;
   }
   if (lives_->full()) {
     // The oldest order that no longer changes what the feed shows: never acknowledged (lost, or
@@ -158,6 +169,7 @@ OwnQuantity::Life* OwnQuantity::add(const Life& l) noexcept {
   Life& s = lives_->get(h);
   s = l;
   s.born = born_++;
+  by_inst_.set(InstBits::bucket(s.inst.value), h.idx);
   return &s;
 }
 
@@ -165,6 +177,13 @@ void OwnQuantity::drop(ClientOrderId id) noexcept {
   const Handle<Life>* h = by_id_->find(id);
   if (h == nullptr) return;
   const Handle<Life> hh = *h;
+  const Life& s = lives_->get(hh);
+  if (keep_all_) {
+    for_each_segment(s, [&](std::int64_t a, std::int64_t b, Qty q) {
+      dropped_.push_back(Segment{a, b, q, s.px, s.inst, s.side});
+    });
+  }
+  by_inst_.clear(InstBits::bucket(s.inst.value), hh.idx);
   by_id_->erase(id);
   lives_->free(hh);
 }
@@ -412,37 +431,23 @@ Timestamp OwnQuantity::gone(const Life& s) noexcept {
   return t;
 }
 
-// The order's segments from its ack, fills and end: leaves step down at each fill.
+// The order's ack, fills or end changed: when it stopped resting, which its segments end at.
 void OwnQuantity::rebuild(Life& s) noexcept {
-  std::vector<Segment>& v = segs(s.inst);
-  std::erase_if(v, [&](const Segment& g) { return g.owner == s.id; });
-  if (!s.acked || !s.resting) return;
-  const std::int64_t start = s.ack.ts.ns;
   const Timestamp g = gone(s);
-  const std::int64_t stop = g.valid() ? g.ns + 1 : kForever;  // gone is inclusive
-  if (stop <= start) return;
-  std::int64_t from = start;
-  Qty leaves = s.qty;
-  const auto emit = [&](std::int64_t a, std::int64_t b, Qty q) {
-    v.push_back(Segment{a, b, q, s.px, s.id, s.side});
-  };
-  for (std::uint32_t i = 0; i < s.nfills; ++i) {
-    const std::int64_t at = std::clamp(s.fills[i].at.ts.ns, start, stop);
-    if (at > from && leaves.is_positive()) emit(from, at, leaves);
-    from = std::max(from, at);
-    leaves = less(leaves, s.fills[i].qty);
-  }
-  if (stop > from && leaves.is_positive()) emit(from, stop, leaves);
+  s.stop = g.valid() ? g.ns + 1 : kForever;  // gone is inclusive
 }
 
+// Forgets the orders that ended before the horizon and rested no later than it.
 void OwnQuantity::gc(Timestamp now) noexcept {
   last_gc_ = now.ns;
   const std::int64_t horizon = now.ns - retention_.ns;
-  for (std::vector<Segment>& v : by_inst_)
-    std::erase_if(v, [&](const Segment& g) { return g.end < horizon; });
   scratch_.clear();
   lives_->for_each([&](Handle<Life>, const Life& s) {
-    if (s.ended && s.end.ts.ns < horizon) scratch_.push_back(s.id);
+    if (!s.ended || s.end.ts.ns >= horizon) return;
+    bool rests = false;
+    for_each_segment(s,
+                     [&](std::int64_t, std::int64_t end, Qty) { rests = rests || end >= horizon; });
+    if (!rests) scratch_.push_back(s.id);
   });
   for (const ClientOrderId id : scratch_) drop(id);
 }
@@ -463,10 +468,17 @@ Qty OwnQuantity::own_at(InstrumentId inst, Side side, Price px, Timestamp t) con
     }
     return q;
   }
-  if (inst.value >= by_inst_.size()) return Qty{};
   Qty q;
-  for (const Segment& g : by_inst_[inst.value]) {
-    if (g.side == side && g.px == px && g.start <= t.ns && t.ns < g.end) q += g.qty;
+  by_inst_.for_each(InstBits::bucket(inst.value), [&](std::uint32_t slot) {
+    const Life& s = lives_->get(Handle<Life>{slot});
+    if (s.px != px || s.side != side || s.inst != inst) return;
+    for_each_segment(s, [&](std::int64_t start, std::int64_t end, Qty leaves) {
+      if (start <= t.ns && t.ns < end) q += leaves;
+    });
+  });
+  for (const Segment& g : dropped_) {
+    if (g.inst == inst && g.side == side && g.px == px && g.start <= t.ns && t.ns < g.end)
+      q += g.qty;
   }
   return q;
 }
@@ -483,19 +495,23 @@ void OwnQuantity::index() {
   struct KeyHash {
     std::size_t operator()(const Key& k) const noexcept { return Index::hash(k.inst_side, k.px); }
   };
+  std::vector<Segment> all = dropped_;
+  lives_->for_each([&](Handle<Life>, const Life& s) {
+    for_each_segment(s, [&](std::int64_t a, std::int64_t b, Qty q) {
+      all.push_back(Segment{a, b, q, s.px, s.inst, s.side});
+    });
+  });
   std::unordered_map<Key, std::uint32_t, KeyHash> ids;
   std::vector<std::vector<const Segment*>> levels;
   std::vector<Key> keys;
-  for (std::size_t k = 0; k < by_inst_.size(); ++k) {
-    for (const Segment& g : by_inst_[k]) {
-      const Key key{Index::inst_side(static_cast<std::uint32_t>(k), g.side), g.px.raw};
-      const auto [it, fresh] = ids.try_emplace(key, static_cast<std::uint32_t>(levels.size()));
-      if (fresh) {
-        levels.emplace_back();
-        keys.push_back(key);
-      }
-      levels[it->second].push_back(&g);
+  for (const Segment& g : all) {
+    const Key key{Index::inst_side(g.inst.value, g.side), g.px.raw};
+    const auto [it, fresh] = ids.try_emplace(key, static_cast<std::uint32_t>(levels.size()));
+    if (fresh) {
+      levels.emplace_back();
+      keys.push_back(key);
     }
+    levels[it->second].push_back(&g);
   }
   std::size_t cap = 16;
   while (cap < levels.size() * 4) cap *= 2;

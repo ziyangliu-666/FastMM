@@ -16,11 +16,16 @@
 // now: a depth update stamped before our cancel still includes the order, one stamped after it
 // does not. The engine asks it at the book's last update (StrategyContext::own_qty); the backtest
 // strips a live journal's feed with the same object after reading the whole journal
-// (backtest/own_orders.hpp, keep_all). Segments older than `retention` in venue time are dropped
-// unless keep_all.
+// (backtest/own_orders.hpp, keep_all).
 //
-// Only order events do work here (a few segment updates for the order they name); a book update
-// costs nothing. All state derives from journaled messages, so a replay reproduces it.
+// Each order's resting quantity over time (its segments) derives from its own record: the ack,
+// up to kMaxFills fills and when it stopped resting. The records sit in a pool with a bit per
+// record for its instrument, so own_at reads the instrument's orders and nothing else, and the
+// memory is fixed: an order event updates the one record it names and never allocates. An order
+// is forgotten once it stopped resting more than `retention` ago in venue time, unless keep_all
+// (then a record the pool has to give up keeps its segments for index()). All state derives from
+// journaled messages, so a replay reproduces it.
+#include "fastmm/core/containers/bucket_bits.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/containers/pool.hpp"
 #include "fastmm/core/enums.hpp"
@@ -34,7 +39,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <unordered_map>
 #include <vector>
 
 namespace fastmm {
@@ -82,8 +86,6 @@ class OwnQuantity {
   // rested.
   void on_gone(ClientOrderId id, Timestamp t) noexcept;
 
-  // Makes room for instruments [0, n) so that order events do not allocate (the engine, at start).
-  void prepare(std::size_t instruments);
   // Touches every order slot, so that a new order takes no page fault (Engine::warm_up).
   void warm_up() noexcept;
 
@@ -103,11 +105,9 @@ class OwnQuantity {
     std::uint64_t exec;
   };
   struct Life {
-    ClientOrderId id;
-    ClientOrderId replaces;
-    ClientOrderId replaced_by;
+    // What own_at reads of each order of the instrument; the rest only for the ones it matches.
+    Price px;
     InstrumentId inst;
-    VenueId venue;
     Side side;
     bool resting;  // can rest on the book (not market, IOC or FOK)
     bool acked;
@@ -115,9 +115,15 @@ class OwnQuantity {
     bool rejected;
     bool seen;       // listed by the reconciliation in progress
     bool cancelled;  // ended by a cancel ack or by its replacement
-    Price px;
-    Qty qty;
     VenueTime ack;
+    // Venue ns at which it stopped resting, exclusive (gone() + 1, set by rebuild()); kForever
+    // while it rests.
+    std::int64_t stop;
+    ClientOrderId id;
+    ClientOrderId replaces;
+    ClientOrderId replaced_by;
+    VenueId venue;
+    Qty qty;
     VenueTime end;
     std::uint64_t born;  // order of arrival, for eviction
     std::uint32_t nfills;
@@ -128,11 +134,16 @@ class OwnQuantity {
     std::int64_t end;
     Qty qty;
     Price px;
-    ClientOrderId owner;
+    InstrumentId inst;
     Side side;
   };
   struct Index;
+  using InstBits = BucketBits<kMaxOpenOrders, kMaxInstruments>;
 
+  // F(start, end, qty) for each of the order's segments: its leaves from the ack, stepping down at
+  // each fill, until it stopped resting.
+  template <class F>
+  static void for_each_segment(const Life& s, F&& f) noexcept;
   Life* find(ClientOrderId id) noexcept;
   Life* add(const Life& l) noexcept;
   void drop(ClientOrderId id) noexcept;
@@ -145,7 +156,6 @@ class OwnQuantity {
   [[nodiscard]] Timestamp gone(const Life& s) noexcept;
   void rebuild(Life& s) noexcept;
   void gc(Timestamp now) noexcept;
-  [[nodiscard]] std::vector<Segment>& segs(InstrumentId id);
 
   bool keep_all_;
   Duration retention_;
@@ -159,9 +169,10 @@ class OwnQuantity {
   Stats stats_;
   std::unique_ptr<Pool<Life, kMaxOpenOrders>> lives_;
   std::unique_ptr<OpenHashMap<ClientOrderId, Handle<Life>, kMaxOpenOrders * 2>> by_id_;
-  std::vector<std::vector<Segment>> by_inst_;  // unsorted; the engine's queries scan one
-  std::vector<ClientOrderId> scratch_;         // orders to end or drop, collected before
-  std::unique_ptr<Index> index_;               // keep_all, after index()
+  InstBits by_inst_;                    // each instrument's records
+  std::vector<ClientOrderId> scratch_;  // orders to end or drop, collected before
+  std::vector<Segment> dropped_;        // keep_all: segments of the records the pool gave up
+  std::unique_ptr<Index> index_;        // keep_all, after index()
 };
 
 }  // namespace fastmm
