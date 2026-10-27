@@ -8,6 +8,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: the quote manager reconciles the levels the strategy asks for and those still holding an order, not all eight levels of each side on every requote.
 - core: the OMS keeps one map of order ids: an order's id names its terminal record from the moment the order ends, instead of moving to a second map.
 - core: `Engine::warm_up()` touches the slots of the timer wheel and of `OwnQuantity` too, so a live order takes no page fault in them.
+- core: `RecentMap` keeps its keys in insertion order and an index of 8-byte slots: the OMS's memory of 64Ki executions takes 1.6 MiB, not 2.5, and a fill touches one line of the index, plus the line of the execution it evicts, fetched at the fill before.
 - backtest: `fastmm-backtest --sweep` says first whether its points share passes, prints each point's risk rejects and kill reason, and prints no warnings of its runs.
 - backtest: a sweep's log lines carry the simulated time of the run that wrote them and name its point (`#n`, `LogRunScope`).
 - backtest: the walk-forward table gives each fold's first instant in UTC, not seconds from the data's start.
