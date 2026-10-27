@@ -1,6 +1,8 @@
 # Troubleshooting
 
-Messages are quoted as the code writes them; `<...>` stands for a value, and `<venue>` is the `[venues.<name>]` name. Log lines start with a timestamp, the level (`INFO`, `WARN`, `ERROR`), the thread id and the source file. Messages marked *stderr* are printed before the logger starts. Exit codes are in [Errors and exit codes](../../reference/errors.md#exit-codes).
+Search this page for the message in your log or on stderr, then follow its row. Exit codes are in [Errors and exit codes](../../reference/errors.md#exit-codes).
+
+Messages are quoted as the code writes them: `<...>` stands for a value, and `<venue>` is the `[venues.<name>]` name. Messages marked stderr are printed before the logger starts. Log lines start with a timestamp, the level (`INFO`, `WARN`, `ERROR`), the thread id and the source file.
 
 ## Startup and configuration
 
@@ -95,17 +97,40 @@ Messages are quoted as the code writes them; `<...>` stands for a value, and `<v
 | Message | Cause | Action |
 |---|---|---|
 | `order <id> rejected: <reason> (<code>)` | The venue or a local check rejected a new order; `[engine] reject_backoff_ms` pauses that side after rejects other than post-only crosses. `PostOnlyWouldCross`: the post-only quote would have crossed the book, frequent when quoting at the touch | For other reasons, look up the venue's error code |
-| `risk reject <reason> on new order: <venue>:<symbol> <side> <qty> @ <price>` (or `on replace order`), optionally `(<n> more suppressed)` | A pre-trade check refused the order; nothing was sent. `<n>`: rejects of that reason not logged since its previous line ([Reject logging](monitor-with-fastmm-top.md#reject-logging)) | Find the limit: `MaxOrderQty` / `MaxOrderNotional` `[risk] max_order_qty` / `max_order_notional`; `MaxPosition` `max_position` (position plus open orders on the same side); `MaxOpenOrders` `max_open_orders`; `PriceCollar` `price_collar_bps` (distance from the mid); `FatFinger` `fat_finger_bps` (distance from the last trade); `MaxGrossNotional` / `MaxNetNotional` `max_gross_notional` / `max_net_notional`; `StaleMarketData` `stale_md_ms` or a book that stopped updating; `FeedLag` `max_feed_lag_ms` (the venue's market data arrives late); `RateLimit` `orders_per_sec` / `burst`; `SelfTradePrevention` `stp`; `InvalidTick` / `InvalidLot` / `BelowMinNotional` the instrument's tick, lot and minimums; `InstrumentDisabled` the instrument is disabled (`enabled = false`, or not trading at the venue); `FxRateUnknown` the `[accounting]` rate of the order's settlement currency is unknown or stale; `MaxUnderlyingNet` `[risk.underlying.<BASE>] max_net`; `UnderlyingMarkUnknown` an inverse contract of the underlying has no current mark; `KillSwitch` / `VenueKilled` the kill switch is engaged ([all reasons](../../reference/errors.md#reject-reasons)) |
+| `risk reject <reason> on new order: <venue>:<symbol> <side> <qty> @ <price>` (or `on replace order`), optionally `(<n> more suppressed)` | A pre-trade check refused the order; nothing was sent. `<n>` counts that reason's rejects since its previous line ([Reject logging](monitor-with-fastmm-top.md#reject-logging)) | Find the limit in [Risk reject reasons](#risk-reject-reasons) |
 | `<venue>: venue rejected a filter/precision rule (<code> <msg>); check tick/lot config` (Binance), `... a precision/filter rule ...` (Bybit), `<venue>: venue rejected an instrument rule (<code> <msg>); check the instrument` (Deribit) | Price or quantity is off the venue's grid, or below its minimum notional | Check `quote_qty` against `min_qty` and `min_notional`, and the strategy's price rounding |
 | `order <id> exceeded cancel-reject retries; asking the venue to reconcile` | A cancel was rejected four times; the connector fetches the venue's open orders and settles the order | If it recurs, check the order on the venue |
-| `cancelling unknown live order <id>` | The venue reported a live order the OMS does not know: one a previous session left (every connector sweeps the open orders on its first connect), or a lost acknowledgement; it is cancelled | Expected after a restart. Otherwise, if frequent, check for a second engine on the account |
+| `cancelling unknown live order <id>` | The venue reported a live order the engine does not know, left by a previous session (swept on first connect) or with a lost acknowledgement; it is cancelled | After a restart, nothing. If frequent otherwise, check for a second engine on the account |
 | `fill for unknown order <id> qty <q> @ <price>` | A fill for an order that is not in the OMS; the position is still booked from the fill | Reconcile the account ([Journals, replay and PnL](journals-replay-pnl.md#check-pnl)) |
-| `order <id> on <symbol>: the venue reports <qty> filled ahead of its executions, booked at the order's price <px> until one names it` | A cancel ack, an expiry or a reconciliation snapshot reported more filled quantity than the fills received. On Binance the execution usually follows within a few milliseconds and replaces the estimate (`execution ... replaces the estimate booked at ...`); after a private-stream outage it can take until the venue's trade history is replayed | Nothing while `fastmm_estimates_pending` returns to 0; an estimate forgotten before an execution named it is logged as an error and counted in `fastmm_estimates_forgotten_total` |
+| `order <id> on <symbol>: the venue reports <qty> filled ahead of its executions, booked at the order's price <px> until one names it` | A cancel ack, expiry or reconciliation snapshot reported more fill than the fills received. The execution usually follows within milliseconds and replaces the estimate (`execution ... replaces the estimate booked at ...`); after a private-stream outage, once the trade history is replayed | Nothing while `fastmm_estimates_pending` returns to 0. An estimate forgotten before an execution named it is an ERROR and counts in `fastmm_estimates_forgotten_total` |
 | `order <id> has no ack after <n> ms: cancelling it` | `[engine] ack_timeout_ms` elapsed with the order still `PendingNew`: the request or its ack was lost | If frequent, check the order channel's latency and the venue's rate limits |
 | `fill commission in an asset other than base or quote is not included in fees or positions (first on order <id>)` | Commission paid in a third asset, for example BNB on Binance | Turn off paying fees with BNB, or account for them outside FastMM |
 | `<venue>: open orders reply could not be parsed; reconciliation skipped` (Binance Spot), `... reconciliation retried` (Binance USDⓈ-M), `<venue>: open orders reply rejected (<msg>); reconciliation skipped` (Bybit), `<venue>: open orders could not be fetched for every currency; reconciliation skipped` (Deribit) | Reconciliation after a connect did not complete | Check the open orders on the venue |
 | `<venue>: only <n> of <m> user channels subscribed; cancels are acknowledged from request responses` (Deribit) | Some private channels were refused | Check the key's scopes |
 | `<venue>: listenKey user streams are gone (HTTP 410); switching to the WebSocket API user stream` (Binance) | `user_stream = "listen_key"` is no longer offered | Set `user_stream = "ws_api"` (the default) |
+
+### Risk reject reasons
+
+The limit behind each reason in a `risk reject` line; the full list is in [Reject reasons](../../reference/errors.md#reject-reasons).
+
+| Reason | Limit or cause |
+|---|---|
+| `MaxOrderQty`, `MaxOrderNotional` | `[risk] max_order_qty`, `max_order_notional` |
+| `MaxPosition` | `max_position`, counting the position plus open orders on the same side |
+| `MaxOpenOrders` | `max_open_orders` |
+| `PriceCollar` | `price_collar_bps`, distance from the mid |
+| `FatFinger` | `fat_finger_bps`, distance from the last trade |
+| `MaxGrossNotional`, `MaxNetNotional` | `max_gross_notional`, `max_net_notional` |
+| `StaleMarketData` | `stale_md_ms`, or a book that stopped updating |
+| `FeedLag` | `max_feed_lag_ms`: the venue's market data arrives late |
+| `RateLimit` | `orders_per_sec`, `burst` |
+| `SelfTradePrevention` | `stp` |
+| `InvalidTick`, `InvalidLot`, `BelowMinNotional` | the instrument's tick, lot and minimums |
+| `InstrumentDisabled` | `enabled = false`, or not trading at the venue |
+| `FxRateUnknown` | the `[accounting]` rate of the settlement currency is unknown or stale |
+| `MaxUnderlyingNet` | `[risk.underlying.<BASE>] max_net` |
+| `UnderlyingMarkUnknown` | an inverse contract of the underlying has no current mark |
+| `KillSwitch`, `VenueKilled` | the kill switch is engaged |
 
 ## Rings, kill switch and shutdown
 

@@ -1,16 +1,18 @@
 # Trade US stocks on Alpaca
 
+<<<<<<< HEAD
 `configs/alpaca-paper.toml` runs `basic_mm` on SPY with an Alpaca paper account: market data from the free IEX stream, orders over Alpaca's REST API, order states and fills from its `trade_updates` stream. What the connector does and the venue's rules: [Venue connectors](../../reference/venues/alpaca.md).
+=======
+`configs/alpaca-paper.toml` runs `basic_mm` on SPY with an Alpaca paper account. The connector and the venue's rules: [Venue connectors](../../reference/venues/alpaca.md).
+>>>>>>> c558cf17 (docs: the operations, strategy, venue, tutorial and contributing pages lead with the task, put steps in numbered lists with real output and like facts in tables, and the AF_XDP section shows the kernel-bypass animation)
 
 ## 1. Keys
 
-Open a paper account at <https://app.alpaca.markets>, then under API Keys on the paper dashboard generate a key. Export the key id and the secret:
+Open a paper account at <https://app.alpaca.markets> and generate a key under API Keys on the paper dashboard. Export the key id and the secret; the config reads them as `${ALPACA_API_KEY}` and `${ALPACA_API_SECRET}`:
 
 ```bash
 export ALPACA_API_KEY=... ALPACA_API_SECRET=...
 ```
-
-The config reads them as `${ALPACA_API_KEY}` and `${ALPACA_API_SECRET}`.
 
 ## 2. Check the connector on the account
 
@@ -19,7 +21,13 @@ cmake --preset release && cmake --build --preset release -j
 ./scripts/alpaca-paper-check.sh
 ```
 
-On SPY it places a buy far below the market, replaces and cancels it, buys one share and sells it again, reconnects, starts a second connector over a resting order the way a restarted session does, and cancels everything. Each step prints its latency. It needs the extended session or the regular one, 04:00 to 20:00 New York time.
+Run it between 04:00 and 20:00 New York time. On SPY it prints each step's latency:
+
+1. places a buy far below the market, replaces it and cancels it;
+2. buys one share and sells it again;
+3. reconnects;
+4. starts a second connector over a resting order, as a restarted session does;
+5. cancels everything.
 
 ## 3. Run a session
 
@@ -27,9 +35,14 @@ On SPY it places a buy far below the market, replaces and cancels it, buys one s
 ./build/release/bin/fastmm-live --config configs/alpaca-paper.toml
 ```
 
-The regular session is 09:30 to 16:00 New York time. IEX quotes from 08:00; with `extended_hours = true` in `[venues.alpaca]` the quotes rest and trade from then until 20:00. Orders go as `day` orders and expire at the end of the day. Stop with Ctrl-C: the session cancels its orders and keeps the position, which the next start reads from the account ([Kill switch and shutdown](../operations/kill-switch-and-shutdown.md)).
+| New York time | Quotes |
+|---|---|
+| 08:00 to 09:30, 16:00 to 20:00 | rest and trade with `extended_hours = true` in `[venues.alpaca]`; IEX quotes from 08:00 |
+| 09:30 to 16:00 | the regular session |
 
-The account refuses a short sale while a buy of the same stock is open, so from a flat position only one side quotes: the first fill of the bid makes the account long and the ask follows. Buy a few shares first for two-sided quoting from the start, and keep `max_inventory` at or below what you hold.
+Orders go as `day` orders and expire at the end of the day. Ctrl-C cancels the session's orders and keeps the position, which the next start reads from the account ([Kill switch and shutdown](../operations/kill-switch-and-shutdown.md)).
+
+From a flat position only the bid quotes, because the account refuses a short sale while a buy of the same stock is open. The first bid fill makes the account long and the ask follows. For two-sided quotes from the start, buy a few shares first and keep `max_inventory` at or below what you hold.
 
 ## 4. Settings to look at
 

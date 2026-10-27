@@ -1,25 +1,23 @@
 # Run on a testnet or Binance Demo
 
-FastMM ships configs for eight practice environments: Binance Spot Demo Mode, Binance USDⓈ-M futures Demo Trading, the Binance Spot testnet, the Bybit v5 testnet (spot and linear perpetuals), OKX demo trading, the Coinbase Exchange sandbox and the Deribit testnet. Coinbase Advanced Trade, the API of individual Coinbase accounts, has no practice environment ([Venue connectors](../../reference/venues/coinbase.md#advanced-trade)). Two more run `xmm` across two of them. The two Binance Demo environments share one set of keys; each other environment has its own. None of them accepts live-exchange keys.
-
-Before a longer session, read [Kill switch and shutdown](kill-switch-and-shutdown.md).
+Run a keyed session against a practice environment: a dry run first, then ten minutes with real orders and fake money. Prerequisites: a C++ build or the [release tarball](deploy.md), and an account on one of the environments below. Read [Kill switch and shutdown](kill-switch-and-shutdown.md) before a longer session.
 
 ## 1. Get the programs
 
-The shipped configs trade built-in C++ strategies (`basic_mm`; `options_mm` on Deribit) with `fastmm-live`, and this page also uses `fastmm-top`, `fastmm-ctl` and `fastmm-pnl`. These are C++ programs: build them, or take them from the [release tarball](deploy.md), which also holds `configs/`. The pip package does not install them.
+The shipped configs trade built-in C++ strategies (`basic_mm`, and `options_mm` on Deribit) with `fastmm-live`. Build it, or take it from the release tarball, which also holds `configs/`:
 
 ```bash
 cmake --preset release && cmake --build --preset release -j
 ctest --preset release -j"$(nproc)"
 ```
 
-The binaries are in `build/release/bin/`.
+The binaries are in `build/release/bin/`. The pip package does not install them.
 
-With `pip install "fastmm-engine[hot,live]"` alone, a Python strategy runs on the same environments through `fastmm run`: copy a config from the repository, set `[strategy] name = "py:<Class>"` and run `fastmm run <module>:<Class> --config <copy> --dry-run` ([Run a Python strategy live](../strategies/python-live.md)). The project `fastmm init` writes has `live.toml` for Binance Spot Demo Mode.
+With `pip install "fastmm-engine[hot,live]"` alone, a Python strategy runs on the same environments: copy a config, set `[strategy] name = "py:<Class>"` and run `fastmm run <module>:<Class> --config <copy> --dry-run` ([Run a Python strategy live](../strategies/python-live.md)). `fastmm init` writes `live.toml` for Binance Spot Demo Mode.
 
 ## 2. Keys in the environment
 
-Keys are read from the environment through `${VAR}` references in `[venues.<name>]` ([Configuration](../../reference/configuration.md#general-rules)). Copy `.env.example` to `.env` (it is ignored by git), fill in the variables and load it:
+Keys are read from the environment through `${VAR}` in `[venues.<name>]` ([Configuration](../../reference/configuration.md#general-rules)). Copy `.env.example` to `.env`, which git ignores, fill it in and load it:
 
 ```bash
 cp .env.example .env        # then edit .env
@@ -28,107 +26,144 @@ set -a && . ./.env && set +a
 
 | Environment | Config | Key variables |
 |---|---|---|
-| Binance Demo Mode | `configs/binance-demo.toml` | `FASTMM_BINANCE_API_KEY`, `FASTMM_BINANCE_API_SECRET` |
-| Binance USDⓈ-M Demo Trading | `configs/binance-usdm-demo.toml` | `FASTMM_BINANCE_API_KEY`, `FASTMM_BINANCE_API_SECRET` |
-| Binance testnet | `configs/binance-testnet.toml` | `FASTMM_BINANCE_API_KEY`, `FASTMM_BINANCE_API_SECRET` |
-| Bybit testnet | `configs/bybit-testnet.toml` | `FASTMM_BYBIT_API_KEY`, `FASTMM_BYBIT_API_SECRET` |
-| Bybit testnet, linear perpetuals | `configs/bybit-linear-testnet.toml` | `FASTMM_BYBIT_API_KEY`, `FASTMM_BYBIT_API_SECRET` |
-| OKX demo trading | `configs/okx-demo.toml` | `FASTMM_OKX_API_KEY`, `FASTMM_OKX_API_SECRET`, `FASTMM_OKX_API_PASSPHRASE` |
+| Binance Spot Demo Mode | `configs/binance-demo.toml` | `FASTMM_BINANCE_API_KEY`, `FASTMM_BINANCE_API_SECRET` |
+| Binance USDⓈ-M Demo Trading | `configs/binance-usdm-demo.toml` | the same Binance variables |
+| Binance Spot testnet | `configs/binance-testnet.toml` | the same Binance variables |
+| Bybit testnet, spot | `configs/bybit-testnet.toml` | `FASTMM_BYBIT_API_KEY`, `FASTMM_BYBIT_API_SECRET` |
+| Bybit testnet, linear perpetuals | `configs/bybit-linear-testnet.toml` | the same Bybit variables |
+| OKX demo trading | `configs/okx-demo.toml`, `configs/okx-spot-demo.toml` | `FASTMM_OKX_API_KEY`, `FASTMM_OKX_API_SECRET`, `FASTMM_OKX_API_PASSPHRASE` |
 | Coinbase Exchange sandbox | `configs/coinbase-sandbox.toml` | `FASTMM_COINBASE_API_KEY`, `FASTMM_COINBASE_API_SECRET`, `FASTMM_COINBASE_API_PASSPHRASE` |
 | Deribit testnet | `configs/deribit-testnet.toml` | `FASTMM_DERIBIT_CLIENT_ID`, `FASTMM_DERIBIT_CLIENT_SECRET` |
-| `xmm`: Spot Demo quotes, USDⓈ-M Demo hedges | `configs/xmm-binance-demo.toml` | `FASTMM_BINANCE_API_KEY`, `FASTMM_BINANCE_API_SECRET` |
-| `xmm`: USDⓈ-M Demo quotes, Bybit testnet hedges | `configs/xmm-demo.toml` | the Binance and the Bybit variables |
+| Gate futures TestNet | `configs/gate-usdt.toml` with testnet URLs | `FASTMM_GATE_API_KEY`, `FASTMM_GATE_API_SECRET` |
+| Hyperliquid testnet | `configs/hyperliquid.toml` with `testnet = true` | `FASTMM_HL_ACCOUNT`, `FASTMM_HL_AGENT_KEY` |
+| Lighter testnet | `configs/lighter.toml` with `testnet = true` | `FASTMM_LIGHTER_ACCOUNT`, `FASTMM_LIGHTER_API_KEY` |
+| `xmm`: Spot Demo quotes, USDⓈ-M Demo hedges | `configs/xmm-binance-demo.toml` | the Binance variables |
+| `xmm`: USDⓈ-M Demo quotes, Bybit testnet hedges | `configs/xmm-demo.toml` | the Binance and Bybit variables |
 
-The Binance configs share variable names, so one set of Binance keys is loaded at a time.
-
-The two `xmm` configs trade on two venues in one session: they quote on the first and hedge every fill on the second ([Quote on one venue, hedge on another](../strategies/xmm.md#run-it)).
+The two Binance Demo environments share one set of keys; every other environment has its own, and none accepts live-exchange keys. Since the Binance configs share variable names, load one set of Binance keys at a time. The `xmm` configs quote on the first venue and hedge every fill on the second ([Quote on one venue, hedge on another](../strategies/xmm.md#run-it)). Coinbase Advanced Trade has no practice environment ([Venue connectors](../../reference/venues/coinbase.md#advanced-trade)).
 
 ## 3. The environments
 
-The shipped configs raise `stale_ms` for quiet feeds ([Venue connectors](../../reference/venues.md#configuration-keys)).
+Each environment's endpoints are in its config. The shipped configs raise `stale_ms` for quiet feeds ([Venue connectors](../../reference/venues.md#configuration-keys)).
 
 ### Binance Spot Demo Mode
 
-- Keys: Binance Demo Trading. Switch to Demo Trading on binance.com and create a key under API Key Management.
-- Endpoints (from `configs/binance-demo.toml`): streams `wss://demo-stream.binance.com/stream`, WebSocket API `wss://demo-ws-api.binance.com/ws-api/v3`, REST `https://demo-api.binance.com`.
-- Market data follows the real market; quotes away from the touch rarely fill.
-- Fees: the config books 10 bps maker and taker (`[venues.binance.fees]`), what the Demo account charged.
-- Commission asset: buys are charged in the base asset (BTC) and sells in the quote asset (USDT) ([Journals, replay and PnL](journals-replay-pnl.md#check-pnl)).
-- Config: `stale_ms = 10000`; `[engine] min_requote_ticks = 50` and `min_requote_interval_ms = 1000` keep the order rate below Binance's limits.
-- Ed25519 key (unsigned orders after `session.logon`, and SBE market data):
-  1. `openssl genpkey -algorithm ed25519 -out ed25519-private.pem` and `openssl pkey -in ed25519-private.pem -pubout -out ed25519-public.pem`; keep the private key out of the repository (`chmod 600`).
-  2. In Demo Trading, API Key Management: create an API key of type "Self-generated" (Ed25519), paste the contents of `ed25519-public.pem`, enable Spot trading (and Futures for USDⓈ-M). Binance shows the API key.
-  3. Export `FASTMM_BINANCE_API_KEY=<that key>` and either keep the PEM file or export it (`export FASTMM_BINANCE_ED25519_PEM="$(cat ed25519-private.pem)"`).
-  4. In `[venues.binance]`: `key_type = "ed25519"`, `private_key_file = "/path/ed25519-private.pem"` or `private_key_env = "FASTMM_BINANCE_ED25519_PEM"`, remove `api_secret`, and optionally `md_format = "sbe"` (derives `wss://demo-stream-sbe.binance.com/stream`).
-  5. `fastmm-live --config configs/binance-demo.toml --dry-run` first: the SBE market-data channel goes Live and the book syncs. In a live run the order channel goes Live only after the `session.logon` reply; `session.logon failed` in the log means the key, its permissions or the IP whitelist are wrong.
+Switch to Demo Trading on binance.com and create a key under API Key Management.
+
+| | |
+|---|---|
+| market data | follows the real market; quotes away from the touch rarely fill |
+| fees | 10 bps maker and taker, as the Demo account charged; buys pay in BTC, sells in USDT ([Check PnL](journals-replay-pnl.md#check-pnl)) |
+| config | `stale_ms = 10000`; `min_requote_ticks = 50` and `min_requote_interval_ms = 1000` keep the order rate under Binance's limits |
+
+To use an Ed25519 key, which signs once at `session.logon` and allows SBE market data:
+
+1. Make the key pair, and keep the private key out of the repository (`chmod 600`):
+
+    ```bash
+    openssl genpkey -algorithm ed25519 -out ed25519-private.pem
+    openssl pkey -in ed25519-private.pem -pubout -out ed25519-public.pem
+    ```
+
+2. In API Key Management, create a "Self-generated" key, paste `ed25519-public.pem` and enable Spot trading, plus Futures for USDⓈ-M.
+3. Export the key Binance shows, and the private key if you do not use the file:
+
+    ```bash
+    export FASTMM_BINANCE_API_KEY=<that key>
+    export FASTMM_BINANCE_ED25519_PEM="$(cat ed25519-private.pem)"
+    ```
+
+4. In `[venues.binance]` set `key_type = "ed25519"` and `private_key_file = "/path/ed25519-private.pem"` or `private_key_env = "FASTMM_BINANCE_ED25519_PEM"`, and remove `api_secret`. `md_format = "sbe"` switches market data to SBE.
+5. Dry-run first: the SBE channel goes live and the book syncs. In a keyed run, `session.logon failed` means the key, its permissions or the IP whitelist are wrong.
 
 ### Binance USDⓈ-M futures Demo Trading
 
-- Keys: the Binance Demo Trading HMAC keys, the same as for Spot Demo Mode. The USDⓈ-M futures wallet needs a USDT balance, and the account must be in one-way position mode (the connector refuses hedge mode).
-- Endpoints (from `configs/binance-usdm-demo.toml`): streams `wss://demo-fstream.binance.com` (`/public`, `/market`, `/private`), WebSocket API `wss://testnet.binancefuture.com/ws-fapi/v1`, REST `https://demo-fapi.binance.com`.
-- Contract: the BTCUSDT perpetual, tick 0.10, lot 0.0001, minimum notional 50 USDT. The config quotes 0.001 BTC about 1 bps from mid with `max_position = "0.003"` and `max_loss = "20"`.
-- Fees: 2 bps maker and 4 bps taker, charged in USDT (`GET /fapi/v1/commissionRate` on the Demo account).
-- Leverage and margin mode are account settings: the log shows them at startup; the connector does not change them. Funding payments are booked from the income history ([Venues](../../reference/venues/binance-usdm.md#reconciliation-and-fills)).
-- After a session, flatten any remaining position with a reduce-only order.
+Use the Demo Trading HMAC keys. The futures wallet needs USDT, and the account must be in one-way position mode; the connector refuses hedge mode.
+
+| | |
+|---|---|
+| contract | BTCUSDT perpetual, tick 0.10, lot 0.0001, minimum notional 50 USDT |
+| config | quotes 0.001 BTC about 1 bps from mid, `max_position = "0.003"`, `max_loss = "20"` |
+| fees | 2 bps maker, 4 bps taker, in USDT |
+| leverage, margin mode | account settings, shown in the start-up log, never changed by the connector |
+| funding | booked from the income history ([Venues](../../reference/venues/binance-usdm.md#reconciliation-and-fills)) |
+
+After a session, flatten any position with a reduce-only order.
 
 ### Binance Spot testnet
 
-- Keys: generate them on <https://testnet.binance.vision> (HMAC keys; Ed25519 keys work with `key_type = "ed25519"` and `private_key_file`).
-- Endpoints (from `configs/binance-testnet.toml`): streams `wss://stream.testnet.binance.vision/stream`, WebSocket API `wss://ws-api.testnet.binance.vision/ws-api/v3`, REST `https://testnet.binance.vision`.
-- Market data is the testnet's own book: thin and often silent for several seconds (`stale_ms = 10000`). Fills are rare and not representative.
+Generate keys on <https://testnet.binance.vision>; HMAC and Ed25519 both work. The market data is the testnet's own book, thin and often silent for seconds, so fills are rare and not representative.
 
-### Gate USDT perpetual futures
+### Bybit v5 testnet
 
-`configs/gate-usdt.toml` points at production (`wss://fx-ws.gateio.ws/v4/ws/usdt`, `https://fx-api.gateio.ws`); Gate's futures TestNet is `wss://ws-testnet.gate.com/v4/ws/futures/usdt` and `https://fx-api-testnet.gateio.ws`, with keys from the "Futures TestNet APIKeys" tab (production keys are refused there). `FASTMM_GATE_API_KEY` / `FASTMM_GATE_API_SECRET`; the account must be in single position mode and hold USDT in its futures account ([Venue connectors](../../reference/venues/gate.md)).
+Create a system-generated (HMAC) key on testnet.bybit.com, under API Management, with spot trading permission.
 
-### Hyperliquid perpetuals
-
-- Keys: the account's address (`api_key`) and a signing key (`api_secret`): an agent wallet the account approved (app.hyperliquid.xyz, More > API: Generate, then Authorize API Wallet) or the account's own key. An agent can place, modify and cancel orders but cannot move funds; the connector checks it against the account's `extraAgents` at start-up.
-- Endpoints (from `configs/hyperliquid.toml`): `wss://api.hyperliquid.xyz/ws` (market data, the account streams and the order posts on three connections), REST `https://api.hyperliquid.xyz`. The testnet is `wss://api.hyperliquid-testnet.xyz/ws` and `https://api.hyperliquid-testnet.xyz` with `testnet = true`; its USDC comes from the testnet faucet, and a mainnet agent is not valid there.
-- Account: in a unified account the spot USDC is the collateral of every dex (main and HIP-3); otherwise USDC has to be moved to the perp balance. Builder-deployed dexes (xyz's US equities) are named with their prefix, `xyz:NVDA`.
-- Request budget: each new order and modify spends one request of the address budget, 10000 plus one per USDC traded (growth-mode volume counts 10 %). The account itself (not an agent) can reserve more with `reserveRequestWeight` at 0.0005 USDC a request, paid from the perp balance; the connector counts the reserved requests and stops new orders and modifies at `address_reserve`.
-- Dead man's switch: `scheduleCancel` is refused until the address has traded enough; the connector logs the reason once and runs without it.
-- After a session, flatten with `fastmm-ctl flatten` (reduce-only) and check `openOrders` and `clearinghouseState` of each dex.
-
-### Lighter perpetuals
-
-- Account: a Lighter account belongs to an Ethereum address. Connect a wallet at app.lighter.xyz and deposit USDC (from Ethereum or a supported L2 through the app's bridge); the first deposit creates the account and its index. On the testnet (`testnet = true`) the faucet funds it.
-- API key: `tools/lighter_api_key.py` makes a key pair and registers it in a slot (4 to 254) with a ChangePubKey that the wallet's key signs. It runs on the trading host after `pip install lighter-sdk eth-account` and reads the wallet key from the environment, never from the command line. Without `--send` it only prints what it would register. Keep the printed private key as `FASTMM_LIGHTER_API_KEY`.
-- Endpoints (from `configs/lighter.toml`): `wss://mainnet.zklighter.elliot.ai/stream` carries the market data, the account channels and the transactions on three connections, and REST is `https://mainnet.zklighter.elliot.ai`. The testnet hosts are `testnet.zklighter.elliot.ai`.
-- Tier: a Standard account trades free, but its orders and cancels wait 300 ms and it may send 60 transactions a minute. Premium (`/api/v1/changeAccountTier`, once a day per address, for every sub-account at once) has no wait for makers and cancels and allows 4000 transactions a minute, but each order spends volume quota; the connector stops at `quota_reserve`.
-- After a session, flatten with `fastmm-ctl flatten` (reduce-only) and check `accountActiveOrders` and the positions of `account`.
-
-### Bybit v5 spot testnet
-
-- Keys: create a system-generated (HMAC) API key on the Bybit testnet site (testnet.bybit.com, API Management) with spot trading permission.
-- Endpoints (from `configs/bybit-testnet.toml`): public `wss://stream-testnet.bybit.com/v5/public/spot`, trade `wss://stream-testnet.bybit.com/v5/trade`, private `wss://stream-testnet.bybit.com/v5/private` (derived from `ws_url` when `ws_private_url` is not set), REST `https://api-testnet.bybit.com`.
-- Config: `supports_replace = false`: quotes are replaced with cancel and new, because Bybit does not document whether amend `qty` includes the filled quantity. `recv_window_ms = 5000`, `stale_ms = 10000`.
-- Linear perpetuals: `configs/bybit-linear-testnet.toml` sets `category = "linear"` and the public stream `wss://stream-testnet.bybit.com/v5/public/linear`. The key needs contract trading permission and USDT in the unified account. The symbol must be in one-way position mode: in hedge mode `fastmm-live` exits 3 at start-up. Not run against the testnet yet ([Venue connectors](../../reference/venues/bybit.md#linear-perpetuals)).
+- The config sets `supports_replace = false`, so quotes are replaced with cancel and new: Bybit does not document whether an amend's `qty` includes the filled quantity.
+- For linear perpetuals, `configs/bybit-linear-testnet.toml` sets `category = "linear"`. The key needs contract trading permission and USDT in the unified account. The symbol must be in one-way mode, or `fastmm-live` exits 3 ([Venue connectors](../../reference/venues/bybit.md#linear-perpetuals)).
 
 ### OKX demo trading
 
-- Keys: on okx.com switch to Demo trading and create a demo API key (Personal center, Demo trading API) with trade permission. OKX asks for a passphrase when the key is made: it is the third credential, `api_passphrase`. Live-trading keys are refused by the demo hosts (50101).
-- Account (swaps, `configs/okx-demo.toml`): net position mode, not the spot account mode, USDT in the trading account. Long/short mode or the spot mode make `fastmm-live` exit 3 at start-up.
-- Endpoints (from `configs/okx-demo.toml`): public `wss://wspap.okx.com:8443/ws/v5/public`, private and orders `wss://wspap.okx.com:8443/ws/v5/private` (derived), REST `https://www.okx.com` with `x-simulated-trading: 1` (`testnet = true`). Production is `wss://ws.okx.com:8443` with `testnet = false`; the connector refuses a demo host with `testnet = false` and the reverse.
-- Units: quantities are contracts. One BTC-USDT-SWAP contract is 0.01 BTC; the config quotes 0.1 contracts (0.001 BTC). On demo the tick is 0.01 and `instIdCode` differs from production; both come from `GET /api/v5/public/instruments` with the demo header.
-- Config: `supports_replace = false` until amend has been seen on the demo; `dead_mans_switch_s = 60` arms `cancel-all-after` (whether demo trading honours it is not documented).
-- Spot: `configs/okx-spot-demo.toml` quotes BTC-USDT at the minimum size (0.00002 BTC) for an account registered on my.okx.com (`region = "eea"`: REST `https://eea.okx.com`, WebSocket `wss://wseeapap.okx.com:8443`). Any account mode trades spot, the spot mode included; keys only work on the domain of the site they were made on. Quantities are BTC.
-- Status: spot ran on the demo (orders, fills, a kill -9 and restart, a clean stop; 2026-09-30). For swaps the public stream was run against the demo and production hosts; orders and the private channels are covered by a scripted fake exchange only ([Venue connectors](../../reference/venues/okx.md)).
+On okx.com switch to Demo trading and create a demo API key with trade permission. The passphrase you choose is the third credential, `api_passphrase`. The demo hosts refuse live keys (50101).
+
+| | Swaps (`okx-demo.toml`) | Spot (`okx-spot-demo.toml`) |
+|---|---|---|
+| account | net position mode, USDT in the trading account; other modes exit 3 | any mode |
+| quantities | contracts; one BTC-USDT-SWAP contract is 0.01 BTC, the config quotes 0.1 | BTC, the minimum 0.00002 |
+| hosts | `wspap.okx.com:8443`, REST `www.okx.com` with `x-simulated-trading: 1` | the EEA site: `eea.okx.com`, `wseeapap.okx.com:8443` (`region = "eea"`) |
+
+Keys work only on the domain of the site they were made on. The connector refuses a demo host with `testnet = false`, and the reverse. The swap config sets `supports_replace = false` and `dead_mans_switch_s = 60`. Demo instrument data, tick 0.01 and `instIdCode`, differs from production ([Venue connectors](../../reference/venues/okx.md)).
 
 ### Coinbase Exchange sandbox
 
-- Keys: sign up at <https://public.sandbox.exchange.coinbase.com> (an account of its own; a coinbase.com login does not work there), then create an API key with the View and Trade permissions. The sandbox shows the secret once and asks for a passphrase: key, secret and passphrase are the three credentials. Add fake funds to the profile in the same interface.
-- Endpoints (from `configs/coinbase-sandbox.toml`): feed `wss://ws-feed-public.sandbox.exchange.coinbase.com` (market data, and the user channel on a second connection), REST `https://api-public.sandbox.exchange.coinbase.com` (`testnet = true`). The connector refuses a sandbox host with `testnet = false` and a production host with `testnet = true`.
-- The sandbox lists a subset of the production products; its books are thin and do not follow production prices, so the config quotes 50 bps from the mid.
-- Status: the public feed ran against the sandbox and production; orders and the user channel are covered by a scripted fake exchange only ([Venue connectors](../../reference/venues/coinbase.md#exchange)).
+Sign up at <https://public.sandbox.exchange.coinbase.com>, an account of its own, and create an API key with View and Trade. The sandbox shows the secret once and asks for a passphrase. Add fake funds to the profile there.
+
+The sandbox lists fewer products than production, and its thin books do not follow production prices, so the config quotes 50 bps from the mid. The connector refuses a sandbox host with `testnet = false`, and the reverse ([Venue connectors](../../reference/venues/coinbase.md#exchange)).
 
 ### Deribit testnet
 
-- Keys: create an account on <https://test.deribit.com> and an API key under Account, API. The key's client id and client secret go into `FASTMM_DERIBIT_CLIENT_ID` and `FASTMM_DERIBIT_CLIENT_SECRET` (`api_key` and `api_secret` in the config).
-- Endpoints (from `configs/deribit-testnet.toml`): WebSocket `wss://test.deribit.com/ws/api/v2` for market data and, on a second connection, authentication and orders; REST `https://test.deribit.com/api/v2` for reference data and the kill-switch `private/cancel_all_by_instrument`.
-- Instruments expire. The shipped config quotes `BTC-25DEC26-*` options with `options_mm`; after that date reference data fails to load (exit 4). Replace the `[[instruments]]` with live names from `public/get_instruments?currency=BTC&kind=option`.
-- Config: `stale_ms = 15000` and `dead_ms = 35000`, above the heartbeat interval (`heartbeat_interval_s = 10`, the minimum). `matching_engine_rate` and `matching_engine_burst` rate-limit order requests locally; set them to your account tier. Option prices are in BTC, so the `[risk]` notional limits are BTC amounts.
-- Status: the private payloads follow Deribit's published schemas and a scripted fake exchange, not recorded traffic ([Venue connectors](../../reference/venues.md#capabilities)).
+Create an account on <https://test.deribit.com> and an API key under Account, API. Its client id and secret go into `FASTMM_DERIBIT_CLIENT_ID` and `FASTMM_DERIBIT_CLIENT_SECRET`.
+
+- Instruments expire. The config quotes `BTC-25DEC26-*` options with `options_mm`; after that date reference data fails to load (exit 4). Replace the `[[instruments]]` with names from `public/get_instruments?currency=BTC&kind=option`.
+- `stale_ms = 15000` and `dead_ms = 35000` sit above the 10 s heartbeat.
+- Set `matching_engine_rate` and `matching_engine_burst` to your account tier.
+- Option prices are in BTC, so the `[risk]` notional limits are BTC amounts.
+
+### Gate USDT perpetual futures
+
+`configs/gate-usdt.toml` points at production. For the futures TestNet, set `wss://ws-testnet.gate.com/v4/ws/futures/usdt` and `https://fx-api-testnet.gateio.ws`, with keys from the "Futures TestNet APIKeys" tab. The account must be in single position mode with USDT in its futures account ([Venue connectors](../../reference/venues/gate.md)).
+
+### Hyperliquid perpetuals
+
+The keys are the account's address (`api_key`) and a signing key (`api_secret`). Use an agent wallet: on app.hyperliquid.xyz, More > API, Generate, then Authorize API Wallet. An agent can trade but cannot move funds; the connector checks it against the account's `extraAgents` at start-up.
+
+| | |
+|---|---|
+| testnet | `wss://api.hyperliquid-testnet.xyz/ws`, `https://api.hyperliquid-testnet.xyz`, `testnet = true`; USDC from the faucet; a mainnet agent is not valid there |
+| collateral | in a unified account, spot USDC backs every dex; otherwise move USDC to the perp balance |
+| HIP-3 dexes | named with their prefix, `xyz:NVDA` |
+| request budget | each order and modify spends one request of 10000 plus one per USDC traded; the account can buy more with `reserveRequestWeight`; the connector stops at `address_reserve` |
+| dead man's switch | `scheduleCancel` is refused until the address has traded enough; the connector logs it once and runs without |
+
+After a session, run `fastmm-ctl flatten` and check `openOrders` and `clearinghouseState` of each dex.
+
+### Lighter perpetuals
+
+1. Connect a wallet at app.lighter.xyz and deposit USDC; the first deposit creates the account. On the testnet the faucet funds it.
+2. Register an API key in a slot (4 to 254) on the trading host. The wallet's key comes from the environment; without `--send` the tool only prints the account, the slot and the new public key:
+
+    ```bash
+    pip install lighter-sdk eth-account
+    LIGHTER_ETH_PRIVATE_KEY=0x... python3 tools/lighter_api_key.py --network testnet --slot 4 --send
+    ```
+
+3. Keep the printed private key as `FASTMM_LIGHTER_API_KEY`.
+
+| Tier | Latency | Rate | Cost |
+|---|---|---|---|
+| Standard | orders and cancels wait 300 ms | 60 transactions a minute | free |
+| Premium | no wait for makers and cancels | 4000 a minute | each order spends volume quota; the connector stops at `quota_reserve` |
+
+Switch tier with `/api/v1/changeAccountTier`, once a day per address, for every sub-account. After a session, run `fastmm-ctl flatten` and check `accountActiveOrders` and the positions of `account`.
 
 ## 4. Dry run
 
@@ -136,45 +171,50 @@ The shipped configs raise `stale_ms` for quiet feeds ([Venue connectors](../../r
 ./build/release/bin/fastmm-live --config configs/binance-demo.toml --dry-run --duration 60s
 ```
 
-`--dry-run` needs no keys, opens market data only and sends no order. The strategy quotes as it would with keys, and its orders stay on paper: each is acknowledged at once and none fills. Every 5 s the log shows what would rest, one line per instrument:
+A dry run needs no keys, opens market data only and sends no order. The strategy quotes as it would; each order is acknowledged at once on paper and none fills. Every 5 s the log shows what would rest:
 
 ```text
 [binance] dry run BTCUSDT: bid 83985.83 x 0.0003 ask 84238.18 x 0.0003 would send new=2 cancel=0 replace=6
 ```
 
-A dry run starts flat and runs as engine `<name>-dryrun` (`fastmm-top --name <name>-dryrun`); it writes no store, kill ledger or strategy state, so the next keyed session starts from the last keyed one. The summary at the end counts them: `dry run: would have sent 2 orders, 2 cancels, 6 replaces (none was sent)`; the cancels include the two the stop pulls. The status line per venue comes every 10 s on the console (`[logging] status_interval_s`); a working dry run shows `md=live`, all books synced (`books=1/1`), `malformed=0` and `dropped=0`.
+At the end: `dry run: would have sent 2 orders, 2 cancels, 6 replaces (none was sent)`. A working dry run's 10 s status line shows `md=live`, `books=1/1`, `malformed=0` and `dropped=0`.
+
+The dry run starts flat and runs as engine `<name>-dryrun` (`fastmm-top --name <name>-dryrun`). It writes no store, kill file or strategy state, so the next keyed session continues from the last keyed one.
 
 ## 5. Short keyed run
 
-Start with the shipped `[risk]` limits (a few hundred USDT of exposure) and a fixed duration, with the journal and log in one directory per session:
+1. Start with the shipped `[risk]` limits, a few hundred USDT of exposure, and a fixed duration, with the journal and log in one directory:
 
-```bash
-mkdir -p runs/demo-1
-./build/release/bin/fastmm-live --config configs/binance-demo.toml --duration 10m \
-  --journal runs/demo-1/session.fmj --log runs/demo-1/engine.log
-```
+    ```bash
+    mkdir -p runs/demo-1
+    ./build/release/bin/fastmm-live --config configs/binance-demo.toml --duration 10m \
+      --journal runs/demo-1/session.fmj --log runs/demo-1/engine.log
+    ```
 
-Watch it from a second terminal (the name is `[engine] name`):
+2. Watch it from a second terminal; the name is `[engine] name`:
 
-```bash
-./build/release/bin/fastmm-top --name binance-demo
-```
+    ```bash
+    ./build/release/bin/fastmm-top --name binance-demo
+    ```
 
-A Demo session one second after connecting:
+    A Demo session one second after connecting logs:
 
-```text
-[binance] md=live user=live order=live books=1/1 md_msgs=4 resyncs=0 malformed=0 dropped=0 orders=2 cancels=0 order_events=4 rest=2/0err reconnects=0 clock_offset_ms=175 rate_refused(weight/10s/1m/1d/paused)=0/0/0/0/0
-```
+    ```text
+    [binance] md=live user=live order=live books=1/1 md_msgs=4 resyncs=0 malformed=0 dropped=0 orders=2 cancels=0 order_events=4 rest=2/0err reconnects=0 clock_offset_ms=175 rate_refused(weight/10s/1m/1d/paused)=0/0/0/0/0
+    ```
 
-`clock_offset_ms` is the venue clock minus the local clock; signed requests fail as it nears `recv_window_ms` ([Troubleshooting](troubleshooting.md#clock)).
+    `clock_offset_ms` is the venue clock minus the local one; signed requests fail as it nears `recv_window_ms` ([Troubleshooting](troubleshooting.md#clock)).
 
 ## 6. Stop and check
 
-Press Ctrl-C or let `--duration` elapse, then read the last log lines ([Reading the last lines](kill-switch-and-shutdown.md#reading-the-last-lines)) and confirm that the venue shows no open orders ([Go-live checklist](go-live-checklist.md#stopping)). Reconcile the journal against the account with [Check PnL](journals-replay-pnl.md#check-pnl).
+1. Press Ctrl-C, or let `--duration` elapse.
+2. Read the last log lines ([Reading the last lines](kill-switch-and-shutdown.md#reading-the-last-lines)).
+3. Confirm the venue shows no open orders ([Go-live checklist](go-live-checklist.md#stopping)).
+4. Reconcile the journal against the account ([Check PnL](journals-replay-pnl.md#check-pnl)).
 
 ## 7. Opt-in live connector tests
 
-The `live.*` test cases in `tests/venues/live_binance_test.cpp`, `live_binance_usdm_test.cpp`, `live_bybit_test.cpp` and `live_deribit_test.cpp` run each connector against its testnet or Demo environment: book sync, then a far post-only order placed and cancelled. `live_coinbase_test.cpp` runs Coinbase Advanced Trade against production read only (accounts, open orders, fills, the user channel, the start-up sweep) with `COINBASE_API_KEY_NAME` and `COINBASE_API_PRIVATE_KEY`; it places nothing. They carry the ctest label `live`, which the test presets exclude; a plain `ctest` runs them, but they skip unless `FASTMM_LIVE_TESTS=1` is set, and the order steps need the key variables above. `FASTMM_BINANCE_ENV=demo` points the Binance test at Demo Mode instead of the testnet.
+The tests labelled `live` run each connector against its practice environment: book sync, then a far post-only order placed and cancelled. They skip unless `FASTMM_LIVE_TESTS=1`, and the order steps need the key variables above.
 
 ```bash
 cmake --build --preset release -j --target fastmm_venues_tests
@@ -183,6 +223,14 @@ FASTMM_LIVE_TESTS=1 FASTMM_BINANCE_ENV=demo ctest --test-dir build/release -L li
 FASTMM_LIVE_TESTS=1 ctest --test-dir build/release -L live -R 'venues\.live\.bybit' --output-on-failure
 ```
 
-## Next
+| Test file | Runs against |
+|---|---|
+| `tests/venues/live_binance_test.cpp` | Binance Spot testnet, or Demo Mode with `FASTMM_BINANCE_ENV=demo` |
+| `live_binance_usdm_test.cpp` | Binance USDⓈ-M Demo |
+| `live_bybit_test.cpp` | Bybit testnet |
+| `live_deribit_test.cpp` | Deribit testnet |
+| `live_coinbase_test.cpp` | Coinbase Advanced Trade production, read only, with `COINBASE_API_KEY_NAME` and `COINBASE_API_PRIVATE_KEY` |
 
-- [Go-live checklist](go-live-checklist.md)
+The test presets exclude the `live` label.
+
+Next: the [Go-live checklist](go-live-checklist.md).

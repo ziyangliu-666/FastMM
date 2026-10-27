@@ -1,6 +1,6 @@
-# Operating a running session
+# Operate a running session
 
-A running `fastmm-live` session listens on a control socket. `fastmm-ctl` sends it one command and prints the reply:
+You need a running `fastmm-live` session and `fastmm-ctl` from the same build. Each `fastmm-ctl` call sends one command and prints the reply:
 
 ```bash
 fastmm-ctl --name sim-local status
@@ -8,48 +8,53 @@ fastmm-ctl --name sim-local pull --instrument BTCUSDT
 fastmm-ctl --name sim-local flatten --max-slippage-bps 30
 ```
 
-Every command except `param`, `ab`, `status`, `stop` and `handoff` becomes a message on the engine's control ring, so the journal records it and a replay reproduces the session exactly ([Determinism](../../explanation/determinism.md)). `param` is validated against the strategy's schema on the control thread and reaches the engine as a `ParamUpdate`, which the journal records too, with its `--source`.
+The journal records every command that reaches the engine, so a replay reproduces the session ([Determinism](../../explanation/determinism.md)). `status`, `stop`, `handoff` and `ab` do not go through the control ring. `param` is checked against the strategy's schema first; the update it sends is journaled with its `--source`.
 
 ## The socket
 
-`<journal_dir>/<engine name>.ctl`, `AF_UNIX` `SOCK_SEQPACKET`, mode 0600, created when the session starts and removed when it shuts down. `fastmm-live --control <path>` moves it; `--no-control` leaves it out.
+| Property | Value |
+|---|---|
+| Path | `<journal_dir>/<engine name>.ctl`; `fastmm-live --control <path>` moves it, `--no-control` leaves it out |
+| Type | `AF_UNIX`, `SOCK_SEQPACKET`: one datagram per request, one per reply |
+| Mode | 0600, created at start, removed at shutdown |
+| Reach | local only; tunnel over SSH from another host |
 
-Authorisation is the file system: nothing but the socket's mode is checked. Keep `journal_dir` out of shared directories; run the session and `fastmm-ctl` as the same user, or give the directory a group and `chmod g+x`.
+The socket's file mode is the only authorisation. Keep `journal_dir` out of shared directories, and run the session and `fastmm-ctl` as the same user, or give the directory a group and `chmod g+x`.
 
-One datagram is the request, one datagram is the reply; any `SOCK_SEQPACKET` client works:
+Any `SOCK_SEQPACKET` client works. `nc -U` does not, because it speaks stream and datagram sockets only:
 
 ```bash
 echo status | socat - UNIX-CONNECT:runs/mm.ctl,socktype=5
 ```
 
-(`socktype=5` is `SOCK_SEQPACKET`; `nc -U` speaks stream and datagram sockets only.)
-
-The control thread waits on the socket and answers a command as it arrives. A command reaches the engine at its next step; the reply means the command is queued, not that the engine has run it. `fastmm-ctl status` or `fastmm-top` shows the effect.
+A reply means the command is queued. The engine runs it at its next step; `fastmm-ctl status` or `fastmm-top` shows the effect.
 
 ## The commands
 
+Replies start with `ok` or `error`, and `fastmm-ctl` exits 0 or 1, except for `status` and `help`.
+
 | Command | What it does |
 |---|---|
-| `pull [--instrument SYM \| --venue NAME]` | Stops quoting and pulls the quotes. Without a scope the whole session stops quoting; with one only that instrument or venue does, and the rest keeps trading. Working orders that are not quotes stay. |
+| `pull [--instrument SYM \| --venue NAME]` | Stops quoting and pulls the quotes, in the whole session or in one scope. Working orders that are not quotes stay. |
 | `resume [--instrument SYM \| --venue NAME]` | Quotes again. Without a scope it also clears every scoped pull and stops a running flatten. |
-| `param <name>=<value> ... [--instrument SYM] [--source WHO]` | New strategy parameters. Validated here first: an unknown name, a value out of range or a failed `validate()` is refused and nothing is published ([Strategy parameters](../../reference/strategy-api.md#parameters)). The reply `ok param queued seq=N` means the update is on the engine's ring, not that the engine has applied it ([below](#confirm-a-parameter-change)). `--source` records who asked for it (`manual`, `scheduled:drain`, at most 39 bytes) in the journal and the status. |
-| `params [--instrument SYM]` | The control socket's sequence numbers, published and applied, the source of the last update, then the parameters' values, one `name=value` per line ([below](#confirm-a-parameter-change)). |
-| `limits <key>=<value> ... [--force]` | New risk limits. The keys are the `[risk]` keys, `check_balance` included, and `underlying.<BASE>.max_net` for a base asset with a `[risk.underlying.<BASE>]` section; the ones you do not name keep the values they have. Setting a limit that is on to `0` (or `stp`, `check_balance` to `false`) turns it off and is refused without `--force` ([below](#change-a-limit)). |
-| `ab` | The `[ab]` test: its arms, the block and the end, and each instrument's arm ([Run an A/B test](../strategies/ab-test.md#run-it-live)). |
-| `ab stop` | Ends the test: every instrument back on the configured parameters, out of any arm. |
-| `ab promote <arm>` | Ends the test with every instrument on that arm's parameters. |
-| `flatten [--instrument SYM] [--max-slippage-bps N]` | The engine works the position off itself ([below](#flatten)), also while the kill switch is set. |
-| `kill` | Trips the global kill switch: quoting off, every quote pulled, every working order cancelled. The position stays; `flatten` works it off. |
-| `unkill` | Clears it and resumes quoting, as `SIGHUP` does, including a latched `max_loss` trip ([Kill switch and shutdown](kill-switch-and-shutdown.md#the-latched-loss-budget)). |
-| `stop` | Shuts the session down as `SIGTERM` does: kill switch, cancel-all on every venue, exit. |
-| `handoff` | `stop` for the process waiting on the instance lock (`fastmm-live --standby` or `--takeover`): the same shutdown, then the lock is released last. Refused by a session that holds no lock ([Hand over a running session](hand-over-a-session.md)). |
-| `log-reopen` | Opens `[logging] file` again, as `SIGUSR1` does: what was logged before stays in the file that was open, the rest goes to the path ([below](#rotate-the-log)). |
-| `status` | The `fastmm-top` frame plus the limits the session runs with. |
+| `kill` | Trips the global kill switch: quoting off, quotes pulled, working orders cancelled. The position stays. |
+| `unkill` | Clears the kill switch and quotes again, as `SIGHUP` does, including a [latched `max_loss`](kill-switch-and-shutdown.md#the-latched-loss-budget). |
+| `flatten [--instrument SYM] [--max-slippage-bps N]` | The engine works the position off itself, also while the kill switch is set ([below](#flatten)). |
+| `param <name>=<value> ... [--instrument SYM] [--source WHO]` | New strategy parameters ([below](#confirm-a-parameter-change)). |
+| `params [--instrument SYM]` | The parameters' values and the update counters. |
+| `limits <key>=<value> ... [--force]` | New risk limits ([below](#change-a-limit)). |
+| `ab`, `ab stop`, `ab promote <arm>` | Show, end or promote the A/B test ([Run an A/B test](../strategies/ab-test.md#run-it-live)). |
+| `stop` | Shuts down as `SIGTERM` does: kill switch, cancel-all on every venue, exit. |
+| `handoff` | `stop` for a successor waiting on the instance lock; the lock is released last ([Hand over a running session](hand-over-a-session.md)). |
+| `log-reopen` | Opens the log file again, as `SIGUSR1` does ([below](#rotate-the-log)). |
+| `status` | The `fastmm-top` frame plus the limits in force. |
 | `help` | The command list. |
 
-`--instrument` takes a symbol, or `<venue>:<symbol>` when the same symbol trades on more than one venue. A scoped pull stays until a matching `resume`: `unkill` does not clear it.
+`--instrument` takes a symbol, or `<venue>:<symbol>` when a symbol trades on more than one venue. A scoped pull stays until a matching `resume`; `unkill` does not clear it.
 
-Replies start with `ok` or `error` (`fastmm-ctl` exit code 0 or 1), except `status` and `help`.
+## Confirm a parameter change
+
+`param` validates the values before it sends anything. An unknown name, a value out of range or a failed `validate()` is refused ([Strategy parameters](../../reference/strategy-api.md#parameters)):
 
 ```bash
 fastmm-ctl --name mm param half_spread_bps=99999
@@ -59,7 +64,43 @@ fastmm-ctl --name mm param half_spread_bps=99999
 error parameter 'half_spread_bps': value 99999 outside [0, 10000]
 ```
 
+1. Send the change with `--wait`, so `fastmm-ctl` waits until the engine has applied it. It exits 4 if that takes longer than the wait in ms. `--source` names who asked, at most 39 bytes.
+
+    ```bash
+    fastmm-ctl --name sim-local --wait 5000 param half_spread_bps=7 --source scheduled:drain
+    ```
+
+    ```text
+    ok param queued seq=1 source=scheduled:drain (every instrument)
+    ok param applied seq=1
+    ```
+
+2. Read the values back:
+
+    ```bash
+    fastmm-ctl --name sim-local params
+    ```
+
+    ```text
+    ok published=1 applied=1 pending=0 engine_updates=1 last_seq=1 last_origin=control last_source=scheduled:drain
+    values=applied
+    half_spread_bps=7
+    skew_bps_per_unit=1
+    quote_qty=0.001
+    max_inventory=0.01
+    requote_threshold_ticks=1
+    pull_on_stale_ms=2000
+    levels=1
+    level_step_ticks=1
+    ```
+
+`published` counts the updates sent; `applied` is the sequence number of the last one the engine applied. While they differ, the values shown are the ones about to be applied (`values=published`). The same counters are under `params` in the [status file](../../reference/status-file.md), and the journal records each update ([Journal format](../../reference/journal-format.md#parameter-updates)).
+
+A strategy that publishes its own parameters (`LiveStrategy::set_params`) numbers the updates itself. Its replies carry no `seq`, `--wait` cannot confirm them and `params` shows no values.
+
 ## Change a limit
+
+The keys are the `[risk]` keys, `check_balance` included, and `underlying.<BASE>.max_net` for a base with a `[risk.underlying.<BASE>]` section. Keys you do not name keep their values.
 
 ```bash
 fastmm-ctl --name mm limits max_position=0.5 orders_per_sec=10
@@ -69,9 +110,9 @@ fastmm-ctl --name mm limits max_position=0.5 orders_per_sec=10
 ok limits queued (2 key(s))
 ```
 
-New limits take effect on the next pre-trade check, except `price_collar_bps` and `fat_finger_bps`, whose bands are recomputed on the next book or trade update of each instrument.
+A new limit applies at the next pre-trade check. `price_collar_bps` and `fat_finger_bps` apply at each instrument's next book or trade update, when their bands are recomputed.
 
-Turning a limit off takes `--force`:
+Turning a limit off (`0`, or `false` for `stp` and `check_balance`) needs `--force`. `burst=0` is not off: it means `orders_per_sec`.
 
 ```bash
 fastmm-ctl --name mm limits max_loss=0
@@ -81,87 +122,54 @@ fastmm-ctl --name mm limits max_loss=0
 error this turns off max_loss; add --force to mean it
 ```
 
-`burst=0` is not off (it means `orders_per_sec`). A session whose instruments settle in more than one currency without `[accounting]` refuses to turn on `max_loss`, `max_gross_notional` or `max_net_notional` it started without, as it refuses `max_loss` at start-up.
+A session whose instruments settle in more than one currency and that has no `[accounting]` refuses to turn on `max_loss`, `max_gross_notional` or `max_net_notional`, as it does at start-up.
 
-Each change the engine applies is logged (`risk limit replaced by the operator: max_loss 100 -> 0 (--force)`), journaled, and kept in the store, one row per key with the values before and after and whether `--force` was given: `fastmm-pnl limit-changes` ([Storage](../../reference/storage.md#limit_changes)). `status` shows the limits the session runs with now.
-
-## Confirm a parameter change
-
-`param` answers once the update is queued. The engine applies it at its next step and then reports the update's sequence number as applied; `--wait <ms>` makes `fastmm-ctl` wait for that, and exit 4 when it does not come in time:
-
-```bash
-fastmm-ctl --name sim-local --wait 5000 param half_spread_bps=7 --source scheduled:drain
-```
-
-```text
-ok param queued seq=1 source=scheduled:drain (every instrument)
-ok param applied seq=1
-```
-
-`params` reads the values back:
-
-```bash
-fastmm-ctl --name sim-local params
-```
-
-```text
-ok published=1 applied=1 pending=0 engine_updates=1 last_seq=1 last_origin=control last_source=scheduled:drain
-values=applied
-half_spread_bps=7
-skew_bps_per_unit=1
-quote_qty=0.001
-max_inventory=0.01
-requote_threshold_ticks=1
-pull_on_stale_ms=2000
-levels=1
-level_step_ticks=1
-```
-
-`published` counts the updates the control socket sent, `applied` is the sequence number of the last one the engine has applied. While they differ, the values are the ones the engine is about to apply (`values=published`). The status file carries the same numbers and the source of the last update (`fastmm-top`, `--json` under `params`; [Status file](../../reference/status-file.md)), and the journal records each update with its origin and source ([Journal format](../../reference/journal-format.md#parameter-updates)).
-
-A strategy that brings its own publisher (`LiveStrategy::set_params`) numbers its updates itself: its replies carry no `seq`, `--wait` cannot confirm them and `params` shows no values.
+Each applied change is logged (`risk limit replaced by the operator: max_loss 100 -> 0 (--force)`), journaled and stored with the values before and after. List them with `fastmm-pnl limit-changes` ([Storage](../../reference/storage.md#limit_changes)).
 
 ## Flatten
 
-`flatten` is run by the engine, not the strategy, which may be what broke. It
+The engine runs `flatten` itself, so it works when the strategy is what broke. It goes in three steps:
 
-1. stops quoting in its scope, pulls those quotes and cancels the working orders there (with `--instrument` only that instrument; without it the whole session);
-2. every `[engine] flatten_interval_ms` (default 500) looks at the position of each instrument in scope and, when one is not flat and has no slice in flight, sends a **reduce-only IOC limit order** for the whole remaining position, priced `--max-slippage-bps` (default `[engine] flatten_slippage_bps`, 25) through the touch: selling at `best_bid - bps`, buying at `best_ask + bps`, rounded back to the tick;
-3. ends when every instrument in scope is flat.
+1. Stops quoting in its scope, pulls those quotes and cancels the working orders there.
+2. Every `[engine] flatten_interval_ms` (500 ms by default), sends a reduce-only IOC limit order for each instrument that is not flat and has no slice in flight. The price is `--max-slippage-bps` through the touch (default `[engine] flatten_slippage_bps`, 25 bps), rounded to the tick.
+3. Ends when every instrument in scope is flat.
 
-Only one slice per instrument is out at a time, so a flatten cannot sell the same position twice. A slice is capped at `[risk] max_order_qty`, so a large position leaves over several sweeps.
+One slice per instrument is out at a time, so a position is never sold twice. A slice is capped at `[risk] max_order_qty`, so a large position takes several sweeps.
 
-A flatten order is exempt from the global kill switch, from `[risk] max_position` (a reduce-only order exists to get under it) and from self-trade prevention (the flatten cancelled the orders of its scope first; a cancel the venue never acknowledges must not leave the position on). Everything else applies: a venue's kill switch, the **price collar**, the fat-finger band, `max_order_qty`, `max_order_notional`, `min_notional` and the rate limit. A slice a limit refuses is retried at the next sweep. If the collar is narrower than the slippage, no slice can pass and the flatten never finishes; widen it with `limits price_collar_bps=...`.
+| Check | Applies to a flatten order |
+|---|---|
+| Global kill switch, `max_position`, self-trade prevention | no |
+| Venue kill switch, price collar, fat-finger band, `max_order_qty`, `max_order_notional`, `min_notional`, rate limit | yes |
 
-Progress is in the status file and in `fastmm-ctl status`:
+A slice a limit refuses is retried at the next sweep. If the price collar is narrower than the slippage, no slice can pass; widen it with `limits price_collar_bps=...`.
+
+Progress is in `fastmm-ctl status` and the status file. `fastmm-top` shows `FLATTENING (1 left)`, and Prometheus gets `fastmm_flatten_state`, `fastmm_flatten_instruments_left` and `fastmm_flatten_orders_total`.
 
 ```text
 flatten    state=Working instruments_left=1 orders=3
 ```
 
-`fastmm-top` shows `FLATTENING (1 left)` next to the state, and Prometheus gets `fastmm_flatten_state`, `fastmm_flatten_instruments_left` and `fastmm_flatten_orders_total`.
-
 ### When it cannot fill
 
 | Case | What happens |
 |---|---|
-| A slice is rejected (risk, rate limit, the venue) or does not fill | The next sweep reprices against the current touch and tries again. |
-| No valid book for an instrument | Nothing is sent for it; the sweeps keep running and it resumes when the book is back. |
-| What is left is below the lot or `min_qty` | No order can move it. The flatten logs `flatten leaves <qty> on <symbol>: below the tradable minimum` and treats that instrument as done. |
-| `[engine] flatten_timeout_ms` (default 60000) elapses with a position left | The flatten gives up: `state=TimedOut`, an ERROR line naming how many instruments still hold a position, no further orders. Quoting stays off in its scope. Widen the slippage or the collar and run `flatten` again, or `resume` to give the session back to the strategy. |
-| `flatten_timeout_ms = 0` | No deadline: it keeps trying until it is flat or an operator stops it. |
+| A slice is rejected or does not fill | The next sweep reprices against the touch and tries again. |
+| No valid book | Nothing is sent for that instrument until the book is back. |
+| The rest is below the lot or `min_qty` | Logs `flatten leaves <qty> on <symbol>: below the tradable minimum` and counts the instrument as done. |
+| `[engine] flatten_timeout_ms` (60000 by default) elapses | `state=TimedOut`, an ERROR line with the instruments still holding a position, no more orders; quoting stays off. Widen the slippage or collar and `flatten` again, or `resume`. |
+| `flatten_timeout_ms = 0` | No deadline. |
 
-`resume` (without a scope) stops a running flatten (`state=Stopped`) and hands the instruments back to the strategy. `kill` does not stop it, and a `flatten` after a kill works the position off with the kill switch still set: quoting stays off, and `unkill` is only needed to quote again. The session's own shutdown (`stop`, SIGTERM, `--duration`) ends a running flatten.
+`resume` without a scope stops a running flatten (`state=Stopped`). `kill` does not, and a `flatten` after a kill runs with the kill switch still set. The session's own shutdown (`stop`, `SIGTERM`, `--duration`) ends it.
 
-After a kill the engine trips itself, `fastmm-live` exits unless `[engine] on_kill = "stay"`; with `stay` the session keeps running and takes `flatten`.
+When the engine trips its own kill switch, `fastmm-live` exits. Set `[engine] on_kill = "stay"` to keep the session running and able to take `flatten`.
 
 ### A restart during a flatten
 
-A flatten is not persisted and a restart does not resume it: the shutdown cancels the slice in flight, the new session starts quoting as `[engine] quoting_enabled` says, and the position is still there. Run `flatten` again if needed. The previous session's journal holds the whole story: `tools/journal_dump.py` prints the `Flatten` command, every sweep and every order it sent.
+A restart does not resume a flatten. The shutdown cancels the slice in flight, the new session quotes as `[engine] quoting_enabled` says, and the position is still there; run `flatten` again. `tools/journal_dump.py` on the old journal prints the `Flatten` command, each sweep and each order.
 
 ## Rotate the log
 
-`fastmm-live` and `fastmm-gateway` hold `[logging] file` (or `--log`) open. After the file is renamed away, `SIGUSR1` or `fastmm-ctl log-reopen` makes the log sink write what it holds to the renamed file and open the path again, so logrotate can rotate without `copytruncate`, which loses the lines written between its copy and its truncate:
+`fastmm-live` and `fastmm-gateway` keep `[logging] file` (or `--log`) open. After logrotate renames the file, `SIGUSR1` or `fastmm-ctl log-reopen` flushes to the renamed file and opens the path again. This avoids `copytruncate`, which loses the lines written between its copy and its truncate.
 
 ```text
 /var/log/fastmm/*.log {
@@ -175,17 +183,14 @@ A flatten is not persisted and a restart does not resume it: the shutdown cancel
 }
 ```
 
-If the path cannot be opened, the sink keeps writing to the old file and says so on stderr; `log-reopen` answers with an error.
+If the path cannot be opened, the log keeps going to the old file, stderr says so, and `log-reopen` replies with an error.
 
 ## Behind a gateway
 
-A strategy attached to `fastmm-gateway` has its own socket and takes every command above. The gateway has one too, `fastmm-ctl --gateway <name>`, whose `pull`, `resume`, `kill` and `clear-kill` act on every attached strategy or the account ([Run behind a gateway](run-behind-a-gateway.md#control)).
+A strategy attached to `fastmm-gateway` has its own socket and takes every command above. The gateway's socket, `fastmm-ctl --gateway <name>`, takes `pull`, `resume`, `kill` and `clear-kill` for every attached strategy or the account ([Run behind a gateway](run-behind-a-gateway.md#control)).
 
-## Scope of the control socket
+## What needs a restart
 
-- Change anything that is not a strategy parameter or a risk limit. Instruments, venues, threads, ring sizes and the strategy itself need a restart; `ControlCommand::Reload` is not implemented.
-- Cancel one order, or place one. The control plane works in scopes (session, venue, instrument), not in single orders.
-- Reach the engine from another host. The socket is local; tunnel over SSH.
-- Undo a fill. `flatten` trades the position away at the market; it does not restore the PnL.
+The control socket changes strategy parameters, risk limits and quoting state, in scopes of session, venue or instrument. Instruments, venues, threads, ring sizes and the strategy itself need a restart. Single orders cannot be placed or cancelled from it, and `flatten` trades a position away without undoing its PnL.
 
 Next: [Kill switch and shutdown](kill-switch-and-shutdown.md).

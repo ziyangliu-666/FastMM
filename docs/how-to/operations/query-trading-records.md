@@ -1,14 +1,24 @@
 # Query what you traded
 
-Read what a deployment traded from the store its sessions wrote, without replaying a journal. The store is `runs/<engine name>.db` unless `[storage] path` says otherwise; the schema and what it guarantees are in [Storage](../../reference/storage.md). `fastmm-pnl`, used below, is a C++ program from a build or the [release tarball](deploy.md); with only the pip package, `fastmm.open_store(path)` reads its fills, orders, positions, PnL, funding payments and kill events as DataFrames ([Python](../../python.md#other-helpers)).
+Read what a deployment traded from the store its sessions wrote, without replaying a journal. You need `fastmm-pnl` from a C++ build or the [release tarball](deploy.md); with only the pip package, use [Python](#from-python).
 
-It is on by default:
+The store is on by default, at `runs/<engine name>.db` unless `[storage] path` says otherwise ([Storage](../../reference/storage.md)):
 
 ```toml
 [storage]
 backend = "sqlite"
 path = "runs/mm1.db"
 ```
+
+The commands below share these options:
+
+| Option | Selects |
+|---|---|
+| `--engine mm1` | `runs/mm1.db`; `--store <path>` reads another file |
+| `--day`, `--since`, `--until` | a UTC day (`2024-03-04`), `today` or `yesterday` |
+| `--session <id>` | one session |
+| `--instrument BTCUSDT` | one symbol |
+| `--csv` | comma-separated output |
 
 ## What did I trade yesterday
 
@@ -23,11 +33,18 @@ day         account  symbol   settlement_ccy  realized  funding  fees  net    gr
 2 row(s)
 ```
 
-`--day`, `--since` and `--until` take a UTC day (`2024-03-04`) or `today` / `yesterday`. `realized` and `fees` are the change within that day; `net` is `realized - fees`. `funding` is the part of `realized` that perpetual funding paid or received. Unrealised PnL is a mark, not a flow, so it is not summed across days: read it from `fastmm-pnl positions`.
+The numbers are recomputed from the stored executions at average cost, carried across sessions; an execution counts once however many records hold it.
 
-The numbers are recomputed from the stored executions at average cost, by the account that holds the position (`account`, the `[venues.<name>]` of the instrument; a pool's members trade into its primary's) and symbol, carried from one session to the next: an execution counts once however many records hold it. `estimates` counts fills the engine booked at the order's price because the venue reported the quantity before the execution (a cancel ack ahead of the fill) and no execution has named yet. `books_net` is what the engine booked for the day from its own positions; it differs from `net` when the engine booked an execution twice (`fill_repeats` in the store, [Storage](../../reference/storage.md#fill_repeats)). `--books` prints the engine's books alone.
+| Column | Means |
+|---|---|
+| `account` | the `[venues.<name>]` holding the position; a pool's members trade into its primary's |
+| `realized`, `fees` | the change within the day |
+| `funding` | the part of `realized` paid or received as perpetual funding |
+| `net` | `realized - fees` |
+| `estimates` | fills booked at the order's price before any execution named them, for example after a cancel ack arrived ahead of the fill |
+| `books_net` | what the engine booked from its own positions; differs from `net` when it booked an execution twice ([`fill_repeats`](../../reference/storage.md#fill_repeats)) |
 
-`--engine mm1` reads `runs/mm1.db` (`--store <path>` another file), `--instrument BTCUSDT` selects one symbol, `--csv` prints comma-separated values.
+Unrealised PnL is a mark, not a flow, so it is not summed by day: read it from `fastmm-pnl positions`. `--books` prints the engine's books alone.
 
 ## What is my PnL by day and instrument
 
@@ -35,7 +52,7 @@ The numbers are recomputed from the stored executions at average cost, by the ac
 build/release/bin/fastmm-pnl pnl --engine mm1 --since 2024-03-01
 ```
 
-Do not add instruments that settle in different currencies; the `settlement_ccy` column separates them ([Risk model](../../explanation/risk-model.md)). For a total per currency, use the `pnl_by_currency` view:
+Do not add instruments that settle in different currencies; `settlement_ccy` keeps them apart ([Risk model](../../explanation/risk-model.md)). The `pnl_by_currency` view totals per currency:
 
 ```bash
 sqlite3 -header -column runs/mm1.db \
@@ -48,15 +65,13 @@ sqlite3 -header -column runs/mm1.db \
 build/release/bin/fastmm-pnl funding --engine mm1 --since 2024-03-01 --instrument BTCUSDT
 ```
 
-One row per payment: `amount` in `asset` (negative paid), the venue's `funding_id`, the position it was paid on, and `replayed` = 1 for one booked from the venue's history rather than its stream.
+One row per payment: `amount` in `asset` (negative when paid), the venue's `funding_id`, the position it was paid on, and `replayed` = 1 for a payment booked from the venue's history rather than its stream.
 
 ## Who refused my orders
 
 ```bash
 build/release/bin/fastmm-pnl rejects --engine mm1 --day today --summary
 ```
-
-One row per account, instrument, side, whether the order only reduced the position, reason and source, with the refusals summed and the first and last time:
 
 ```text
 account    symbol   side  reduces  reason          source              rejects  first                last
@@ -65,15 +80,22 @@ binance-b  BTCUSDT  Sell  1        RateLimit       risk_bucket         1        
 binance    BTCUSDT  Buy   0        VenueRateLimit  venue               1        2024-03-04 00:00:00  2024-03-04 00:00:00
 ```
 
-`source` keeps the limits apart: `risk_bucket` is the engine's `[risk] orders_per_sec` bucket every account shares, `account_orders_10s` (`_1m`, `_1d`, `account_paused`) one account's window as the engine counts it, `venue_local` the connector's own limiter (never sent), `venue` the exchange's answer. `reduces` 1 is an order that would have taken the position towards zero: an inventory exit, not new risk. Without `--summary`, one row per refusal with the budget then (`tokens`, `orders_10s` as used/admitted, ...); [Storage](../../reference/storage.md#rejects) lists the columns. The live budget is in `fastmm-top` (the `order budget` lines and `risk bucket`) and its `--json`.
+`reduces` = 1 is an order that would have taken the position towards zero: an inventory exit, not new risk. `source` says which limit refused it:
+
+| `source` | Limit |
+|---|---|
+| `risk_bucket` | the engine's `[risk] orders_per_sec` bucket, shared by every account |
+| `account_orders_10s`, `_1m`, `_1d`, `account_paused` | one account's window, as the engine counts it |
+| `venue_local` | the connector's own limiter; never sent |
+| `venue` | the exchange's answer |
+
+Without `--summary` there is one row per refusal, with the budget at that moment ([columns](../../reference/storage.md#rejects)). The live budget is in `fastmm-top` (`order budget` and `risk bucket`) and its `--json`.
 
 ## What were the parameters at a time
 
 ```bash
 build/release/bin/fastmm-pnl params --engine sim-local --at "2026-10-10 05:10:20"
 ```
-
-The values in effect then, in the newest session of the engine that had started by that time (`--session` names one; without `--at`, its last update). One row per parameter and scope: `*` for every instrument, or a symbol that has its own value; `--instrument SYM` shows that instrument's view. `set` is when the value took effect, `origin` is `initial` (the session started with it), `control` (`fastmm-ctl param`) or `strategy` (the strategy's own publisher), `source` the `--source` it was given:
 
 ```text
 name                     instrument  value  set                  origin   source  session_id
@@ -83,7 +105,15 @@ level_step_ticks         *           1      2026-10-10 05:10:12  initial        
 quote_qty                *           0.002  2026-10-10 05:10:23  control  manual  1791609012330808010
 ```
 
-`param-changes` lists every value of every update in order, the starting set first (`seq` 0); `changed` is 0 for a value a control update repeated:
+It reads the newest session started by that time; `--session` names one, and without `--at` you get its last values. A row's `instrument` is `*` for every instrument or a symbol with its own value; `--instrument SYM` shows one instrument's view. `set` is when the value took effect, and `source` is the `--source` it was sent with.
+
+| `origin` | Set by |
+|---|---|
+| `initial` | the configuration the session started with |
+| `control` | `fastmm-ctl param` |
+| `strategy` | the strategy's own publisher |
+
+`param-changes` lists every value of every update in order, the starting set first as `seq` 0. `changed` is 0 for a value an update repeated.
 
 ```bash
 build/release/bin/fastmm-pnl param-changes --engine sim-local --session 1791609012330808010
@@ -104,7 +134,7 @@ ts                   session_id           seq  origin   source           instrum
 build/release/bin/fastmm-pnl param-diff --engine mm1 --session <new session id>
 ```
 
-The parameters the previous session of the engine ended with against those the named one started with, one row per value that differs: a parameter set with `fastmm-ctl param` and not put in the configuration comes back to its configured value. `--against <id>` compares with another session.
+One row per value that differs between what the previous session ended with and what this one started with. A parameter set with `fastmm-ctl param` and not put in the configuration shows here, back at its configured value. `--against <id>` compares with another session.
 
 ## Which configuration did a session run with
 
@@ -112,7 +142,7 @@ The parameters the previous session of the engine ended with against those the n
 build/release/bin/fastmm-pnl config --engine mm1 --session <id>
 ```
 
-The effective configuration the session started with (the file after `--strategy` and `--param`, secrets left out), as the journal header holds it. Take a backtest's configuration from here rather than from the file on the host, which may have been edited since. `--at <time>` picks the session that was running then.
+It prints the effective configuration from the journal header: the file after `--strategy` and `--param`, without secrets. Take a backtest's configuration from here, not from the file on the host, which may have changed since. `--at <time>` picks the session running then.
 
 ## Show me the fills of session X
 
@@ -126,11 +156,9 @@ ts                   account  symbol   side  liquidity  price      qty    named_
 2024-03-04 09:14:02  binance  BTCUSDT  Buy   Maker      61250.10   0.002  0          0.00061  quote      fm000300000a1b    88213401  0          0.002         control  1709510400123456789
 ```
 
-A `synthetic` row is an estimate the engine booked from a venue's filled quantity before the execution arrived; `named_qty` on it is how much of it executions named since, and on an execution how much of it named an estimate. Count an execution whole and a synthetic row for `qty - named_qty`.
+A `synthetic` row is an estimate booked from a venue's filled quantity before the execution arrived. Its `named_qty` is how much executions have named since; on an execution, how much of it named an estimate. Count an execution whole and a synthetic row as `qty - named_qty`.
 
-`arm` is the `[ab]` arm the order was sent under, empty outside a test ([Run an A/B test](../strategies/ab-test.md)).
-
-`fastmm-pnl orders --session <id>` lists each order in its last state; `fastmm-pnl positions --session <id>` the last position per instrument.
+`arm` is the `[ab]` arm the order was sent under, empty outside a test ([Run an A/B test](../strategies/ab-test.md)). `fastmm-pnl orders --session <id>` lists each order in its last state, and `fastmm-pnl positions --session <id>` the last position per instrument.
 
 ## What did the last session leave behind
 
@@ -150,9 +178,9 @@ session 1709510400123456789 (basic_mm)
   open      fm000300000a1c BTCUSDT Sell 0.002 (filled 0) @ 61260.5 Live
 ```
 
-A `twice` line names an execution the store holds in more than one session ([below](#executions-stored-twice)).
+`fastmm-live` logs the same summary when it starts. A `twice` line names an execution stored by more than one session ([below](#executions-stored-twice)).
 
-`fastmm-live` logs the same summary when it starts. The open orders are the ones FastMM last saw open; the venue may have cancelled, filled or expired them since, and nothing that happened while the process was down is in here. The next `fastmm-live` start restores the position from the store, books what the venue executed in between and cancels the orders left open ([Recovery at start-up](../../reference/storage.md#recovery-at-start-up)).
+The open orders are the ones FastMM last saw open; nothing that happened while the process was down is here. The next start restores the position, books what the venue executed in between and cancels the orders left open ([Recovery at start-up](../../reference/storage.md#recovery-at-start-up)).
 
 ## Executions stored twice
 
@@ -160,15 +188,17 @@ A `twice` line names an execution the store holds in more than one session ([bel
 build/release/bin/fastmm-pnl duplicates --engine mm1
 ```
 
-One row per venue execution or funding payment that more than one session stored (same venue, symbol and venue id): a restart booked it again. The columns are the kind (`fill` or `funding`), engine, venue, symbol, id, the number of copies, side, quantity (the amount of a funding payment), the time of the first copy and the sessions holding it, oldest first. Exit code 0 with no row, 4 with some. Every other command prints a warning on stderr when the rows it read from hold one: the positions, fees and PnL of those sessions count it twice. Nothing is rewritten; correct the figures from the listed rows. `store.duplicates()` returns the same rows in Python.
+One row per execution or funding payment that more than one session stored, because a restart booked it again. Rows show the kind (`fill` or `funding`), engine, venue, symbol, id, number of copies, side, quantity or amount, first time, and the sessions holding it, oldest first. The exit code is 0 with no rows and 4 with some.
+
+The positions, fees and PnL of those sessions count it twice, and every other command warns on stderr when it reads such a row. Nothing is rewritten: correct the figures from the listed rows. `store.duplicates()` returns the same rows in Python.
 
 ## The economic ledger
+
+`fills` lists the stored rows, which after a re-booking restart or an execution replay are not the same as what happened. `ledger` gives one row per execution, however many sessions stored it, as the first one did:
 
 ```bash
 build/release/bin/fastmm-pnl ledger --engine mm1 --day today
 ```
-
-`fills` lists the rows the store holds; after a restart that booked an execution again, or a replay that brought in what traded while the process was down, those are not the same as what happened. `ledger` gives one row per execution (the venue's id of it on an account, symbol and side) however many sessions stored it, as the first one did:
 
 ```text
 received             venue_time           account  symbol   side  liquidity  price     qty    booked_qty  fee      fee_asset  cl_ord_id       exec_id     flags         copies  session_id
@@ -177,15 +207,22 @@ received             venue_time           account  symbol   side  liquidity  pri
 2024-03-04 09:14:09  2024-03-04 09:14:09  binance  BTCUSDT  Buy   Maker      61250.10  0.002  0.002       0.00061  quote      fm000700000004  2966124872                1       6
 ```
 
-`received` is when FastMM first had it, `venue_time` when the venue says it traded, `booked_qty` what the position took. `flags`: `repeated` (stored by more than one session; `copies` says how many), `before_start` (traded before the session that booked it started: the restart's replay brought it), `late` (for an order that had already ended), `synthetic` (booked from a jump in the order's filled quantity, without a venue report). `--session` keeps the executions that session booked first. `--raw` lists every stored row instead, with its `copy` number. The positions and PnL tables are computed from the raw rows; a `repeated` execution is counted twice there ([below](#executions-stored-twice)).
+`received` is when FastMM first had it, `venue_time` when the venue says it traded, `booked_qty` what the position took.
+
+| Flag | Means |
+|---|---|
+| `repeated` | stored by more than one session; `copies` says how many |
+| `before_start` | traded before the session that booked it started; a restart's replay brought it |
+| `late` | arrived for an order that had already ended |
+| `synthetic` | booked from a jump in the order's filled quantity, with no venue report |
+
+`--session` keeps the executions that session booked first; `--raw` lists every stored row with its `copy` number. The positions and PnL tables are computed from the raw rows, so a `repeated` execution counts twice there.
 
 ## What happened to an order
 
 ```bash
 build/release/bin/fastmm-pnl order --engine mm1 --order fm000700000003
 ```
-
-Everything the store has about one client order, in time order, its last known state at the end:
 
 ```text
 ts                   event    symbol   side  price    qty   cum_qty  detail                                 session_id
@@ -195,31 +232,40 @@ ts                   event    symbol   side  price    qty   cum_qty  detail     
 2024-03-04 09:14:02  state    ETHUSDT  Buy   3412.55  0.05  0.05     Filled after 3 update(s)               5
 ```
 
-`refused` rows (schema 9) name the limit that refused it, as `rejects` does. The store keeps an order's last state, not each transition; the journal has every message ([Journal format](../../reference/journal-format.md)). `--session` narrows it to one session.
+The rows are everything the store has about one client order, ending with its last known state. A `refused` row names the limit, as `rejects` does. The store keeps the last state, not each transition; the journal has every message ([Journal format](../../reference/journal-format.md)).
 
 ## Check the stored fills against the venue
 
-Export the account's executions from the venue and compare them with what the store holds:
+1. Export the account's executions from the venue, as JSON or CSV ([formats](#export-formats)).
+2. Compare them with the store:
 
-```bash
-build/release/bin/fastmm-pnl audit --engine mm1 --venue binance --exchange trades.json
-```
+    ```bash
+    build/release/bin/fastmm-pnl audit --engine mm1 --venue binance --exchange trades.json
+    ```
 
-```text
-kind     time_ms        symbol   exec_id   side  venue_qty  venue_price  venue_fee       booked_qty  booked_price  booked_fee       order_id  fields  session_id
-missing  1709543642118  BTCUSDT  88213977  Buy   0.002      61248.3      0.0000012 BTC                                                    40012                     
-differs  1709543700402  BTCUSDT  88214102  Sell  0.002      61251.2      0.06125 USDT    0.001       61251.2       0.03062 quote    40019     qty,fee 1709510400123456789
-2 row(s)
-```
+    ```text
+    kind     time_ms        symbol   exec_id   side  venue_qty  venue_price  venue_fee       booked_qty  booked_price  booked_fee       order_id  fields  session_id
+    missing  1709543642118  BTCUSDT  88213977  Buy   0.002      61248.3      0.0000012 BTC                                                    40012
+    differs  1709543700402  BTCUSDT  88214102  Sell  0.002      61251.2      0.06125 USDT    0.001       61251.2       0.03062 quote    40019     qty,fee 1709510400123456789
+    2 row(s)
+    ```
 
-`missing`: the venue has the execution and no session booked it. `phantom`: a session booked it and the venue does not have it. `differs`: both have it and `fields` names what differs (`qty`, `price`, `fee`, `side`, `order`; the fee and the order only where both sides report one). `twice`: stored by more than one session. Rows are matched by symbol (case and separators ignored: `BTC-USDT` is `BTCUSDT`), the venue's trade id and side. A summary goes to stderr; the exit code is 0 when everything agrees and 5 otherwise.
+3. Read the exit code: 0 when everything agrees, 5 otherwise. A summary goes to stderr.
 
-The window is the file's span unless `--from-ms`/`--to-ms` (Unix ms) or `--since`/`--until` (UTC days) say otherwise; the store is read a minute past both ends, so a fill the two sides stamp a little differently is compared rather than reported twice. `--venue` selects the store's fills of one `[venues.<name>]` (and the file's rows naming another are skipped); `--instrument` one symbol.
+| Kind | Means |
+|---|---|
+| `missing` | the venue has the execution; no session booked it |
+| `phantom` | a session booked it; the venue does not have it |
+| `differs` | both have it; `fields` names what differs: `qty`, `price`, `fee`, `side`, `order` (fee and order only where both report one) |
+| `twice` | stored by more than one session |
 
-The file is either:
+Rows match on symbol (case and separators ignored, so `BTC-USDT` is `BTCUSDT`), the venue's trade id and side. The window is the file's span unless `--from-ms`/`--to-ms` (Unix ms) or `--since`/`--until` (UTC days) set it. The store is read one minute past both ends, so a fill the two sides stamp slightly apart is compared, not reported twice. `--venue` selects one `[venues.<name>]` and skips the file's rows naming another.
 
-- a JSON array as Binance returns `GET /api/v3/myTrades` or `GET /fapi/v1/userTrades` (several replies can be joined into one array), or of objects with the generic names below;
-- CSV with a header row naming the columns, in any order.
+`fastmm-live` can run the same comparison while it trades ([Fill audit](../../reference/configuration.md#fill-audit)).
+
+### Export formats
+
+The file is either a JSON array or a CSV with a header row, columns in any order. A JSON array can be Binance's `GET /api/v3/myTrades` or `GET /fapi/v1/userTrades` reply, several joined into one array, or objects with the names below.
 
 | Column | Aliases | |
 |---|---|---|
@@ -234,9 +280,9 @@ The file is either:
 | `fee_asset` | `commissionAsset` | |
 | `venue` | | the `[venues.<name>]` |
 
-fastmm-live can run the same comparison against the venue's trade history while it trades ([Fill audit](../../reference/configuration.md#fill-audit)).
-
 ## From Python
+
+`fastmm.open_store(path)` reads fills, orders, positions, PnL, funding and kill events as DataFrames ([Python](../../python.md#other-helpers)). It needs pandas: `pip install 'fastmm-engine[pandas]'`.
 
 ```python
 import fastmm
@@ -249,15 +295,20 @@ with fastmm.open_store("runs/mm1.db") as store:
     store.query("SELECT day, SUM(fills) FROM pnl_daily GROUP BY day")
 ```
 
-Raw fixed-point columns come back as floats without the `_raw` suffix (`fee_raw` reads as `fee`) and nanosecond columns as UTC datetimes without `_ns`. It needs pandas: `pip install 'fastmm-engine[pandas]'`.
+Fixed-point columns come back as floats without the `_raw` suffix (`fee_raw` reads as `fee`), and nanosecond columns as UTC datetimes without `_ns`.
 
 ## When the numbers look short
 
-- `fastmm-pnl sessions` has a `records_dropped` column. A non-zero value means the engine-to-store ring filled and that many records never reached the store, so its rows are incomplete by that many. Raise `[storage] ring_bytes`.
-- `clean_shutdown = 0` means the process was killed: the last batch of records and the session's closing row are missing. The journal of that session is the authority.
-- `journal_complete` is 0 when a session stopped without closing its journal, and NULL after a kill (the row was never closed). Either way `fastmm-replay` refuses that journal without `--allow-incomplete`.
-- A store the engine cannot open stops the session at start-up with exit code 3. `[storage] backend = "none"` runs without one.
+| Sign in `fastmm-pnl sessions` | Cause | Action |
+|---|---|---|
+| `records_dropped` above 0 | the engine-to-store ring filled; that many records never reached the store | raise `[storage] ring_bytes` |
+| `clean_shutdown = 0` | the process was killed; the last batch and the closing row are missing | use the session's journal |
+| `journal_complete` 0 or NULL | the session stopped without closing its journal (NULL after a kill) | `fastmm-replay` needs `--allow-incomplete` |
 
-## Rebuilding from a journal
+A store the engine cannot open stops the session at start-up with exit 3; `[storage] backend = "none"` runs without one.
 
-The journal is the byte-exact record and replays exactly ([Journals, replay and PnL](journals-replay-pnl.md)); the store is derived from the same events. When a store is missing or a session dropped records, `python3 tools/pnl_report.py <file.fmj>` computes fills, fees and PnL from the journal.
+The journal is the byte-exact record ([Journals, replay and PnL](journals-replay-pnl.md)), and the store is derived from the same events. When a store is missing or dropped records, compute fills, fees and PnL from the journal:
+
+```bash
+python3 tools/pnl_report.py <file.fmj>
+```

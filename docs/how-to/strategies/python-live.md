@@ -1,6 +1,8 @@
 # Run a Python strategy live
 
-A class with hot hooks runs against venues inside the Python process, through `fastmm run` (the same as `python -m fastmm run`) or `fastmm.run_live`. The session opens its own venue connections; it cannot attach to `fastmm-gateway`. Reference: [Live sessions](../../reference/python-api.md#live-sessions). Before a keyed session, work through the [Go-live checklist](../operations/go-live-checklist.md).
+A class with hot hooks runs against venues inside the Python process, through `fastmm run` or `fastmm.run_live`. The session opens its own venue connections; it cannot attach to `fastmm-gateway`. Reference: [Live sessions](../../reference/python-api.md#live-sessions).
+
+Before a keyed session, work through the [Go-live checklist](../operations/go-live-checklist.md).
 
 ## Install
 
@@ -12,27 +14,35 @@ To build both packages from a checkout instead: [Install from source](../../gett
 
 ## Run against the simulated exchange
 
-Start the simulated exchange. `fastmm sim` runs the one `fastmm-engine-live` ships, on 127.0.0.1:9080 without TLS; a build and the unpacked [release tarball](../operations/deploy.md) have it as a C++ program, with the same `configs/` and the TLS certificate it reads:
+The steps use `configs/` and `examples/` from a checkout. With only the pip package, the project `fastmm init` writes has `sim.toml` for the same session ([Quick start](../../getting-started/quickstart.md#2-live-against-the-simulated-exchange)).
 
-```bash
-fastmm sim                                                          # pip install
-./build/release/bin/fastmm-sim-exchange --config configs/sim.toml   # checkout
-bin/fastmm-sim-exchange --config configs/sim.toml                   # in fastmm-<version>-x86_64/
-```
+1. Start the simulated exchange. It listens on 127.0.0.1:9080.
 
-The steps below use `configs/` and `examples/` from a checkout. With only the pip package, the project `fastmm init` writes has `sim.toml` for the same session ([Quick start](../../getting-started/quickstart.md#2-live-against-the-simulated-exchange)).
+    | You have | Run |
+    |---|---|
+    | the pip package | `fastmm sim` (no TLS) |
+    | a checkout | `./build/release/bin/fastmm-sim-exchange --config configs/sim.toml` |
+    | the [release tarball](../operations/deploy.md), in `fastmm-<version>-x86_64/` | `bin/fastmm-sim-exchange --config configs/sim.toml` |
 
-Copy `configs/sim-local.toml` to `sim-py.toml` and set `name = "py:BasicMMHot"` in its `[strategy]` table, so its `[strategy.params]` apply to the class. In another terminal:
+2. Copy `configs/sim-local.toml` to `sim-py.toml` and set `name = "py:BasicMMHot"` in its `[strategy]` table, so its `[strategy.params]` apply to the class.
 
-```bash
-FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret \
-PYTHONPATH=examples/python/strategies \
-  python -m fastmm run basic_mm_hot:BasicMMHot --config sim-py.toml --duration 60s
-```
+3. In another terminal, run the class:
 
-The hooks compile and run once on scratch data before the session connects; the log is then the one `fastmm-live` writes. Ctrl-C stops the session: the kill switch trips, open orders are cancelled and the process exits with code 0 after `fastmm-live: shutdown took <n> ms (cancel_all ok)` ([Kill switch and shutdown](../operations/kill-switch-and-shutdown.md)).
+    ```bash
+    FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret \
+    PYTHONPATH=examples/python/strategies \
+      python -m fastmm run basic_mm_hot:BasicMMHot --config sim-py.toml --duration 60s
+    ```
 
-From a script, `run_live` returns the exit code:
+    The hooks compile and run once on scratch data before the session connects. The log is then the one `fastmm-live` writes.
+
+4. Press Ctrl-C to stop it. The kill switch trips, open orders are cancelled and the process exits with code 0 after this line ([Kill switch and shutdown](../operations/kill-switch-and-shutdown.md)):
+
+    ```text
+    fastmm-live: shutdown took <n> ms (cancel_all ok)
+    ```
+
+`python -m fastmm run` is the same as `fastmm run`. From a script, `run_live` returns the exit code:
 
 ```python
 import fastmm
@@ -51,17 +61,19 @@ PYTHONPATH=examples/python/strategies \
     --config configs/sim-local.toml --duration 60s
 ```
 
-`[strategy.params]` of `basic_mm` in `configs/sim-local.toml` do not apply to the class (stderr says `note: ignoring [strategy.params]`). The session stops with exit code 7 when a slow method raises, a call runs past its `timeout`, the fills ring is full or the slow thread ends ([Slow methods live](../../reference/python-api.md#slow-methods-live)).
+The `basic_mm` `[strategy.params]` in `configs/sim-local.toml` do not apply to the class; stderr says `note: ignoring [strategy.params]`.
+
+The session stops with exit code 7 when a slow method raises, a call runs past its `timeout`, the fills ring is full or the slow thread ends ([Slow methods live](../../reference/python-api.md#slow-methods-live)). To keep it running:
 
 1. Set each `timeout` above the longest wall time the method can take; `run_backtest` reports it in `result.slow_methods`.
-2. Keep `max_param_age_ms` below the timeouts, so a stalled model pulls the quotes before the session stops: the log shows `no parameter update for <n> ms (max_param_age_ms): quotes pulled until the next`.
+2. Keep `max_param_age_ms` below the timeouts, so a stalled model pulls the quotes before the session stops. The log shows `no parameter update for <n> ms (max_param_age_ms): quotes pulled until the next`.
 3. Make `on_stop` return: `python -m fastmm run` waits `--slow-tier-timeout-ms` (10000 ms by default) for it after the session stops, then exits.
 
 ## Keep other threads off the engine's core
 
-1. Pin the engine thread with `[engine] cpu` (and `net_cpus` for the venue threads). Before `on_start`, the calling thread moves to the other CPUs, so the slow thread and the threads `on_start` starts inherit them; when the session starts, every other thread of the process moves too ([Cores](../operations/running-in-production.md#cores)).
+1. Pin the engine thread with `[engine] cpu`, and the venue threads with `net_cpus` ([Cores](../operations/running-in-production.md#cores)). Before `on_start`, the calling thread moves to the other CPUs, so the slow thread and threads `on_start` starts inherit them. When the session starts, all other threads of the process move too.
 2. Set thread-count variables before Python starts, for example `OPENBLAS_NUM_THREADS=2 python my_session.py`; numpy reads them when it loads. `python -m fastmm run` sets `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS` and `MKL_NUM_THREADS` to 1 unless they are set.
-3. Start worker processes with `multiprocessing.set_start_method("forkserver")` or `"spawn"`: a child forked during a session cannot run a session or publish parameters.
+3. Start worker processes with `multiprocessing.set_start_method("forkserver")` or `"spawn"`. A child forked during a session cannot run a session or publish parameters.
 
 ## Check the journal
 
@@ -73,14 +85,14 @@ j = fastmm.inspect_journal('runs/sim-local-<session id>.fmj')
 print(j['strategy_meta'])"
 ```
 
-Replay a Python strategy's journal with its class; slow methods do not run, the parameter updates come from the journal ([Replay](../../reference/python-api.md#replay)):
+Replay a Python strategy's journal with its class. Slow methods do not run; the parameter updates come from the journal ([Replay](../../reference/python-api.md#replay)):
 
 ```bash
 PYTHONPATH=examples/python/strategies python -c "import fastmm, hot_slow_mm
 print(fastmm.replay('runs/sim-local-<session id>.fmj', hot_slow_mm.HotSlowMM))"
 ```
 
-`BasicMMHot` sends the orders C++ `basic_mm` sends, so the C++ strategy also replays its journal. Pass a configuration that names `basic_mm` with the same parameters; `fastmm-replay` warns that the configuration hash differs and still compares every message:
+`BasicMMHot` sends the orders C++ `basic_mm` sends, so the C++ strategy also replays its journal. Pass a configuration that names `basic_mm` with the same parameters. `fastmm-replay` warns that the configuration hash differs, then compares all messages:
 
 ```bash
 ./build/release/bin/fastmm-replay --journal runs/sim-local-<session id>.fmj \

@@ -63,13 +63,17 @@ def quote(self, ctx, book):
 
 ## Read the engine's state
 
-`ctx.recent(inst).rows` holds recent top-of-book changes and trades as a numpy array. `ctx.snapshot()` holds each instrument's book, position, PnL, quoting state and parameter age. `ctx.fills()` returns the fills since the previous call.
+| Call | Returns |
+|---|---|
+| `ctx.recent(inst).rows` | recent top-of-book changes and trades, as a numpy array |
+| `ctx.snapshot()` | each instrument's book, position, PnL, quoting state and parameter age |
+| `ctx.fills()` | the fills since the previous call |
 
-Both lag the engine: `snapshot().age_ms` and each instrument's `param_age_ms` give the age in ms.
+The state lags the engine. `snapshot().age_ms` and each instrument's `param_age_ms` give the age in ms.
 
 ## Publish
 
-`ctx.publish(fair_offset_bps=offset)` changes the named parameters for every instrument; `inst=` limits the update to one instrument. An unknown name or an invalid value raises `ValueError` in the slow method, and nothing is sent.
+`ctx.publish(fair_offset_bps=offset)` changes the named parameters for all instruments; `inst=` limits the update to one instrument. An unknown name or an invalid value raises `ValueError` in the slow method, and nothing is sent.
 
 The engine stops quoting when no update has applied for `max_param_age_ms`, which defaults to 3 periods of the fastest slow method. A method with nothing to change calls `ctx.publish()` to renew it.
 

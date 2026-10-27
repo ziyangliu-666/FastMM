@@ -38,7 +38,7 @@ session journal: runs/tutorial/backtest.fmj
 | `fills.csv` | one row per fill: time, side, price, quantity, fee, liquidity, the mid and the touch at the fill, the queue position, and the mid at each markout horizon |
 | `orders.csv` | one row per order message sent: new, cancel or replace |
 
-Prices, quantities, fees and PnL in the CSV files are decimals in quote currency or base units; `ts_ns` columns are nanoseconds since the epoch. An empty markout column means the run ended before that horizon, so the fill is left out of it ([Backtesting](../../explanation/backtesting.md#markouts)).
+Prices, quantities, fees and PnL in the CSV files are decimals in quote currency or base units; `ts_ns` columns are nanoseconds since the epoch. An empty markout column means the run ended before that horizon ([Backtesting](../../explanation/backtesting.md#markouts)).
 
 ## Report
 
@@ -51,7 +51,9 @@ python3 tools/report.py runs/tutorial/backtest --config configs/backtest-example
 runs/tutorial/backtest/report.html
 ```
 
-One self-contained page from those four files: the equity curve and the inventory on one time axis, the PnL split into spread capture, mid drift and fees, the markout at each horizon, the fill quality, the counts and the configuration ([Run report](../../reference/run-report.md)). `--config` is optional; it names the instrument's currencies. With the Python package installed, `fastmm report runs/tutorial/backtest` is the same command.
+Open the file in a browser. It shows the equity curve and the inventory on one time axis, the PnL split into spread capture, mid drift and fees, the markouts, the fill quality and the configuration ([Run report](../../reference/run-report.md)).
+
+`--config` is optional; it names the instrument's currencies. With the Python package installed, `fastmm report runs/tutorial/backtest` is the same command.
 
 ## Replay
 
@@ -71,6 +73,8 @@ replayed outbound 1198 msgs sha256 72b6e437ae296cb2bb1472f3a77e244dd6ce8da08690c
 replay MATCH
 ```
 
-The journal holds the events the engine consumed and the configuration after the command-line overrides, so the replay needs no configuration file. `--verify` compares each order message the replayed engine sends with the recorded copy and exits with code 1 on the first difference, which it prints. A mismatch with the same binary means the strategy used something that is not an engine input ([Determinism](../../explanation/determinism.md)). `rng_seed` in the first line is the recorded `[engine] rng_seed`. The replayed strategy's logs go to stderr.
+The journal holds the events the engine consumed and the configuration after the command-line overrides, so the replay needs no configuration file. `rng_seed` in the first line is the recorded `[engine] rng_seed`; the replayed strategy's logs go to stderr.
+
+`--verify` compares each order message the replayed engine sends with the recorded copy. On the first difference it prints it and exits with code 1. A mismatch with the same binary means the strategy used something that is not an engine input ([Determinism](../../explanation/determinism.md)).
 
 Next: [8. Trade on the simulated exchange](08-sim-exchange.md)

@@ -1,67 +1,86 @@
 # Add a venue
 
+<<<<<<< HEAD
 Model a JSON-over-WebSocket connector on the five that ship: Binance Spot (`include/fastmm/venues/binance/`), Binance USDⓈ-M (`include/fastmm/venues/binance_usdm/`), Bybit v5 spot and linear perpetuals (`include/fastmm/venues/bybit/`), OKX v5 USDT-margined swaps (`include/fastmm/venues/okx/`) and Deribit options and futures (`include/fastmm/venues/deribit/`). Bybit is the main worked example; Deribit shows JSON-RPC, request credits and options data. Binary wire formats live in `codecs/` ([FIX](../../reference/codecs/fix.md), [Nasdaq](../../reference/codecs/nasdaq.md), [CME MDP 3.0](../../reference/codecs/cme-mdp3.md)), and a connector can build on them: `nasdaq_itch` is a `Venue` over ITCH, MoldUDP64 and OUCH ([Venue connectors](../../reference/venues/nasdaq-itch.md)), and Binance SBE market data is a connector option (`md_format = "sbe"`). FIX and CME MDP 3.0 have no connector yet and are built only with `-DFASTMM_CODEC_FIX=ON` / `-DFASTMM_CODEC_MDP3=ON` ([Optional codecs](../../getting-started/install.md#optional-codecs)); turn the option on in the same change that adds the venue.
+=======
+Write a connector for a new JSON-over-WebSocket exchange, register it, and prove it with the same tests the shipped connectors pass. Throughout, `foo` stands for your venue. Prerequisites: a debug or release build of this repository and the venue's API documentation.
+>>>>>>> c558cf17 (docs: the operations, strategy, venue, tutorial and contributing pages lead with the task, put steps in numbered lists with real output and like facts in tables, and the AF_XDP section shows the kernel-bypass animation)
 
-Throughout, `foo` stands for your venue.
+Model it on a shipped connector under `include/fastmm/venues/`:
+
+| Connector | Directory | Shows |
+|---|---|---|
+| Bybit v5 spot and linear | `bybit/` | the main worked example |
+| Binance Spot | `binance/` | REST snapshots, Ed25519, SBE market data |
+| Binance USDⓈ-M | `binance_usdm/` | reusing another connector's signing and feed |
+| OKX v5 | `okx/` | a third credential, contracts as quantities |
+| Deribit | `deribit/` | JSON-RPC, request credits, options data |
+| Coinbase | `coinbase/` | orders over REST, a user channel, ES256 JWTs |
+
+Binary formats live in `codecs/` ([FIX](../../reference/codecs/fix.md), [Nasdaq](../../reference/codecs/nasdaq.md), [CME MDP 3.0](../../reference/codecs/cme-mdp3.md)), and a connector can build on them, as `nasdaq_itch` does. FIX and MDP 3.0 build only with `-DFASTMM_CODEC_FIX=ON` or `-DFASTMM_CODEC_MDP3=ON` ([Optional codecs](../../getting-started/install.md#optional-codecs)); turn the option on in the change that adds the venue.
 
 ## 1. Before you start
 
-A connector is one control-path class that implements `fastmm::venues::Venue` (`include/fastmm/venues/venue.hpp`) and owns the hot-path objects: a market-data feed, a private (user) stream parser and an order encoder, all driven from the venue's own network thread.
+A connector is one control-path class implementing `fastmm::venues::Venue` (`venue.hpp`). It owns three hot-path objects, all driven from the venue's own network thread.
 
-The threading contract, from `venue.hpp`:
+| Method | Runs on | Rule |
+|---|---|---|
+| `load_reference_data()`, `attach()`, `subscribe()` | main thread, once, before any network thread | blocking REST is allowed |
+| `connect()`, `disconnect()`, `on_timer()`, `on_wake()`, `poll()`, `resync_books()`, `request_open_orders()`, `request_executions()` | the venue's reactor thread | `poll()` runs after every iteration; `spin_mode = "busy"` needs it |
+| `send_now()` | the engine thread, with `threading = "single"` | encode and write inline ([Run to completion](../../explanation/architecture.md#run-to-completion)) |
+| `cancel_all()` | any thread, even with the reactor stuck | use its own blocking connection (`BlockingHttp`) |
 
-- `load_reference_data()` and `attach()` run once on the main thread before any network thread starts; blocking REST calls are allowed there. `fastmm-live` also calls `subscribe()` once during that setup.
-- `connect()`, `disconnect()`, `on_timer()`, `on_wake()`, `poll()`, `resync_books()`, `request_open_orders()` and `request_executions()` run on the venue's reactor thread. `poll()` is called after every reactor iteration, and `[engine] spin_mode = "busy"` needs it to make progress without an epoll wake-up.
-- `send_now()` is called on the engine thread with `[engine] threading = "single"`: encode and write the batch inline instead of pushing it to the outbound ring ([Architecture](../../explanation/architecture.md#run-to-completion)).
-- `cancel_all()` must work from any thread, including while the reactor thread is stuck: use an independent blocking REST connection (`BlockingHttp`, `include/fastmm/venues/blocking_http.hpp`).
-- Two sinks carry events to the engine (`include/fastmm/venues/event_sink.hpp`). The market-data sink is lossy: when its ring is full the delta is dropped and the book must resync. The order sink never drops: it spins, then calls its overflow callback, and `fastmm-live` shuts down.
-- Nothing on the hot path allocates, throws or calls a virtual function; the virtual `Venue` interface is control path only.
+The market-data sink is lossy: when its ring is full the delta is dropped and the book must resync. The order sink never drops: it spins, then calls its overflow callback, and `fastmm-live` shuts down. Nothing on the hot path allocates, throws or makes a virtual call.
 
+<<<<<<< HEAD
 Read [Venue connectors](../../reference/venues.md) for what the five connectors do today, and its section [What a Binance-compatible simulator must implement](../../reference/venues/binance-spot.md#what-a-binance-compatible-simulator-must-implement) as a list of venue behaviours your connector must handle.
+=======
+Read [Venue connectors](../../reference/venues.md) for what the shipped connectors do, and its [list of venue behaviours](../../reference/venues/binance-spot.md#what-a-binance-compatible-simulator-must-implement) your connector must handle.
+>>>>>>> c558cf17 (docs: the operations, strategy, venue, tutorial and contributing pages lead with the task, put steps in numbered lists with real output and like facts in tables, and the AF_XDP section shows the kernel-bypass animation)
 
-## 2. File layout
+## 2. Lay out the files
 
-The Bybit connector, with the file names a new venue should mirror:
+Mirror the Bybit connector's names:
 
 | File | Contents |
 |---|---|
 | `include/fastmm/venues/bybit/bybit_auth.hpp` | `Credentials` and `Signer`: REST header and WebSocket auth signatures |
-| `include/fastmm/venues/bybit/bybit_md_parser.hpp`, `src/venues/bybit/bybit_md_parser.cpp` | `BybitMdParser::decode()`: one public frame into one normalised message |
-| `include/fastmm/venues/bybit/bybit_md_feed.hpp` | `BybitMdFeed`: the `MarketDataFeed`; owns the parser and one book sync per instrument |
-| `include/fastmm/venues/bybit/bybit_book_sync.hpp` | `BybitBookSync`: `BookSyncer<BybitSyncTraits>` plus resubscribe on gaps |
-| `include/fastmm/venues/bybit/bybit_order_encoder.hpp`, `src/venues/bybit/bybit_order_encoder.cpp` | `BybitOrderEncoder` (WebSocket and REST requests) and `BybitResponseDecoder` (order responses, open orders) |
-| `include/fastmm/venues/bybit/bybit_private_parser.hpp`, `src/venues/bybit/bybit_private_parser.cpp` | `BybitPrivateParser`: order, execution and wallet topics into order events |
-| `include/fastmm/venues/bybit/bybit_rest_decoder.hpp`, `src/venues/bybit/bybit_rest_decoder.cpp` | Reference data and server time |
-| `include/fastmm/venues/bybit/bybit_error_map.hpp` | `map_error()`: `retCode` to `RejectReason` and `VenueAction` |
-| `include/fastmm/venues/bybit/bybit_venue.hpp`, `src/venues/bybit/bybit_venue.cpp` | `BybitVenueConfig`, `BybitVenue`, `make_bybit_config()` |
-| `src/venues/bybit/bybit_registration.cpp` | the registry entry: the `kind`, the capabilities, the config keys the venue owns and the factory (section 10) |
+| `bybit_md_parser.hpp`, `src/venues/bybit/bybit_md_parser.cpp` | `BybitMdParser::decode()`: one public frame into one normalised message |
+| `bybit_md_feed.hpp` | `BybitMdFeed`: owns the parser and one book sync per instrument |
+| `bybit_book_sync.hpp` | `BybitBookSync`: `BookSyncer<BybitSyncTraits>` plus resubscribe on gaps |
+| `bybit_order_encoder.hpp`, `.cpp` | `BybitOrderEncoder` (WebSocket and REST requests) and `BybitResponseDecoder` |
+| `bybit_private_parser.hpp`, `.cpp` | order, execution and wallet topics into order events |
+| `bybit_rest_decoder.hpp`, `.cpp` | reference data and server time |
+| `bybit_error_map.hpp` | `map_error()`: `retCode` to `RejectReason` and `VenueAction` |
+| `bybit_venue.hpp`, `.cpp` | `BybitVenueConfig`, `BybitVenue`, `make_bybit_config()` |
+| `src/venues/bybit/bybit_registration.cpp` | the registry entry ([step 10](#10-register-it)) |
 
-Differences in the other connectors:
+Other connectors differ in a few files:
 
-- Binance names its private parser `binance_user_parser.hpp` and its book sync `binance_depth_sync.hpp` (the snapshot comes from REST).
-- OKX needs a third credential (the generic `api_passphrase`), names instruments by `instIdCode` in WebSocket order operations, counts swaps in contracts (`contract_multiplier` = `ctVal`) and keeps each book level's text for the (now deprecated) checksum in `okx_book_sync.hpp`.
-- Deribit adds `deribit_json.hpp` (exact parsing of JSON numbers with exponents) and `deribit_credits.hpp` (`CreditBucket`, the matching-engine request credits).
-- The two Coinbase connectors (`include/fastmm/venues/coinbase/`) enter orders over REST and take their order events from a WebSocket user channel; their book streams carry no update ids, so the feeds number the messages themselves (`coinbase_book_sync.hpp`). Advanced Trade signs with ES256 JWTs (`advanced_auth.hpp`) and reads each order's executions when its cumulative quantity grows; the Exchange maps client ids to UUIDs (`coinbase_wire.hpp`).
-- Binance USDⓈ-M is the same exchange as Binance Spot, so it reuses the Spot signing, feed and depth-sync code and holds only the futures protocol itself; `include/fastmm/venues/binance_usdm/binance_usdm_venue.hpp` lists what is shared and what is not.
+| Connector | Difference |
+|---|---|
+| Binance | `binance_user_parser.hpp` for the private stream; `binance_depth_sync.hpp`, snapshot from REST |
+| OKX | `api_passphrase`; `instIdCode` in WebSocket orders; `contract_multiplier` = `ctVal`; level text kept for the checksum in `okx_book_sync.hpp` |
+| Deribit | `deribit_json.hpp` parses JSON numbers with exponents exactly; `deribit_credits.hpp` holds the request credits |
+| Coinbase | orders over REST; feeds number messages themselves (`coinbase_book_sync.hpp`); `advanced_auth.hpp` signs ES256 JWTs; `coinbase_wire.hpp` maps client ids to UUIDs |
+| Binance USDⓈ-M | reuses Spot signing, feed and depth sync; `binance_usdm_venue.hpp` lists what is shared |
 
-Do not copy a connector's plumbing: the pieces that are the same for every venue already exist.
+Do not copy plumbing; these headers in `include/fastmm/venues/` already hold it:
 
 | Header | What it gives you |
 |---|---|
-| `include/fastmm/venues/connector_common.hpp` | `map_conn_state()` / `channel_state()` (the transport state the engine is told about), `header_int()`, `origin_of()` / `url_root()`, `IdText`, `load_published_status()`, `trip_venue_kill_once()`, `VenueExtras` for the `extra` keys of your `make_foo_config()` |
-| `include/fastmm/venues/book_sync.hpp` | `StreamBookSync<Traits>` for a venue that sends its snapshot on the stream; write the traits, not the syncer |
-| `include/fastmm/venues/order_events.hpp` | `emit_order_ack()`, `emit_order_reject()`, `emit_cancel_ack()`, `emit_cancel_reject()`, `emit_replayed_fill()`, `emit_funding()`, `emit_connection_state()`, `emit_venue_kill()` |
-| `include/fastmm/venues/order_commands.hpp` | `OrderCommand`, `SentWatermark`, `is_reconcile_request()` |
-| `include/fastmm/venues/wire_latency.hpp` | `BatchedOrders`, `drain_outbound_coalesced()` |
-| `include/fastmm/venues/dead_mans_switch.hpp` | `CountdownSwitch`, the refresh clock for a venue-side countdown cancel |
+| `connector_common.hpp` | `map_conn_state()`, `channel_state()`, `header_int()`, `origin_of()`, `url_root()`, `IdText`, `load_published_status()`, `trip_venue_kill_once()`, `VenueExtras` |
+| `book_sync.hpp` | `StreamBookSync<Traits>` for a venue that sends its snapshot on the stream; write the traits, not the syncer |
+| `order_events.hpp` | `emit_order_ack()`, `emit_order_reject()`, `emit_cancel_ack()`, `emit_cancel_reject()`, `emit_replayed_fill()`, `emit_funding()`, `emit_connection_state()`, `emit_venue_kill()` |
+| `order_commands.hpp` | `OrderCommand`, `SentWatermark`, `is_reconcile_request()` |
+| `wire_latency.hpp` | `BatchedOrders`, `drain_outbound_coalesced()` |
+| `dead_mans_switch.hpp` | `CountdownSwitch`, the refresh clock for a venue-side countdown cancel |
 
-`src/venues/CMakeLists.txt` globs `src/venues/**/*.cpp` and the test targets glob `tests/venues/*.cpp`, both with `CONFIGURE_DEPENDS`, so new files need no CMake edits.
+New `.cpp` files under `src/venues/` and tests under `tests/venues/` are globbed, so they need no CMake edits.
 
-## 3. Market data
+## 3. Parse market data
 
-### The feed contract
-
-`include/fastmm/venues/feed.hpp` defines the concept every feed satisfies:
+Every feed satisfies the `MarketDataFeed` concept in `feed.hpp`:
 
 ```cpp
 template <class F>
@@ -73,124 +92,138 @@ concept MarketDataFeed = requires(F& f, std::string_view json, std::int64_t rx_t
 };
 ```
 
-Every feed checks it with a `static_assert` at the end of its header, for example `static_assert(MarketDataFeed<BybitMdFeed>);` in `bybit_md_feed.hpp`. Do the same.
+End your feed's header with `static_assert(MarketDataFeed<FooMdFeed>);`, as `bybit_md_feed.hpp` does. The parser decodes one frame into a caller-provided buffer, and the feed writes the message into the sink.
 
-Underneath, the parser decodes one frame into a caller-provided buffer, for example `MdDecodeResult BybitMdParser::decode(std::string_view json, Timestamp recv_ts, Cycles t0, std::span<std::byte> out) noexcept`, and the feed writes the message into the sink.
-
-### Parse status
-
-The feed counts `Malformed` into `VenueStatus::md_malformed` and ring overflows into `md_dropped`:
-
-| Status | Use it for |
+| `ParseStatus` | Use it for |
 |---|---|
-| `Ok` | A message was produced |
-| `Ignored` | A valid frame you do not consume: subscription acks, pongs, heartbeats |
-| `Malformed` | JSON error, or a missing or invalid field |
-| `UnknownSymbol` | A symbol that is not in the `SymbolTable` |
-| `Overflow` | The ring is full or the output buffer is too small |
-| `Error` | A venue error payload |
+| `Ok` | a message was produced |
+| `Ignored` | a valid frame you do not consume: subscription acks, pongs, heartbeats |
+| `Malformed` | JSON error, missing or invalid field; counted in `md_malformed` |
+| `UnknownSymbol` | a symbol not in the `SymbolTable` |
+| `Overflow` | the ring is full or the buffer too small; counted in `md_dropped` |
+| `Error` | a venue error payload |
 
-### Messages and parsing rules
+Rules for the parser:
 
-- Produce `BookSnapshotMsg` and `BookDeltaMsg`, `TradeMsg`, `BookTickerMsg` and, for options, `OptionTickerMsg` (`include/fastmm/core/messages.hpp`). Never construct a `BookDeltaMsg` by value; reserve it in the sink or the output buffer (CONTRIBUTING rule 8).
-- Parse every price and quantity string exactly with `include/fastmm/venues/decimal.hpp` (`Fixed::from_decimal`, no `double`). If the venue sends JSON numbers, parse the raw token as Deribit does in `deribit_json.hpp`.
-- simdjson needs 64 readable bytes after the payload (`kJsonPadding`). WebSocket frames have them; in tests and benchmarks wrap fixtures in `PaddedJson` (`include/fastmm/venues/padded_json.hpp`).
-- Look symbols up in `SymbolTable` (`include/fastmm/venues/symbology.hpp`); lookups fold case without allocating.
+- Produce `BookSnapshotMsg`, `BookDeltaMsg`, `TradeMsg`, `BookTickerMsg` and, for options, `OptionTickerMsg`. Reserve a `BookDeltaMsg` in the sink or buffer; never construct one by value.
+- Parse prices and quantities exactly with `decimal.hpp` (`Fixed::from_decimal`), never through `double`. For JSON numbers, parse the raw token as `deribit_json.hpp` does.
+- simdjson needs 64 readable bytes after the payload. WebSocket frames have them; wrap test fixtures in `PaddedJson`.
+- Look symbols up in `SymbolTable`, which folds case without allocating.
 
-## 4. Book synchronisation
+## 4. Synchronise the book
 
-`BookSyncer<Traits, Sink>` (`include/fastmm/core/book/book_syncer.hpp`) is the venue-independent snapshot and delta state machine. A venue supplies a traits struct:
+`BookSyncer<Traits, Sink>` is the snapshot-and-delta state machine; you supply the traits.
 
 | Member | Meaning |
 |---|---|
-| `kNeedsRestSnapshot` | The snapshot comes from REST (`request_snapshot()` is called) instead of the stream |
-| `kBuffersDeltas` | Deltas are buffered until the snapshot arrives |
-| `is_stale(delta, snapshot_id)` | The delta is older than the snapshot and is dropped |
-| `first_applies(delta, snapshot_id)` | The first delta after the snapshot bridges it |
-| `next_applies(delta, prev_id)` | The delta continues the chain; otherwise it is a gap |
-| `is_snapshot_marker(delta)` | The venue signals a reset |
+| `kNeedsRestSnapshot` | the snapshot comes from REST (`request_snapshot()` is called) |
+| `kBuffersDeltas` | deltas wait until the snapshot arrives |
+| `is_stale(delta, snapshot_id)` | the delta is older than the snapshot and is dropped |
+| `first_applies(delta, snapshot_id)` | the first delta after the snapshot bridges it |
+| `next_applies(delta, prev_id)` | the delta continues the chain; otherwise it is a gap |
+| `is_snapshot_marker(delta)` | the venue signals a reset |
 
 The sink receives `on_snapshot()`, `on_delta()`, `on_resync(SyncReason)` and `request_snapshot()`. The shipped rules:
 
 | Traits | Rule |
 |---|---|
-| `BinanceSpotSyncTraits` (`book_syncer.hpp`) | REST snapshot with `lastUpdateId`; buffered deltas chained on `U`/`u` |
-| `BinanceFuturesSyncTraits` (`book_syncer.hpp`) | REST snapshot; the first delta brackets `lastUpdateId`, later deltas chained on `pu` (Binance USDⓈ-M) |
-| `BybitSyncTraits` (`book_syncer.hpp`) | Snapshot in the stream; `u` strictly increasing; `u == 1` is a reset marker |
-| `DeribitSyncTraits` (`include/fastmm/venues/deribit/deribit_book_sync.hpp`) | First notification is the snapshot; `prev_change_id` equals the previous `change_id` |
-| `OkxSyncTraits` (`include/fastmm/venues/okx/okx_book_sync.hpp`) | Snapshot in the stream; `prevSeqId` equals the previous `seqId` (a heartbeat repeats it, a reset lowers it) |
-| `GeminiSyncTraits` (`include/fastmm/venues/gemini/gemini_book_sync.hpp`) | Snapshot in the stream, not marked: the first frame after subscribing; `U` ≤ the last `u` < `u` |
+| `BinanceSpotSyncTraits` | REST snapshot with `lastUpdateId`; buffered deltas chained on `U`/`u` |
+| `BinanceFuturesSyncTraits` | REST snapshot; the first delta brackets `lastUpdateId`, later ones chain on `pu` |
+| `BybitSyncTraits` | snapshot in the stream; `u` strictly increasing; `u == 1` resets |
+| `DeribitSyncTraits` | first notification is the snapshot; `prev_change_id` equals the previous `change_id` |
+| `OkxSyncTraits` | snapshot in the stream; `prevSeqId` equals the previous `seqId` |
+| `GeminiSyncTraits` | the first frame after subscribing is the snapshot; `U` ≤ last `u` < `u` |
 
-On a gap, the connector emits `ConnectionStateMsg` with `ConnState::Resyncing` on channel 0 (`emit_connection_state()` in `include/fastmm/venues/order_events.hpp`) and fetches a new snapshot, rate limited: Bybit, Deribit and OKX resubscribe at most once every 2 s per instrument and again when no snapshot arrives within 10 s. Any state other than `Live` on channel 0 makes the engine clear the book and pull the quotes of that venue's instruments.
+On a gap, emit `ConnState::Resyncing` on channel 0 with `emit_connection_state()` and fetch a new snapshot. Rate-limit it: Bybit, Deribit and OKX resubscribe at most every 2 s per instrument, and again after 10 s without a snapshot. Any state other than `Live` on channel 0 makes the engine clear the book and pull that venue's quotes.
 
-A market-data channel with no traffic for `stale_ms` reports `ConnState::Stale`; after `dead_ms` the connection is closed and reopened. Private and order channels are often quiet, so they report no `Stale`, and each connector raises `dead_ms` above its keepalive interval for them. The per-connector values are in [Venue connectors](../../reference/venues.md#configuration-keys).
+A market-data channel silent for `stale_ms` reports `Stale`; after `dead_ms` it reconnects. Private and order channels are often quiet, so they report no `Stale`, and their `dead_ms` sits above the keepalive interval ([Configuration keys](../../reference/venues.md#configuration-keys)).
 
-## 5. Order entry
+## 5. Send orders
 
-`feed.hpp` also defines an `OrderGateway` concept (`encode(cmd, now_ms, out) -> std::size_t`, `on_message(json, rx_ts) -> ParseStatus`, `can_send(now_ns) -> bool`), but no shipped encoder is checked against it. Binance and Bybit have `encode_ws()` and `encode_rest()`; Deribit has `DeribitOrderEncoder::encode(const OrderCommand& cmd, const OrderShadow* shadow, std::string_view access_token, std::span<char> out)`. Follow the pattern rather than the concept:
+1. The engine writes `OutNewOrderMsg`, `OutCancelMsg` and `OutReplaceMsg` into the outbound ring and wakes the venue.
+2. `on_wake()` drains the ring with `drain_outbound_coalesced()`, wrapping each message in an `OrderCommand` (`New`, `Cancel`, `Replace`). Cork the order connection for the drain, so all orders leave in one write.
+3. Check the client-side rate limiter, then encode into a fixed buffer with `JsonWriter`, which never allocates and refuses to send a truncated request.
+4. Name requests `<kind><client order id>` with `request_id.hpp`: kind `n`, `c`, `r`, or `a` for an amend.
+5. Map post-only to the venue's flag: Binance `LIMIT_MAKER`, Bybit `PostOnly`, Deribit `post_only` with `reject_post_only`.
+6. When a request cannot be sent (rate limit, fatal state, dry run), emit a reject with `emit_order_reject()`; otherwise the OMS waits forever.
+7. Record `order_encode` and `order_send` latency in `VenueStatus`. In a drain, every order's send stamp is the return of the one write.
 
-1. The engine writes `OutNewOrderMsg`, `OutCancelMsg` and `OutReplaceMsg` into the outbound ring and wakes the venue. `on_wake()` drains the ring with `drain_outbound_coalesced()` (`include/fastmm/venues/wire_latency.hpp`) and wraps each message in an `OrderCommand` (`include/fastmm/venues/order_commands.hpp`, kinds `New`, `Cancel`, `Replace`). The order connection is corked for the drain (`ConnectionSlot::cork()` / `uncork()`), so all orders of one drain leave in one write. The ring can also carry a `ControlMsg` with `ControlCommand::Reconcile`, which the engine sends when a cancel is refused more than three times: answer it with `request_open_orders()` (`is_reconcile_request(h)` in `order_commands.hpp`).
-2. It checks the client-side rate limiter (`include/fastmm/venues/rate_limiter.hpp`; Deribit's `CreditBucket`), then encodes into a fixed buffer with `JsonWriter` (`include/fastmm/venues/json_writer.hpp`), which never allocates and refuses to send a truncated request.
-3. Request ids are `<kind><client order id>` (`include/fastmm/venues/request_id.hpp`: kind `n`, `c`, `r` or `a` for an amend, 15 characters).
-4. Post-only maps to the venue's flag: Binance `LIMIT_MAKER`, Bybit `timeInForce` `PostOnly`, Deribit `post_only` with `reject_post_only`.
-5. The quote manager replaces quotes on the venue's instruments only when `VenueCaps::supports_replace`, the venue's `supports_replace` and `[engine] supports_replace` are all true; otherwise it sends cancel and new.
-6. When a request cannot be sent (rate limit, fatal state, dry run), emit a reject to the order sink with `emit_order_reject()`; otherwise the OMS waits for an answer that never comes.
+The ring can also carry a reconcile request (`is_reconcile_request(h)`), which the engine sends after a cancel is refused more than three times; answer it with `request_open_orders()`. The quote manager replaces quotes only when `VenueCaps::supports_replace`, the venue's `supports_replace` and `[engine] supports_replace` are all true; otherwise it sends cancel and new.
 
-Record encode and send latency in `VenueStatus::order_encode` and `order_send` (`include/fastmm/venues/wire_latency.hpp`). Inside a drain the send stamp of every order is the return of the drain's one write.
+## 6. Sign requests
 
-## 6. Authentication
+`net/crypto.hpp` provides HMAC-SHA256, Ed25519 and ECDSA P-256 with base64url for ES256 JWTs. Sign the exact bytes you send; Bybit signs timestamp, key, receive window and the query string or body.
 
-Use `include/fastmm/net/crypto.hpp` for HMAC-SHA256, Ed25519 (Binance `key_type = "ed25519"`) and ECDSA P-256 with base64url (ES256 JWTs, Coinbase Advanced Trade). Sign the exact bytes you send: Bybit signs timestamp, key, receive window and the query string or body. Signed requests carry a timestamp and a receive window (`recv_window_ms`), so measure the clock offset from the venue's server-time endpoint at startup and whenever the venue reports a timestamp error, and log it when it exceeds 1000 ms.
+Signed requests carry a timestamp and `recv_window_ms`. Measure the clock offset from the venue's server-time endpoint at start-up and after a timestamp error, and log it above 1000 ms.
 
-## 7. Error map
+## 7. Map the errors
 
-Map every documented venue error code to an `ErrorMapping` (`include/fastmm/venues/error_action.hpp`): a `RejectReason` for the engine, a `VenueAction` for the connector and whether the code is known. The signature to follow is Bybit's `constexpr ErrorMapping map_error(int code, std::string_view msg = {}) noexcept`. Cite the venue's documentation next to each code.
-
-What each action does in the shipped connectors (`BybitVenue::apply_action()`):
+Map every documented error code to an `ErrorMapping` (`error_action.hpp`): a `RejectReason` for the engine, a `VenueAction` for the connector, and whether the code is known. Follow Bybit's `constexpr ErrorMapping map_error(int code, std::string_view msg = {}) noexcept`, and cite the venue's documentation next to each code.
 
 | `VenueAction` | Connector behaviour |
 |---|---|
-| `None` | Report the reject only |
-| `Backoff` | Pause sending for 1 s |
-| `RateLimit` | Pause until the venue's reset time, count a cooldown, log `rate limited (...)` |
-| `ResyncClock` | Fetch the server time and recompute the offset |
+| `None` | report the reject only |
+| `Backoff` | pause sending for 1 s |
+| `RateLimit` | pause until the venue's reset time, log `rate limited (...)` |
+| `ResyncClock` | fetch the server time and recompute the offset |
 | `Reconcile` | `request_open_orders()` |
-| `DisableInstrument` | Log `venue rejected a precision/filter rule (...)`; the config is wrong for the symbol |
-| `HardStop` | Stop all REST requests (IP ban), log `REST hard stop (...)` and ask the engine to kill this venue (`KillReason::VenueHardStop`) |
-| `Fatal` | Refuse every further order on the venue, log `fatal venue error (...)` and ask the engine, once, to kill this venue only: `trip_venue_kill_once()` sends `ControlCommand::TripVenueKill` with `KillReason::VenueFatal` |
+| `DisableInstrument` | log `venue rejected a precision/filter rule (...)`; the config is wrong for the symbol |
+| `HardStop` | stop all REST (IP ban), log `REST hard stop (...)`, kill this venue with `VenueHardStop` |
+| `Fatal` | refuse every further order, log `fatal venue error (...)`, kill this venue once with `VenueFatal` via `trip_venue_kill_once()` |
 
-## 8. Private stream and reconciliation
+## 8. Parse the private stream and reconcile
 
-- Emit acknowledgements, rejects, cancel acknowledgements and cancel rejects with the helpers in `include/fastmm/venues/order_events.hpp`, and `OrderFillMsg`, `OrderExpiredMsg` and `PositionUpdateMsg` directly.
-- Every fill carries `fee` in units of `fee_asset` (`FeeAsset::Quote`, `Base` or `Other`); the engine books base-asset commission into the position (Binance charges BTC on buys). Classify the commission asset against the instrument's base and quote.
-- Ignore events for client ids that are not FastMM's (orders placed by hand or by other software).
-- A perpetual's funding payment is a `FundingMsg` (`emit_funding()`), carrying the venue's id for the payment; the engine books each id once, so the stream and a replay may both deliver it.
-- Balances: pass the instrument table to `ReconcileDriver::attach`, implement `ReconcileHooks::fetch_balances(generation)` (rows with `add_balance()`, then `balances_fetched(generation, ok, venue_ms)` once), and emit the private stream's balance updates with `emit_balance()` (`include/fastmm/venues/balances.hpp`), filtered by `reconcile_.assets()`. Amounts are absolute; stamp the venue's time of the balance ([Balance check](../../explanation/risk-model.md#balance-check)). Without a balance stream, call `request_balances()` after fills.
-- `request_open_orders()` is a reconciliation. If the venue can list the account's executions (`caps.executions`), first replay them since the last replay with `emit_replayed_fill()` (the venue's execution id, `OrderFillMsg::kReplayed`); then emit `ReconcileMsg` `Begin` (with `kSentWatermark`, and `kExecutionsExact` when every instrument's replay answered in full), one `OpenOrder` per live order (and `Position` if the venue reports one), then `End`. The engine pauses quoting from `Begin` to `End` and cancels live orders it does not know. Report every open order on the session's symbols, other programs' and manual ones too, with `venue_order_id` set and `cl_ord_id` decoded from the venue's client id (`decode_cl_ord_id`) or left invalid: `[engine] cancel_unknown = "own"` keeps an order whose `cl_ord_id` is not FastMM's, so a connector that drops the client id makes its own orders look foreign.
-- Reconcile on the first connect of the private channel with an empty watermark: this sweeps orders a dead process left resting, whose ids belong to an earlier session. Reconcile again after every private or order-channel reconnect (not on a return from `Stale`), and run `request_executions()` once a minute while all is well, which books a fill the stream dropped without disconnecting. `ReplayScheduler` does that; with `Hooks::active` (backed by an `OrderActivity` the connector notes orders and order events in) the minute's replay skips the instruments without order activity.
-- On order-channel loss with `cancel_on_order_channel_loss = true`, cancel everything over REST.
-- If the venue offers a dead man's switch, arm it: a countdown (Binance USDⓈ-M `countdownCancelAll`, refreshed with `CountdownSwitch`) or cancel-on-disconnect (Deribit, Bybit DCP), wired in the connector.
+| Event | Emit with | Rule |
+|---|---|---|
+| ack, reject, cancel ack, cancel reject | `order_events.hpp` helpers | |
+| fill | `OrderFillMsg` | `fee` in units of `fee_asset` (`Quote`, `Base`, `Other`), classified against the instrument; base-asset fees go into the position |
+| expiry, position | `OrderExpiredMsg`, `PositionUpdateMsg` | |
+| funding | `emit_funding()` | carries the venue's payment id; the engine books each id once |
+| balance | `emit_balance()` | absolute amounts, filtered by `reconcile_.assets()`, stamped with the venue's time ([Balance check](../../explanation/risk-model.md#balance-check)) |
+| replayed execution | `emit_replayed_fill()` | the venue's execution id, `OrderFillMsg::kReplayed` |
 
-## 9. The venue class
+Ignore events for client ids that are not FastMM's. For balances, pass the instrument table to `ReconcileDriver::attach` and implement `ReconcileHooks::fetch_balances(generation)`; without a balance stream, call `request_balances()` after fills.
+
+`request_open_orders()` is a reconciliation:
+
+1. If the venue lists executions (`caps.executions`), replay them since the last replay.
+2. Emit `ReconcileMsg` `Begin` with `kSentWatermark`, plus `kExecutionsExact` when every instrument's replay answered in full.
+3. Emit one `OpenOrder` per live order on the session's symbols, other programs' and manual ones too, with `venue_order_id` set and `cl_ord_id` decoded by `decode_cl_ord_id` or left invalid. A connector that drops the client id makes its own orders look foreign to `cancel_unknown = "own"`.
+4. Emit `Position` if the venue reports one, then `End`.
+
+The engine pauses quoting from `Begin` to `End` and cancels live orders it does not know.
+
+| When | Reconcile |
+|---|---|
+| first connect of the private channel | with an empty watermark, to sweep orders a dead process left |
+| every private or order-channel reconnect | yes; not on a return from `Stale` |
+| once a minute while healthy | `request_executions()`, through `ReplayScheduler`, skipping instruments without order activity |
+| order channel lost, `cancel_on_order_channel_loss = true` | cancel everything over REST |
+
+If the venue offers a dead man's switch, arm it: a countdown refreshed with `CountdownSwitch`, as on Binance USDⓈ-M, or cancel-on-disconnect, as on Deribit and Bybit DCP.
+
+## 9. Write the venue class
 
 Subclass `Venue` and implement:
 
-- `load_reference_data()`: fetch instruments and overwrite tick, lot, minimum and maximum quantity and minimum notional (and, for options, strike, expiry, type and contract size). Disable instruments that are not trading, and fail on a required symbol that is missing unless `allow_offline_reference_data` is set.
-- `attach()`: keep the symbol table, instruments, both sinks and the outbound ring.
-- `connect()`, `disconnect()`, `subscribe()`: open the channels. Bybit uses one handler struct per channel (`on_state`, `on_text`, `on_binary`, `on_connected_send_subscriptions`) inside a `ConnectionSlot<Handler>` (`include/fastmm/venues/connection_slot.hpp`), which picks plain TCP for `ws://` and TLS for `wss://`; reconnect backoff comes from `net::BackoffConfig` (`include/fastmm/net/backoff.hpp`).
-- `on_timer()`: keepalives and application pings, clock-offset refresh, snapshot retries. The backend calls it about once a second.
-- `on_wake()`: drain the outbound ring (section 5). `poll()`: one non-blocking pass over the venue's sockets, for `spin_mode = "busy"`. `send_now()`: encode and write a batch handed over by the engine thread, for `threading = "single"`.
-- `request_open_orders()` and `cancel_all()` (sections 1 and 8); `request_executions(since_venue_ms)` if the venue has a trade-history query.
-- `resume_executions(since_venue_ms, known)`: where the first replay starts after a restart, in the venue's clock, and the execution ids the earlier session booked. A venue whose trade ids increase per instrument also implements `resume_trade_ids()` for an exact start and `resume_known_trade_ids()` for the ids above it that are booked already (Binance; `ReplayScheduler::set_cursor` and `set_known_ids`). A connector without `caps.executions` ignores both, and the session restores no position for it.
-- `resync_books()`: start every book over from a fresh snapshot; `fastmm-gateway` calls it when its own copies are lost. The default does nothing.
-- `refused_account_settings()`: true after `load_reference_data()` refused an account setting a retry does not fix (hedge position mode), so `fastmm-live` exits 3 instead of 4.
-- `status()`: fill `VenueStatus`; `fastmm-live` logs it every second and `fastmm-top` shows it.
-- REST on the reactor thread goes through `RestChannel` (`include/fastmm/venues/rest_channel.hpp`). Orders, cancels, cancel-all and dead man's switch refreshes take `RestLane::Orders`, a connection of their own, so they never wait behind a snapshot or a replay; a venue that wants its signed requests to arrive in the order they were signed (Gemini's nonce) keeps them all on one lane. Honour `--record-raw` with `RawRecorder` (`include/fastmm/venues/raw_recorder.hpp`).
-- In a dry run, open market data only and refuse orders (`VenueCaps::user_stream = false`).
+| Method | Does |
+|---|---|
+| `load_reference_data()` | fetch instruments; set tick, lot, quantity limits, minimum notional, and option strike, expiry, type and size; disable non-trading ones; fail on a missing required symbol unless `allow_offline_reference_data` |
+| `attach()` | keep the symbol table, instruments, both sinks and the outbound ring |
+| `connect()`, `disconnect()`, `subscribe()` | open the channels; Bybit uses one handler per channel inside a `ConnectionSlot<Handler>`, which picks TCP for `ws://` and TLS for `wss://`, with `net::BackoffConfig` for reconnects |
+| `on_timer()` | keepalives, pings, clock-offset refresh, snapshot retries; called about once a second |
+| `on_wake()`, `poll()`, `send_now()` | drain the outbound ring; one non-blocking pass for `busy`; inline send for `single` |
+| `request_open_orders()`, `cancel_all()`, `request_executions(since_venue_ms)` | steps 1 and 8 |
+| `resume_executions(since_venue_ms, known)` | where the first replay starts after a restart; with increasing trade ids also `resume_trade_ids()` and `resume_known_trade_ids()`; without `caps.executions` no position is restored |
+| `resync_books()` | start every book over; `fastmm-gateway` calls it when its copies are lost |
+| `refused_account_settings()` | true after a setting a retry will not fix, such as hedge mode, so the exit code is 3, not 4 |
+| `status()` | fill `VenueStatus`, which the log and `fastmm-top` show |
 
-## 10. Registration
+REST on the reactor thread goes through `RestChannel`. Orders, cancels, cancel-all and dead man's switch refreshes take `RestLane::Orders`, a connection of their own, so they never wait behind a snapshot. A venue that needs requests to arrive in signing order, like Gemini's nonce, keeps them on one lane. Honour `--record-raw` with `RawRecorder`. In a dry run, open market data only and refuse orders.
 
-A connector is one entry in the venue registry (`include/fastmm/venues/registry.hpp`): the `kind` that selects it, what it can do, the `[venues.<name>]` keys it owns, and a factory. Put it in its own translation unit next to the connector, `src/venues/foo/foo_registration.cpp`:
+## 10. Register it
+
+A connector is one entry in the venue registry: its `kind`, capabilities, keys and factory. Put it in `src/venues/foo/foo_registration.cpp`:
 
 ```cpp
 #include "fastmm/venues/foo/foo_venue.hpp"
@@ -228,41 +261,37 @@ void register_foo_venue(VenueRegistry& r) {
 }  // namespace fastmm::venues
 ```
 
-Then two lines in `src/venues/registry.cpp`: a declaration of `register_foo_venue` and a call in `register_builtin_venues()`. Nothing self-registers: the linker drops a static library's self-registering object. No other core file changes.
-
-### What the entry says
+Then add two lines to `src/venues/registry.cpp`: a declaration of `register_foo_venue` and a call in `register_builtin_venues()`. Nothing self-registers, because the linker drops a static library's self-registering object.
 
 | Field | Meaning |
 |---|---|
 | `name` | the `[venues.<name>] kind` value that selects this connector |
-| `aliases` | other `kind` values that select it (`binance_spot` answers to `binance` and `sim`) |
+| `aliases` | other `kind` values (`binance_spot` answers to `binance` and `sim`) |
 | `summary` | one line for the connector table in [Configuration](../../reference/configuration.md#connectors) |
-| `keys` | the `[venues.<name>]` keys the venue owns, beyond the generic ones |
-| `caps` | `credentials`, `market_data_keys`, `order_entry`, `replace`, `positions`, `position_snapshot`, `polls`, `executions`: what this connector can do |
-| `make` | the factory, called after the section's keys have been validated |
+| `keys` | the section keys the venue owns beyond the generic ones |
+| `caps` | `credentials`, `market_data_keys`, `order_entry`, `replace`, `positions`, `position_snapshot`, `polls`, `executions` |
+| `make` | the factory, called after the keys are validated |
 
-The core reads `caps` instead of testing `kind`: `credentials = false` is why `fastmm-live` never asks `nasdaq_itch` for an API key, `polls = true` is why its sockets are driven from `Venue::poll()`, and `executions = true` lets a restart restore the venue's position. They say what the connector *can* do; whether a given instance does is `Venue::caps()`, which sees the configuration (a dry run, `order_entry = "none"`, missing credentials).
+The core reads `caps` instead of testing `kind`. For example, `credentials = false` is why `nasdaq_itch` is never asked for a key, and `executions = true` lets a restart restore the position. `caps` says what the connector can do; `Venue::caps()` says what this instance does, given a dry run or missing credentials.
 
-### Configuration keys
+The central schema knows only the generic keys: `kind`, the URLs, the credentials, `testnet`, `supports_replace`, `insecure_tls`, `ca_file`, `recv_window_ms` and `fees`. Every other key reaches the venue in `VenueSection::extra` and is checked against `kFooKeys`: an unknown, mistyped or missing key stops the session, naming the line. Values only the connector can judge, such as a URL or a range, are `make_foo_config`'s job; throw `std::invalid_argument` with a message starting `venues.<name>.<key>:`.
 
-The central schema (`include/fastmm/config/schema.hpp`) knows only the generic keys (`kind`, the URLs, the credentials, `testnet`, `supports_replace`, `insecure_tls`, `ca_file`, `recv_window_ms`, `fees`). Everything else in the section is kept verbatim in `VenueSection::extra`, with its line in `extra_lines`, and handed to the venue that owns it. `fastmm::venues::validate_venues()` then checks the section against `kFooKeys`: a key the venue does not own, a key of the wrong type or a missing required key stops the session, naming the line. Values only the connector can judge (a URL, a range, a pair that must not cross) are `make_foo_config`'s job; throw `std::invalid_argument` with a message that starts `venues.<name>.<key>:`.
+### Document it
 
-### Documentation
+1. Add a section to [Configuration](../../reference/configuration.md) with the two markers, then run `python3 tools/docs_config_ref.py`:
 
-The key table and the connector table in [Configuration](../../reference/configuration.md) are generated from the registration file: add a section with the two region markers and run `python3 tools/docs_config_ref.py`.
+    ```markdown
+    #### `foo`
 
-```markdown
-#### `foo`
+    <!-- BEGIN config-keys venue:foo -->
+    <!-- END config-keys -->
+    ```
 
-<!-- BEGIN config-keys venue:foo -->
-<!-- END config-keys -->
-```
+2. Add a section in [Venue connectors](../../reference/venues.md), `configs/foo-testnet.toml`, the key variables in `.env.example`, an environment in [Run on a testnet](../operations/run-on-testnet.md) and a CHANGELOG entry.
 
-The rest is prose: a section in [Venue connectors](../../reference/venues.md), a `configs/foo-testnet.toml`, the key variables in `.env.example`, an environment section in [Run on a testnet](../operations/run-on-testnet.md) and a CHANGELOG entry.
+## 11. Keep it outside FastMM
 
-## 11. A venue outside FastMM
-
-A connector can live outside this repository. `examples/external-venue/` is a venue project built against the installed headers: a connector, its registration, a live app and a test.
+A connector can live in its own project. `examples/external-venue/` builds one against the installed headers: a connector, its registration, a live app and a test.
 
 ```cpp
 // apps/live.cpp: fastmm-live plus this project's connector.
@@ -283,44 +312,48 @@ add_executable(echo-live apps/live.cpp)
 target_link_libraries(echo-live PRIVATE echo_venue fastmm::live)
 ```
 
-`kind = "echo"` in a configuration selects it and its keys are validated by its own declaration. Build it against an install prefix, or against a source tree with `-DFASTMM_SOURCE_DIR=<checkout>`; `ctest` in this repository compiles the same two files into `fastmm_venues_tests` (`venues.external.*`), and the CI external-project job builds the project itself.
+`kind = "echo"` selects it, and its own declaration validates its keys. Build it against an install prefix, or a source tree with `-DFASTMM_SOURCE_DIR=<checkout>`. This repository's `ctest` also compiles the two files into `fastmm_venues_tests` (`venues.external.*`).
 
-## 12. Fixtures
+## 12. Record fixtures
 
-Once market data works, record public frames from the venue's testnet with the connector:
+Once market data works, record public frames from the testnet:
 
 ```bash
 ./build/release/bin/fastmm-live --config configs/foo-testnet.toml --dry-run --duration 60s \
     --record-raw tests/fixtures/foo/raw
 ```
 
-Each channel is appended to `<dir>/<venue>-<channel>.jsonl`, one frame per line prefixed with the receive timestamp and a tab. Cut single messages out into `tests/fixtures/foo/*.json`, remove keys, account ids and order ids that identify an account, and describe every file in `tests/fixtures/foo/fixtures.meta.json` as `recorded`, `synthesised from ...` or `docs-example (<url>)`, with the source URL and recording date (see `tests/fixtures/bybit/fixtures.meta.json`). Private payloads you cannot record yet come from the venue's documentation examples; say so in the meta file and in the CHANGELOG.
+Each channel is appended to `<dir>/<venue>-<channel>.jsonl`, one frame per line after the receive timestamp and a tab.
 
-## 13. Tests
+1. Cut single messages into `tests/fixtures/foo/*.json`.
+2. Remove keys, account ids and order ids that identify an account.
+3. Describe each file in `tests/fixtures/foo/fixtures.meta.json` as `recorded`, `synthesised from ...` or `docs-example (<url>)`, with source and date, as in `tests/fixtures/bybit/fixtures.meta.json`.
 
-Name the tests after the Bybit ones; they are picked up by the `fastmm_venues_tests` binary (labels `unit` and `fixture`):
+Private payloads you cannot record yet come from the venue's documentation examples; say so in the meta file and the CHANGELOG.
 
-| Test file | What it proves |
+## 13. Test it
+
+Name the tests after the Bybit ones; `fastmm_venues_tests` picks them up with labels `unit` and `fixture`:
+
+| Test file | Proves |
 |---|---|
-| `tests/venues/foo_md_parser_test.cpp` | Fixture in, expected messages out, including malformed, unknown-symbol and ignored frames, and a recorded session that syncs without a resync |
-| `tests/venues/foo_book_sync_test.cpp` | Snapshot first, stale and out-of-order deltas, gaps leading to a rate-limited resync |
-| `tests/venues/foo_order_encoder_test.cpp` | Golden request strings, signatures against an independent implementation, response decoding and the error map |
-| `tests/venues/foo_private_parser_test.cpp` | Every order status, fills with the commission asset, positions, foreign client ids |
-| `tests/venues/foo_venue_test.cpp` | The whole connector against `FakeVenueServer` (`tests/venues/fake_venue_util.hpp`): config mapping, reference data, subscribe, order round trip, reconciliation, channel loss and the blocking `cancel_all()` |
-| `tests/venues/live_foo_test.cpp` | Opt-in testnet check with `tests/venues/live_test_util.hpp`: skipped unless `FASTMM_LIVE_TESTS=1`. Name the test cases `live.foo: ...`; the `venues.live.` prefix gives them the ctest label `live` instead of `unit` and `fixture` |
-| `tests/hotpath/venues_noalloc_test.cpp` | A test case for the market-data parser, the private parser and the order encoder: after a warm-up pass over the fixtures, no allocation (binary `fastmm_hotpath_tests`, label `noalloc`) |
-| `tests/core/book_syncer_test.cpp` | New sync traits, if you add them to `book_syncer.hpp` |
-
-Run them:
+| `tests/venues/foo_md_parser_test.cpp` | fixtures in, expected messages out, including malformed, unknown-symbol and ignored frames; a recorded session syncs without a resync |
+| `foo_book_sync_test.cpp` | snapshot first, stale and out-of-order deltas, gaps leading to a rate-limited resync |
+| `foo_order_encoder_test.cpp` | golden requests, signatures against an independent implementation, response decoding, the error map |
+| `foo_private_parser_test.cpp` | every order status, fills with the commission asset, positions, foreign client ids |
+| `foo_venue_test.cpp` | the whole connector against `FakeVenueServer`: config, reference data, subscribe, orders, reconciliation, channel loss, blocking `cancel_all()` |
+| `live_foo_test.cpp` | opt-in testnet check, skipped unless `FASTMM_LIVE_TESTS=1`; name cases `live.foo: ...` for the `live` label |
+| `tests/hotpath/venues_noalloc_test.cpp` | no allocation in the parsers and encoder after warm-up (label `noalloc`) |
+| `tests/core/book_syncer_test.cpp` | new sync traits, if you add them to `book_syncer.hpp` |
 
 ```bash
 cmake --build --preset release -j --target fastmm_venues_tests
 ctest --preset release -R 'foo\.'
 ```
 
-Benchmarks: add the parsers to `bench/bench_json.cpp` and the order encoder to `bench/bench_order_encoders.cpp`, then a p50 budget for each in `bench/ci_budget.toml`.
+Add the parsers to `bench/bench_json.cpp`, the encoder to `bench/bench_order_encoders.cpp`, and a p50 budget for each in `bench/ci_budget.toml`.
 
-## 14. Conformance checklist
+## 14. Check conformance
 
 A venue is done when each item has an equivalent test.
 

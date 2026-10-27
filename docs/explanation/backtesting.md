@@ -285,67 +285,7 @@ Run on each real order as if it were ours, this rule reproduces all 629,373 fill
 
 ## Calibrating against live sessions
 
-`fastmm-data calibrate` fits the `l2_queue` fill model and the simulated latency to journals recorded by `fastmm-live`, and prints the `[backtest]` keys to use:
-
-```bash
-./build/release/bin/fastmm-data calibrate sessA.fmj sessB.fmj sessV.fmj --backtest
-```
-
-For each session it replays the orders that rested through the queue model, once per `queue_conservatism` (`--conservatism`, default `0,0.25,0.5,0.75,1`), and counts orders by whether they filled live and in the model ([fill check](../how-to/operations/journals-replay-pnl.md#check-the-fill-model-against-live-fills)):
-
-```text
-  conservatism     both   live  model   none    hit   miss  false  error model/live
-  0.00              151      2      0   1573  0.987  0.013  0.000  0.013      0.987
-  ...
-  1.00              151      2      0   1573  0.987  0.013  0.000  0.013      0.987
-  no ticker         144      9      1   1572  0.941  0.059  0.001  0.065      0.940
-  no tape           150      3      0   1573  0.980  0.020  0.000  0.020      0.981
-  neither           127     26      1   1572  0.830  0.170  0.001  0.175      0.795
-```
-
-| Column or row | Meaning |
-|---|---|
-| `hit`, `miss` | share of live fills the model also fills, and the rest |
-| `false` | share of orders not filled live that the model fills |
-| `error` | (live only + model only) over the orders filled either way; the fit minimises it, then `model/live` nearest 1, then prefers the larger conservatism |
-| `no ticker`, `no tape`, `neither` | the fitted value without the book ticker, without the trades since the depth update, or both: what each input is worth |
-
-The conservatism is cross-validated: fitted on each session and scored on the others. When every value scores the same, the data does not identify it and 1 is kept; queues at or inside the touch are set by the book ticker, where the conservatism does not act.
-
-The fitted keys look like this:
-
-```text
-[backtest]
-fill_model = "l2_queue"
-queue_conservatism = 0.75
-md_arrival = "recorded"
-latency_fixed_us = 360
-latency_jitter_us = 300
-latency_sigma = 0.5
-latency_ack_us = 375
-latency_ack_jitter_us = 160
-latency_ack_sigma = 0.5
-latency_cancel_us = 200
-latency_cancel_jitter_us = 250
-latency_cancel_sigma = 0.5
-order_service_us = 220
-```
-
-With several venues, including a pool's accounts, the latency keys go under `[backtest.venues.<name>]`, one table per venue. `md_arrival = "recorded"` delivers market data to the strategy when the session received it.
-
-| Latency key | Fitted from |
-|---|---|
-| `latency_*_us`, `latency_*_jitter_us` | each order's send time, the venue's time on its ack and the ack's arrival; each leg is a fixed part plus a lognormal excess of shape `latency_*_sigma` |
-| `latency_cancel_*` | at least 20 isolated cancels, timed by their cancel acks |
-| `order_service_us` | messages sent within 1 ms of the one before, which wait for the venue to take that one in |
-
-On Binance Spot a burst of cancels on one connection is taken in about 0.25 ms apart, so the tenth cancel reaches the book some 2 ms after the first. The round trip's tail, a p99 of 40 ms in a live Binance Spot session, is beyond this model.
-
-When a cancel path or service time is fitted, the fill check runs twice more with cancels replayed. `cancels, before` sends them through the order path alone; `cancels, fitted` through everything fitted. The strategy's decisions are those it made live, so the two rows measure the cancel race alone.
-
-`--backtest` then re-runs each session over its journal with our orders stripped, once with its configuration's `[backtest]` and once with the fitted keys. It prints both beside the live session: orders, rejects, fills, time to fill, the PnL decomposition and markouts. This adds everything a backtest re-decides on top of the fill model, such as how often the strategy requotes. `--from-live-state` starts both runs from the session's recorded state ([below](#starting-from-the-live-sessions-state)); `--csv` writes the fill-check grid.
-
-A live commission paid in a third asset such as BNB has no price in the journal. The live fees and net leave it out, as the engine does, and a line under the table gives those fills and their commission.
+`fastmm-data calibrate` fits the `l2_queue` fill model and the simulated latencies to recorded live sessions and prints the `[backtest]` keys to use ([Calibrate the backtest against live sessions](../how-to/operations/journals-replay-pnl.md#calibrate-the-backtest-against-live-sessions)).
 
 ## Starting from the live session's state
 

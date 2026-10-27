@@ -4,19 +4,38 @@ A release is a `v<version>` tag. Pushing the tag builds and publishes everything
 
 ## 1. Set the version
 
-`project(fastmm VERSION <x.y.z>)` in [`CMakeLists.txt`](../../CMakeLists.txt) is the only source. `pyproject.toml` reads it for both wheels. Two places repeat it by hand, and a version bump changes all three in one commit: the `live` extra in `pyproject.toml` pins `fastmm-engine-live==<x.y.z>` (`python/tests/test_packaging.py` fails when they disagree), and [`examples/quickstart/CMakeLists.txt`](../../examples/quickstart/CMakeLists.txt) fetches `GIT_TAG v<x.y.z>` (configuring FastMM with examples fails when they disagree). Run `python3 tools/doc_snippets.py` afterwards: the Quick start quotes that file.
+Change the version in all three places in one commit. `pyproject.toml` reads the first one for both wheels.
+
+| File | Line | A mismatch fails |
+|---|---|---|
+| [`CMakeLists.txt`](../../CMakeLists.txt) | `project(fastmm VERSION <x.y.z>)` | |
+| `pyproject.toml`, the `live` extra | `fastmm-engine-live==<x.y.z>` | `python/tests/test_packaging.py` |
+| [`examples/quickstart/CMakeLists.txt`](../../examples/quickstart/CMakeLists.txt) | `GIT_TAG v<x.y.z>` | configuring FastMM with examples |
+
+Then run `python3 tools/doc_snippets.py`: the Quick start quotes the last file.
 
 What a version number promises: [Versions and compatibility](../reference/compatibility.md).
 
 ## 2. Write the CHANGELOG section
 
-Rename `## [Unreleased]` to `## [<x.y.z>] - <YYYY-MM-DD>`. `release.yml` copies the section into the GitHub Release verbatim and appends the install lines and a compare link, so write it for someone scanning a release page:
+Rename `## [Unreleased]` to `## [<x.y.z>] - <YYYY-MM-DD>`. `release.yml` copies the section into the GitHub Release verbatim and appends the install lines and a compare link, so write it for someone scanning a release page.
 
-- A minor release opens with one or two sentences on what it is about. A patch release has no lead.
-- A section with more than 25 bullets gets a `Highlights:` list after the lead: three to six one-line items a user would upgrade for, each ending with the section and area it is detailed under, e.g. `(Added, venues)`.
-- Sections, in this order and only when non-empty: `### Breaking changes`, `### Added`, `### Changed`, `### Removed`, `### Fixed`, `### Documentation`. Anything that stops an existing config key, file format, call form or install from working goes under Breaking changes. Within a section, bullets are grouped by area.
-- One change per bullet, one line of at most 100 characters, prefixed with the area: `- venues: a warm standby started early in a rate-limit minute has its books before the handoff.` Say what the user sees now and stop: no "so that", "instead of", "which" or "because" clauses, no examples in parentheses, no story of how it was found. Keep config keys, flags, commands and API names in backticks. Under Breaking changes one extra clause may say what to do (`set "stay" for the old behaviour`).
-- Leave out test-only, CI-only and internal changes.
+| Part | Rule |
+|---|---|
+| lead | a minor release opens with one or two sentences on what it is about; a patch release has none |
+| `Highlights:` | after the lead when the section has more than 25 bullets: three to six one-line items a user would upgrade for, each ending with where it is detailed, e.g. `(Added, venues)` |
+| sections | in this order, only when non-empty: `### Breaking changes`, `### Added`, `### Changed`, `### Removed`, `### Fixed`, `### Documentation` |
+| Breaking changes | anything that stops an existing config key, file format, call form or install from working; one extra clause may say what to do |
+| bullets | one change each, one line of at most 100 characters, prefixed with the area, grouped by area |
+| left out | test-only, CI-only and internal changes |
+
+A bullet says what the user sees now and stops:
+
+```text
+- venues: a warm standby started early in a rate-limit minute has its books before the handoff.
+```
+
+No "so that", "instead of", "which" or "because" clauses, no examples in parentheses and no story of how it was found. Config keys, flags, commands and API names go in backticks.
 
 ## 3. Check it locally
 
@@ -53,4 +72,4 @@ docker run --rm ghcr.io/ziyangliu-666/fastmm:<x.y.z> fastmm-live --version
 gh release view v<x.y.z>
 ```
 
-PyPI files cannot be replaced: a broken upload needs a new patch version. The wheels can be built and inspected before the tag by running `wheels.yml` by hand with **publish** unchecked.
+PyPI files cannot be replaced: a broken upload needs a new patch version. To inspect the wheels before tagging, run `wheels.yml` by hand with **publish** unchecked.

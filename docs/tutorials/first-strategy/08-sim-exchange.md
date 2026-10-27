@@ -1,6 +1,6 @@
 # 8. Trade on the simulated exchange
 
-`fastmm-sim-exchange` is a local exchange that speaks the Binance Spot API.
+`fastmm-sim-exchange` is a local exchange that speaks the Binance Spot API. On this page three processes run on your machine:
 
 ## Start the exchange
 
@@ -60,11 +60,22 @@ INFO  fastmm-live: realized_pnl=1.05586083 unrealized_pnl=0.01321016 fees=0.3258
 INFO  fastmm-live: shutdown took 316 ms (cancel_all ok)
 ```
 
-(Timestamps and thread ids removed.) Channel 0 is market data; channel 1 is order entry and the user-data stream, which report separately. After the disconnect the connector reconnected within 250 ms, took a fresh snapshot, and the next `on_book` requoted. PnL and fees are in USDT.
+Timestamps and thread ids are removed above; PnL and fees are in USDT.
+
+| Channel | Carries |
+|---|---|
+| 0 | market data |
+| 1 | order entry and the user-data stream, which report separately |
+
+After the disconnect the connector reconnected within 250 ms, took a fresh snapshot, and the next `on_book` requoted.
 
 On WSL2 and in virtual machines the terminal may also show `TSC recalibration stepped the engine clock` warnings: the host's wall clock jumped ([Troubleshooting](../../how-to/operations/troubleshooting.md)).
 
-The session journal also renders as a page: `python3 tools/report.py runs/tutorial/sim.fmj` writes `runs/tutorial/report.html` with the equity, the inventory and the counts of the session ([Run report](../../reference/run-report.md)).
+The session journal also renders as a page with the equity, the inventory and the counts ([Run report](../../reference/run-report.md)). This writes `runs/tutorial/report.html` and prints its path:
+
+```bash
+python3 tools/report.py runs/tutorial/sim.fmj
+```
 
 ## Replay the live session
 

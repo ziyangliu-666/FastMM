@@ -15,11 +15,15 @@ cmake --preset release && cmake --build build/release -j
 python3 python/fastmm/data/__main__.py fetch --symbol BTCUSDT --date 2024-03-27
 ```
 
-It needs only the Python standard library, so it runs before the bindings are built. With the wheel installed it is `python3 -m fastmm.data fetch --symbol BTCUSDT --date 2024-03-27`.
+The script needs only the Python standard library, so it runs before the bindings are built. With the wheel installed, run `python3 -m fastmm.data fetch --symbol BTCUSDT --date 2024-03-27`.
 
-It downloads `bookTicker` and `aggTrades` from [data.binance.vision](https://data.binance.vision), checks each file against the SHA-256 the archive publishes next to it, and unpacks them into `$FASTMM_DATA_HOME` (default `~/.cache/fastmm/data`). A partial download resumes, and a ZIP is deleted once unpacked. One day of BTCUSDT is a 207 MB download and 1.5 GB unpacked; `python3 -m fastmm.data ls` shows what the cache holds.
+It downloads `bookTicker` and `aggTrades` from [data.binance.vision](https://data.binance.vision), checks each file against the SHA-256 the archive publishes, and unpacks it into `$FASTMM_DATA_HOME` (default `~/.cache/fastmm/data`). A partial download resumes, and a ZIP is deleted once unpacked.
 
-Pick a date between 2023-05-16 and 2024-03-30. The archive published futures `bookTicker` only in that window and nothing since, so those are the days with a book. Trades run to yesterday.
+| | |
+|---|---|
+| dates with a book | 2023-05-16 to 2024-03-30, the only window with futures `bookTicker`; trades run to yesterday |
+| one day of BTCUSDT | 207 MB download, 1.5 GB unpacked |
+| what the cache holds | `python3 -m fastmm.data ls` |
 
 ## 3. Run
 
@@ -30,7 +34,14 @@ Pick a date between 2023-05-16 and 2024-03-30. The archive published futures `bo
 
 The day is 18 million market-data events. To try an hour first, add `,start=12:00,end=13:00`.
 
-`configs/backtest-binance.toml` runs `basic_mm` quoting one level at the touch, with BTCUSDT perpetual's real tick (0.10 USDT), step (0.001 BTC) and minimum notional (100 USDT), and Binance USDⓈ-M VIP 0 fees: 0.0200 % maker and 0.0500 % taker, which is 2 bps and 5 bps.
+`configs/backtest-binance.toml` runs `basic_mm` quoting one level at the touch, with the instrument's real terms:
+
+| Setting | Value |
+|---|---|
+| tick | 0.10 USDT |
+| step | 0.001 BTC |
+| minimum notional | 100 USDT |
+| fees, Binance USDⓈ-M VIP 0 | 2 bps maker, 5 bps taker |
 
 ## 4. Pack it for repeated runs
 
@@ -41,7 +52,7 @@ The day is 18 million market-data events. To try an hour first, add `,start=12:0
     --data ~/.cache/fastmm/data/btcusdt-2024-03-27.fmj
 ```
 
-The journal holds the same events already decoded. It gives byte-identical results and runs faster: 3 s against 5 s for this day on a WSL2 desktop ([Journal format](../../reference/journal-format.md)).
+The journal holds the same events already decoded ([Journal format](../../reference/journal-format.md)). It gives byte-identical results and runs this day in 3 s instead of 5 s on a desktop.
 
 ## From Python
 
@@ -81,21 +92,40 @@ markout per fill (bps of notional)
   1m        -149.0135    -0.8488     5.6225     0.0320     0.8808    12529
 ```
 
-The run stops quoting at 09:37 UTC, when the loss reaches `[risk] max_loss` (500 USDT) and the kill switch trips (the `kill switch engaged (MaxLoss ...)` line in the log); the numbers cover those hours. The strategy loses 499 USDT on 1.76 M USDT traded, and the decomposition says where: it captured 0.032 bps of spread and paid 2 bps of maker fee. No queue position closes that gap: BTCUSDT perpetual's spread is one tick, 0.1 USDT on a 70,000 USDT mid, which is 0.014 bps, a fourteenth of the fee.
+The kill switch stops quoting at 09:37 UTC, when the loss reaches `[risk] max_loss` (500 USDT); the log shows `kill switch engaged (MaxLoss ...)`. The numbers cover those hours.
 
-The markouts say the fills were not worth having either: the mid moved 0.66 bps against each one within a second and 0.85 bps within ten. Buys and sells lose about equally, so this is adverse selection on both sides, not a directional bet gone wrong. A strategy that quoted for free would still lose 0.85 bps per fill.
+| What the numbers say | Value |
+|---|---|
+| loss | 499 USDT on 1.76 M USDT traded |
+| spread captured | 0.032 bps, against a maker fee of 2 bps |
+| BTCUSDT perpetual's spread | one tick, 0.1 USDT on a 70,000 USDT mid: 0.014 bps |
+| mid move against each fill | 0.66 bps within 1 s, 0.85 bps within 10 s |
+| orders rejected | 5,796 of 70,301, nearly all `PostOnlyWouldCross` |
 
-5,796 of 70,301 orders are rejected, nearly all of them `PostOnlyWouldCross`. That is the spread again: with a one-tick market and a 5 ms round trip, the touch has usually moved by the time an order arrives, and a post-only order that would take liquidity is rejected rather than filled. Raise `latency_fixed_us` and it gets worse; that number is a property of the venue and the link, not of the simulator.
+The fee is the first problem: no queue position earns 2 bps from a spread of 0.014 bps.
 
-The synthetic market cannot produce this number: its flow is a coin flip, so its markouts measure the queue and the latency and nothing else ([Backtesting](../../explanation/backtesting.md#model-assumptions)). Here the flow is real, and it costs 0.85 bps a fill.
+The fills are not worth having either. Buys and sells lose about equally, so this is adverse selection on both sides, not a directional bet. A strategy that quoted for free would still lose 0.85 bps per fill.
+
+The rejects are the one-tick spread again. With a 5 ms round trip, the touch has usually moved by the time an order arrives, and a post-only order that would take liquidity is rejected. A higher `latency_fixed_us` makes it worse; that number belongs to the venue and the link.
+
+The synthetic market cannot produce this result. Its flow is a coin flip, so its markouts measure the queue and the latency only ([Backtesting](../../explanation/backtesting.md#model-assumptions)). Here the flow is real, and it costs 0.85 bps a fill.
 
 ## Properties of this data
 
-[Backtesting](../../explanation/backtesting.md) lists the simulator's assumptions: no market impact, and a queue model instead of counterparties. The points below belong to this data.
+[Backtesting](../../explanation/backtesting.md) lists the simulator's assumptions: no market impact, and a queue model instead of counterparties. This data adds four of its own.
+
+| Property | Effect | What to do |
+|---|---|---|
+| top of book only | an order behind the touch is modelled as alone at its price and fills as soon as a trade reaches it | quote at the touch; measure multi-level strategies on depth data |
+| millisecond clocks | a trade and the book update it caused share a timestamp; the merge puts the trade first | keep `queue_conservatism = 1.0`, where the order does not change the answer |
+| your orders are absent | the market never saw your quotes | read the PnL as an upper bound, the markouts as a lower bound on adverse selection |
+| one day | 2024-03-27 was an ordinary day | fetch a range with `--from` and `--to`, then pass `binance:BTCUSDT,from=2024-03-25,to=2024-03-29` |
 
 ### Top of book only
 
-`bookTicker` publishes the best bid and ask; the archive has no depth file that can be replayed. The queue model sets an order's position from the displayed quantity at its price, and at any price except the touch that quantity is zero as far as this feed is concerned. So an order resting behind the touch is modelled as alone at its price and fills the moment a trade reaches it. In the run above 8 % of the fills are behind the touch, and those are the optimistic ones (the 4 % inside it improved the best price, where the order really was alone). `configs/backtest-binance.toml` quotes one level at the touch for that reason; measure a multi-level strategy on depth data.
+`bookTicker` publishes the best bid and ask, and the archive has no depth file that can be replayed. The queue model takes an order's position from the displayed quantity at its price, which this feed shows only at the touch.
+
+In the run above 8 % of the fills are behind the touch, and those are the optimistic ones. The 4 % inside it improved the best price, where the order really was alone. `configs/backtest-binance.toml` quotes one level at the touch for that reason.
 
 For depth, use [`tardis`](../../reference/data-sources.md#tardis), whose `incremental_book_L2` is the whole book:
 
@@ -106,19 +136,19 @@ python3 python/fastmm/data/__main__.py fetch --source tardis \
     --data tardis:binance-futures,BTCUSDT,2026-09-01
 ```
 
-That is a different day, so it is not a controlled comparison, but it says the same thing: 1,771 maker fills, markouts of −0.65 bps at 1 s and −0.87 bps at 10 s, a *negative* spread capture of −0.036 bps, and 50.6 USDT of fees against 71.0 USDT of loss. One day of BTCUSDT L2 is 748 MB compressed and 10.9 GB unpacked, and the run takes 28 seconds.
+| Tardis, 2026-09-01 | Value |
+|---|---|
+| maker fills | 1,771 |
+| markout | -0.65 bps at 1 s, -0.87 bps at 10 s |
+| spread capture | -0.036 bps |
+| fees / loss | 50.6 USDT / 71.0 USDT |
+| one day of BTCUSDT L2 | 748 MB compressed, 10.9 GB unpacked, 28 s to run |
+
+It is a different day, so not a controlled comparison, but it says the same thing.
 
 ### Millisecond clocks
 
-`bookTicker` and `aggTrades` both stamp the venue's transaction time to the millisecond, so a trade and the book update it caused usually carry the same timestamp and their true order is not recoverable. The merge puts the trade first, which consumes the queue before the level is recorded as smaller. With `queue_conservatism = 1.0` the other order would give the same answer; at lower conservatism it would not, and the run would be slightly optimistic.
-
-### Your orders are absent
-
-The recorded flow was generated by a market that never saw your quotes. The PnL is the most the strategy would have earned, and the markouts the least adverse selection it would have paid.
-
-### One day
-
-2024-03-27 was an ordinary day. For other volatility regimes, fetch a range with `--from` and `--to` and pass `binance:BTCUSDT,from=2024-03-25,to=2024-03-29`.
+`bookTicker` and `aggTrades` both stamp the venue's transaction time to the millisecond, so a trade and the book update it caused usually carry the same timestamp. The merge puts the trade first, which consumes the queue before the level is recorded as smaller. With `queue_conservatism = 1.0` the other order gives the same answer; at lower conservatism the run is slightly optimistic.
 
 ## Licence
 

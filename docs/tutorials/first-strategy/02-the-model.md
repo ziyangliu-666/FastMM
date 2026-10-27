@@ -1,20 +1,36 @@
 # 2. The model
 
-The engine owns the books, positions, orders and your strategy, and runs on one thread. Network threads decode venue messages and pass them to it through lock-free rings. Hooks are never called concurrently.
-
-Hooks are plain member functions. The engine calls `on_book` after a book update, `on_fill` after one of your orders trades and `on_timer` when a timer fires. Every hook is optional. A hook with a wrong signature fails the build (page 3).
-
-You describe quotes; the engine sends orders. A hook calls `ctx.set_quotes(id, quotes)` with the bids and asks it wants. The engine's quote manager compares them with your resting orders and sends the new orders, cancels and replaces that make up the difference; it keeps an order whose price is within `[engine] min_requote_ticks` of the desired one. Every order passes pre-trade risk checks first. For anything else there are direct orders (`ctx.send`).
-
-Prices, quantities, amounts and ratios are 64-bit integers with 8 decimals (`Price`, `Qty`, `Notional`, `Ratio`). `100.25_px` and `5_bps` are compile-time literals. Parameters are parsed without `double`.
-
-A session journals each event the engine consumed and the clock at which it did. Replaying the journal through the same strategy must send the same orders, byte for byte; pages 7 and 8 check this.
+The engine owns the books, positions, orders and your strategy, and runs them on one thread. Network threads decode venue messages and pass them to it through lock-free rings, so hooks are never called concurrently.
 
 ```text
 venue ─► network thread ─► ring ─► engine ─► ring ─► network thread ─► venue
 
 engine: journal ─► book ─► on_book ─► set_quotes ─► quote manager ─► risk ─► OMS
 ```
+
+## Hooks
+
+Hooks are plain member functions, and each one is optional. A hook with a wrong signature fails the build (page 3).
+
+| Hook | The engine calls it |
+|---|---|
+| `on_book` | after a book update |
+| `on_fill` | after one of your orders trades |
+| `on_timer` | when one of your timers fires |
+
+## Quotes, not orders
+
+A hook describes the quotes it wants with `ctx.set_quotes(id, quotes)`, and the engine sends the orders. The quote manager compares the quotes with your resting orders and sends the new orders, cancels and replaces that make up the difference.
+
+It keeps a resting order whose price is within `[engine] min_requote_ticks` of the desired one. Every order passes the pre-trade risk checks first. For anything else there are direct orders (`ctx.send`).
+
+## Numbers
+
+Prices, quantities, amounts and ratios are 64-bit integers with 8 decimals: `Price`, `Qty`, `Notional` and `Ratio`. `100.25_px` and `5_bps` are compile-time literals, and parameters are parsed without `double`.
+
+## Replay
+
+A session journals each event the engine consumed and the clock at which it did. Replaying the journal through the same strategy must send the same orders, byte for byte; pages 7 and 8 check this.
 
 Two rules follow for hook code:
 

@@ -30,9 +30,11 @@ struct FirstMMParams {
 
 Each `FASTMM_PARAM*` line declares a field with its default, range and description. The macro sets how the value is written in a configuration:
 
-- `FASTMM_PARAM_BPS` declares a `Ratio` configured in basis points (`edge_bps = 5.0`).
-- `FASTMM_PARAM(Qty, ...)` declares a `Qty` (`quote_qty = 0.001`).
-- `FASTMM_PARAM_MS` declares a `Duration` configured in whole milliseconds.
+| Macro | Field type | In a configuration |
+|---|---|---|
+| `FASTMM_PARAM_BPS` | `Ratio` | basis points: `edge_bps = 5.0` |
+| `FASTMM_PARAM(Qty, ...)` | `Qty` | base units: `quote_qty = 0.001` |
+| `FASTMM_PARAM_MS` | `Duration` | whole milliseconds: `report_ms = 10000` |
 
 `validate()` rejects inconsistent combinations. The same declarations drive `--list-strategies`, `--param key=value` and configuration errors.
 
@@ -115,7 +117,7 @@ void on_connection(auto& /*ctx*/, const ConnectionStateMsg& m) noexcept {
 }
 ```
 
-`on_quoting` runs when quoting is paused or resumed: an operator pull, the kill switch, or a reconciliation (a live session starts with one, so quoting comes on after `on_start`). On resume the strategy requotes without waiting for the next book update:
+`on_quoting` runs when quoting is paused or resumed: by an operator pull, the kill switch or a reconciliation. A live session starts with a reconciliation, so quoting comes on after `on_start`. On resume the strategy requotes without waiting for the next book update:
 
 <!-- snippet: examples/cpp/tutorial/first_mm.hpp#on_quoting -->
 ```cpp
@@ -147,6 +149,12 @@ void on_timer(auto& ctx, TimerId id, std::uint64_t /*tag*/) noexcept {
 static_assert(verify_strategy<FirstMM>());  // a hook with a wrong signature fails here
 ```
 
-If you misspell a hook's parameters, for example `on_fill(auto& ctx, const OrderFillMsg& m)`, the build stops with `fastmm: on_fill has the wrong signature or is not public; expected void on_fill(auto& ctx, const Fill& fill)`. A likely misspelling of a name, such as `on_fills`, is a warning. The [Strategy API](../../reference/strategy-api.md) lists the hooks.
+If you misspell a hook's parameters, for example `on_fill(auto& ctx, const OrderFillMsg& m)`, the build stops with:
+
+```text
+fastmm: on_fill has the wrong signature or is not public; expected void on_fill(auto& ctx, const Fill& fill)
+```
+
+A likely misspelling of a name, such as `on_fills`, is a warning. The [Strategy API](../../reference/strategy-api.md) lists the hooks.
 
 Next: [4. Unit-test it](04-unit-test.md)

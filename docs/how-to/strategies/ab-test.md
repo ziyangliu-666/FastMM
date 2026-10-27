@@ -1,6 +1,6 @@
 # Run an A/B test
 
-An `[ab]` section runs two or more parameter sets of one strategy, the arms, in the same session: the engine moves each instrument into its arm at the times the design says, tags every order with the arm it was sent under, and the journal and the store record both. `fastmm-data ab` reads the journals back into a comparison of the arms. The same section runs in `fastmm-live` and in `fastmm-backtest`, so a test can be tried on a recorded session before it goes live.
+An `[ab]` section runs two or more parameter sets of one strategy, the arms, in one session. The same section runs in `fastmm-live` and `fastmm-backtest`, so you can try a test on a recorded session before it goes live.
 
 ## Choose the design
 
@@ -11,10 +11,13 @@ An `[ab]` section runs two or more parameter sets of one strategy, the arms, in 
 | `crossover` | changes arm each block, the instruments split between the arms in every block | each instrument with itself, and the arms within each block | a parameter set per instrument |
 | `branch` | is in one arm per run: `fastmm-backtest` runs the configuration once per arm over the same data and seed | each instrument with itself over the same market | any that takes parameter updates; a backtest only |
 
-- `crossover` removes both the difference between instruments and the difference between moments; it is the design to start from. `time` suits a strategy that keeps one parameter set. `instrument` suits a parameter whose effect outlasts a block, such as the inventory a wider spread lets build up.
-- Blocks are `block_s` long and start at multiples of it since 1970-01-01 UTC, so a backtest and a live session over the same hours share them. Each run of as many blocks as there are arms gives every arm one block, in an order drawn from `seed`. Make a block longer than the time the parameter takes to show its effect, and the test several runs long.
-- `branch` takes nothing from the market's noise: both arms see the same data, and the simulator's draws are the same until their orders differ. It tests what a change would have done over a recorded session, not how it does live; `fastmm-live` refuses it. From a checkpoint of a live session, every arm starts in the session's state ([Replay a live session](../operations/replay-live-session.md#compare-two-configurations-from-a-checkpoint)).
-- `instrument` and `crossover` sort the instruments by `[ab.weights]` (a recent daily volume, a volatility) and give each consecutive group of as many instruments as there are arms every arm once.
+Start from `crossover`: it removes both the difference between instruments and the difference between moments. `time` suits a strategy that keeps one parameter set. `instrument` suits a parameter whose effect outlasts a block, such as the inventory a wider spread lets build up.
+
+Blocks are `block_s` long and start at multiples of it since 1970-01-01 UTC, so a backtest and a live session over the same hours share them. Each run of as many blocks as there are arms gives each arm one block, in an order drawn from `seed`. Make a block longer than the parameter takes to show its effect, and the test several runs long.
+
+`instrument` and `crossover` sort the instruments by `[ab.weights]`, such as a recent daily volume or a volatility. Each consecutive group of as many instruments as there are arms gets each arm once.
+
+`branch` takes nothing from the market's noise: both arms see the same data, and the simulator's draws are the same until their orders differ. It tests what a change would have done over a recorded session, not how it does live, and `fastmm-live` refuses it. From a checkpoint of a live session, each arm starts in the session's state ([Replay a live session](../operations/replay-live-session.md#compare-two-configurations-from-a-checkpoint)).
 
 A strategy keeps a parameter set per instrument when it derives from `StrategyBase<Params, ParamScope::PerInstrument>` and reads `params(id)` ([Strategy API](../../reference/strategy-api.md#parameters-per-instrument)); `basic_mm` and `avellaneda_stoikov` do.
 
@@ -43,10 +46,13 @@ name = "wide"
 params = { half_spread_bps = 8, levels = 2 }
 ```
 
-- Arm 0 is the control: the readout compares every other arm with it. An arm without `params` runs the configured `[strategy.params]`; an arm's `params` are set on top of them.
-- Each update carries every parameter some arm names, the arm's value or the configured one, so an instrument that leaves an arm gets the configured values back.
-- Two arms with no `params` are an A/A test: run one first, its intervals are the noise floor of the comparison.
-- The arms are checked against the strategy when the session or backtest starts; an unknown parameter, a value out of range or one `validate()` refuses stops it with exit code 3.
+Arm 0 is the control: the readout compares each other arm with it. An arm without `params` runs the configured `[strategy.params]`; an arm's `params` are set on top of them.
+
+Each update carries every parameter some arm names, with the arm's value or the configured one. An instrument that leaves an arm gets the configured values back.
+
+Two arms with no `params` are an A/A test. Run one first: its intervals are the noise floor of the comparison.
+
+The arms are checked against the strategy at start. An unknown parameter, a value out of range or one `validate()` refuses stops the session or backtest with exit code 3.
 
 ## Try it on a recorded session
 
@@ -61,26 +67,39 @@ The backtest publishes each arm's parameters at the block boundaries of the data
 
 ## Run it live
 
-`fastmm-live --config mm-ab.toml` puts every instrument in its arm before the first event and moves it at each block boundary. `fastmm-ctl ab` shows where the test is:
+1. Start the session. Each instrument is in its arm before the first event and moves at each block boundary.
 
-```bash
-fastmm-ctl --name mm ab
-```
+    ```bash
+    fastmm-live --config mm-ab.toml
+    ```
 
-```text
-ok spread-1: running, assignment crossover, 2 arms, seed 7, block 3600 s
-arm        0 control: the configured parameters; 2 instrument(s) now
-arm        1 wide: half_spread_bps=8 levels=2; 2 instrument(s) now
-block      497969 until 2026-10-22 18:00:00 UTC (in 58m 20s)
-end        2026-11-05 00:00:00 UTC (in 13d 06h)
-instrument binance:BTCUSDT wide
-instrument binance:ETHUSDT control
-...
-```
+2. See where the test is:
 
-- `fastmm-ctl --name mm ab stop` ends the test: every instrument goes back to the configured parameters, out of any arm. `ab promote wide` ends it with every instrument on that arm's parameters.
-- While the test runs, `fastmm-ctl param` refuses the parameters the arms name; the others change as usual.
-- The assignment is a function of the configuration and the time: a restart with `[ab]` still in the configuration resumes the test where the clock is. A stop or promote lasts for the session; to keep a promoted arm, move its `params` into `[strategy.params]` and remove `[ab]`.
+    ```bash
+    fastmm-ctl --name mm ab
+    ```
+
+    ```text
+    ok spread-1: running, assignment crossover, 2 arms, seed 7, block 3600 s
+    arm        0 control: the configured parameters; 2 instrument(s) now
+    arm        1 wide: half_spread_bps=8 levels=2; 2 instrument(s) now
+    block      497969 until 2026-10-22 18:00:00 UTC (in 58m 20s)
+    end        2026-11-05 00:00:00 UTC (in 13d 06h)
+    instrument binance:BTCUSDT wide
+    instrument binance:ETHUSDT control
+    ...
+    ```
+
+3. End the test, either way:
+
+    | Command | Instruments go to |
+    |---|---|
+    | `fastmm-ctl --name mm ab stop` | the configured parameters, out of any arm |
+    | `fastmm-ctl --name mm ab promote wide` | that arm's parameters |
+
+While the test runs, `fastmm-ctl param` refuses the parameters the arms name; the others change as usual.
+
+The assignment is a function of the configuration and the time, so a restart with `[ab]` still configured resumes where the clock is. A stop or promote lasts for the session. To keep a promoted arm, move its `params` into `[strategy.params]` and remove `[ab]`.
 
 ## Read it out
 
@@ -88,7 +107,7 @@ instrument binance:ETHUSDT control
 fastmm-data ab runs/mm-*.fmj --aa runs/aa-*.fmj --maker-rebate-bps 0.8 --csv ab-cells.csv
 ```
 
-A backtest of four instruments in 60 s blocks (`tests/backtest/ab_backtest_test.cpp`), read out without `--aa`:
+A backtest of four instruments in 60 s blocks, read out without `--aa`:
 
 ```text
 test     spread-1: crossover, blocks of 60 s, seed 5, 2 arms
@@ -115,13 +134,33 @@ wide             notional/hour        13269.6887     33346.9817    -20077.2929  
 wide             fills/hour           13292.6901     33367.0031    -20074.3130     [-20651.8130, -19666.1259]
 ```
 
-- Pass every journal the test ran in, all parts of all sessions; they are read in time order and must carry the same `[ab]`. The configuration, the arm updates, the arm of each order and the BookTicker mids all come from the journals.
-- A fill belongs to the arm its order was sent under. Markouts are the mid at the horizon against the fill price, in quote currency and in bps of the notional marked; fees are the rates `[venues.<x>.fees]` and `[[instruments]]` configure (negative: a rebate), and `--maker-rebate-bps` adds a rebate the venue pays apart from the fills. Net is markout less fees.
-- The comparison pairs what the design makes comparable: one instrument over one run of blocks (time, crossover), or the instruments of one weight group (instrument). A pair counts when it has time in every arm; the test's first and last runs may not. `net/hour`, `notional/hour` and `fills/hour` are an arm's total over its instrument-hours in the pairs, so a run cut short at the test's start or stop counts for the time it has.
-- The interval resamples whole runs of blocks (or weight groups), so a market move that hit every instrument at once counts once. With `--aa`, the `A/A +-` column is the half-width of the A/A test's interval for the same metric: a difference inside it is noise.
-- `--csv` writes one row per instrument, arm and block; `--json` prints the whole report.
+Pass all journals the test ran in, all parts of all sessions. They are read in time order and must carry the same `[ab]`. The configuration, the arm updates, the arm of each order and the BookTicker mids all come from the journals.
+
+A fill belongs to the arm its order was sent under.
+
+| Column | Meaning |
+|---|---|
+| `markout_bps` | mid at the horizon against the fill price, in bps of the notional marked |
+| `fee_bps` | the rates of `[venues.<x>.fees]` and `[[instruments]]`, negative for a rebate, plus `--maker-rebate-bps` for a rebate paid apart from the fills |
+| `net_bps` | markout less fees |
+| `net/hour`, `notional/hour`, `fills/hour` | an arm's total over its instrument-hours in the pairs |
+| `95% interval` | from resampling whole runs of blocks, or weight groups |
+| `A/A +-` | with `--aa`, the half-width of the A/A test's interval for the same metric |
+
+The comparison pairs what the design makes comparable: one instrument over one run of blocks (`time`, `crossover`), or the instruments of one weight group (`instrument`). A pair counts when it has time in all arms, which the test's first and last runs may not. A run cut short at start or stop counts for the time it has.
+
+Resampling whole runs counts a market move that hit all instruments at once only once. A difference inside the `A/A +-` half-width is noise.
+
+| Option | Writes |
+|---|---|
+| `--csv <file>` | one row per instrument, arm and block |
+| `--json` | the whole report |
 
 ## What is recorded
 
-- The journal: each arm change is a `ParamUpdate` with origin 2 and the arm, and every `OutNewOrder` and `OutReplace` carries its arm ([Journal format](../../reference/journal-format.md#parameter-updates)). A replay reproduces the session with its arm changes.
-- The store: `ab_arms` names each session's arms, and `fills`, `orders` and `param_updates` have an `arm` column ([Storage](../../reference/storage.md#ab_arms)). `fastmm-pnl fills` and `orders` print it.
+| Where | What |
+|---|---|
+| journal | each arm change as a `ParamUpdate` with origin 2 and the arm; each `OutNewOrder` and `OutReplace` with its arm ([Journal format](../../reference/journal-format.md#parameter-updates)) |
+| store | `ab_arms` names each session's arms; `fills`, `orders` and `param_updates` have an `arm` column ([Storage](../../reference/storage.md#ab_arms)) |
+
+A replay reproduces the session with its arm changes. `fastmm-pnl fills` and `orders` print the arm.

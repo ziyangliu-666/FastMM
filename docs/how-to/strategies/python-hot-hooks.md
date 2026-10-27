@@ -1,6 +1,6 @@
 # Write hot hooks in Python
 
-Hot hooks are strategy methods that Numba compiles and the engine thread calls without the GIL; they run in backtests and [live sessions](python-live.md). Reference: [Hot hooks](../../reference/python-api.md#hot-hooks).
+Hot hooks are strategy methods that Numba compiles and the engine thread calls without the GIL. They run in backtests and [live sessions](python-live.md). Reference: [Hot hooks](../../reference/python-api.md#hot-hooks).
 
 ## Install
 
@@ -12,7 +12,14 @@ To build the package from a checkout instead: [Install from source](../../gettin
 
 ## Declare the strategy
 
-Declare parameters with `fastmm.Param` and per-instrument values that persist between calls with `fastmm.State`. Mark each hook with `@fastmm.hot` (`on_book`, `on_fill`, `on_quoting`, `on_connection`, `on_params`) or with `@fastmm.hot(every="100ms")` for a timer; every hook takes `(self, ctx, book)`. Plain Python that changes the parameters goes in slow methods: [Run slow methods beside hot hooks](python-slow-methods.md).
+| Declare | With |
+|---|---|
+| a parameter | `fastmm.Param` |
+| a per-instrument value kept between calls | `fastmm.State` |
+| a hook: `on_book`, `on_fill`, `on_quoting`, `on_connection`, `on_params` | `@fastmm.hot` |
+| a timer | `@fastmm.hot(every="100ms")` |
+
+Each hook takes `(self, ctx, book)`. Plain Python that changes the parameters goes in slow methods ([Run slow methods beside hot hooks](python-slow-methods.md)).
 
 <!-- snippet: examples/python/strategies/basic_mm_hot.py#class -->
 ```python
@@ -75,7 +82,7 @@ class BasicMMHot(fastmm.Strategy):
 
 ## Write intents
 
-Write intents through `ctx` (`quote`, `bid`, `ask`, `clear`, `pull`, `uncross`, `keep_passive`, `quiet_book`); the engine sends them when the hook returns. Put code that several hooks share in a `numba.njit` function:
+Write intents through `ctx`: `quote`, `bid`, `ask`, `clear`, `pull`, `uncross`, `keep_passive` and `quiet_book` ([reference](../../reference/python-api.md#hot-hooks)). The engine sends them when the hook returns. Put code that several hooks share in a `numba.njit` function:
 
 <!-- snippet: examples/python/strategies/basic_mm_hot.py#requote -->
 ```python
@@ -109,11 +116,11 @@ def requote(self, ctx, book):
     self.last_mid = mid if ctx.quoting_enabled else 0
 ```
 
-To send the same orders as a C++ strategy, use the `_raw` fields, `ctx.bid_raw` and `ctx.ask_raw`, and `fastmm.fx` for the C++ operators, as `requote` does. Float prices and quantities are rounded to the nearest 1e-8, then to the tick and lot.
+To send the same orders as a C++ strategy, use the `_raw` fields and `fastmm.fx` for the C++ operators, as `requote` does. Float prices and quantities are rounded to the nearest 1e-8, then to the tick and lot.
 
 ## Run a backtest
 
-Pass the class to `fastmm.run_backtest(cfg, data=..., strategy=BasicMMHot)`. The first run compiles the hooks; later runs load them from the Numba cache. The example compares the hot ports with the C++ `basic_mm`:
+Pass the class to `fastmm.run_backtest(cfg, data=..., strategy=BasicMMHot)`. The first run compiles the hooks; later runs load them from the Numba cache. The example runs the hot ports and the C++ `basic_mm` and compares their outbound orders:
 
 ```bash
 python examples/python/strategies/basic_mm_hot.py

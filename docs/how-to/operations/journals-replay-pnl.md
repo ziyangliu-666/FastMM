@@ -1,65 +1,101 @@
 # Journals, replay and PnL
 
+Every live session writes a journal; from it you can replay the session, value its fills, check the backtest's fill model and reconcile PnL with the account.
+
+| Task | Command |
+|---|---|
+| read the events | `python3 tools/journal_dump.py <journal>` |
+| see the session as a page | `fastmm report <journal>` |
+| reproduce the session | `fastmm-replay --journal <journal> --verify` |
+| value the fills | `fastmm-data analyze <journal>` |
+| check the fill model | `fastmm-data fill-check <journal>` |
+| fit the backtest to live sessions | `fastmm-data calibrate <journals> --backtest` |
+| line a backtest up with the session | `fastmm-data events <journal>` |
+| reconcile PnL with the account | `python3 tools/pnl_report.py <journal>` |
+
 ## Journal files
 
-With `[engine] journal = true` (the default), `fastmm-live` writes `<journal_dir>/<engine name>-<session id>.fmj`; `--journal <path>` chooses the file and `--no-journal` turns it off. The log names the file at startup (`journal: <path>`).
+`fastmm-live` writes `<journal_dir>/<engine name>-<session id>.fmj` and names it at start-up (`journal: <path>`). `--journal <path>` chooses the file and `--no-journal` turns it off.
 
-A journal holds the session header, the instrument table, the effective configuration (without API keys and secrets), each consumed event with the engine clock at which it was processed, and a copy of each order message the engine sent (marked `out`). Blocks carry CRC32C checksums, and a clean shutdown writes a trailer block. The current format is version 4 ([Journal format](../../reference/journal-format.md), [ADR 0010](../../adr/0010-fmj-journal-format.md)); the tools also read versions 1 to 3.
+A journal holds:
 
-Size: one-symbol Binance Demo sessions wrote 23 MB to 32 MB per hour. `[engine] journal_max_bytes` rolls the file over into numbered parts and `[engine] journal_retention_days` deletes old ones at start-up; `[engine] journal_sync` chooses how far a write is pushed before the writer moves on, and a journal that cannot be written trips the kill switch ([Journal format](../../reference/journal-format.md#durability)).
+- the session header, the instrument table and the effective configuration, without keys and secrets;
+- each event the engine consumed, with the engine clock when it was processed;
+- a copy of each order message the engine sent, marked `out`.
 
-Next to the journal, `[storage]` writes the same session as rows: fills, orders, positions, PnL by day and kill events, queryable without a replay ([Query what you traded](query-trading-records.md)). Where the two disagree, the journal is right.
+Blocks carry CRC32C checksums, and a clean shutdown writes a trailer ([Journal format](../../reference/journal-format.md)).
+
+| Key in `[engine]` | Effect |
+|---|---|
+| `journal` | on by default |
+| `journal_max_bytes` | rolls the file over into numbered parts |
+| `journal_retention_days` | deletes old journals at start-up |
+| `journal_sync` | how far a write is pushed before the writer moves on ([Durability](../../reference/journal-format.md#durability)) |
+
+A one-symbol Binance Demo session writes 23 to 32 MB per hour. A journal that cannot be written trips the kill switch.
+
+`[storage]` writes the same session as rows for queries without a replay ([Query what you traded](query-trading-records.md)). Where the two disagree, the journal is right.
 
 ### The session epoch
 
-`[engine] epoch_file` (default `runs/session_epoch`) stores a counter that goes up by one for every session. Client order ids are the epoch in the upper 32 bits and a sequence number in the lower 32 bits, so ids stay unique across restarts. Keep the file between sessions that trade on the same account. The startup log shows the value (`epoch=22`).
+`[engine] epoch_file` (default `runs/session_epoch`) holds a counter that goes up by one each session. Client order ids carry the epoch in their upper 32 bits, so they stay unique across restarts. Keep the file between sessions on the same account; the start-up log shows the value (`epoch=22`).
 
 ## Read a journal
 
-`fastmm report runs/demo-1/session.fmj` writes the session as one HTML page (equity, inventory, fees, order and reject counts) beside the journal ([Run report](../../reference/run-report.md)). For the events themselves, `tools/journal_dump.py` needs only Python 3:
+`fastmm report <journal>` writes the session as one HTML page beside the journal: equity, inventory, fees, order and reject counts ([Run report](../../reference/run-report.md)). For the events, use `tools/journal_dump.py`, which needs only Python 3:
 
 ```bash
 python3 tools/journal_dump.py runs/demo-1/session.fmj --type OrderFill --first 3
 ```
 
-It prints the header, the instrument table, the first matching events and a count per event type. A fill:
+It prints the header, the instrument table, the first matching events and a count per type. A fill:
 
 ```text
 #86      OrderFill         in  inst 0 venue 0 flags - exch_ts 1789356325085000000 recv_ts 1789356324721949775 venue_seq 0
           cl_ord_id=94489280513(epoch 22, seq 1) exec_id=300867841 px=77762.68 qty=0.0003 cum=0.0003 leaves=0 fee=0.0000003 fee_asset=base side=Buy liq=Maker
 ```
 
-- `fee` is in units of `fee_asset`: `quote` (for example USDT), `base` (for example BTC) or `other` (for example BNB, which the engine cannot value and leaves out of fees and positions).
-- `liq` is `Maker`, `Taker` or `Unknown`.
-- `trailer MISSING` at the end means the process did not shut down cleanly. The events before the damaged block are readable; `fastmm-replay` refuses such a journal unless given `--allow-incomplete`, and then its outbound comparison proves nothing.
-- `--no-crc` skips checksum verification, which is slow in pure Python on large journals.
+| Field or line | Meaning |
+|---|---|
+| `fee_asset` | `quote` (USDT), `base` (BTC) or `other` (BNB, which the engine cannot value and leaves out) |
+| `liq` | `Maker`, `Taker` or `Unknown` |
+| `trailer MISSING` | the process did not shut down cleanly; events before the damaged block are readable |
+
+`--no-crc` skips checksum verification, which is slow in Python on large journals.
 
 ## Replay
 
-A journal recorded by `fastmm-live` or by `fastmm-backtest --journal-out` replays on its own:
+1. Replay a journal from `fastmm-live`, or one a backtest wrote with `--journal-out`:
 
-```bash
-./build/release/bin/fastmm-replay --journal runs/sim-local-1789370000000000000.fmj --verify
-./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic \
-    --out - --journal-out runs/bt/session.fmj
-./build/release/bin/fastmm-replay --journal runs/bt/session.fmj --verify
-```
+    ```bash
+    ./build/release/bin/fastmm-replay --journal runs/sim-local-1789370000000000000.fmj --verify
+    ```
 
-`fastmm-replay` runs the recorded inbound events through the same engine and strategy with a simulated clock set to the engine clock of the recording, and compares every outbound order message, and their SHA-256, with the copies in the journal. It takes the configuration embedded in the journal, and the session epoch, dry run, RNG seed and each venue's cancel-replace from the header, so it needs neither the config file nor API keys. A 20 s `fastmm-live` session against `fastmm-sim-exchange`:
+    ```text
+    journal  /tmp/e2e/session.fmj: format v5, 2644 messages (850 market data, 320 outbound), rng_seed 42, strategy 'basic_mm'
+    session  epoch 23, quoting enabled, cancel-replace venues 0x1, engine clock recorded
+    config   embedded in the journal (hash fb8ab9d4318a634e)
+    replay   strategy=basic_mm events=2300
+    recorded outbound 320 msgs sha256 a9463030a4344f26d386ee4bf5ec1f53060895e9b925f6bda62b69b76ef9cd6a
+    replayed outbound 320 msgs sha256 a9463030a4344f26d386ee4bf5ec1f53060895e9b925f6bda62b69b76ef9cd6a
+    replay MATCH
+    ```
 
-```text
-journal  /tmp/e2e/session.fmj: format v5, 2644 messages (850 market data, 320 outbound), rng_seed 42, strategy 'basic_mm'
-session  epoch 23, quoting enabled, cancel-replace venues 0x1, engine clock recorded
-config   embedded in the journal (hash fb8ab9d4318a634e)
-replay   strategy=basic_mm events=2300
-recorded outbound 320 msgs sha256 a9463030a4344f26d386ee4bf5ec1f53060895e9b925f6bda62b69b76ef9cd6a
-replayed outbound 320 msgs sha256 a9463030a4344f26d386ee4bf5ec1f53060895e9b925f6bda62b69b76ef9cd6a
-replay MATCH
-```
+2. For a backtest, write the journal first:
 
-`--config <file>` replays with that file instead. Its effective configuration (secrets and formatting do not count) is hashed and compared with the journal's; if they differ, the run is a what-if replay and prints the warning below. `--strategy <name>` is a what-if run too.
+    ```bash
+    ./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic \
+        --out - --journal-out runs/bt/session.fmj
+    ./build/release/bin/fastmm-replay --journal runs/bt/session.fmj --verify
+    ```
 
-A mismatch prints the first differing message as recorded and as replayed. The same session with `half_spread_bps = 6.0` instead of `5.0`:
+The replay runs the recorded inbound events through the same engine and strategy on the recorded engine clock. It compares every outbound message, and their SHA-256, with the copies in the journal. The configuration, epoch, dry run, RNG seed and cancel-replace settings come from the journal, so it needs no config file and no keys.
+
+With the embedded configuration and the same binary, a mismatch is a determinism bug, and the journal reproduces it ([Determinism](../../explanation/determinism.md)). A different binary need not match.
+
+### What-if replays
+
+`--config <file>` or `--strategy <name>` replays with something else. A configuration whose hash differs from the journal's prints a warning; secrets and formatting do not count. The same session with `half_spread_bps = 6.0` instead of `5.0`:
 
 ```text
 fastmm-replay: warning: sim-local-whatif.toml is not the configuration this session was recorded with (effective config hash cc9c8e5451e9b57f, journal fb8ab9d4318a634e); this is a what-if replay and is not expected to match. Omit --config to replay with the recorded configuration.
@@ -70,17 +106,19 @@ first mismatching outbound message: #0
 replay MISMATCH
 ```
 
-Only the first mismatch is meaningful: replay feeds the recorded acknowledgements whatever it sent, so everything after it diverges.
+Only the first mismatch counts: the replay feeds the recorded acknowledgements whatever it sent, so everything after it diverges.
 
-Journals written before format version 2 carry no configuration, session settings or engine clock. Replay them with `--config <the config the session ran with>`; a live session of that age does not replay to a match. A journal without outbound copies (market data only, such as `tests/fixtures/journals/sample_1000.fmj`) is backtested first, with `configs/backtest-example.toml` unless `--config` is given, and with `--verify` the run's outbound hash must match the `<journal>.sha256` sidecar or `--expect <sha256>`:
+### Other journals
 
-```bash
-./build/release/bin/fastmm-replay --journal tests/fixtures/journals/sample_1000.fmj --verify
-```
+| Journal | How it replays |
+|---|---|
+| no trailer | refused unless `--allow-incomplete`; then the outbound comparison proves nothing |
+| format before version 2 | no embedded configuration; pass `--config`, and a live session will not match |
+| market data only, such as `tests/fixtures/journals/sample_1000.fmj` | backtested with `configs/backtest-example.toml` or `--config`; `--verify` checks the hash against `<journal>.sha256` or `--expect <sha256>` |
 
 ### Check before replaying
 
-`--check` says whether a replay can run, and with what, without replaying: the journal (readable, closed by its writer), the configuration (embedded, given and matching the recording, or the market-data default), the strategy registered in this build, its parameters known to it, and for a market-data journal an expected hash.
+`--check` says whether a replay can run, and with what, without running it:
 
 ```bash
 ./build/release/bin/fastmm-replay --journal tests/fixtures/journals/sample_1000.fmj --check
@@ -96,20 +134,16 @@ expected_hash  ok   tests/fixtures/journals/sample_1000.sha256
 ready to replay
 ```
 
-A `warn` line runs but proves less (a what-if configuration, no engine clock, an unclosed journal with `--allow-incomplete`); a `fail` line stops the replay, and the exit code is 3. `--json` prints one object, `{"ready": ..., "checks": [{"check", "status", "detail"}, ...]}`, for a script.
-
-Exit codes: [Command lines](../../reference/cli.md#fastmm-replay).
-
-A mismatch with the embedded configuration and the same binary is a determinism bug, and the journal reproduces it ([Determinism](../../explanation/determinism.md)). A different binary need not match.
+A `warn` line runs but proves less: a what-if configuration, no engine clock, or an unclosed journal. A `fail` line stops the replay with exit code 3 ([Command lines](../../reference/cli.md#fastmm-replay)). `--json` prints `{"ready": ..., "checks": [{"check", "status", "detail"}, ...]}` for a script.
 
 ## What the fills were worth
+
+`fastmm-data analyze` marks each fill of a live session against the venue mid the session recorded. It reads the journal alone, with no store, configuration or replay.
 
 ```bash
 ./build/release/bin/fastmm-data analyze runs/mm1-1789370000000000000.fmj
 ./build/release/bin/fastmm-data analyze runs/mm1-1789370000000000000.fmj --json --horizons-ms 1000,10000,60000
 ```
-
-Reads a live session's journal alone (no store, no configuration, nothing replayed) and marks each fill against the venue mid the session recorded (its BookTicker stream): what it captured against the mid at the fill, what it was still worth after each horizon (the markout) and the difference (adverse selection), in basis points of the traded notional, overall, by maker and taker, and by instrument; with the order traffic and the maker share beside them:
 
 ```text
 session  strategy 'basic_mm', 1 s of venue time
@@ -124,11 +158,18 @@ horizon  fills of         marked  capture_bps  markout_bps  adverse_bps  exclude
 10s      all                  0         0.00         0.00         0.00         1
 ```
 
-An execution reported twice (the replay after a reconnect) is counted once. A fill whose horizon falls after the last mid, or that had no mid, is left out and counted under `excluded`, never marked at a stale price. A session without a BookTicker stream has the counts and no markouts. The definitions are those of a backtest's markouts ([Backtesting](../../explanation/backtesting.md)), so the two compare directly.
+| Column | Meaning, in bps of traded notional |
+|---|---|
+| `capture_bps` | the fill price against the mid at the fill |
+| `markout_bps` | what the fill was worth at the mid after the horizon |
+| `adverse_bps` | the difference |
+| `excluded` | fills with no mid at the fill or after the horizon, never marked at a stale price |
+
+An execution reported twice, as after a reconnect, counts once. A session without a BookTicker stream has counts and no markouts. The definitions match a backtest's markouts, so the two compare directly ([Backtesting](../../explanation/backtesting.md)).
 
 ## Check the fill model against live fills
 
-`fastmm-data fill-check` measures how well `[backtest] fill_model = "l2_queue"` predicts the passive fills of a live session. It does not re-run the strategy. It takes the orders the session had resting, each from its ack until its cancel ack, last fill or expiry in venue time, puts each one behind the quantity displayed at its price at the ack's venue time, and feeds the queue model the journal's book deltas, trades and book tickers in venue time order, the way a backtest does. A book ticker newer than the depth (by the venue's update id when both carry one, else by venue time) sets the queue at its touch: an order priced better than the touch has nothing ahead, an order at the touch joins behind the touch's quantity less ours and never has more ahead than it shows later. Trades printed after the depth update or the ticker take their quantity from its levels until the next update shows it. A replace follows the new order id. Orders that crossed the book at the ack, market, IOC and FOK orders are left out.
+`fastmm-data fill-check` measures how well `[backtest] fill_model = "l2_queue"` predicts a live session's passive fills. It replays the session's resting orders through the queue model, each from its ack to its end, behind the quantity displayed at its price.
 
 ```bash
 ./build/release/bin/fastmm-data fill-check runs/demo-1/session.fmj \
@@ -149,15 +190,32 @@ conservatism  filled   both live only model only neither model/live    model qty
 1.00             522    519       990          3     835      0.376      0.15319     0.0ms
 ```
 
-Each row is one `queue_conservatism` value (`--conservatism 0,0.25,0.5` to choose others). `both`, `live only`, `model only` and `neither` count orders by whether they filled live and whether the model filled them. `model/live` is the ratio of filled quantities. `|dt| p50` is the median gap between the first model fill and the first live fill, for orders that filled both ways. Pick the conservatism whose `model/live` is closest to 1 and whose `live only` and `model only` are smallest.
+Each row is one `queue_conservatism`; `--conservatism 0,0.25,0.5` picks others. Choose the row whose `model/live` is closest to 1 and whose `live only` and `model only` are smallest.
 
-The model predicted 38-39% of the quantity this session filled, whatever the conservatism. Binance Demo fills passive orders ahead of the quantity it displays: the session's first buy, 0.0003 BTC at 77762.68, acked behind 1.65 BTC, filled after 0.009 BTC had traded at that price, with 1.43 BTC still displayed there. A Demo session cannot calibrate the model; use a session on the real market.
+| Column | Meaning |
+|---|---|
+| `both`, `live only`, `model only`, `neither` | orders by whether they filled live and in the model |
+| `model/live` | ratio of filled quantities |
+| `\|dt\| p50` | median gap between the first model fill and the first live fill |
 
-Times are venue times (`exch_ts`): a venue sends its execution report before the public trade that filled the order, so by receive time the trade would fall after the order's end. An event without a venue time uses its receive time; the `times` line counts them. Binance order times are whole milliseconds, so a trade in the ack's millisecond counts for the order (a tie, counted); one in the end's millisecond only when the order had a fill in that millisecond, and only up to that fill's trade id. A fill reported after the order's end (the API's cancel response can arrive before the execution report) is still a live fill. In a live session the depth feed shows our own orders; each level is stripped of what we had resting at its price at the update's venue time before the model sees it (the same stripping as `journal:<file>,strip_own=1`, [Market-data sources](../../reference/data-sources.md#journal)). `--csv` writes one row per order: price, size, the quantity ahead at the ack, resting time, how it ended, and the live and model fills with their times. `fastmm-data calibrate` runs this over several sessions, fits the conservatism and the latencies, and compares a backtest of each session with it ([Backtesting](../../explanation/backtesting.md#calibrating-against-live-sessions)).
+Here the model predicted 38 to 39% of the filled quantity at any conservatism. Binance Demo fills passive orders ahead of the displayed queue, so calibrate on a session on the real market.
+
+`fastmm-data calibrate` runs this over several sessions and fits the conservatism and the latencies ([Calibrate the backtest](#calibrate-the-backtest-against-live-sessions)).
+
+### How orders are matched
+
+- Times are venue times: a venue sends its execution report before the public trade that filled the order. The `times` line counts events that had only a receive time.
+- Binance order times are whole milliseconds. A trade in the ack's millisecond counts for the order, and the `ties` count shows how many.
+- The depth feed shows your own orders; each level is stripped of them before the model sees it, as `journal:<file>,strip_own=1` does ([Market-data sources](../../reference/data-sources.md#journal)).
+- A replace follows the new order id. Orders that crossed the book at the ack, and market, IOC and FOK orders, are left out.
+
+The full matching rules, including the book ticker, trade and tie rules, are in [How fill-check matches orders](../../reference/cli.md#how-fill-check-matches-orders).
+
+`--market other.fmj` takes the market data from another journal of the same period, such as a recorder with more depth. `--csv` writes one row per order: price, size, queue ahead at the ack, resting time, how it ended, and the live and model fills.
 
 ### Which live fills the model misses
 
-After the table, `fill-check` prints a diagnosis at the last conservatism listed. Each order's first live fill and first model fill get the mid move over `--pre-ms` (default 100) before it and markouts at `--horizons-ms` (default `100,1000,10000`), all against the journal's book ticker mids, in bps of the order's price, positive when the mid moved the order's way:
+After the table, `fill-check` prints a diagnosis at the last conservatism listed. Each first fill gets the mid move over `--pre-ms` (default 100) before it and markouts at `--horizons-ms` (default `100,1000,10000`), in bps, positive when the mid moved the order's way:
 
 ```text
   fills                     n    100ms       1s      10s  pre p10  pre p50  pre p90  through  missing  crossed   cancel
@@ -167,22 +225,84 @@ After the table, `fill-check` prints a diagnosis at the last conservatism listed
   model only              ...
 ```
 
-`live only` against `both, live fill` says whether the fills the model misses are worse ones. The columns after the markouts say how each fill came about:
+Compare `live only` with `both, live fill` to see whether the missed fills are worse ones.
 
 | Column | Meaning |
 |---|---|
-| `through` | live: a trade printed through the order's price in the fill's millisecond (a sweep took it); model: the fill came from such a print |
-| `missing` | no trade at or through the order's price in the live fill's millisecond: the recorded trades do not show it |
+| `through` | live: a trade printed through the order's price in the fill's millisecond; model: the fill came from such a print |
+| `missing` | no recorded trade at or through the order's price in the live fill's millisecond |
 | `crossed` | the opposite touch had reached the order's price by the fill |
-| `cancel` | a cancel or replace of the order had gone out before the live fill: it lost the race |
+| `cancel` | a cancel or replace had gone out before the live fill: it lost the race |
 
-The line under the table counts the first live fills whose exec id is a trade id of the recorded tape (Binance spot's raw trade stream: all of them; an aggregated stream: none, and the fills are matched by price and millisecond instead). Then each feature splits the orders into buckets, with the orders filled live, by the model, their ratio and the live-only count: the queue ahead at the ack in order quantities, ticks behind the touch at the ack, whether the opposite touch reached the price while the order rested, whether a trade printed through it, how much printed at the price against the queue at the ack, resting time, and whether the order was cancelled or replaced. A bucket whose `live/model` stands far from the others locates what the model gets wrong. `--csv` adds these per order: the cancel's send time, ticks behind, when the touch reached the price and when a trade printed through it, the quantity printed at it, the live fill's print class, and the pre-fill moves and markouts of the live fill and of each conservatism's model fill.
+Then each feature splits the orders into buckets: queue ahead, ticks behind the touch, touch reached, trade through, quantity printed, resting time, cancelled. A bucket whose `live/model` stands far from the others shows what the model gets wrong.
 
-`--market other.fmj` replays the market data of another journal recorded over the same period (a recorder on another host, a feed with more depth) instead of the session's own. Its instruments are matched to the session's by venue id and symbol; messages on others are counted. The session's own orders are still taken out of its depth.
+## Calibrate the backtest against live sessions
+
+`fastmm-data calibrate` fits the `l2_queue` fill model and the simulated latency to journals recorded by `fastmm-live`, and prints the `[backtest]` keys to use:
+
+```bash
+./build/release/bin/fastmm-data calibrate sessA.fmj sessB.fmj sessV.fmj --backtest
+```
+
+For each session it replays the orders that rested through the queue model, once per `queue_conservatism` (`--conservatism`, default `0,0.25,0.5,0.75,1`), and counts orders by whether they filled live and in the model ([fill check](#check-the-fill-model-against-live-fills)):
+
+```text
+  conservatism     both   live  model   none    hit   miss  false  error model/live
+  0.00              151      2      0   1573  0.987  0.013  0.000  0.013      0.987
+  ...
+  1.00              151      2      0   1573  0.987  0.013  0.000  0.013      0.987
+  no ticker         144      9      1   1572  0.941  0.059  0.001  0.065      0.940
+  no tape           150      3      0   1573  0.980  0.020  0.000  0.020      0.981
+  neither           127     26      1   1572  0.830  0.170  0.001  0.175      0.795
+```
+
+| Column or row | Meaning |
+|---|---|
+| `hit`, `miss` | share of live fills the model also fills, and the rest |
+| `false` | share of orders not filled live that the model fills |
+| `error` | (live only + model only) over the orders filled either way; the fit minimises it, then `model/live` nearest 1, then prefers the larger conservatism |
+| `no ticker`, `no tape`, `neither` | the fitted value without the book ticker, without the trades since the depth update, or both: what each input is worth |
+
+The conservatism is cross-validated: fitted on each session and scored on the others. When every value scores the same, the data does not identify it and 1 is kept; queues at or inside the touch are set by the book ticker, where the conservatism does not act.
+
+The fitted keys look like this:
+
+```text
+[backtest]
+fill_model = "l2_queue"
+queue_conservatism = 0.75
+md_arrival = "recorded"
+latency_fixed_us = 360
+latency_jitter_us = 300
+latency_sigma = 0.5
+latency_ack_us = 375
+latency_ack_jitter_us = 160
+latency_ack_sigma = 0.5
+latency_cancel_us = 200
+latency_cancel_jitter_us = 250
+latency_cancel_sigma = 0.5
+order_service_us = 220
+```
+
+With several venues, including a pool's accounts, the latency keys go under `[backtest.venues.<name>]`, one table per venue. `md_arrival = "recorded"` delivers market data to the strategy when the session received it.
+
+| Latency key | Fitted from |
+|---|---|
+| `latency_*_us`, `latency_*_jitter_us` | each order's send time, the venue's time on its ack and the ack's arrival; each leg is a fixed part plus a lognormal excess of shape `latency_*_sigma` |
+| `latency_cancel_*` | at least 20 isolated cancels, timed by their cancel acks |
+| `order_service_us` | messages sent within 1 ms of the one before, which wait for the venue to take that one in |
+
+On Binance Spot a burst of cancels on one connection is taken in about 0.25 ms apart, so the tenth cancel reaches the book some 2 ms after the first. The round trip's tail, a p99 of 40 ms in a live Binance Spot session, is beyond this model.
+
+When a cancel path or service time is fitted, the fill check runs twice more with cancels replayed. `cancels, before` sends them through the order path alone; `cancels, fitted` through everything fitted. The strategy's decisions are those it made live, so the two rows measure the cancel race alone.
+
+`--backtest` then re-runs each session over its journal with our orders stripped, once with its configuration's `[backtest]` and once with the fitted keys. It prints both beside the live session: orders, rejects, fills, time to fill, the PnL decomposition and markouts. This adds everything a backtest re-decides on top of the fill model, such as how often the strategy requotes. `--from-live-state` starts both runs from the session's recorded state ([below](../../explanation/backtesting.md#starting-from-the-live-sessions-state)); `--csv` writes the fill-check grid.
+
+A live commission paid in a third asset such as BNB has no price in the journal. The live fees and net leave it out, as the engine does, and a line under the table gives those fills and their commission.
 
 ## Compare a backtest with the live session
 
-A backtest over a live session's journal (`journal:<file>,strip_own=1`) re-decides every order, so its fills can only be compared with the session's once both are laid out the same way. `fastmm-data events` writes a session's own traffic as CSV, one row per record: the orders, cancels and replaces it sent, the venue's acks, rejects, cancel acks and rejects, fills and expiries, the balances it reported and the money it reported in or out of the account (flows), the reconciliations and the parameter updates. Run it over the live parts and over the backtest's journal (`fastmm-backtest --journal-out`) and the two files line up:
+A backtest over a live journal re-decides every order. To compare its fills with the session's, write both as CSV with `fastmm-data events`:
 
 ```bash
 ./build/release/bin/fastmm-data events j/session.7.fmj j/session.8.fmj --out live.csv
@@ -191,35 +311,62 @@ A backtest over a live session's journal (`journal:<file>,strip_own=1`) re-decid
 ./build/release/bin/fastmm-data events runs/r/bt.fmj --out replay.csv
 ```
 
-The columns are `type,time,venue_time,venue,symbol,id,side,price,qty,a,b,c,d,e,flags,trigger,engine`. `time` is the receive time (the send time of an outbound message), `venue_time` the venue's, `venue` the account the record came from or went to, `trigger` the receive time of the event an outbound message answered, `engine` the time the engine took an inbound record in (in a part that begins without an absolute engine time, relative to its first record). `a` to `e` depend on the type: a new order's type, time in force and reduce-only flag; a reject's reason, venue code and text; a fill's liquidity (1 maker, 2 taker), fee, fee asset, exec id and leaves; a balance's asset, free, locked, total and equity; a flow's asset, signed amount (positive in) and the venue's id of it; a reconciliation's kind (0 begin, 1 open order, 2 position, 3 end) and filled quantity; a parameter update's `name=value` pairs, origin and source. `flags` holds the record's header flags, and for a fill or a balance the message's own flags shifted by 8 (a fill flagged 256 is a replay of an execution the session already had, from the venue's trade history). `--symbol <S>` adds the trades, book tickers and depth levels of that symbol, `--symbol '*' --trades-only` every public trade, whose id is the exec id of the session's fill against it on Binance spot.
+A backtest order within a few milliseconds of a live one, at the same price, symbol and side, is the same decision; its fills show how the fill model treated it. A live fill with no backtest order near it shows where the two runs parted.
 
-With both files, an order of the backtest that went out within a few milliseconds of a live one, at the same price, on the same symbol and side, is the same decision; its fills say how the fill model treated it. A live fill the backtest has no order near tells where the two runs parted.
+Each row is one record the session sent or received. The columns are `type,time,venue_time,venue,symbol,id,side,price,qty,a,b,c,d,e,flags,trigger,engine`.
+
+| Column | Meaning |
+|---|---|
+| `time` | receive time, or send time of an outbound message |
+| `venue_time` | the venue's time |
+| `venue` | the account the record came from or went to |
+| `trigger` | receive time of the event an outbound message answered |
+| `engine` | when the engine took an inbound record in |
+| `flags` | header flags; for a fill or balance, its own flags shifted by 8 (256 marks a replayed execution) |
+
+| Record | `a` to `e` |
+|---|---|
+| new order | order type, time in force, reduce-only |
+| reject | reason, venue code, text |
+| fill | liquidity (1 maker, 2 taker), fee, fee asset, exec id, leaves |
+| balance | asset, free, locked, total, equity |
+| flow | asset, signed amount (positive in), venue id |
+| reconciliation | kind (0 begin, 1 open order, 2 position, 3 end), filled quantity |
+| parameter update | `name=value` pairs, origin, source |
+
+`--symbol <S>` adds that symbol's trades, book tickers and depth. `--symbol '*' --trades-only` adds every public trade; on Binance spot its id is the exec id of your fill against it.
 
 ## Check PnL
 
-A session's PnL has four views:
+A session's PnL has four views, and they should agree:
 
-1. The engine's, from the summary line `fastmm-live: realized_pnl=<r> unrealized_pnl=<u> fees=<f> ...` (also the final `fastmm-top` frame). Net PnL is `r + u - f`, marked at the engine's last mid. On perpetuals, `r` includes funding.
-2. The journal's, computed from the fills by `tools/pnl_report.py`.
-3. The store's, from `fastmm-pnl` or `fastmm.open_store()`: the same fills, indexed by day and instrument across sessions ([Query what you traded](query-trading-records.md)).
-4. The account's, from balance snapshots taken before and after the session.
+| View | Source |
+|---|---|
+| engine | the summary line `fastmm-live: realized_pnl=<r> unrealized_pnl=<u> fees=<f> ...`; net is `r + u - f` at the last mid, and `r` includes funding on perpetuals |
+| journal | the fills, through `tools/pnl_report.py` |
+| store | `fastmm-pnl` or `fastmm.open_store()`, by day and instrument ([Query what you traded](query-trading-records.md)) |
+| account | balance snapshots before and after the session |
 
-`tools/pnl_report.py` prints fills, maker share, volume, fees and inventory per hour, post-fill markouts, the journal's trading PnL and, when given, the engine's summary and the account reconciliation:
+1. Before the session, save a snapshot of the account from the venue's account and ticker endpoints. FastMM ships no tool for this. Balances are free plus locked:
 
-```bash
-python3 tools/pnl_report.py runs/demo-1/session.fmj --engine-log runs/demo-1/engine.log \
-  --start runs/demo-1/equity_start.json --end runs/demo-1/equity_end.json
-```
+    ```json
+    {"utc": "2026-09-14T03:25:21Z", "btc": 0.004995, "usdt": 4614.81995, "mid": 77762.685, "open_orders": 0}
+    ```
 
-The snapshots are JSON objects you produce from the venue's account and ticker endpoints right before and after the session; FastMM ships no tool for this. Balances are free plus locked:
+    Use `base` and `quote` as keys, or the lower-case asset names set by `--base-asset` and `--quote-asset` (default `BTC` and `USDT`). `equity` is optional; it defaults to `quote + base * mid`.
 
-```json
-{"utc": "2026-09-14T03:25:21Z", "btc": 0.004995, "usdt": 4614.81995, "mid": 77762.685, "open_orders": 0}
-```
+2. After the session, save the end snapshot the same way.
 
-The balance keys are `base` and `quote`, or the lower-case asset names given by `--base-asset` and `--quote-asset` (default `BTC` and `USDT`). `equity` (or `equity_usdt`) is optional and computed as `quote + base * mid` when missing. Each execution is booked once, keyed like the engine's OMS (venue execution id, instrument, side): a reconnect replays executions the stream already delivered, and the journal records both. `python3 tools/pnl_report.py --self-test` checks the tool on a synthetic journal.
+3. Run the report:
 
-The markout table marks each fill against the mid `--markout-horizons` seconds later (default `1,10,60`), taken from the journal's `BookTicker` events; a journal without top-of-book updates has no mid to mark against and the report says so. A fill whose horizon falls after the last quote in the journal is excluded, not marked at the last known mid. The spread capture beside it covers the same fills, so the difference is the adverse selection ([Backtesting](../../explanation/backtesting.md#markouts)).
+    ```bash
+    python3 tools/pnl_report.py runs/demo-1/session.fmj --engine-log runs/demo-1/engine.log \
+      --start runs/demo-1/equity_start.json --end runs/demo-1/equity_end.json
+    ```
+
+    It prints fills, maker share, volume, fees and inventory per hour, markouts, the journal's trading PnL, the engine's summary and the account reconciliation. `--self-test` checks the tool on a synthetic journal.
+
+The account's change splits into the inventory you started with and trading:
 
 ```text
 equity change = starting base balance * (end mid - start mid) + trading
@@ -227,15 +374,17 @@ equity change = starting base balance * (end mid - start mid) + trading
 
 The session reconciles when:
 
-- the unexplained balance change (account balance change minus the journal's inventory or cash change) is zero. A non-zero value means fills that are not in the journal (a second engine or manual trades on the account), deposits or withdrawals, or commission paid in another asset;
-- the journal's trading PnL equals the account's trading PnL to within rounding;
-- the engine's net PnL differs from the account's trading PnL only by the engine's inventory marked at its last mid instead of the end snapshot's mid.
+- the unexplained balance change is zero; otherwise there are fills outside the journal, deposits or withdrawals, or commission in another asset;
+- the journal's trading PnL equals the account's within rounding;
+- the engine's net PnL differs from the account's trading PnL only by inventory marked at its last mid instead of the end snapshot's.
 
-Commission charged in the base asset is already inside the inventory: a buy receives `qty - fee` and a sell delivers `qty + fee`. Do not subtract it again.
+Each execution is booked once, by venue execution id, instrument and side, since a reconnect replays executions the journal already has. Commission in the base asset is already inside the inventory: a buy receives `qty - fee`, a sell delivers `qty + fee`. Do not subtract it again.
+
+Markouts use `--markout-horizons` seconds (default `1,10,60`) against the journal's `BookTicker` mids; fills past the last quote are excluded ([Markouts](../../explanation/backtesting.md#markouts)).
 
 ## Example: Binance Demo
 
-Two one-hour `basic_mm` sessions on BTCUSDT in Binance Demo Mode, with the same risk limits and quote size (0.0003 BTC):
+Two one-hour `basic_mm` sessions on BTCUSDT in Binance Demo Mode, with the same risk limits and a quote size of 0.0003 BTC:
 
 | Session | `half_spread_bps` | Fills in the hour | Account equity change | Of which trading |
 |---|---:|---:|---:|---:|
@@ -244,8 +393,11 @@ Two one-hour `basic_mm` sessions on BTCUSDT in Binance Demo Mode, with the same 
 
 The second session's report:
 
-- Notional traded: 31,622.62 USDT; fees: 31.62 USDT, 10.00 bps (the 0.1% maker commission). Commission was charged in BTC on buys (0.00020358 BTC in total) and in USDT on sells (15.82 USDT).
-- Inventory change -0.00044358 BTC and cash change +1.5160 USDT, both after fees, equal to the account's balance changes.
-- Account: equity change -33.36 USDT = starting inventory revaluation -0.42 USDT + trading -32.94 USDT.
-- Engine: realised -1.32 USDT, unrealised +0.00 USDT, fees 31.62 USDT, net -32.94 USDT, 0.003 USDT from the account's trading PnL.
-- Post-only rejects (`PostOnlyWouldCross`): 260.
+| Item | Value |
+|---|---|
+| notional traded | 31,622.62 USDT |
+| fees | 31.62 USDT, 10.00 bps (0.1% maker); 0.00020358 BTC on buys, 15.82 USDT on sells |
+| inventory and cash change, after fees | -0.00044358 BTC and +1.5160 USDT, equal to the account's balance changes |
+| account equity change | -33.36 USDT = revaluation -0.42 USDT + trading -32.94 USDT |
+| engine | realised -1.32, unrealised +0.00, fees 31.62, net -32.94 USDT; 0.003 USDT from the account's trading PnL |
+| post-only rejects (`PostOnlyWouldCross`) | 260 |

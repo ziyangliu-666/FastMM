@@ -1,30 +1,117 @@
-# Monitoring a live session
+# Monitor a live session
 
-`fastmm-live` writes its counters, PnL, kill-switch state, latency percentiles and each venue's status to a memory-mapped file every 250 ms without touching the engine thread; the engine's values in it refresh every second. The file is `/dev/shm/fastmm-<engine name>.status` unless `--status <path>` is given; `--no-status` turns it off. `fastmm run` writes the same file. `fastmm-top` itself is a C++ program, from a build or the [release tarball](deploy.md); the pip package does not install it.
+You need a running `fastmm-live` or `fastmm run` session, and `fastmm-top` from a C++ build or the [release tarball](deploy.md); the pip package does not install it.
+
+The session writes its counters, PnL, kill state, latencies and venue states to a memory-mapped status file without touching the engine thread. The engine's values in it refresh every second. `fastmm-live --status <path>` moves the file and `--no-status` turns it off.
+
+## Open the dashboard
 
 ```bash
 ./build/release/bin/fastmm-live --config configs/binance-demo.toml &
 ./build/release/bin/fastmm-top --name binance-demo          # or --path <status file>
 ```
 
-`fastmm-top` redraws the dashboard in place (`--interval <ms>`, default 500; `--no-color`; `--once` prints one frame; `--json` prints one snapshot as JSON; `--metrics <port>` serves it for Prometheus instead of drawing, [below](#scrape-it-with-prometheus)). It shows:
+| Option | Effect |
+|---|---|
+| `--interval <ms>` | redraw period, 500 ms by default |
+| `--no-color` | plain text |
+| `--once` | print one frame and exit |
+| `--json` | print one snapshot as JSON |
+| `--metrics <[host:]port>` | serve Prometheus metrics instead of drawing ([below](#scrape-it-with-prometheus)) |
+| `--gateway <name>` | read a `fastmm-gateway`'s file, `/dev/shm/fastmm-<name>.gw.status` ([Run behind a gateway](run-behind-a-gateway.md#monitor)) |
 
-- the session: engine and strategy name, session id, pid, dry-run flag, uptime and the state (starting, running, stopping, stopped). A running engine that has not published for more than 3 seconds is shown as `STALE`: the process has most likely died. Next to the state, `KILLED (<reason>)` means the global kill switch is engaged (the reason stays in the final `stopped` frame), `VENUE KILLED` that at least one venue's switch is, and `LATCHED` that a `max_loss` trip is recorded in `[engine] kill_file`, so the next start refuses to trade ([Kill switch and shutdown](kill-switch-and-shutdown.md#the-latched-loss-budget));
-- engine counters: events, book updates, orders, cancels, replaces, fills, kill switch trips (`kills` global, `venue_kills` per venue) and flags. In a dry run (`fastmm-top --name <name>-dryrun`) the orders are on paper (`paper orders=`): what the engine would have sent;
-- PnL, in the quote currency or `[accounting] reporting_currency`: this session's `realized` (funding included), `unrealized` and `fees`, the `carried` net PnL of earlier sessions and `budget_used`, the sum `[risk] max_loss` is compared against;
-- rejects: `risk_rejects` counts orders the engine's pre-trade checks refused (they were never sent), `venue_rejects` orders a venue refused; each is followed by its most frequent reasons, for example `risk_rejects=17 (MaxPosition 12, RateLimit 5) venue_rejects=3 (PostOnlyWouldCross 3)`. Up to six reasons per kind are listed, rejects of further reasons are summed as `other <n>`. `balance_withheld` counts quote orders the engine held back when their old order ended (a requote on a venue without replace) and the balance no longer covered them, typically because the old order filled: that side stays unquoted until the strategy quotes again;
-- after a private-stream outage, an `estimates` line: `fills` booked from a cumulative quantity no fill message reported (a cancel ack, an expiry or a reconciliation snapshot), at the order's own price with no fee; `pending`, the orders whose estimate no execution has named yet (the next execution replay corrects their price and fee); `forgotten`, estimates whose order the OMS stopped remembering (4096 ended orders later) before an execution named them. An execution of such an order that the venue replays later is booked again on top of its estimate, so a `forgotten` above 0 on a venue that replays executions means the position may be over by that order's quantity until the venue reports its own ([Executions the private stream never delivered](../../reference/venues/connector-behaviour.md#execution-replay));
-- once the store has failed a write or dropped a record, a `store` line: the `rows` it wrote, its `errors` and the records `dropped` before they reached it. The next start restores positions from that store ([Storage](../../reference/storage.md#what-a-backend-guarantees));
-- with a pool treasury ([`[venues.<primary>.treasury]`](../../reference/configuration.md#venuestreasury)), a `treasury` line summed over the pools: transfers `in_flight`, `sent`, `done`, `failed`, `timed_out`, plans the limits held back (`limited`), `dry_run_plans` and `errors` (requests without an answer, ledger writes that failed);
-- engine latency per interval as count, p50, p99, p99.9 and max. `decode` is the network thread's parse time; `book_apply` runs from the end of decoding on the network thread to the book update on the engine thread, so it includes the hand-off through the SPSC ring and, with `spin_mode = "adaptive"`, an idle engine's wake-up; `strategy`, `serialize` and `send` are engine thread only; `tick_to_trade` and `wire_to_book` start at the socket read;
-- per venue: market-data, user and order channel states (`down`, `connecting`, `live`, `stale`; a user or order channel that is connected but quiet shows `live`), synced books, market-data messages, resyncs, orders, cancels, order events, reconnects, REST errors, clock offset and the network thread's wire tick-to-trade p50, and in the `kill` column the reason a killed venue was tripped for (`-` while it trades);
-- `quotes`: per instrument and side that asks for something, works, or carries a note (below), what the strategy asked for (level 0 price x quantity over every level), what works (best price x leaves, in how many orders), the first obstacle and how long it has held, and the strategy's note and budget. Sides that are stuck are drawn in yellow. The obstacles, in the order the engine checks them: `not_wanted` (the strategy asks for nothing), `quoting_off` (quoting is disabled: pulled, killed, reconciling, parameters stale), `venue_killed`, `pulled` (`fastmm-ctl pull`), `feed_lag` (the feed-lag gate), `quoting` (the working orders cover what was asked), `backoff` (a venue refusal put the side in its reject backoff), `starved` (waiting for a `[risk] orders_per_sec` token), `refused:<reason>` (the last order on the side was refused in the last 2 s) and `pending` (orders on their way or a requote waiting its turn). Why a model asks for less, or nothing, only the strategy can say: `ctx.note_quote` ([Strategy API](../../reference/strategy-api.md#context)) puts it in the note column. A `metrics` line follows with the numbers the strategy publishes with `ctx.metric`;
-- `process`: what the host is doing to the session, read by `fastmm-top` itself from `/proc/<pid>` (the session publishes nothing for it): resident memory, the host's load and, per thread (`fm-engine`, `fm-store`, the venue threads), its state, the CPU it last ran on and the CPUs it may run on, its CPU use and its context switches per second since the previous frame (`--once`: totals), and major page faults. An engine thread with involuntary switches is being preempted: another task shares its core, and a latency spike at that time is the host's, not FastMM's. `--json` has the same as `"process"`, with cumulative counters to difference between two reads. Only on the session's own host and pid namespace: a pid that started at another time than the session (the session ended and the pid was reused) is refused (`"ok": false` and the reason);
-- per multicast venue (`nasdaq_itch`), a feed line: state, receive backend, packets per line, A/B skew, gaps, recovered and given-up sequences, snapshots, the reorder high-water mark and the kernel-to-T0 p50 and p99 ([Receive a multicast feed](multicast-feeds.md#7-check-the-feed)).
+For a dry run, use `--name <name>-dryrun`; its orders show as `paper orders=`, what the engine would have sent.
 
-`fastmm-top --gateway <name>` reads a `fastmm-gateway`'s file instead (`/dev/shm/fastmm-<name>.gw.status`); the file says which it is, so `--path` works for either. Its frame and metrics are the gateway's: attachments, the account, positions ([Run behind a gateway](run-behind-a-gateway.md#monitor)).
+The file stays after the session ends, with a final `stopped` frame. Its layout is versioned, and a `fastmm-top` from another build refuses it; with `--once` that exits 3, as a missing file does:
 
-The file stays after the session ends; the last frame shows `stopped` with the final numbers. The layout is versioned. A `fastmm-top` from another build refuses the file with `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>); use fastmm-top from the same build as fastmm-live` (with `--once`, exit code 3, as for a missing file).
+```text
+<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>); use fastmm-top from the same build as fastmm-live
+```
+
+## Read the dashboard
+
+### Session state
+
+| Shows | Means |
+|---|---|
+| `starting`, `running`, `stopping`, `stopped` | the session state, next to engine and strategy name, session id, pid, dry-run flag and uptime |
+| `STALE` | a running engine has not published for over 3 s; the process has most likely died |
+| `KILLED (<reason>)` | the global kill switch is engaged; the reason stays in the final frame |
+| `VENUE KILLED` | at least one venue's kill switch is engaged |
+| `LATCHED` | a `max_loss` trip is recorded in `[engine] kill_file`, so the next start refuses to trade ([Kill switch and shutdown](kill-switch-and-shutdown.md#the-latched-loss-budget)) |
+| `FLATTENING (<n> left)` | an [operator flatten](operate-a-running-session.md#flatten) is running |
+
+### Lines
+
+| Line | Shows |
+|---|---|
+| engine counters | events, book updates, orders, cancels, replaces, fills, `kills` (global) and `venue_kills` |
+| PnL | this session's `realized` (funding included), `unrealized` and `fees`; `carried` from earlier sessions; `budget_used`, the sum `[risk] max_loss` is compared against. In the quote currency or `[accounting] reporting_currency` |
+| rejects | `risk_rejects` (refused by pre-trade checks, never sent) and `venue_rejects`, each with up to six top reasons and `other <n>` |
+| `balance_withheld` | quote orders held back after a requote because the balance no longer covered them, usually because the old order filled; that side stays unquoted until the strategy quotes again |
+| `estimates` | after a private-stream outage ([below](#estimated-fills)) |
+| `store` | once the store failed a write or dropped a record: `rows`, `errors`, `dropped`. The next start restores from it ([Storage](../../reference/storage.md#what-a-backend-guarantees)) |
+| `treasury` | with a [pool treasury](../../reference/configuration.md#venuestreasury), summed over pools: `in_flight`, `sent`, `done`, `failed`, `timed_out`, `limited`, `dry_run_plans`, `errors` |
+| latency | per interval: count, p50, p99, p99.9 and max ([below](#latency-intervals)) |
+| per venue | channel states, synced books, messages, resyncs, orders, cancels, reconnects, REST errors, clock offset, wire tick-to-trade p50, and the `kill` reason (`-` while trading) |
+| `quotes` | per instrument and side ([below](#quotes)) |
+| `metrics` | the values the strategy publishes with `ctx.metric` |
+| `process` | the host's view of the session ([below](#process)) |
+| feed | per `nasdaq_itch` venue: state, receive backend, packets per line, A/B skew, gaps, recoveries, snapshots, reorder high-water mark, kernel-to-T0 p50 and p99 ([Receive a multicast feed](multicast-feeds.md#7-check-the-feed)) |
+
+A channel state is `down`, `connecting`, `live` or `stale`; a connected but quiet user or order channel shows `live`. A rejects line reads:
+
+```text
+risk_rejects=17 (MaxPosition 12, RateLimit 5) venue_rejects=3 (PostOnlyWouldCross 3)
+```
+
+### Latency intervals
+
+| Interval | Measures | Thread |
+|---|---|---|
+| `decode` | parsing a message | network |
+| `book_apply` | end of decoding to the book update, including the ring hand-off and, with `spin_mode = "adaptive"`, an idle engine's wake-up | network to engine |
+| `strategy`, `serialize`, `send` | each step | engine |
+| `tick_to_trade`, `wire_to_book` | from the socket read | both |
+
+### Quotes
+
+The `quotes` table has a row per instrument and side that asks for something, works, or carries a note. It shows what the strategy asked for (level-0 price x quantity over every level), what works (best price x leaves, in how many orders), the first obstacle and how long it has held, and the strategy's note and budget. Stuck sides are yellow.
+
+The obstacles, in the order the engine checks them:
+
+| Obstacle | Means |
+|---|---|
+| `not_wanted` | the strategy asks for nothing |
+| `quoting_off` | quoting is disabled: pulled, killed, reconciling or parameters stale |
+| `venue_killed` | the venue's kill switch is engaged |
+| `pulled` | `fastmm-ctl pull` |
+| `feed_lag` | the feed-lag gate |
+| `quoting` | the working orders cover what was asked |
+| `backoff` | a venue refusal put the side in reject backoff |
+| `starved` | waiting for a `[risk] orders_per_sec` token |
+| `refused:<reason>` | the last order on the side was refused in the last 2 s |
+| `pending` | orders on their way, or a requote waiting its turn |
+
+Why a model asks for less, or nothing, only the strategy knows; `ctx.note_quote` puts it in the note column ([Strategy API](../../reference/strategy-api.md#context)).
+
+### Estimated fills
+
+After a private-stream outage the `estimates` line counts fills booked without a fill message ([Executions the private stream never delivered](../../reference/venues/connector-behaviour.md#execution-replay)):
+
+| Counter | Means |
+|---|---|
+| `fills` | booked from a cumulative quantity (a cancel ack, an expiry, a reconciliation snapshot), at the order's price with no fee |
+| `pending` | estimates no execution has named yet; the next execution replay corrects price and fee |
+| `forgotten` | estimates whose order was forgotten (4096 ended orders later) before an execution named it |
+
+A replayed execution of a forgotten order is booked again on top of its estimate. So `forgotten` above 0 on a venue that replays executions means the position may be over by that order's quantity, until the venue reports its own.
+
+### Process
+
+`fastmm-top` reads `/proc/<pid>` itself; the session publishes nothing for it. It shows resident memory, host load, and per thread (`fm-engine`, `fm-store`, the venue threads) its state, last CPU, allowed CPUs, CPU use, context switches per second and major page faults. With `--once` the counters are totals; `--json` has them under `"process"` as cumulative counters.
+
+An engine thread with involuntary switches is being preempted by another task on its core, so a latency spike at that time is the host's. The section works only in the session's host and pid namespace; a reused pid is refused with `"ok": false` and the reason.
 
 ## Scrape it with Prometheus
 
@@ -35,9 +122,9 @@ The file stays after the session ends; the last frame shows `stopped` with the f
 curl -s http://127.0.0.1:9109/metrics | head
 ```
 
-The exporter reads the status file in `fastmm-top`'s own process; a scrape never reaches `fastmm-live`. It serves one request at a time and answers `fastmm_up 0` while no session is publishing.
+A scrape reads the status file in `fastmm-top`'s process and never reaches `fastmm-live`. The exporter serves one request at a time and answers `fastmm_up 0` while no session publishes.
 
-The default host is `127.0.0.1`. `--metrics 0.0.0.0:9109` or `--metrics '[::]:9109'` exposes it on the network, without authentication or TLS.
+It listens on `127.0.0.1` by default. `--metrics 0.0.0.0:9109` or `--metrics '[::]:9109'` exposes it on the network, with no authentication or TLS.
 
 ```yaml
 # prometheus.yml
@@ -81,7 +168,7 @@ The quantiles are the engine's (p50, p99, p99.9), not a histogram: they cannot b
 
 ## Alerts
 
-`deploy/prometheus/fastmm-alerts.yml` (also in the release tarball) holds alerting rules for these metrics; add it to `rule_files` and route the alerts with Alertmanager. `critical` means act now: the process is hung or dead (`fastmm_status_age_seconds`), the kill switch is engaged, a venue is killed, or the store failed a write or dropped records (`FastMMStoreFailing`: the next start restores from it). `warning` means look soon: a net loss past 80% of `max_loss` or a latched `max_loss` trip, a channel down or stale market data, books out of sync, reconnect or REST-error bursts, a clock offset past a second, and for a gateway an account loss past 80% of its `max_loss`, no strategy attached, or a strategy falling behind on market data.
+`deploy/prometheus/fastmm-alerts.yml`, also in the release tarball, holds alert rules for these metrics. Add it to `rule_files` and route the alerts with Alertmanager.
 
 ```yaml
 # prometheus.yml
@@ -89,16 +176,21 @@ rule_files:
   - /opt/fastmm/deploy/prometheus/fastmm-alerts.yml
 ```
 
+| Severity | Fires when |
+|---|---|
+| `critical`, act now | the snapshot is stale (process hung or dead), the kill switch is engaged, a venue is killed, or the store failed a write or dropped records (`FastMMStoreFailing`) |
+| `warning`, look soon | net loss past 80% of `max_loss`, a latched `max_loss` trip, a channel down, stale market data, books out of sync, reconnect or REST-error bursts, clock offset past 1 s; for a gateway, account loss past 80% of its `max_loss`, no strategy attached, or a strategy behind on market data |
+
 ## Reject logging
 
-Rejects are counted per reason. A risk reject is logged at WARN the first time its reason occurs, then at most once per reason every 10 seconds (`EngineConfig::reject_log_interval`), with the number of that reason's rejects not logged since its previous line:
+Rejects are counted per reason. A risk reject is logged at WARN the first time its reason occurs, then at most once per reason every 10 s, with the count suppressed since:
 
 ```text
 WARN  ... risk reject MaxPosition on new order: binance:BTCUSDT Buy 0.01 @ 64250.1
 WARN  ... risk reject MaxPosition on new order: binance:BTCUSDT Buy 0.01 @ 64251.3 (11 more suppressed)
 ```
 
-Venue rejects are logged per order (`order <id> rejected: <reason> (<code>)`). At shutdown `fastmm-live` logs both breakdowns after the engine counters; a kind without rejects has no breakdown line, and a long one continues on further lines with the same prefix:
+Venue rejects are logged per order: `order <id> rejected: <reason> (<code>)`. At shutdown `fastmm-live` logs a breakdown for each kind that had rejects:
 
 ```text
 fastmm-live: events=... fills=812 risk_rejects=17 venue_rejects=3
@@ -106,4 +198,4 @@ fastmm-live: risk_rejects by reason: MaxPosition 12, RateLimit 5
 fastmm-live: venue_rejects by reason: PostOnlyWouldCross 3
 ```
 
-`tools/pnl_report.py --engine-log` reads these lines. What each risk reason means and which limit to look at: [Troubleshooting](troubleshooting.md#orders-and-reconciliation).
+`tools/pnl_report.py --engine-log` reads these lines. Each risk reason and the limit behind it: [Troubleshooting](troubleshooting.md#orders-and-reconciliation).

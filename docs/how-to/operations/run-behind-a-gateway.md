@@ -1,119 +1,201 @@
 # Run strategies behind a gateway
 
-`fastmm-gateway` holds the venue connections. Strategy processes, `fastmm-live --gateway`, attach to it, several at once, each trading instruments no other attached strategy trades, or instruments `[gateway.shared]` lets several trade ([Shared instruments](#shared-instruments)). A strategy can stop, crash or be replaced without the venue sessions dropping or the others noticing. When a strategy process goes away, `kill -9` included, the gateway cancels its orders at once.
+`fastmm-gateway` holds the venue connections and the API keys; strategy processes attach to it. A strategy can stop, crash or be replaced while the venue sessions stay up and the other strategies keep trading. When a strategy process goes away, `kill -9` included, the gateway cancels its orders at once.
 
-```bash
-fastmm-sim-exchange --config configs/sim.toml &
-export FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret
-fastmm-gateway --config configs/sim-local.toml &
-fastmm-live --config configs/sim-local.toml --gateway runs/sim-local.gw
-```
+Prerequisites: a release build ([Install](../../getting-started/install.md)), commands run from the repository root.
 
-The gateway uses `[engine]` (`name`, `journal_dir`, `epoch_file`, `kill_file`, `spin_mode`, `net_cpus`, `net_backend`, the ring sizes), `[venues.*]`, `[[instruments]]` (every instrument any strategy trades) and `[gateway]`; it needs the API keys. A strategy uses everything else and needs no keys. Its `[[instruments]]` name what it trades there (venue and symbol); its venues, their ids and the instrument table (tick, lot, limits from the venue's reference data) come from the gateway. Give each strategy its own `[engine] name`, so each has its own store, journal and kill file.
+## Start a gateway and attach a strategy
 
-## Attach
+1. Start the simulated exchange and the gateway. The gateway needs the API keys:
 
-The socket is `<journal_dir>/<engine name>.gw` of the gateway's configuration, `AF_UNIX` `SOCK_SEQPACKET`, mode 0600 (`--socket` moves it). The gateway refuses an attach naming an instrument it does not have, or one a live attachment trades and `[gateway.shared]` does not name (`instrument BTCUSDT on venue 'sim' is traded by <engine> (pid, attachment, epoch) ...`), one with the `[engine] name` of an attached strategy, at most 16 at a time, and every attach while the account's kill switch is latched ([Account risk](#account-risk)). Otherwise it:
+    ```bash
+    ./build/release/bin/fastmm-sim-exchange --config configs/sim.toml &
+    export FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret
+    ./build/release/bin/fastmm-gateway --config configs/sim-local.toml &
+    ```
 
-1. gives the strategy a session epoch from the gateway's `epoch_file` (the high 16 bits of every client order id, so ids are unique across strategies and across gateway restarts; the strategy's own `epoch_file` is not used),
-2. creates three rings per venue under `/dev/shm` (`fastmm-gw-<name>-<pid>-<attachment>-<venue>.md`, `.ord`, `.out`) and adds them to the venue's routing; the strategy unlinks the files once it has mapped them, so a `kill -9` of either side leaves nothing in `/dev/shm`,
-3. puts a snapshot of every book in its market-data ring, taken from the gateway's own copy ([Books](#books)),
-4. reconciles: the account's executions since the strategy's last stored fill on each venue (in the venue's clock, [Recovery at start-up](../../reference/storage.md#recovery-at-start-up)), then the open orders,
-5. answers with the epoch, the instrument table, the ring paths and, as descriptors, the wake pages and its reactors' eventfds ([Latency](#latency)).
+    ```text
+    INFO  sim: reference data loaded for 1 symbols (4 rate limit rules)
+    INFO  status: /dev/shm/fastmm-sim-local.gw.status (watch with fastmm-top --path /dev/shm/fastmm-sim-local.gw.status)
+    INFO  control socket: runs/sim-local.gw.ctl (fastmm-ctl --path runs/sim-local.gw.ctl status)
+    INFO  fastmm-gateway: 1 venue(s), 1 instrument(s), dry_run=false, net=epoll, ...
+    ```
 
-The strategy restores its previous position from its own store, as `fastmm-live` does on a restart ([What survives a restart](running-in-production.md#restarts)); the execution replay in step 4 books what happened since. The attach request carries the positions it restored, which start the gateway's account, and its earlier sessions' orders that were open at their last record, with the venue's id of each: a venue's trade history can name an execution by that id alone (Binance's does), and after a gateway restart only the strategy's store says whose order it was. Instruments of other strategies stay in its table, disabled: their market data arrives, their quotes are pulled.
+2. Attach a strategy. It needs no keys, and its `[engine] name` must differ from the gateway's and every other strategy's; here a copy of the configuration with `name = "mm-btc"`:
 
-## Routing
+    ```bash
+    ./build/release/bin/fastmm-live --config configs/mm-btc.toml --gateway runs/sim-local.gw
+    ```
 
-On each venue's network thread:
+    ```text
+    INFO  gateway: attached to runs/sim-local.gw (attachment 1, session epoch 1): 1 venue(s), 1 of 1 instrument(s) traded here, with the gateway's reference data
+    ```
 
-- Market data goes to every attachment. A strategy that falls behind loses market data alone: its ring drops (the gateway logs the count), and once it has room again it gets a `Resyncing` state (its books clear, its quotes on that venue are pulled) and snapshots of the gateway's books.
-- An order event goes to the strategy whose epoch its client order id carries. A fill of an epoch no attachment holds (a dead session's order, or an execution naming no order) goes to the strategy that trades the instrument, and so does an account-level position record; with none, the gateway logs it and keeps the fill (up to 4096 per venue) for the strategy that attaches owning the instrument, or whose order it is. After a gateway restart the replay one strategy's attach starts can find another's fills before that one has attached: it receives them when it does.
-- A reconciliation goes to the strategies that asked for it (their attach, their engine's reconcile request), or to all when the connector started it. Each gets its own rows, under a `Begin` whose sent watermark is its own last order the venue had taken. A row of an epoch no attachment holds is a dead session's order, and the gateway cancels it.
-- On a shared instrument the executions naming no live order, the funding and the venue's position records go elsewhere ([Shared instruments](#shared-instruments)).
-- A balance report (`BalanceMsg`) goes to every attachment: the account's balances are one, and each engine keeps them for its own check and strategy ([Balance check](../../explanation/risk-model.md#balance-check)).
-- A replayed fill is routed like a streamed one. The replay one strategy's attach starts names the others' executions too; each books only those its engine has not seen (it deduplicates by execution id), which includes a fill its private stream missed. One naming no live order reaches the instrument's owner only if it is not older than the owner's own replay start and not among the trade ids its store listed: older ones are in its store already (the gateway logs and counts them).
+3. List what is attached:
 
-## Books
+    ```bash
+    ./build/release/bin/fastmm-ctl --gateway sim-local attachments
+    ```
 
-The gateway keeps its own copy of every book, up to 1024 levels a side (the most a snapshot message carries, so as deep as any connector's snapshot). A strategy that attaches, or whose ring dropped, gets a `BookSnapshot` of each copy in its market-data ring, followed by the events the gateway routes after it, so its engine's book (256 levels) is the one the venue's own snapshot and the same deltas would build. A venue update that changed more levels on a side than a message carries keeps the ones nearest the touch; the gateway's copy then drops its levels behind the last one carried, which the update may have changed. The venue is not asked for anything; the other strategies' books do not pause. A book the gateway does not hold at that moment (the venue is resyncing it, or its channel is down) gets no snapshot there; the venue's next one reaches every strategy. Only when the gateway's copy itself lost events (logged as `account books lost`) does it ask the venue to resync its books, at most once a second.
+    ```text
+    attachment=1 epoch=1 engine=mm-btc pid=42911 up=8s instruments=sim:BTCUSDT md_dropped=0 refused=0
+    ```
+
+4. Watch the account: `fastmm-top --gateway sim-local` ([Monitor](#monitor)).
+
+The socket is `<journal_dir>/<engine name>.gw` of the gateway's configuration, mode 0600; `--socket` moves it.
+
+## Split the configuration
+
+Both processes can read the same file; each uses its own part of it.
+
+| | Gateway | Strategy |
+|---|---|---|
+| `[engine]` | `name`, `journal_dir`, `epoch_file`, `kill_file`, `spin_mode`, `net_cpus`, `net_backend`, ring sizes | everything else; its own `name`, so its own store, journal and kill file |
+| `[venues.*]` | yes, with the API keys | no keys; venues and ids come from the gateway |
+| `[[instruments]]` | every instrument any strategy trades | the ones it trades (venue and symbol); tick, lot and limits come from the gateway |
+| `[gateway]`, `[gateway.shared]`, `[gateway.underlying]` | yes | no |
+| `[strategy]`, `[risk]` | no | yes |
+
+A strategy's `[engine] epoch_file` is not used: the gateway hands out the epochs. A session with `[engine] threading = "single"` cannot attach.
+
+## What happens on attach
+
+The gateway refuses an attach that:
+
+- names an instrument the gateway does not have,
+- names one a live attachment trades, unless `[gateway.shared]` lists it,
+- uses the `[engine] name` of an attached strategy,
+- would be the 17th (at most 16 at a time),
+- arrives while the account's kill switch is latched ([Account risk](#account-risk)).
+
+Otherwise the gateway:
+
+1. gives the strategy a session epoch, the high 16 bits of every client order id, unique across strategies and gateway restarts;
+2. creates three rings per venue under `/dev/shm`, which the strategy unlinks once mapped, so a `kill -9` of either side leaves nothing behind;
+3. sends a snapshot of every book from its own copy ([Books and routing](#books-and-routing));
+4. reconciles the account's executions since the strategy's last stored fill, then the open orders ([Recovery at start-up](../../reference/storage.md#recovery-at-start-up));
+5. answers with the epoch, the instrument table, the ring paths and the wake-up descriptors.
+
+The strategy restores its position from its own store, as on a restart ([What survives a restart](running-in-production.md#restarts)). Its attach request carries that position, which seeds the gateway's account, and its earlier sessions' open orders with their venue ids. Instruments of other strategies stay in its table, disabled: their market data arrives, but it does not quote them.
 
 ## Account guards
 
-Every order passes the gateway's network thread on its way to the connector, where `[gateway]` ([Configuration](../../reference/configuration.md#gateway)) checks, in this order:
+Every order passes the gateway on its way to the venue. These checks run in order, over every attached strategy; a refused order goes back to its sender as an `OrderReject` ([Reject reasons](../../reference/errors.md#gateway)) and its quote manager backs that side off.
 
-- the instrument is one the sending strategy claimed,
-- the account's kill switch ([Account risk](#account-risk)),
-- on a shared instrument, that it would not trade with another strategy's resting order ([Shared instruments](#shared-instruments)),
-- `max_open_notional`: the notional of every order working at the venue, both sides, every strategy, including this one (a replace counts the difference),
-- `max_gross_notional` and `max_net_notional`: the account's positions at the marks, over every venue, plus this order, as `[risk]` checks one strategy's; an order that reduces its instrument's position always passes, and so does one that brings a net already over the cap towards zero,
-- `[gateway.underlying.<BASE>] max_net`: the account's net position in the order's base asset over every venue and strategy, in base units, plus the orders working at the venues on the order's side and this order, as `[risk.underlying]` checks one strategy's ([Risk model](../../explanation/risk-model.md#net-position-per-underlying)); an order that brings the net towards zero passes. An inverse contract counts at the mid of the gateway's own book; while one with a position or working orders has none (or none newer than `[risk] stale_md_ms`), orders on that underlying are refused,
-- `check_balance`: the account's balance on the venue, the venue's last report moved by the orders and fills of every strategy since, covers the order as `[risk] check_balance` checks one strategy's; two strategies cannot both spend the same free quote asset. Off for a venue until it reports balances,
-- `orders_per_sec` and `burst`: new orders and replaces of every strategy together, per venue (cancels always go).
+| Check | Key ([Configuration](../../reference/configuration.md#gateway)) | Refused as |
+|---|---|---|
+| the instrument is one the sender claimed | | `GatewayNotOwner` |
+| the account's kill switch is off | `max_loss` | `GatewayAccountKilled` |
+| it would not trade with another strategy's resting order on a shared instrument | `[gateway.shared]` | `GatewaySelfTrade` |
+| notional working at the venue, both sides, every strategy; a replace counts the difference | `max_open_notional` | `GatewayOpenNotional` |
+| the account's positions at the marks plus this order; reducing orders pass | `max_gross_notional`, `max_net_notional` | `GatewayGrossNotional`, `GatewayNetNotional` |
+| net position in the base asset over every venue, plus working orders on that side; orders towards zero pass | `[gateway.underlying.<BASE>] max_net` | `GatewayUnderlyingNet`, `GatewayUnderlyingMarkUnknown` |
+| the venue's last balance, moved by every strategy's orders and fills since, covers the order | `check_balance` | `GatewayBalanceShort` |
+| new orders and replaces of every strategy together, per venue; cancels always go | `orders_per_sec`, `burst` | `GatewayRateLimit` |
+| the currency's rate source is fresh | `[accounting]` | `GatewayFxRateUnknown` |
 
-A refused order goes back to the strategy that sent it as an `OrderReject` with `GatewayNotOwner`, `GatewayAccountKilled`, `GatewayOpenNotional`, `GatewayGrossNotional`, `GatewayNetNotional`, `GatewayFxRateUnknown`, `GatewayUnderlyingNet`, `GatewayUnderlyingMarkUnknown`, `GatewaySelfTrade`, `GatewayBalanceShort` or `GatewayRateLimit` ([Reject reasons](../../reference/errors.md#gateway)); its quote manager backs that side off as after any venue reject. An exposure refusal is per order; the other strategies trade on. Each strategy's own `[risk]` still applies to it.
+An inverse contract counts at the mid of the gateway's own book. While one with a position or working orders has no book newer than `[risk] stale_md_ms`, orders on that underlying are refused. `check_balance` stays off for a venue until it reports balances. Each strategy's own `[risk]` still applies to it ([Risk model](../../explanation/risk-model.md#net-position-per-underlying)).
 
 ## Account risk
 
-The gateway keeps the account's positions: every execution that passes through it, streamed or replayed, whichever strategy it goes to (or none), booked once (by venue execution id, instrument and side, as a strategy's OMS books it; a base-asset commission changes the quantity as it does there), marked at the mid of the gateway's own copy of each book (applied after the strategies have been woken, so it is not on their way). Each venue's network thread books its own instruments; the totals are shared between the threads.
+The gateway books every execution that passes through it, once, whichever strategy it goes to. It marks positions at the mid of its own book copy, after the strategies have been woken.
 
-- Where it starts: a fresh gateway knows no positions. The first strategy that attaches owning an instrument sends the position it restored from its store, and the account's position of that instrument starts there (flat when it restored nothing, or its venue cannot replay executions and the strategy starts flat too). A replayed execution older than that strategy's replay start, or among the trade ids its store listed, is in the position already and is not booked; one of the instrument that arrives before (another strategy's replay) waits for that seed. From then on the account books everything itself.
-- Detach: the position is the account's, not the process's: it stays when its strategy detaches, fills of its orders still in flight are booked into it, and the next strategy that owns the instrument finds it (the gateway logs what that strategy's store said).
-- `max_loss`: the account's net PnL (realized plus unrealized minus fees, over every strategy, plus what earlier runs carried) at or below `-max_loss` trips the account's kill switch. The realized PnL and fees are carried in the gateway's kill file (`[engine] kill_file`, default `<journal_dir>/<name>.kill`, the format of [a strategy's](kill-switch-and-shutdown.md#the-latched-loss-budget)); unrealized PnL is measured again from the positions the strategies bring. Give the gateway an `[engine] name` of its own: with `max_loss` set it refuses a strategy with its name, whose kill file would be the same.
-- The trip: every network thread refuses new orders and replaces (`GatewayAccountKilled`), sends each attached strategy `TripVenueKill` (`GatewayMaxLoss`) for its venue, so its engine pulls its quotes, cancels its orders and, with every venue killed, trips its own kill switch (`on_kill`); the gateway cancels every order it knows, asks each venue for its open orders and cancels every row, cancels an acknowledgement that arrives later, and calls each venue's `cancel_all`. It then refuses every attach. The trip is latched in the kill file: a restart exits 6 until `fastmm-gateway --clear-kill` or the file is removed, which arms the whole budget again; `fastmm-ctl --gateway <name> clear-kill` does the same without a restart ([Control](#control)).
+| Moment | What the account does |
+|---|---|
+| fresh gateway | knows no positions; the first strategy that attaches owning an instrument seeds it with the position from its store |
+| replayed execution older than that seed | already in the position, not booked |
+| strategy detaches | the position stays with the account; the next owner finds it |
+| net PnL at or below `-max_loss` | trips the account's kill switch |
 
-Once a second the gateway logs the account when it changed, and each position that changed:
+`max_loss` counts realized plus unrealized PnL minus fees, over every strategy, plus what earlier runs carried. Realized PnL and fees persist in the gateway's kill file (`[engine] kill_file`, default `<journal_dir>/<name>.kill`, [format](kill-switch-and-shutdown.md#the-latched-loss-budget)). Give the gateway an `[engine] name` of its own: with `max_loss` set it refuses a strategy with the same name.
+
+When the account trips, the gateway:
+
+1. refuses new orders and replaces with `GatewayAccountKilled`;
+2. sends each strategy `TripVenueKill` (`GatewayMaxLoss`), so its engine pulls quotes, cancels its orders and trips its own kill switch;
+3. cancels every order it knows, asks each venue for its open orders and cancels each, and calls each venue's `cancel_all`;
+4. refuses every attach.
+
+The trip is latched: a restart exits 6 until `fastmm-gateway --clear-kill`, removing the kill file, or `fastmm-ctl --gateway <name> clear-kill` ([Control](#control)).
+
+Once a second the gateway logs the account and each position that changed:
 
 ```text
-gateway: account net_pnl=-0.42600010 realized=0 unrealized=0.17352000 fees=0.59952010 carried=0 gross_exposure=240.00008000 net_exposure=240.00008000 kill=armed max_loss=3
-gateway: account position sim:BTCUSDT 0.004
+gateway: account net_pnl=0.04858381 realized=0.0481 unrealized=0.018485 fees=0.01800119 carried=0 gross_exposure=60.005585 net_exposure=-60.005585 kill=off max_loss=0
+gateway: account position sim:BTCUSDT -0.001
 gateway: account underlying BTC net=0.004
 ```
 
-The limits are one number in one currency. When the instruments settle in more than one, set `[accounting]` in the gateway's configuration ([Configuration](../../reference/configuration.md#accounting)): every instrument of the gateway must settle in `reporting_currency` or have a source, an instrument of the gateway's table, whose mid gives the rate. The account's positions stay in their own currencies; its PnL, exposure, kill file and log line (`in=USDT`) are in the reporting one, converted at the current rates when they are read. An order that adds exposure in a currency whose source's book is not valid, or has not updated for `[accounting] stale_fx_ms`, goes back as `GatewayFxRateUnknown`. Without `[accounting]` a gateway with any limit set refuses such a table (exit 3), as `fastmm-live` does for `[risk] max_loss`. `max_open_notional` stays per venue in the settlement currencies, unconverted.
+### More than one settlement currency
 
-A strategy's own `[risk]` limits convert with its own `[accounting]`; its source may be another strategy's instrument, whose market data every attachment receives, but it must be listed in its `[[instruments]]` with `enabled = false`.
+The limits are one number in one currency. When instruments settle in more than one, set `[accounting]` in the gateway's configuration ([Configuration](../../reference/configuration.md#accounting)). Every instrument must settle in `reporting_currency` or name a source instrument whose mid gives the rate.
+
+Positions stay in their own currencies; PnL, exposure, the kill file and the log line (`in=USDT`) are converted at current rates. Without `[accounting]`, a gateway with any limit set refuses a mixed-currency table (exit 3). `max_open_notional` stays per venue, unconverted.
+
+A strategy's own `[risk]` converts with its own `[accounting]`. Its source may be another strategy's instrument, listed in its `[[instruments]]` with `enabled = false`.
 
 ## Shared instruments
 
-Several strategies can trade one instrument: two cross-venue pairs hedging into the same perpetual, a market maker next to a separate hedger, an old and a new version side by side. List it in the gateway's configuration ([Configuration](../../reference/configuration.md#gatewayshared)):
+Several strategies can trade one instrument: two cross-venue pairs hedging into the same perpetual, a market maker next to a hedger, or an old and a new version side by side. List it in the gateway's configuration ([Configuration](../../reference/configuration.md#gatewayshared)):
 
 ```toml
 [gateway.shared."bybit:BTCUSDT"]
 primary = "hedger"    # [engine] name; leave it out for none
 ```
 
-Each strategy that trades it names it in its own `[[instruments]]` and has its own `[engine] name`, store, position and `[risk]`. What the gateway does differently for such an instrument:
+Each strategy names it in its own `[[instruments]]` and keeps its own store, position and `[risk]`. The gateway handles the instrument differently in these ways:
 
-- Its own fills: an execution goes to the strategy whose client order id's epoch it carries, as for any instrument. One of an order of an earlier session goes to the strategy of that session, if attached: the gateway remembers the epochs it gave each `[engine] name`, and a strategy that restores from its store sends the epochs of its earlier sessions (the last 64) and their orders by the venue's id. A strategy killed and restarted therefore receives the fills of its dead session's orders, made while it was down, from its replay, also after a gateway restart and whichever strategy's replay finds them first; the other strategies never see them. An order whose acknowledgement never came has no venue id in the store; on Binance, whose trade history names only that id, the connector asks the venue for the order ([Venue connectors](../../reference/venues/connector-behaviour.md#execution-replay)). While that lookup is being retried, the fill goes to no strategy, not even the `primary`: the account books it for nobody, and the copy naming its order moves it to its strategy. Only a fill the connector gives up on follows the rule for events naming no order.
-- Events naming no order: liquidation and ADL fills, executions of orders placed outside FastMM, and funding go to the `primary`; while it is away they count as its share and its replay delivers them when it comes back. Without a primary the account alone books them (unattributed), and so it does a fill of a session no strategy has claimed, until a strategy that attaches claims it: it then moves to that strategy's share, and the strategy receives it.
-- The venue's position (reconciliation `Position` rows, position pushes) is the account's, not a strategy's: no strategy gets it, and the gateway compares it with the strategies' shares instead.
-- Positions: the account's position is the venue's. The gateway also counts every execution it books towards the strategy it belongs to (its share, starting from what that strategy's store held the first time it attached in this gateway run) or towards nobody (unattributed). The account's position less the shares and the unattributed part is the unexplained part, zero when the books agree; a venue position record that disagrees makes it nonzero. Each strategy's share should equal its own store's position.
-- Self-trade: an order that would trade with a resting order of another strategy on the instrument (a buy at or above its sell, a sell at or below its buy, a market order against any) goes back to its sender as `GatewaySelfTrade` before it reaches the venue. The gateway knows every order working there: a linear scan of the other side's resting orders, 1.3 ns with 2 of them and 14 ns with 32 (`BM_SelfTrade_Check`); an instrument that is not shared skips it. IOC, FOK and market orders do not rest, so they never block another strategy's order. The venue's own self-trade prevention stays as the second line.
-- Risk: `[gateway]` and `[gateway.underlying]` already sum over every strategy; each strategy's `[risk]` limits its own position.
-- Detach: a strategy that goes, `kill -9` included, has the orders of its epoch cancelled; the others keep quoting. Its share stays in the account.
+| Event | Goes to |
+|---|---|
+| fill of a live order | the strategy whose epoch the client order id carries |
+| fill of an earlier session's order | that session's strategy, also after a restart of either side; a strategy sends the epochs of its last 64 sessions on attach |
+| fill whose order the venue still has to be asked for (Binance, no ack came) | nobody until the lookup resolves, then its strategy ([Venue connectors](../../reference/venues/connector-behaviour.md#execution-replay)) |
+| liquidation, ADL, outside orders, funding | the `primary`; while it is away its replay delivers them later. Without a primary, the account books them unattributed |
+| venue position records | nobody; the gateway compares them with the strategies' shares |
 
-The log line once a second shows the split, and a mismatch as a warning:
+The account's position is the venue's. The gateway splits it into each strategy's share, an unattributed part, and an unexplained part, which is zero when the books agree. Each strategy's share should equal its own store's position.
 
 ```text
 gateway: account position bybit:BTCUSDT 0.004 (shared: mm-a=0.003 hedger=0.002 unattributed=-0.001)
 gateway: account position bybit:BTCUSDT 0.005 does not match its strategies' (shared: mm-a=0.003 hedger=0.002 unattributed=-0.001): off by 0.001
 ```
 
+An order that would trade with another strategy's resting order goes back as `GatewaySelfTrade` before it reaches the venue; the check takes 1.3 ns with 2 resting orders and 14 ns with 32. IOC, FOK and market orders never rest, so they never block another strategy. The venue's own self-trade prevention stays as a second line.
+
 `fastmm-ctl --gateway <name> attachments` adds each strategy's share (`share=bybit:BTCUSDT=0.003`).
 
 ## Monitor
 
-The gateway publishes its state in a status file, `/dev/shm/fastmm-<name>.gw.status` (`--status <path>` moves it, `--no-status` turns it off), every 250 ms from its main thread; the network threads only keep the counters and totals they had. The `.gw` keeps it apart from a strategy that runs with the same configuration.
+The gateway publishes its state every 250 ms to `/dev/shm/fastmm-<name>.gw.status`; `--status <path>` moves it and `--no-status` turns it off.
 
 ```bash
-fastmm-top --gateway sim-local
-fastmm-top --gateway sim-local --metrics 9110
+./build/release/bin/fastmm-top --gateway sim-local
 ```
 
-The frame has the account (net PnL, realized, unrealized, fees, carried, gross and net exposure, the `[gateway]` limits, `ACCOUNT KILLED (<reason>)` and `LATCHED`), one line per attachment (id, epoch, engine name, pid, uptime, market data it dropped, orders the gateway refused it by reason, what it trades), the account's position per instrument with its owner's epoch (a shared one: how many trade it, its unattributed part and, in red, an unexplained one), the account's balances per venue and asset, the venue table `fastmm-live` shows (channel states, books, counters) and per venue what the gateway discarded, could not route, cancelled itself and refused. `--json` prints it with `"kind": "gateway"`. The layout: [Status file](../../reference/status-file.md#gateway-block).
+```text
+fastmm-top  gateway=sim-local pid=42870
+state      running  uptime=13s  updated 0.1s ago
 
-`--metrics` exports the header and `fastmm_venue_*` families of a session and these ([Monitoring a live session](monitor-with-fastmm-top.md#scrape-it-with-prometheus)):
+account    net_pnl=0.53489389 realized=0.6821 unrealized=0.02679 fees=0.17399611 carried=0 gross_exposure=59.9971 net_exposure=59.9971
+limits     max_loss=off max_gross_notional=off max_net_notional=off max_open_notional=off
+
+balance    sim BTC free=100 locked=0.001 total=100.001
+balance    sim USDT free=9999880.57348389 locked=59.96431 total=9999940.53779389
+
+attachment epoch engine                    pid        up md_dropped refused                  instruments
+1              1 mm-btc                  42911       10s          0 0                        sim:BTCUSDT
+
+position       instrument                            qty  owner
+sim            BTCUSDT                             0.001      1
+...
+routing        md_discard ord_discard  unrouted gw_cancels untracked   stale  skipped books_lost refused
+sim                   109          6         0          0         0       0        0          0 0
+```
+
+A tripped account shows `ACCOUNT KILLED (<reason>)` and `LATCHED`; an unexplained part of a shared position shows in red. `--json` prints the frame with `"kind": "gateway"`; the layout is in [Status file](../../reference/status-file.md#gateway-block).
+
+`--metrics 9110` serves Prometheus metrics: the session families `fastmm-live` exports ([Monitoring a live session](monitor-with-fastmm-top.md#scrape-it-with-prometheus)) and these.
 
 | Metric | Type | Meaning |
 |---|---|---|
@@ -125,10 +207,10 @@ The frame has the account (net PnL, realized, unrealized, fees, carried, gross a
 | `fastmm_account_position{venue,instrument}` | gauge | base units |
 | `fastmm_account_underlying_net{underlying}`, `_underlying_max_net{underlying}` | gauge | `[gateway.underlying]`, base units; the net is absent while an inverse contract has no mark |
 | `fastmm_balance_free`, `_locked`, `_total`, `_equity`, `_maintenance` `{venue,asset,account}` | gauge | the account's balances over every strategy, asset units |
-| `fastmm_perp_mark`, `_index`, `_funding_rate`, ... `{venue,symbol}` | gauge | the venues' mark, index and funding, as for `fastmm-live`; the account's positions are valued at the mark while it is fresh |
+| `fastmm_perp_mark`, `_index`, `_funding_rate`, ... `{venue,symbol}` | gauge | the venues' mark, index and funding; positions are valued at the mark while it is fresh |
 | `fastmm_gateway_instrument_owner{venue,instrument}` | gauge | the owner's epoch; absent while nobody trades it, and for a shared instrument |
 | `fastmm_gateway_instrument_traders{venue,instrument}` | gauge | attachments trading it |
-| `fastmm_account_unattributed{venue,instrument}`, `_unexplained{venue,instrument}` | gauge | a shared instrument's parts, base units ([Shared instruments](#shared-instruments)); alert on `_unexplained != 0` |
+| `fastmm_account_unattributed{venue,instrument}`, `_unexplained{venue,instrument}` | gauge | a shared instrument's parts, base units; alert on `_unexplained != 0` |
 | `fastmm_gateway_attachments` | gauge | strategies attached |
 | `fastmm_gateway_attachment_info{epoch,engine,pid,attachment}` | gauge | constant 1 per attachment |
 | `fastmm_gateway_attachment_uptime_seconds{epoch,engine}` | gauge | since it attached |
@@ -141,65 +223,75 @@ An epoch is unique per attachment for the gateway's life, so it keys a strategy'
 
 ## Control
 
-The control socket is the attach socket's path plus `.ctl` (`<journal_dir>/<name>.gw.ctl`; `--control <path>` moves it, `--no-control` leaves it out), mode 0600, the same listener and wire format as `fastmm-live`'s ([Operating a running session](operate-a-running-session.md#the-socket)). `fastmm-ctl --gateway <name>` talks to it (`--dir` as for `--name`; `--path` for a moved socket):
+`fastmm-ctl --gateway <name>` talks to `<journal_dir>/<name>.gw.ctl`, the same wire format as `fastmm-live`'s socket ([Operating a running session](operate-a-running-session.md#the-socket)). `--control <path>` moves it and `--no-control` leaves it out.
 
 ```bash
-fastmm-ctl --gateway sim-local attachments
+./build/release/bin/fastmm-ctl --gateway sim-local pull --venue sim
 ```
 
 ```text
-attachment=1 epoch=7 engine=mm-btc pid=4121 up=310s instruments=sim:BTCUSDT md_dropped=0 refused=0
-```
-
-```bash
-fastmm-ctl --gateway sim-local pull --venue sim
-```
-
-```text
-ok pull queued (venue 0), sent to 2 strategies
+ok pull queued (venue 0), sent to 1 strategies
 ```
 
 | Command | What it does |
 |---|---|
-| `pull [--instrument SYM \| --venue NAME]` | The strategies in the scope stop quoting: every strategy trading `SYM`, every strategy on `NAME`, or every strategy. Each gets the engine's own `PullQuotes` on its order ring, so its journal records it and a replay reproduces it; it is the same as `fastmm-ctl --name <strategy> pull` with that scope. |
-| `resume [--instrument SYM \| --venue NAME]` | `ResumeQuotes` the same way. |
-| `kill` | Trips the account's kill switch exactly as `max_loss` does ([Account risk](#account-risk)), reason `GatewayOperator`: orders refused, every strategy's venues killed (each exits 6 with `on_kill = "exit"`), every open order cancelled, attaches refused. With `max_loss` set the kill file latches it, so a restart exits 6 too; without, it holds until `clear-kill` or the gateway exits. |
-| `clear-kill` | Clears the account's kill switch and the kill file and arms the whole `max_loss` budget again, without a restart: the realized PnL and fees so far no longer count, the positions' unrealized PnL does. Refused while any strategy is attached: every strategy attached at the trip was killed by it and stays killed in its own engine; stop it first (`on_kill = "exit"` does), then clear, then start it. |
-| `attachments` | One line per attached strategy. |
-| `status` | The `fastmm-top` frame. |
-| `help` | The command list. |
+| `pull [--instrument SYM \| --venue NAME]` | the strategies in scope stop quoting; each gets `PullQuotes` on its order ring, so its journal records it |
+| `resume [--instrument SYM \| --venue NAME]` | `ResumeQuotes` the same way |
+| `kill` | trips the account as `max_loss` does, reason `GatewayOperator`; with `max_loss` set the kill file latches it, otherwise it holds until `clear-kill` or exit |
+| `clear-kill` | clears the kill switch and the kill file and re-arms the whole `max_loss` budget; refused while any strategy is attached |
+| `attachments` | one line per attached strategy |
+| `status` | the `fastmm-top` frame |
+| `help` | the command list |
 
-A strategy that attaches after a `pull` quotes: the pull reached the strategies attached at the time.
+A `pull` reaches the strategies attached at that moment; one that attaches later quotes. Before `clear-kill`, stop every strategy (`on_kill = "exit"` does), since each stays killed in its own engine.
 
-## Detach
+## Detach and restart
 
-Closing the connection is the detach; the kernel closes it when the process dies. The gateway takes the strategy out of the routing, cancels every order of its epoch it knows to be working (one cancel each; the connectors' only other primitive is a venue-wide cancel-all, which would take every other strategy's quotes too), asks the venue for its open orders so that one it did not know is cancelled as a dead session's row, frees the instruments and removes the rings. An acknowledgement that arrives later for an order of the dead epoch is cancelled too. The other strategies keep trading.
+Closing the connection is the detach; the kernel closes it when the process dies. The gateway then:
 
-A strategy that stops cleanly cancels its own quotes through the gateway first and logs `no venue cancel_all here`. A strategy whose gateway goes away stops with exit code 5. The gateway itself, on SIGINT or SIGTERM, detaches everyone and cancels all open orders on every venue.
+1. takes the strategy out of the routing;
+2. cancels each working order of its epoch, one by one, so the other strategies keep their quotes;
+3. asks the venue for open orders and cancels any of that epoch it did not know;
+4. frees the instruments and removes the rings.
 
-## Run under systemd
+A late acknowledgement for the dead epoch is cancelled too. A strategy that stops cleanly cancels its own quotes first and logs `no venue cancel_all here`.
 
-`deploy/fastmm-gateway.service` runs the gateway and `deploy/fastmm-live@.service` one strategy per instance (`fastmm-live@mm1` runs `/etc/fastmm/mm1.toml` attached to `/var/lib/fastmm/runs/gateway.gw`, so the gateway's `[engine] name` is `gateway`). Enable each instance: it is then wanted by the gateway, so every start of the gateway, its automatic restart after a crash included, starts the strategies again, and stopping the gateway stops them. The gateway's unit is `Type=notify`: the strategies start once it says `READY=1`, with its socket listening, rather than while it still loads reference data and before there is anything to attach to. A strategy exits 5 when its gateway goes away and is not restarted for that alone.
+| Process stops | Effect |
+|---|---|
+| a strategy, any way | its orders cancelled; the others trade on |
+| the gateway, SIGINT or SIGTERM | detaches everyone, cancels every open order on every venue |
+| the gateway, any way | each strategy exits 5 |
+
+### Under systemd
+
+`deploy/fastmm-gateway.service` runs the gateway, `deploy/fastmm-live@.service` one strategy per instance. `fastmm-live@mm1` runs `/etc/fastmm/mm1.toml` attached to `/var/lib/fastmm/runs/gateway.gw`, so the gateway's `[engine] name` is `gateway`.
 
 ```bash
 sudo systemctl enable --now fastmm-gateway fastmm-live@mm1 fastmm-live@mm2
 ```
 
-After `kill -9` of the gateway (tested with user units against `fastmm-sim-exchange`), systemd restarted it within 2 s, the strategy reattached and restored its position, and the venue and the strategy's store agreed on the position and on all 123 fills.
+An enabled instance is wanted by the gateway: every gateway start, crash restarts included, starts the strategies again, and stopping the gateway stops them. The gateway's unit is `Type=notify`, so strategies start only once its socket listens. After a `kill -9` of the gateway, systemd restarts it within 2 s and the strategies reattach with their positions.
+
+## Books and routing
+
+The gateway keeps a copy of every book, up to 1024 levels a side. A strategy that attaches, or whose ring dropped, gets a snapshot from that copy followed by the live events, so its 256-level book matches the venue's. The venue is not asked for anything and the other strategies do not pause. Only when the gateway's own copy lost events (`account books lost`) does it ask the venue to resync, at most once a second.
+
+| Event | Goes to |
+|---|---|
+| market data | every attachment; one that falls behind drops data alone, then gets `Resyncing` and fresh snapshots |
+| order event | the strategy whose epoch its client order id carries |
+| fill of an epoch nobody holds, or naming no order | the strategy that trades the instrument; with none, kept (up to 4096 per venue) for the one that attaches |
+| reconciliation | the strategies that asked for it, or all when the connector started it; a row of a dead epoch is cancelled |
+| balance report | every attachment |
+| replayed fill | like a streamed one; each engine deduplicates by execution id |
 
 ## Latency
 
-With `spin_mode = "adaptive"` an idle side blocks, and the other wakes it as threads wake each other inside `fastmm-live`: the engine sleeps on a futex in a page it shares with the gateway, and the gateway's network threads sleep in their reactors, whose flags (in a second page, shared by every attachment) and eventfds the strategy receives on attach. A wake-up costs a system call only while the other side sleeps. Each event and order is copied once more than in-process: the connector's events from its own ring into each attachment's, the orders from the attachment's ring into the venue's.
+With `spin_mode = "adaptive"` an idle side sleeps and the other wakes it, a system call only while the other side sleeps. Each event and order is copied once more than in-process.
 
-Tick-to-trade against the simulator with one strategy attached (`scripts/bench-gateway.sh`, 45 s x 3 runs, WSL2, unpinned; the routing for several strategies and the account's checks and marks, `--account-limits`, and the 1024-level book copies left it unchanged), p50 in µs:
+Tick-to-trade p50 against the simulator with one strategy attached, in µs, on an unpinned WSL2 host (method: `scripts/bench-gateway.sh`):
 
 | `spin_mode` | engine, in-process | engine, gateway | wire, in-process | wire, gateway |
 | --- | --- | --- | --- | --- |
 | `adaptive` | 34.8 | 36.9 | 66.4 | 70.3 |
 | `busy` | 7.2-7.7 | 7.9-9.2 | 41.0 | 43.0 |
-
-## Differences from a standalone session
-
-- A session with `[engine] threading = "single"` runs the venue in the engine's thread and cannot attach.
-- The strategy's status file shows the venue names; their connection state is in the gateway's ([Monitor](#monitor)).
-- The gateway's status file carries the account's position per instrument and its PnL per venue.
