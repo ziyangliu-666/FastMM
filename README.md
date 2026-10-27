@@ -11,13 +11,12 @@ https://github.com/user-attachments/assets/dcd130c5-28fe-482f-a757-d0fc6550c5b9
 
 ## Features
 
-- **Strategies in C++ or Python.** Python hooks marked `@fastmm.hot` compile to machine code with Numba.
-- **One strategy file for backtest and live.** Replays are deterministic, and the simulated exchange models queue position.
-- **Account pools.** Several sub-accounts trade behind one venue, and orders spread across them.
-- **Gateway.** One `fastmm-gateway` holds the exchange connections; several strategy processes attach to it and can stop or restart without dropping them.
-- **Live control.** `fastmm-ctl` changes a running session's parameters without a restart.
-- **A/B tests.** Parameter sets run side by side, split by instrument, by time block or both, and are compared on markouts and net with paired intervals.
-- **Low-latency tuning.** Core pinning, busy polling, and AF_XDP or DPDK receive for UDP multicast feeds. Order entry runs on the kernel TCP stack, which OpenOnload or XLIO can replace through `LD_PRELOAD`.
+- **[Low latency](https://ziy.bio/FastMM/explanation/benchmarks/).** In the engine a book update becomes an order in 143 ns (p50). Core pinning, busy polling, AF_XDP or DPDK receive and OpenOnload or XLIO order entry tune the host around it.
+- **[Sweeps in one pass](https://ziy.bio/FastMM/explanation/backtesting/#many-runs-in-one-pass).** Thousands of parameter points share one pass over the data, and each gets the result its own backtest gives: 16,384 points over four hours of Binance BTCUSDT futures took 228 s on 8 threads.
+- **[Quote on one venue, hedge on another](https://ziy.bio/FastMM/how-to/strategies/xmm/).** `xmm` makes the market on one exchange and hedges each fill with an IOC on another.
+- **[C++ or Python, backtest or live](https://ziy.bio/FastMM/how-to/strategies/python-hot-hooks/).** One strategy file runs in backtests, replays and live sessions; replays are deterministic and the simulated exchange models queue position. Python hooks marked `@fastmm.hot` compile to machine code with Numba.
+- **[Many accounts, one gateway](https://ziy.bio/FastMM/how-to/operations/run-behind-a-gateway/).** Several sub-accounts trade behind one venue, and strategy processes attach to one `fastmm-gateway` that keeps the exchange connections while they restart.
+- **[A/B tests](https://ziy.bio/FastMM/how-to/strategies/ab-test/).** Parameter sets run side by side, split by instrument, by time block or both, and are compared on markouts and net with paired intervals.
 
 ## Quickstart
 
@@ -56,7 +55,7 @@ class TouchMM(fastmm.Strategy):
 
 ## Exchanges
 
-Binance (spot and USDⓈ-M futures), OKX, Bybit, Gate, Hyperliquid, Lighter, Deribit, Gemini and Coinbase.
+FastMM trades on Binance (spot and USDⓈ-M futures), OKX, Bybit, Gate, Hyperliquid, Lighter, Deribit, Gemini, Coinbase (Advanced Trade and Exchange) and, for US stocks, Alpaca ([Venue connectors](https://ziy.bio/FastMM/reference/venues/)).
 
 > If you are running FastMM on Binance, try [bndesk](https://github.com/ziyangliu-666/bndesk), a real-time dashboard for your accounts.
 

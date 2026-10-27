@@ -1,11 +1,13 @@
 # FastMM
 
-- **[Strategies in C++ or Python](how-to/strategies/python-hot-hooks.md).** Python hooks marked `@fastmm.hot` compile to machine code with Numba.
-- **[One strategy file for backtest and live](explanation/determinism.md).** Replays are deterministic, and the simulated exchange models queue position.
-- **[Account pools](reference/venues.md#account-pools).** Several sub-accounts trade behind one venue, and orders spread across them.
-- **[Gateway](how-to/operations/run-behind-a-gateway.md).** One `fastmm-gateway` holds the exchange connections; strategy processes attach to it and restart without dropping them.
+- **[Low latency](explanation/benchmarks.md).** In the engine a book update becomes an order in 143 ns (p50). Core pinning, busy polling, AF_XDP or DPDK receive and OpenOnload or XLIO order entry tune the host around it.
+- **[Sweeps in one pass](explanation/backtesting.md#many-runs-in-one-pass).** Thousands of parameter points share one pass over the data, and each gets the result its own backtest gives: 16,384 points over four hours of Binance BTCUSDT futures took 228 s on 8 threads.
+- **[Quote on one venue, hedge on another](how-to/strategies/xmm.md).** `xmm` makes the market on one exchange and hedges each fill with an IOC on another.
+- **[C++ or Python, backtest or live](how-to/strategies/python-hot-hooks.md).** One strategy file runs in backtests, replays and live sessions; replays are deterministic and the simulated exchange models queue position. Python hooks marked `@fastmm.hot` compile to machine code with Numba.
+- **[Many accounts, one gateway](how-to/operations/run-behind-a-gateway.md).** Several sub-accounts trade behind one venue, and strategy processes attach to one `fastmm-gateway` that keeps the exchange connections while they restart.
 - **[A/B tests](how-to/strategies/ab-test.md).** Parameter sets run side by side, split by instrument, by time block or both, and are compared on markouts and net with paired intervals.
-- **[Low-latency tuning](how-to/operations/running-in-production.md#host-tuning).** Core pinning, busy polling, AF_XDP or DPDK for market data, OpenOnload or XLIO for orders.
+
+FastMM trades on Binance (spot and USDⓈ-M futures), OKX, Bybit, Gate, Hyperliquid, Lighter, Deribit, Gemini, Coinbase (Advanced Trade and Exchange) and, for US stocks, Alpaca ([Venue connectors](reference/venues.md)).
 
 ## Quickstart
 

@@ -1,7 +1,7 @@
 # FastMM documentation site (MkDocs + Material). Preview: ./scripts/docs-serve.sh
 # The Markdown under docs/ is the source and stays readable on GitHub; this file only orders it.
 site_name: FastMM
-site_description: A C++20 market-making engine that quotes on one venue and hedges on another; in the engine benchmark a book update becomes an order in 159 ns (p50).
+site_description: A C++20 market-making engine that quotes on one venue and hedges on another; in the engine benchmark a book update becomes an order in 143 ns (p50).
 site_url: https://ziy.bio/FastMM/
 site_author: Ziyang Liu
 repo_url: https://github.com/ziyangliu-666/FastMM
