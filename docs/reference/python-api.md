@@ -454,17 +454,7 @@ Defining the class raises `TypeError` when:
 - it has more than 128 parameters;
 - a parameter or `State` field is named `publish` or `inst`.
 
-```mermaid
-flowchart LR
-  subgraph engine[engine thread]
-    H[hot hooks]
-  end
-  subgraph slow[slow thread]
-    M["on_start, @every methods, on_stop"]
-  end
-  H -- "snapshot, recent rows, fills" --> M
-  M -- "publish(values)" --> H
-```
+Hot hooks run on the engine thread. `on_start`, the `@fastmm.every` methods and `on_stop` run on a slow thread: they read the snapshot, recent rows and fills the engine publishes, and send values back with `publish()`.
 
 ### Slow ctx
 

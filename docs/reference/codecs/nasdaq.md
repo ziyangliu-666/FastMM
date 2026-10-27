@@ -15,15 +15,12 @@ Shared field helpers (6-byte timestamps, price and share conversions, alpha and 
 
 How the `nasdaq_itch` venue chains them:
 
-```mermaid
-flowchart LR
-  A[Line A] --> R[MoldUDP64 Receiver]
-  B[Line B] --> R
-  G[GLIMPSE snapshot] --> L3
-  R --> L3[ItchL2Bridge: one L3Book per stock]
-  L3 --> E[Engine: BookSnapshot, BookDelta, Trade]
-  E --> O[OUCH encoder] --> S[SoupBinTCP session]
-```
+| Stage | Codec |
+|---|---|
+| lines A and B | MoldUDP64 `Receiver` |
+| initial book | GLIMPSE snapshot |
+| books | `ItchL2Bridge`, one `L3Book` per stock, sending `BookSnapshot`, `BookDelta` and `Trade` to the engine |
+| orders | OUCH encoder over a SoupBinTCP session |
 
 ## Wire layouts
 

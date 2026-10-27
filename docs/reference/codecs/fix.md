@@ -6,13 +6,10 @@
 
 A tag=value FIX 4.4 codec: framing, a session layer for initiators and acceptors, and a decoder and encoder between FIX messages and the engine's messages. It has no XML dictionary; the tags and enumerations it uses are constants in `include/fastmm/codecs/fix/fix_tags.hpp`. It depends on core only, and its hot path is `noexcept` and allocation-free after construction.
 
-```mermaid
-flowchart LR
-  bytes --> F[FixFramer] --> S[FixSession.on_frame]
-  S -- session message --> H[handled]
-  S -- application message --> D[FixDecoder] --> K[EventSink]
-  C[OrderCommand] --> E[FixEncoder.encode] --> A[FixSession.send_app] --> M[MessageStore and SendFn]
-```
+| Direction | Path |
+|---|---|
+| inbound | bytes → `FixFramer` → `FixSession::on_frame`; session messages are handled there, application messages go on to `FixDecoder` → `EventSink` |
+| outbound | `OrderCommand` → `FixEncoder::encode` → `FixSession::send_app` → message store and send function |
 
 | Header | Type | Concept |
 |---|---|---|

@@ -91,16 +91,11 @@ void on_risk_reject(auto& /*ctx*/, const RiskReject& r) noexcept {
 
 One input event runs through the hooks in this order:
 
-```mermaid
-flowchart TD
-  E[input event] --> S[engine updates book, position, OMS]
-  S --> H[the event's hook]
-  H --> R[on_risk_reject, one per refused order]
-  R --> Q[on_quoting, if quoting_enabled changed]
-  Q --> N{input rings empty<br/>and batch end requested?}
-  N -- yes --> B[on_batch_end]
-  N -- no --> E
-```
+1. The engine updates the book, the position and the OMS.
+2. The event's hook runs.
+3. `on_risk_reject` runs once per refused order.
+4. `on_quoting` runs if `quoting_enabled` changed.
+5. When the input rings are empty and a batch end was requested, `on_batch_end` runs.
 
 | Rule | |
 |---|---|

@@ -19,15 +19,6 @@ The codec decodes CME Group MDP 3.0 market data, Simple Binary Encoding over UDP
 | Encoder for tests, simulation and benchmarks | `mdp3_encoder.hpp`, `src/codecs/mdp3/mdp3_encoder.cpp` |
 | Fixtures | `tests/fixtures/cme/` |
 
-```mermaid
-flowchart LR
-  A[Line A] --> F[Mdp3Feed: arbitration, gaps]
-  B[Line B] --> F
-  S[Snapshot loop] --> F
-  F --> D[Mdp3Decoder: per-instrument MBP books]
-  D --> K[EventSink: BookDelta, BookSnapshot, Trade, ConnectionState]
-```
-
 ## Templates
 
 | Template | Id | blockLength | Use |
@@ -127,14 +118,12 @@ An RptSeq at or below the last applied one is a stale replay, skipped silently.
 | RptSeq gap | only that instrument recovers |
 | While recovering | emits `ConnectionStateMsg{Resyncing, channel 0}` with a `ResyncReason` (LateJoin, PacketGap, RptSeqGap, BookError, SinkOverflow); healthy instruments keep updating; packets are copied into a buffer of `recovery_packets` (8192) |
 
-```mermaid
-flowchart TD
-  S[SnapshotFullRefresh52 for a recovering instrument] --> C1{Buffer covers every packet after LastMsgSeqNumProcessed?}
-  C1 -- no --> W[Wait for the next loop]
-  C1 -- yes --> C2{Buffered entries after the snapshot's RptSeq contiguous?}
-  C2 -- no --> W
-  C2 -- yes --> R[Replace the book, replay the buffered entries]
-```
+A `SnapshotFullRefresh52` recovers an instrument when both hold:
+
+1. The buffer covers every packet after the snapshot's `LastMsgSeqNumProcessed`.
+2. The buffered entries after the snapshot's `RptSeq` are contiguous.
+
+The book is then replaced and the buffered entries replayed; otherwise the instrument waits for the next snapshot loop.
 
 Recovery applies CME's rule per entry by RptSeq, not per packet, so events split across packets recover too.
 

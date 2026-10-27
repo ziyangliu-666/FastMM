@@ -15,15 +15,12 @@ There is no REST connection. The connector declares that it needs no credentials
 
 ## Pipeline
 
-```mermaid
-flowchart LR
-    A[Line A] --> R
-    B[Line B] --> R
-    R[MoldUDP64 receiver<br/>A/B merge, reorder, re-requests] --> RB[Recovery buffer<br/>during a snapshot]
-    G[GLIMPSE snapshot] --> L3
-    RB --> L3[ITCH to L2 bridge<br/>one L3 book per instrument]
-    L3 --> M[BookSnapshot, BookDelta, Trade<br/>to the market-data ring]
-```
+| Stage | What it does |
+|---|---|
+| receiver, `rx_backend` | reads lines A and B, keeps the first copy of each packet, reorders, re-requests gaps |
+| recovery buffer | holds messages while a GLIMPSE snapshot loads |
+| ITCH to L2 bridge | one L3 book per instrument |
+| market-data ring | `BookSnapshot`, `BookDelta`, `Trade` |
 
 `rx_backend` picks the datagram source for both lines: the kernel socket or AF_XDP.
 

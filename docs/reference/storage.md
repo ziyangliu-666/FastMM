@@ -43,13 +43,7 @@ kill_on_failure = false   # trip the kill switch when a write fails or a record 
 
 ## How a record reaches the store
 
-```mermaid
-flowchart LR
-  E[engine thread] -- record --> R[(SPSC ring)]
-  R -- fm-store thread --> B[backend]
-  B --> T[(tables)]
-  C[control thread] -- session metadata --> B
-```
+The engine thread writes each record into a single-producer ring, and the `fm-store` thread drains it into the backend.
 
 The engine copies each record into the ring without allocating, calling the kernel or waiting. The store thread batches up to 512 records into one backend transaction and sleeps 2 ms when the ring is empty. The control thread writes the session rows and the instrument table directly.
 
@@ -355,16 +349,11 @@ One row per `[risk]` key a `fastmm-ctl limits` changed, keyed `(session_id, seq,
 
 `fastmm-live` reads the store before any session thread starts and logs what the previous session of the same `[engine] name` left: its PnL, clean shutdown or not, kill state, journal parts, last position per instrument and its open orders. `fastmm-pnl recover --engine <name>` prints the same.
 
-```mermaid
-flowchart LR
-  S[read store] --> L[log the previous session]
-  L --> P{restore_position?}
-  P -- yes --> R[restore last position per venue and symbol]
-  P -- no --> C
-  R --> C[replay each venue's executions from its resume point]
-  C --> O[open-order snapshot]
-  O --> Q[quoting on]
-```
+1. Read the store and log the previous session.
+2. With `restore_position`, restore the last position per venue and symbol.
+3. Replay each venue's executions from its resume point.
+4. Take the open-order snapshot.
+5. Turn quoting on.
 
 With `[engine] restore_position` the session carries over the last position per venue and symbol ([What survives a restart](../how-to/operations/running-in-production.md#restarts)). The position is the newest stored row for that venue and symbol, a position row or a fill: each fill row carries the position it left.
 

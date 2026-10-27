@@ -6,17 +6,6 @@ Every venue connector follows the rules on this page; each venue's page lists on
 
 Each connector runs on its own network thread and writes normalised messages into two rings per venue. Orders and control commands come back on a third.
 
-```mermaid
-flowchart TB
-  V[venue] <--> C[connector thread]
-  C --> MD[market-data ring]
-  C --> OR[order ring]
-  MD --> E[engine]
-  OR --> E
-  E --> OUT[outbound ring]
-  OUT --> C
-```
-
 | Ring | When full |
 |---|---|
 | market data | drops the delta and forces a book resync |
