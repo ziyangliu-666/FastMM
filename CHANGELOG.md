@@ -10,6 +10,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: `Engine::warm_up()` touches the slots of the timer wheel and of `OwnQuantity` too, so a live order takes no page fault in them.
 - core: `RecentMap` keeps its keys in insertion order and an index of 8-byte slots: the OMS's memory of 64Ki executions takes 1.6 MiB, not 2.5, and a fill touches one line of the index, plus the line of the execution it evicts, fetched at the fill before.
 - core: `OwnQuantity` keeps each order's resting quantity with the order: an order event updates that order alone and never allocates, where it rewrote the instrument's list of segments, which grew on a busy instrument.
+- sim: the simulator's transport writes an order message into the scheduler slot it takes instead of building and copying it, and draws a latency without a call when there is no jitter.
 - backtest: `fastmm-backtest --sweep` says first whether its points share passes, prints each point's risk rejects and kill reason, and prints no warnings of its runs.
 - backtest: a sweep's log lines carry the simulated time of the run that wrote them and name its point (`#n`, `LogRunScope`).
 - backtest: the walk-forward table gives each fold's first instant in UTC, not seconds from the data's start.

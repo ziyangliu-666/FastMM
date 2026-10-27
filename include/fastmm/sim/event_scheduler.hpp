@@ -45,9 +45,16 @@ class EventScheduler {
 
   // False when full.
   bool push(Timestamp fire_ts, const Payload& p) noexcept {
-    if (FASTMM_UNLIKELY(size_ == N)) return false;
+    Payload* slot = push(fire_ts);
+    if (slot == nullptr) return false;
+    *slot = p;
+    return true;
+  }
+  // Schedules an event at `fire_ts` and returns its payload for the caller to fill in place (a
+  // payload is written once, not built and copied); nullptr when full.
+  [[nodiscard]] Payload* push(Timestamp fire_ts) noexcept {
+    if (FASTMM_UNLIKELY(size_ == N)) return nullptr;
     const std::uint32_t slot = free_[N - 1 - size_];
-    payload_[slot] = p;
     std::size_t i = size_++;
     const Key k{fire_ts, next_seq_++, slot};
     while (i > 0) {
@@ -57,7 +64,7 @@ class EventScheduler {
       i = parent;
     }
     heap_[i] = k;
-    return true;
+    return &payload_[slot];
   }
   // Timestamp::max() when empty.
   [[nodiscard]] Timestamp peek_ts() const noexcept {

@@ -182,20 +182,20 @@ bool SimTransport::send(const EventHeader& m) noexcept {
     if (observer_ != nullptr) observer_->on_order_sent(m, now, Timestamp{});
     return true;  // accepted by the transport, lost in the network
   }
-  OutSlot slot{};
-  slot.len = m.len;
-  slot.over_limit = over_limit ? 1 : 0;
-  std::memcpy(slot.bytes, &m, m.len);
   Timestamp arrival = now + s.delay;
   // One connection's messages are taken in one after another (SimVenueConfig::order_service).
   if (l.order_service.ns > 0 && l.last_order_processed.valid() &&
       arrival < l.last_order_processed + l.order_service)
     arrival = l.last_order_processed + l.order_service;
-  if (!sched_.push(arrival, slot)) {
+  OutSlot* slot = sched_.push(arrival);
+  if (slot == nullptr) {
     ++stats_.scheduler_full;
     if (observer_ != nullptr) observer_->on_order_sent(m, now, Timestamp{});
     return false;
   }
+  slot->len = m.len;
+  slot->over_limit = over_limit ? 1 : 0;
+  std::memcpy(slot->bytes, &m, m.len);
   if (l.order_service.ns > 0) l.last_order_processed = arrival;
   if (observer_ != nullptr) observer_->on_order_sent(m, now, arrival);
   return true;

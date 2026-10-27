@@ -9,6 +9,7 @@
 // stream of its own (MdPath): the feed's delays depend on the seed and the data alone, not on the
 // orders a strategy sends, so the runs of a sweep with one seed see one feed and share it
 // (backtest/multiverse.hpp).
+#include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/rng.hpp"
 #include "fastmm/core/time.hpp"
 
@@ -29,16 +30,23 @@ struct LatencySample {
   bool dropped = false;
 };
 
-// fixed + jitter * LogNormal(mean 1), drawn from `rng` (none when there is no jitter).
-[[nodiscard]] inline Duration draw_latency(const LatencyParams& p, Xoshiro256ss& rng) noexcept {
-  if (p.jitter.ns <= 0) return p.fixed;
+// jitter * LogNormal(mean 1), drawn from `rng`.
+[[nodiscard]] FASTMM_NOINLINE inline Duration draw_jitter(const LatencyParams& p,
+                                                          Xoshiro256ss& rng) noexcept {
   // Box-Muller; u1 in (0, 1] so the log is finite.
   const double u1 = 1.0 - rng.uniform01();
   const double u2 = rng.uniform01();
   const double z = std::sqrt(-2.0 * std::log(u1)) * std::cos(6.283185307179586 * u2);
   const double s = p.sigma;
   const double excess = static_cast<double>(p.jitter.ns) * std::exp(s * z - 0.5 * s * s);
-  return p.fixed + Duration{static_cast<std::int64_t>(excess)};
+  return Duration{static_cast<std::int64_t>(excess)};
+}
+
+// fixed + jitter * LogNormal(mean 1), drawn from `rng` (none when there is no jitter).
+[[nodiscard]] FASTMM_FORCE_INLINE Duration draw_latency(const LatencyParams& p,
+                                                        Xoshiro256ss& rng) noexcept {
+  if (p.jitter.ns <= 0) return p.fixed;
+  return p.fixed + draw_jitter(p, rng);
 }
 
 // The market-data path of a venue: its latency and the stream its jitter draws from. Two equal
