@@ -40,6 +40,11 @@ A new page gets an entry in the `nav` of [`mkdocs.yml`](../../mkdocs.yml); the s
 12. Units on every number (bps, ms, s, ticks, base or quote currency, raw fixed-point integers).
 13. Commands run from the repository root and copy as they are: no `$` prompt, in a `bash` block, with their output in a separate `text` block after it; code longer than three lines is a snippet; relative links only.
 14. Write each paragraph and list item on one line; do not wrap prose at a column.
+15. Write for the reader of the page, not for a reviewer: no qualifier that only protects the writer (a trailing parenthesis of requirements, "with no X", "only Y", "rather than Z").
+16. A warning appears only if a reader following the page would hit the problem. Something learned while writing the page, that the page's reader cannot run into, stays out.
+17. State a capability or leave it out; do not state it and take it back in the same sentence. Its limits belong on its reference page.
+18. Edit by deleting first, then by moving the sentence to the page that owns it, and only then by rewriting it. Do not repair a sentence by adding a clause.
+19. Prefer short paragraphs to lists, and short pages to complete ones; a page answers what its reader came for and stops.
 
 ## Snippets
 
