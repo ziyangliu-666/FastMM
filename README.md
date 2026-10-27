@@ -21,8 +21,6 @@ https://github.com/user-attachments/assets/dcd130c5-28fe-482f-a757-d0fc6550c5b9
 
 ## Quickstart
 
-The package on PyPI is `fastmm-engine`, imported as `fastmm`; `pip install fastmm` installs a different project.
-
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install "fastmm-engine[hot]"
@@ -30,7 +28,7 @@ fastmm init my-mm && cd my-mm
 python backtest.py
 ```
 
-This runs a strategy on a simulated market, with no account and no API keys (Linux x86-64, Python 3.10+). On Debian and Ubuntu, `sudo apt install python3-venv` first; on macOS or Windows, [run it in Docker](https://ziy.bio/FastMM/getting-started/install/#without-building-it). The [quick start](https://ziy.bio/FastMM/getting-started/quickstart/) continues to a live session against the local simulated exchange; C++ strategies start from the [C++ quick start](https://ziy.bio/FastMM/getting-started/cpp-quickstart/).
+This runs a strategy on a simulated market.
 
 ## A strategy
 
@@ -58,7 +56,7 @@ class TouchMM(fastmm.Strategy):
 
 ## Exchanges
 
-Binance (spot and USDⓈ-M futures), OKX, Bybit, Gate, Hyperliquid, Lighter, Deribit, Gemini and Coinbase. A Nasdaq connector (TotalView-ITCH market data, OUCH 5.0 orders) trades only against the bundled simulator, `fastmm-sim-itch`.
+Binance (spot and USDⓈ-M futures), OKX, Bybit, Gate, Hyperliquid, Lighter, Deribit, Gemini and Coinbase.
 
 > If you are running FastMM on Binance, try [bndesk](https://github.com/ziyangliu-666/bndesk), a real-time dashboard for your accounts.
 

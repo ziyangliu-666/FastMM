@@ -120,14 +120,14 @@ F and G require Side, OrderQty and OrdType, which `OutCancelMsg` / `OutReplaceMs
 
 ## Performance
 
-`bench/bench_codecs_fix.cpp`, from [bench/README.md](../../../bench/README.md) (`scripts/bench.sh`, preset `release-native`, gcc 13, AMD Ryzen 7 7800X3D under WSL2, pinned, median of 5 repetitions, 2026-09-23):
+`bench/bench_codecs_fix.cpp`, from [bench/full-results.md](../../../bench/full-results.md) (machine and method: [Benchmarks](../../explanation/benchmarks.md)):
 
 | benchmark | p50 |
 |---|---|
-| `BM_Fix_ParseExecReportFill` (validate + index a 25-field, ~250-byte fill, one getter) | 221 ns |
-| `BM_Fix_DecodeExecReportFill` (parse + `OrderFillMsg` into a MsgRing, ExecID dedup) | 404 ns |
-| `BM_Fix_BuildNewOrderSingle` (`FixEncoder::encode`, post-only limit, 9 body fields) | 122 ns |
-| `BM_Fix_FramerNext` (one complete message) | 8.3 ns |
+| `BM_Fix_ParseExecReportFill` (validate + index a 25-field, ~250-byte fill, one getter) | 228 ns |
+| `BM_Fix_DecodeExecReportFill` (parse + `OrderFillMsg` into a MsgRing, ExecID dedup) | 400 ns |
+| `BM_Fix_BuildNewOrderSingle` (`FixEncoder::encode`, post-only limit, 9 body fields) | 127 ns |
+| `BM_Fix_FramerNext` (one complete message) | 7.8 ns |
 
 ```bash
 ./build/<dir>/bin/bench/bench_codecs_fix --cpu=5 --benchmark_repetitions=9 \

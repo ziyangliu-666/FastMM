@@ -1,6 +1,6 @@
 # Quick start
 
-The package on PyPI is `fastmm-engine`, imported as `fastmm`. `pip install fastmm` installs a different project.
+The package on PyPI is `fastmm-engine`, imported as `fastmm`.
 
 The wheels need Linux x86-64 and CPython 3.10 or later; on macOS or Windows, run the steps in a container ([Install](install.md#without-building-it)). Nothing here needs an account or API keys. To write the strategy in C++ instead, see the [Quick start in C++](cpp-quickstart.md).
 

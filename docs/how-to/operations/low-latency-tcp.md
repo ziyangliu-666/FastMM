@@ -39,4 +39,4 @@ Both stacks intercept the socket calls through `LD_PRELOAD` and run TCP and UDP 
 - Run with `spin_mode = "busy"` and the network thread on an isolated core; the stacks poll from the calling thread.
 - Check that the stack is in use: `onload_stackdump` lists the process's stacks; XLIO prints its banner on start.
 
-`bench_order_tcp` measures the kernel path over a veth pair ([bench/README.md](../../../bench/README.md)).
+`bench_order_tcp` measures the kernel path over a veth pair.

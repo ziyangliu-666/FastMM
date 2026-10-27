@@ -150,7 +150,7 @@ The `[engine]` keys below are off by default. One the process lacks the permissi
 | the journal, store, log and control threads may run on a hot thread's core | they preempt it or share its core; the line names the CPUs to start the process on with `taskset -c` |
 | `spin_mode = "adaptive"` with threads alone on their cores | an idle thread sleeps and pays a wake-up on the next event |
 
-A session with five accounts behind one venue and a hedge venue has seven hot threads: seven physical cores and one more for everything else, 16 vCPUs on an AWS c7i, where CPU n and n + 8 are one core. `fastmm init --profile production` writes a config laid out this way.
+A session with five accounts behind one venue and a hedge venue has seven hot threads: seven physical cores and one more for everything else, 16 vCPUs on a VM where CPU n and n + 8 are one core. `fastmm init --profile production` writes a config laid out this way.
 
 Venues that `net_cpus` puts on one core share a network thread when that thread polls (`spin_mode = "busy"`, or `"adaptive"` with `net_spin_dedicated = true`) and the core is not the engine's. The thread gives each venue its turn of the loop in order and never sleeps, so an order for any of them waits at most for the other venues' turns, where threads that take turns on the core sleep and pay a wake-up on each order. The topology line names them as one hot thread (`net 1 (spot_b) + net 2 (spot_c)`). Without polling, each venue keeps a thread of its own, which blocks when idle on a shared core.
 

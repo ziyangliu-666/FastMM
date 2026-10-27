@@ -73,7 +73,7 @@ The io_uring backend uses liburing 2.15, linked statically into `fastmm_net`; SQ
 
 ### Backend latency
 
-`bench/bench_reactor.cpp` measures 64-byte loopback TCP echo round trips with both backends; they are within measurement noise of each other ([bench/README.md](../../bench/README.md)). Loopback TCP and the `read` and `write` system calls dominate, and both backends make those calls the same way; io_uring saves only the empty `epoll_wait` of an idle busy-polling loop. The threaded variants need two free cores and refuse to run with fewer in their affinity mask (`FASTMM_BENCH_NEEDS_CORES`, `bench/bench_pin.hpp`).
+`bench/bench_reactor.cpp` measures 64-byte loopback TCP echo round trips with both backends; they are within measurement noise of each other (`BM_ReactorEcho*` in [bench/full-results.md](../../bench/full-results.md)). Loopback TCP and the `read` and `write` system calls dominate, and both backends make those calls the same way; io_uring saves only the empty `epoll_wait` of an idle busy-polling loop. The threaded variants need two free cores and refuse to run with fewer in their affinity mask (`FASTMM_BENCH_NEEDS_CORES`, `bench/bench_pin.hpp`).
 
 ## Hot-path rules
 

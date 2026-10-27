@@ -377,9 +377,9 @@ PRODUCTION_TOML = '''\
 # not the private key.
 #
 # Cores. The engine and every venue's network thread poll without sleeping on a physical core of
-# their own; `lscpu -e` lists them (CORE column; on AWS c7i, CPU n and n + vCPUs/2 are one core).
+# their own; `lscpu -e` lists them (CORE column; on a VM, CPU n and n + vCPUs/2 are often one core).
 # Seven hot threads (an engine and six accounts) need seven cores plus one for everything else:
-# 16 vCPUs on c7i. `taskset -c 0` keeps the journal, store, log and control threads on CPU 0; the
+# 16 vCPUs with two threads a core. `taskset -c 0` keeps the journal, store, log and control threads on CPU 0; the
 # engine and network threads move themselves to `cpu` and `net_cpus`. fastmm-live prints a
 # topology check at start that names any thread sharing a core.
 #

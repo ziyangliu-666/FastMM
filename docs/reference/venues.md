@@ -206,7 +206,14 @@ The fetched rates replace `[venues.<x>.fees]` and `[[instruments]] maker_bps` / 
 | `<sym>@trade` | `TradesStreamEvent` 10000 | one `Trade` per group entry |
 | `<sym>@depth20` | `DepthSnapshotStreamEvent` 10002 | decoded, not subscribed |
 
-The schema is `tools/sbe/binance_spot_stream_1_0.xml` (schema id 1, version 0, from the binance-spot-api-docs repository); `tools/sbe_gen.py` generates `include/fastmm/venues/binance/generated/binance_stream_sbe.hpp` (CI checks it is current). Timestamps are microseconds; prices and quantities are int64 mantissas with a per-message exponent, converted exactly to 1e-8 fixed point (a value finer than 1e-8 makes the frame malformed). The depth snapshot still comes from REST (JSON), and depth sync is unchanged. JSON decode per message ([bench/README.md](../../bench/README.md), release-native, 2026-09-23): `BM_Json_BinanceDepth20` 608 ns, `BM_Json_BinanceDepth100` 2.73 µs, `BM_Json_BinanceBookTicker` 111 ns, `BM_Json_BinanceTrade` 109 ns. The `BM_Sbe_*` benchmarks are in `bench/bench_json.cpp` (`--benchmark_filter=Sbe_Binance`) but not in `bench/results/latest`.
+The schema is `tools/sbe/binance_spot_stream_1_0.xml` (schema id 1, version 0, from the binance-spot-api-docs repository); `tools/sbe_gen.py` generates `include/fastmm/venues/binance/generated/binance_stream_sbe.hpp` (CI checks it is current). Timestamps are microseconds; prices and quantities are int64 mantissas with a per-message exponent, converted exactly to 1e-8 fixed point (a value finer than 1e-8 makes the frame malformed). The depth snapshot still comes from REST (JSON), and depth sync is unchanged. Decode per message, SBE against JSON ([bench/full-results.md](../../bench/full-results.md)):
+
+| Stream | SBE | JSON |
+|---|---:|---:|
+| best bid and ask | 17.2 ns | 116.6 ns |
+| trade | 19.1 ns | 114.1 ns |
+| depth, 20 levels | 47.4 ns | 669.9 ns |
+| depth, 100 levels | 150.5 ns | 2.96 µs |
 
 WS API responses stay JSON: `responseFormat=sbe` would move order acks and execution reports to SBE schema 3 (retired every few months, currently version 5), for a saving of about 300 ns per order event.
 
@@ -440,7 +447,7 @@ Demo trading uses the production REST host with `x-simulated-trading: 1`. A my.o
 * Dead man's switch: `POST /countdown_cancel_all {"timeout":N}` with `dead_mans_switch_s`, refreshed at a third of the window (`CountdownDriver`); a lapse kills the venue (`DeadMansSwitchLost`); `disconnect()` sends `timeout` 0 on a blocking connection. The countdown is per account, every contract.
 * Rate limits (REST docs "Frequency limit rule"): futures order placement and amend 100 r/s per UID (WebSocket API and REST together), cancels 200 r/s, other private endpoints 200 r/10 s each, public 200 r/10 s per endpoint and IP. Client-side `orders_per_second` (default 50) on new orders and amends; `X-Gate-RateLimit-Requests-Remain` / `-Limit` (REST, reset in seconds) and `x_gate_ratelimit_*` (WebSocket API, reset in ms) feed the limiter; a 429 or `TOO_MANY_REQUESTS` cools down until the reset.
 * Errors (`gate_error_map.hpp`), by label: `INVALID_KEY` / `INVALID_SIGNATURE` / `IP_FORBIDDEN` / `READ_ONLY` / `FORBIDDEN` / `ACCOUNT_LOCKED` fatal; `REQUEST_EXPIRED` clock resync; `TOO_MANY_REQUESTS` / `TOO_BUSY` rate limit; `SERVER_ERROR` / `INTERNAL` backoff; `ORDER_NOT_FOUND` / `ORDER_NOT_OWNED` reconcile; `INSUFFICIENT_AVAILABLE` balance; `ORDER_POC_IMMEDIATE` post-only would cross; `SIZE_TOO_SMALL` / `SIZE_TOO_LARGE` / `PRICE_TOO_DEVIATED` / `INVALID_PRECISION` the lot, size and price reasons; `POSITION_DUAL_MODE` fatal.
-* Measured from AWS Tokyo (ap-northeast-1a) on 2026-10-03: `futures.order_place` over the WebSocket API answers in 1.6 ms (p50; the ack in 1.0 ms), `order_cancel` 1.8 ms, `futures.login` 10.5 ms; REST `POST /orders` 15 ms including a new TCP + TLS connection a request; the public stream's book was 2 ms behind the venue's clock.
+* Measured from a VM near the venue on 2026-10-03: `futures.order_place` over the WebSocket API answers in 1.6 ms (p50; the ack in 1.0 ms), `order_cancel` 1.8 ms, `futures.login` 10.5 ms; REST `POST /orders` 15 ms including a new TCP + TLS connection a request; the public stream's book was 2 ms behind the venue's clock.
 * Not handled: the `futures.order_book_update` channel (the REST-snapshot variant of the book; `obu` replaces it), batch orders (`futures.order_batch_place`, 20 a request), `futures.order_cancel_ids`, the fractional lot step of a contract with `enable_decimal` (the lot stays 1 contract), the account book as a funding source, USD1- and BTC-settled contracts beyond the endpoint names (`settle`), SBE market data (`/v4/ws/usdt/sbe`).
 
 ## Hyperliquid perpetuals (`hyperliquid`)
