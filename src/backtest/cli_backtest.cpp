@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <vector>
@@ -120,19 +121,60 @@ int run_branches(const char* prog, const bt::BacktestConfig& cfg, bt::MdSource* 
   return 0;
 }
 
-// --sweep: the grid's points, under the queue fill models in multiverses (one pass over the data
-// for a group of points, bt::sweep_by_name), with --solo as separate backtests. One line per
-// point. --verify K runs K points, spread over the grid, again as backtests of their own and
-// compares each with its sweep result (bt::result_difference).
-int run_sweep(const char* prog,
-              const bt::BacktestConfig& cfg,
-              const std::vector<std::string>& sweeps,
-              const std::string& data,
-              int threads,
-              bool solo,
-              std::size_t verify) {
+// The --sweep options.
+struct SweepArgs {
+  std::vector<std::string> sweeps;
+  std::string data;
+  int threads = 0;
+  bool solo = false;
+  std::size_t verify = 0;
+  int folds = 0;
+  std::string metric = "net_pnl";
+};
+
+std::string json_string(std::string_view v) {
+  std::string out = "\"";
+  for (const char c : v) {
+    if (c == '"' || c == '\\') out += '\\';
+    out += c;
+  }
+  return out + '"';
+}
+
+// One line of sweep.jsonl: the point's values, its fold (walk-forward) and its summary.json.
+std::string jsonl_line(const ParamMap& point, int fold, const bt::BacktestResult& result) {
+  std::string line = "{\"point\": {";
+  bool first = true;
+  for (const auto& [k, v] : point) {
+    line.append(first ? "" : ", ").append(json_string(k)).append(": ").append(json_string(v));
+    first = false;
+  }
+  line += "}, ";
+  if (fold >= 0) line.append("\"fold\": ").append(std::to_string(fold)).append(", ");
+  const std::string summary = result.summary_json();
+  bool indent = false;
+  for (std::size_t i = summary.find('{') + 1; i < summary.size(); ++i) {
+    const char c = summary[i];
+    if (c == '\n') {
+      indent = true;
+      continue;
+    }
+    if (indent && c == ' ') continue;
+    indent = false;
+    line += c;
+  }
+  return line;
+}
+
+// --sweep: the grid's points (strategy parameters and the settings of bt::kSweepSettings), under
+// the queue fill models in multiverses (one pass over the data for a group of points,
+// bt::sweep_by_name), with --solo as separate backtests. One line per point, and with an output
+// directory sweep.jsonl. --folds runs the grid as a walk-forward (bt::walk_forward_by_name) and
+// prints its report. --verify K runs K points, spread over the grid, again as backtests of their
+// own and compares each with its sweep result (bt::result_difference).
+int run_sweep(const char* prog, const bt::BacktestConfig& cfg, const SweepArgs& a) {
   bt::ParamGrid grid;
-  for (const std::string& s : sweeps) {
+  for (const std::string& s : a.sweeps) {
     const std::size_t eq = s.find('=');
     std::vector<std::string> values;
     std::size_t pos = eq + 1;
@@ -145,25 +187,40 @@ int run_sweep(const char* prog,
     grid.emplace_back(s.substr(0, eq), std::move(values));
   }
   const bt::SourceFactory factory = [&]() -> std::unique_ptr<bt::MdSource> {
-    return data.empty() ? bt::open_source(cfg) : bt::open_data(data, &cfg.instruments);
+    return a.data.empty() ? bt::open_source(cfg) : bt::open_data(a.data, &cfg.instruments);
   };
+  const std::size_t n_points = bt::expand_grid(grid).size();
+  const std::string refusal = a.solo ? "--solo" : bt::multiverse_refusal({cfg});
+  std::printf("%zu points%s %s\n",
+              n_points,
+              a.folds > 1 ? (" on " + std::to_string(a.folds) + " folds").c_str() : "",
+              refusal.empty() ? "in multiverses" : ("as separate backtests: " + refusal).c_str());
+  std::fflush(stdout);
+  // Warnings of thousands of runs at once say nothing of the run they come from: each point's
+  // risk rejects and kill switch are on its line and in sweep.jsonl.
+  if (Logger::instance().level() < LogLevel::Error) Logger::instance().set_level(LogLevel::Error);
   Logger::instance().start(stderr, LogLevel::Warn);
   // A line per point needs its metrics: the rows go as each point ends, but for the points
   // --verify runs again.
-  const std::size_t n_points = bt::expand_grid(grid).size();
-  const std::size_t n_verify = std::min(verify, n_points);
+  const std::size_t n_verify = std::min(a.verify, n_points);
   std::vector<bool> verified(n_points, false);
   for (std::size_t k = 0; k < n_verify; ++k) verified[k * n_points / n_verify] = true;
   const bt::ResultHook trim = [&](std::size_t i, bt::BacktestResult& r) {
-    if (verified[i]) return;
+    if (i < n_points && verified[i]) return;
     r.fills = {};
     r.equity = {};
     r.orders = {};
   };
   std::vector<bt::SweepPoint> points;
+  bt::WalkForwardReport report;
   const auto t0 = std::chrono::steady_clock::now();
   try {
-    points = bt::sweep_by_name(cfg, cfg.strategy, grid, factory, threads, solo, trim);
+    if (a.folds > 0) {
+      report = bt::walk_forward_by_name(
+          cfg, cfg.strategy, grid, factory, a.folds, a.metric, a.threads, trim);
+    } else {
+      points = bt::sweep_by_name(cfg, cfg.strategy, grid, factory, a.threads, a.solo, trim);
+    }
   } catch (const std::invalid_argument& e) {
     Logger::instance().stop();
     std::fprintf(stderr, "%s: %s\n", prog, e.what());
@@ -176,37 +233,64 @@ int run_sweep(const char* prog,
   const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   Logger::instance().stop();
   std::uint64_t events = 0;
-  for (const bt::SweepPoint& p : points) {
-    std::string label;
-    for (const auto& kv : grid)
-      label.append(label.empty() ? "" : " ")
-          .append(kv.first)
-          .append("=")
-          .append(p.params.at(kv.first));
-    const bt::Metrics& m = p.result.metrics;
-    std::printf("%-40s net %14.4f  fills %8llu  orders %8llu  outbound %s\n",
-                label.c_str(),
-                m.net_pnl,
-                static_cast<unsigned long long>(m.fills),
-                static_cast<unsigned long long>(m.orders),
-                p.result.outbound_sha256.substr(0, 16).c_str());
+  std::string jsonl;
+  const auto add = [&](const bt::SweepPoint& p, int fold) {
     events += p.result.md_events;
+    if (!cfg.output_dir.empty()) jsonl.append(jsonl_line(p.params, fold, p.result)).append("\n");
+  };
+  if (a.folds > 0) {
+    for (std::size_t f = 0; f < report.folds.size(); ++f) {
+      for (const bt::SweepPoint& p : report.folds[f].points) add(p, static_cast<int>(f));
+    }
+    std::fputs(report.table().c_str(), stdout);
+  } else {
+    for (const bt::SweepPoint& p : points) {
+      std::string label;
+      for (const auto& kv : grid)
+        label.append(label.empty() ? "" : " ")
+            .append(kv.first)
+            .append("=")
+            .append(p.params.at(kv.first));
+      const bt::Metrics& m = p.result.metrics;
+      std::printf(
+          "%-40s net %14.4f  fills %8llu  orders %8llu  risk rejects %8llu  outbound %s%s\n",
+          label.c_str(),
+          m.net_pnl,
+          static_cast<unsigned long long>(m.fills),
+          static_cast<unsigned long long>(m.orders),
+          static_cast<unsigned long long>(p.result.engine.risk_rejects),
+          p.result.outbound_sha256.substr(0, 16).c_str(),
+          p.result.killed()
+              ? ("  killed " + std::string(to_string(p.result.engine.kill_reason))).c_str()
+              : "");
+      add(p, -1);
+    }
   }
-  const bool shared = !solo && bt::multiverse_refusal({cfg}).empty();
-  std::printf("%zu points %s in %.2f s, %.1f M market-data events a second over the runs\n",
-              points.size(),
-              shared ? "in multiverses" : "as separate backtests",
+  std::printf("done in %.2f s, %.1f M market-data events a second over the runs\n",
               wall,
               wall > 0 ? static_cast<double>(events) / wall / 1e6 : 0.0);
-  if (verify == 0 || points.empty()) return 0;
-  const std::size_t n = std::min(verify, points.size());
+  if (!cfg.output_dir.empty()) {
+    const std::string path = cfg.output_dir + "/sweep.jsonl";
+    std::error_code ec;
+    std::filesystem::create_directories(cfg.output_dir, ec);
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    const bool ok = f != nullptr && std::fwrite(jsonl.data(), 1, jsonl.size(), f) == jsonl.size();
+    if (f != nullptr && std::fclose(f) != 0) {
+      std::fprintf(stderr, "%s: cannot write %s\n", prog, path.c_str());
+      return kExitRun;
+    }
+    if (!ok) {
+      std::fprintf(stderr, "%s: cannot write %s\n", prog, path.c_str());
+      return kExitRun;
+    }
+    std::printf("each point's summary.json in %s\n", path.c_str());
+  }
+  if (a.verify == 0 || points.empty()) return 0;
+  const std::size_t n = std::min(a.verify, points.size());
   const bt::BacktestConfig start = bt::shared_start(cfg);
   for (std::size_t k = 0; k < n; ++k) {
     const bt::SweepPoint& p = points[k * points.size() / n];
-    bt::BacktestConfig c = start;
-    for (const auto& [key, v] : p.params) c.params[key] = v;
-    c.output_dir.clear();
-    c.journal_out.clear();
+    const bt::BacktestConfig c = bt::point_config(start, p.params);
     const std::unique_ptr<bt::MdSource> source = factory();
     const std::string diff =
         bt::result_difference(bt::run_backtest(c, cfg.strategy, source.get()), p.result);
@@ -235,10 +319,7 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
   std::uint64_t seed = 0;
   std::uint64_t duration_s = 0;
   bool list = false;
-  std::vector<std::string> sweeps;
-  int threads = 0;
-  bool solo = false;
-  std::size_t verify = 0;
+  SweepArgs sweep;
 
   CLI::App app("Backtests a registered strategy.", program);
   setup(app);
@@ -269,22 +350,37 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
       ->check(CLI::Range(std::uint64_t{1}, std::uint64_t{10'000'000}));
   app.add_option("--journal-out", journal_out, "record the session for fastmm-replay")
       ->option_text("<file>");
-  app.add_option("--sweep",
-                 sweeps,
-                 "a parameter's values, every combination with the other --sweep keys run "
-                 "(repeatable); under l2_queue and l3_queue the points share their passes over "
-                 "the data")
-      ->option_text("<key=v1,v2,...>")
-      ->allow_extra_args(false)
-      ->check(key_value());
-  app.add_option("--threads", threads, "--sweep: worker threads (default: every core)")
+  CLI::Option* sweep_opt =
+      app.add_option("--sweep",
+                     sweep.sweeps,
+                     "a strategy parameter's or a backtest setting's values (latency_fixed_us, "
+                     "latency_jitter_us, latency_md_us, latency_md_jitter_us, p_drop, "
+                     "queue_conservatism, maker_fee_bps, taker_fee_bps), every combination with "
+                     "the other --sweep keys run (repeatable); under l2_queue and l3_queue the "
+                     "points share their passes over the data. --out writes sweep.jsonl")
+          ->option_text("<key=v1,v2,...>")
+          ->allow_extra_args(false)
+          ->check(key_value());
+  app.add_option("--threads", sweep.threads, "--sweep: worker threads (default: every core)")
       ->option_text("<n>");
-  app.add_flag("--solo", solo, "--sweep: run every point as a backtest of its own");
+  app.add_flag("--solo", sweep.solo, "--sweep: run every point as a backtest of its own");
   app.add_option("--verify",
-                 verify,
+                 sweep.verify,
                  "--sweep: run this many points again as backtests of their own and compare the "
                  "results, fill for fill")
       ->option_text("<n>");
+  CLI::Option* folds_opt =
+      app.add_option("--folds",
+                     sweep.folds,
+                     "--sweep as a walk-forward: the grid on this many consecutive slices of the "
+                     "data, the best point of each slice scored on the next")
+          ->option_text("<k>")
+          ->check(CLI::Range(1, 1'000))
+          ->needs(sweep_opt);
+  app.add_option("--metric", sweep.metric, "--folds: what ranks the points (default net_pnl)")
+      ->option_text("<net_pnl|realized_pnl|sharpe_bar|spread_captured_bps>")
+      ->check(CLI::IsMember({"net_pnl", "realized_pnl", "sharpe_bar", "spread_captured_bps"}))
+      ->needs(folds_opt);
   CLI::Option* list_opt =
       app.add_flag("--list-strategies", list, "print registered strategies and their parameters");
   app.add_option("--format", format_arg, "output format of --list-strategies (default text)")
@@ -292,6 +388,8 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
       ->check(CLI::IsMember({"text", "json"}))
       ->needs(list_opt);
   if (const std::optional<int> rc = parse(app, argc, argv)) return *rc;
+  if (sweep.folds > 0 && (sweep.solo || sweep.verify > 0))
+    return usage_error(app, "--folds runs no --solo or --verify");
   const bool have_seed = seed_opt->count() > 0;
 
   if (!register_strategy_modules(program, modules)) return kExitConfig;
@@ -364,7 +462,10 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
     return kExitData;
   }
 
-  if (!sweeps.empty()) return run_sweep(prog, cfg, sweeps, data, threads, solo, verify);
+  if (!sweep.sweeps.empty()) {
+    sweep.data = data;
+    return run_sweep(prog, cfg, sweep);
+  }
   if (cfg.ab.enabled() && cfg.ab.assignment == "branch")
     return run_branches(prog, cfg, source.get());
 

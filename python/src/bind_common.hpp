@@ -79,13 +79,15 @@ py::tuple run_hot_strategy(const bt::BacktestConfig& cfg,
                            const py::object& slow);
 
 // The configurations' runs of a compiled hot strategy in multiverses (bind_hot.cpp): programs[i]
-// and slows[i] as run_hot_strategy's, for cfgs[i]. Returns the list of run_hot_strategy's tuples.
+// and slows[i] as run_hot_strategy's, for cfgs[i]. Returns the list of run_hot_strategy's tuples;
+// with summary_only, results without their fills, equity bars and orders.
 py::list sweep_hot_strategy(const std::vector<bt::BacktestConfig>& cfgs,
                             const py::object& data,
                             const py::list& programs,
                             const std::string& metadata,
                             const py::list& slows,
-                            int threads);
+                            int threads,
+                            bool summary_only);
 
 // Runs `body` with the GIL released and a factory of fresh cursors over `data` (the forms
 // run_backtest takes; None: the configuration's source, else the synthetic market as a stream).

@@ -576,16 +576,17 @@ def run(config: Any, data: Any, instance: Any, name: str, spec: HotSpec, cache: 
     return _outcome(type(instance), spec, cache, out, slow)
 
 
-def run_many(config: Any, data: Any, instances: Sequence[Any], name: str, spec: HotSpec,
-             cache: bool, params: Sequence[Mapping[str, str]], strategy_meta: str,
-             slows: Sequence[Optional[Dict[str, Any]]],
-             threads: int) -> List[Tuple[Any, Optional[Dict[str, Any]], int]]:
-    """run() of every instance in one pass over the data (bt::run_multiverse), each with the
-    result it gives alone. The fill model must be a queue model."""
+def run_many(configs: Sequence[Any], data: Any, instances: Sequence[Any], name: str,
+             spec: HotSpec, cache: bool, params: Sequence[Mapping[str, str]], strategy_meta: str,
+             slows: Sequence[Optional[Dict[str, Any]]], threads: int,
+             summary_only: bool = False) -> List[Tuple[Any, Optional[Dict[str, Any]], int]]:
+    """run() of every instance, under its config, in one pass over the data
+    (bt::run_multiverse), each with the result it gives alone. The fill model must be a queue
+    model."""
     hot = compiled(type(instances[0]), spec, cache)
-    outs = _core._sweep_hot_strategy(config, data, name, [dict(p) for p in params],
+    outs = _core._sweep_hot_strategy(list(configs), data, name, [dict(p) for p in params],
                                      [hot.program(i) for i in instances], strategy_meta,
-                                     list(slows), threads)
+                                     list(slows), threads, summary_only)
     return [_outcome(type(i), spec, cache, out, slow)
             for i, out, slow in zip(instances, outs, slows)]
 

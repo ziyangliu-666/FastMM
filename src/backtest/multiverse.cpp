@@ -1223,18 +1223,19 @@ std::vector<SweepPoint> sweep_multiverse(const BacktestConfig& base,
                                          const SourceFactory& source_factory,
                                          int threads,
                                          const ResultHook& done) {
-  const std::vector<ParamMap> points = expand_grid(grid);
+  return sweep_multiverse(base, strategy, expand_grid(grid), source_factory, threads, done);
+}
+
+std::vector<SweepPoint> sweep_multiverse(const BacktestConfig& base,
+                                         std::string_view strategy,
+                                         const SweepPoints& points,
+                                         const SourceFactory& source_factory,
+                                         int threads,
+                                         const ResultHook& done) {
   const BacktestConfig start = shared_start(base);
   std::vector<BacktestConfig> cfgs;
   cfgs.reserve(points.size());
-  for (const ParamMap& p : points) {
-    BacktestConfig c = start;
-    for (const auto& [k, v] : p) c.params[k] = v;
-    c.output_dir.clear();
-    c.journal_out.clear();
-    c.keep_orders = false;
-    cfgs.push_back(std::move(c));
-  }
+  for (const ParamMap& p : points) cfgs.push_back(point_config(start, p));
   // Without data, the synthetic market as a stream (l2_queue), the one each point would read.
   const SourceFactory factory = [&]() -> std::unique_ptr<MdSource> {
     std::unique_ptr<MdSource> s = source_factory ? source_factory() : nullptr;
@@ -1257,11 +1258,22 @@ std::vector<SweepPoint> sweep_by_name(const BacktestConfig& base,
                                       int threads,
                                       bool separately,
                                       const ResultHook& done) {
+  return sweep_by_name(
+      base, std::move(strategy), expand_grid(grid), source_factory, threads, separately, done);
+}
+
+std::vector<SweepPoint> sweep_by_name(const BacktestConfig& base,
+                                      std::string strategy,
+                                      const SweepPoints& points,
+                                      const SourceFactory& source_factory,
+                                      int threads,
+                                      bool separately,
+                                      const ResultHook& done) {
   if (!separately && queue_model(base.transport.fill_model))
-    return sweep_multiverse(base, strategy, grid, source_factory, threads, done);
+    return sweep_multiverse(base, strategy, points, source_factory, threads, done);
   return sweep(
       base,
-      grid,
+      points,
       source_factory,
       [strategy = std::move(strategy)](const BacktestConfig& c, MdSource* s) {
         return run_backtest(c, strategy, s);
@@ -1276,11 +1288,29 @@ WalkForwardReport walk_forward_by_name(const BacktestConfig& base,
                                        const SourceFactory& source_factory,
                                        int folds,
                                        std::string_view metric,
-                                       int threads) {
+                                       int threads,
+                                       const ResultHook& done) {
+  WalkForwardReport rep = walk_forward_by_name(
+      base, std::move(strategy), expand_grid(grid), source_factory, folds, metric, threads, done);
+  rep.param_names.clear();
+  for (const auto& [k, values] : grid) {
+    if (!values.empty()) rep.param_names.push_back(k);
+  }
+  return rep;
+}
+
+WalkForwardReport walk_forward_by_name(const BacktestConfig& base,
+                                       std::string strategy,
+                                       const SweepPoints& points,
+                                       const SourceFactory& source_factory,
+                                       int folds,
+                                       std::string_view metric,
+                                       int threads,
+                                       const ResultHook& done) {
   if (!queue_model(base.transport.fill_model)) {
-    return walk_forward(
+    WalkForwardReport rep = walk_forward(
         base,
-        grid,
+        points,
         source_factory,
         [strategy = std::move(strategy)](const BacktestConfig& c, MdSource* s) {
           return run_backtest(c, strategy, s);
@@ -1288,18 +1318,34 @@ WalkForwardReport walk_forward_by_name(const BacktestConfig& base,
         folds,
         metric,
         threads);
+    if (done) {
+      for (std::size_t f = 0; f < rep.folds.size(); ++f) {
+        for (std::size_t p = 0; p < rep.folds[f].points.size(); ++p)
+          done(f * points.size() + p, rep.folds[f].points[p].result);
+      }
+    }
+    return rep;
   }
   if (folds < 1) throw std::invalid_argument("walk_forward: folds must be >= 1");
   static_cast<void>(score_metric(metric));  // an unknown metric fails before anything runs
   WalkForwardReport rep;
   rep.metric = std::string(metric);
-  for (const auto& [k, values] : grid) {
-    if (!values.empty()) rep.param_names.push_back(k);
+  for (const ParamMap& p : points) {
+    for (const auto& kv : p) {
+      if (std::find(rep.param_names.begin(), rep.param_names.end(), kv.first) ==
+          rep.param_names.end())
+        rep.param_names.push_back(kv.first);
+    }
   }
   const auto k = static_cast<std::size_t>(folds);
   rep.folds.resize(k);
+  const auto fold_done = [&](std::size_t f) -> ResultHook {
+    if (!done) return {};
+    return [&done, f, n = points.size()](std::size_t i, BacktestResult& r) { done(f * n + i, r); };
+  };
   if (k == 1) {
-    rep.folds[0].points = sweep_multiverse(base, strategy, grid, source_factory, threads);
+    rep.folds[0].points =
+        sweep_multiverse(base, strategy, points, source_factory, threads, fold_done(0));
   } else {
     const std::vector<Timestamp> edges = fold_edges(base, source_factory, folds);
     for (std::size_t i = 0; i < k; ++i) {
@@ -1310,7 +1356,7 @@ WalkForwardReport walk_forward_by_name(const BacktestConfig& base,
       };
       rep.folds[i].start_ts = edges[i].ns;
       rep.folds[i].end_ts = edges[i + 1].ns;
-      rep.folds[i].points = sweep_multiverse(base, strategy, grid, slice, threads);
+      rep.folds[i].points = sweep_multiverse(base, strategy, points, slice, threads, fold_done(i));
     }
   }
   score_walk_forward(rep);

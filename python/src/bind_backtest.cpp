@@ -20,6 +20,7 @@
 
 #include <pybind11/stl.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -534,42 +535,95 @@ std::string resolve_strategy(const BacktestConfig& cfg, const std::optional<std:
   return name;
 }
 
-// A sweep grid as strings, plus the caller's original values per (key, string form) so the
-// returned dicts keep the types the caller used (floats stay floats).
+// A sweep's points as strings: a grid {name: [values]} expanded, or a list of points
+// [{name: value}]. The keys in grid order (of a list, as they first appear) and the caller's
+// original values per (key, string form), so the returned dicts keep the types the caller used
+// (floats stay floats).
 struct PyGrid {
-  bt::ParamGrid grid;
-  std::vector<std::map<std::string, py::object>> originals;
+  std::vector<std::string> keys;
+  bt::SweepPoints points;
+  std::map<std::string, std::map<std::string, py::object>> originals;
 };
 
-PyGrid parse_grid(const py::dict& grid) {
+constexpr const char* kGridForms =
+    "grid must be a dict {name: [values]} (every combination) or a list of points "
+    "[{name: value}]";
+
+PyGrid parse_grid(const py::object& grid) {
   PyGrid out;
-  for (const auto& [k, values] : grid) {
-    const std::string key = py::str(k).cast<std::string>();
-    if (py::isinstance<py::str>(values) || !py::isinstance<py::iterable>(values)) {
-      throw py::type_error("grid['" + key + "'] must be a list of values");
+  const auto value = [&](const std::string& key, py::handle v) {
+    std::string s = param_value_string(v);
+    out.originals[key].emplace(s, py::reinterpret_borrow<py::object>(v));
+    if (std::find(out.keys.begin(), out.keys.end(), key) == out.keys.end()) out.keys.push_back(key);
+    return s;
+  };
+  if (py::isinstance<py::dict>(grid)) {
+    bt::ParamGrid g;
+    for (const auto& [k, values] : grid.cast<py::dict>()) {
+      const std::string key = py::str(k).cast<std::string>();
+      if (py::isinstance<py::str>(values) || !py::isinstance<py::iterable>(values)) {
+        throw py::type_error("grid['" + key + "'] must be a list of values");
+      }
+      std::vector<std::string> strs;
+      for (const auto& v : values) strs.push_back(value(key, v));
+      if (strs.empty()) throw py::value_error("grid['" + key + "'] is empty");
+      g.emplace_back(key, std::move(strs));
     }
-    std::vector<std::string> strs;
-    std::map<std::string, py::object> orig;
-    for (const auto& v : values) {
-      std::string s = param_value_string(v);
-      orig.emplace(s, py::reinterpret_borrow<py::object>(v));
-      strs.push_back(std::move(s));
-    }
-    if (strs.empty()) throw py::value_error("grid['" + key + "'] is empty");
-    out.grid.emplace_back(key, std::move(strs));
-    out.originals.push_back(std::move(orig));
+    out.points = bt::expand_grid(g);
+    return out;
   }
+  if (py::isinstance<py::str>(grid) || !py::isinstance<py::iterable>(grid))
+    throw py::type_error(kGridForms);
+  for (const auto& item : grid) {
+    if (!py::isinstance<py::dict>(item)) throw py::type_error(kGridForms);
+    ParamMap point;
+    for (const auto& [k, v] : item.cast<py::dict>()) {
+      const std::string key = py::str(k).cast<std::string>();
+      point[key] = value(key, v);
+    }
+    out.points.push_back(std::move(point));
+  }
+  if (out.points.empty()) throw py::value_error("grid: the list of points is empty");
   return out;
 }
 
 py::dict grid_params(const PyGrid& g, const ParamMap& p) {
   py::dict params;
-  for (std::size_t i = 0; i < g.grid.size(); ++i) {
-    const auto it = p.find(g.grid[i].first);
+  for (const std::string& k : g.keys) {
+    const auto it = p.find(k);
     if (it == p.end()) continue;
-    params[py::str(g.grid[i].first)] = g.originals[i].at(it->second);
+    params[py::str(k)] = g.originals.at(k).at(it->second);
   }
   return params;
+}
+
+// Keeps a point's metrics, counts and markouts, not its fills, equity bars and orders
+// (summary_only).
+const bt::ResultHook kSummaryOnly = [](std::size_t, BacktestResult& r) {
+  r.fills = {};
+  r.equity = {};
+  r.orders = {};
+};
+
+// Scores a walk-forward by a Python callable of a BacktestResult: `results` holds each fold's
+// result objects, in the order of rep's points.
+void score_by_callable(bt::WalkForwardReport& rep,
+                       const py::function& fn,
+                       const py::list& results) {
+  std::map<const BacktestResult*, double> scores;
+  for (std::size_t f = 0; f < rep.folds.size(); ++f) {
+    const auto fold = results[f].cast<py::list>();
+    for (std::size_t i = 0; i < rep.folds[f].points.size(); ++i)
+      scores[&rep.folds[f].points[i].result] = fn(fold[i]).cast<double>();
+  }
+  bt::score_walk_forward(rep, [&](const BacktestResult& r) { return scores.at(&r); });
+}
+
+std::string metric_name(const py::object& metric) {
+  if (py::isinstance<py::str>(metric)) return metric.cast<std::string>();
+  if (!PyCallable_Check(metric.ptr()))
+    throw py::type_error("metric must be the name of a metric or a callable of a BacktestResult");
+  return py::str(py::getattr(metric, "__name__", py::str("metric"))).cast<std::string>();
 }
 
 py::list sweep_points(const PyGrid& g, std::vector<bt::SweepPoint>& points) {
@@ -948,17 +1002,24 @@ void bind_backtest(py::module_& m) {
   m.def(
       "sweep",
       [](const BacktestConfig& config,
-         const py::dict& grid,
+         const py::object& grid,
          const py::object& data,
          const std::optional<std::string>& strategy,
-         int threads) {
+         int threads,
+         bool summary_only) {
         const PyGrid g = parse_grid(grid);
         DataSpec spec = parse_data(data);
         const BacktestConfig cfg = config;
         const std::string name = resolve_strategy(cfg, strategy);
         std::vector<bt::SweepPoint> points;
         with_source_factory(spec, cfg, [&](const bt::SourceFactory& factory) {
-          points = bt::sweep_by_name(cfg, name, g.grid, factory, threads);
+          points = bt::sweep_by_name(cfg,
+                                     name,
+                                     g.points,
+                                     factory,
+                                     threads,
+                                     false,
+                                     summary_only ? kSummaryOnly : bt::ResultHook{});
         });
         return sweep_points(g, points);
       },
@@ -967,31 +1028,59 @@ void bind_backtest(py::module_& m) {
       py::arg("data") = py::none(),
       py::arg("strategy") = py::none(),
       py::arg("threads") = 0,
-      "Cartesian parameter sweep of a registered C++ strategy on a thread pool (GIL released). "
-      "grid: {param: [values]}. Returns [(params, BacktestResult)] in grid order, first "
-      "parameter varying slowest. Every worker opens its own cursor over `data` (same forms as "
-      "run_backtest). threads <= 0 uses every hardware thread. Under fill_model l2_queue or "
-      "l3_queue the points share their passes over the data, with the results each gives alone "
-      "(backtest/multiverse.hpp). fastmm.sweep also takes a fastmm.Strategy class.");
+      py::arg("summary_only") = false,
+      "Parameter sweep of a registered C++ strategy on a thread pool (GIL released). grid: "
+      "{name: [values]}, every combination, or a list of points [{name: value}]; a name is a "
+      "strategy parameter or one of the BacktestConfig settings latency_fixed_us, "
+      "latency_jitter_us, latency_md_us, latency_md_jitter_us, p_drop, queue_conservatism, "
+      "maker_fee_bps and taker_fee_bps. Returns [(params, BacktestResult)] in the points' order, a "
+      "grid's first name varying slowest. Every worker opens its own cursor over `data` (same "
+      "forms as run_backtest). threads <= 0 uses every hardware thread. Under fill_model "
+      "l2_queue or l3_queue the points share their passes over the data, with the results each "
+      "gives alone (backtest/multiverse.hpp). summary_only: each result keeps its metrics, "
+      "counts and markouts but not its fills, equity bars and orders. fastmm.sweep also takes a "
+      "fastmm.Strategy class.");
 
   m.def(
       "walk_forward",
       [](const BacktestConfig& config,
-         const py::dict& grid,
+         const py::object& grid,
          int folds,
          const py::object& data,
-         const std::string& metric,
+         const py::object& metric,
          const std::optional<std::string>& strategy,
-         int threads) {
+         int threads,
+         bool summary_only) {
         const PyGrid g = parse_grid(grid);
         DataSpec spec = parse_data(data);
         const BacktestConfig cfg = config;
         const std::string name = resolve_strategy(cfg, strategy);
+        const bool named = py::isinstance<py::str>(metric);
+        const std::string label = metric_name(metric);
         bt::WalkForwardReport rep;
         with_source_factory(spec, cfg, [&](const bt::SourceFactory& factory) {
-          rep = bt::walk_forward_by_name(cfg, name, g.grid, factory, folds, metric, threads);
+          rep = bt::walk_forward_by_name(cfg,
+                                         name,
+                                         g.points,
+                                         factory,
+                                         folds,
+                                         named ? label : "net_pnl",
+                                         threads,
+                                         summary_only ? kSummaryOnly : bt::ResultHook{});
         });
-        return report_dict(g, rep, nullptr);
+        if (named) return report_dict(g, rep, nullptr);
+        py::list fold_points;
+        py::list results;
+        for (bt::WalkForwardFold& f : rep.folds) {
+          py::list pts = sweep_points(g, f.points);
+          py::list rs;
+          for (const py::handle t : pts) rs.append(t.cast<py::tuple>()[1]);
+          fold_points.append(pts);
+          results.append(rs);
+        }
+        rep.metric = label;
+        score_by_callable(rep, metric.cast<py::function>(), results);
+        return report_dict(g, rep, &fold_points);
       },
       py::arg("config"),
       py::arg("grid"),
@@ -1000,10 +1089,12 @@ void bind_backtest(py::module_& m) {
       py::arg("metric") = "net_pnl",
       py::arg("strategy") = py::none(),
       py::arg("threads") = 0,
-      "Walk-forward sweep: the grid runs on `folds` consecutive time slices of `data`, and the "
-      "best point of fold i-1 by `metric` (net_pnl, realized_pnl, sharpe_bar, "
-      "spread_captured_bps) is scored on fold i. Returns a dict: metric, folds (start_ts, "
-      "end_ts, best, chosen, in_sample, out_of_sample, hindsight, scores, points), "
+      py::arg("summary_only") = false,
+      "Walk-forward sweep: the points (a grid or a list, as in sweep) run on `folds` consecutive "
+      "time slices of `data`, and the best point of fold i-1 by `metric` is scored on fold i. "
+      "metric: net_pnl, realized_pnl, sharpe_bar, spread_captured_bps, or a callable of a "
+      "BacktestResult returning a number, higher is better. Returns a dict: metric, folds "
+      "(start_ts, end_ts, best, chosen, in_sample, out_of_sample, hindsight, scores, points), "
       "mean_in_sample, mean_out_of_sample, mean_hindsight, choice_changes and table (the "
       "printable report). folds=1 runs exactly fastmm.sweep. The synthetic market needs "
       "fill_model='l2_queue' for folds > 1. This entry point runs a registered C++ strategy; "
@@ -1025,14 +1116,31 @@ void bind_backtest(py::module_& m) {
 
   m.def(
       "_expand_grid",
-      [](const py::dict& grid) {
+      [](const py::object& grid) {
         const PyGrid g = parse_grid(grid);
         py::list out;
-        for (const ParamMap& p : bt::expand_grid(g.grid)) out.append(grid_params(g, p));
+        for (const ParamMap& p : g.points) out.append(grid_params(g, p));
         return out;
       },
       py::arg("grid"),
-      "Internal: the points of a sweep grid in fastmm.sweep's order, with the caller's values.");
+      "Internal: the points of a sweep grid or list in fastmm.sweep's order, with the caller's "
+      "values.");
+  m.attr("_SWEEP_SETTINGS") = [] {
+    py::tuple t(bt::kSweepSettings.size());
+    for (std::size_t i = 0; i < bt::kSweepSettings.size(); ++i)
+      t[i] = py::str(std::string(bt::kSweepSettings[i]));
+    return t;
+  }();
+  m.def(
+      "_summary_only",
+      [](const BacktestResult& r) {
+        auto out = std::make_shared<BacktestResult>(r);
+        kSummaryOnly(0, *out);
+        return out;
+      },
+      py::arg("result"),
+      "Internal: a copy of the result without its fills, equity bars and orders "
+      "(fastmm.sweep(summary_only=True)).");
 
   m.def(
       "_result_difference",
@@ -1052,8 +1160,11 @@ void bind_backtest(py::module_& m) {
       [](const BacktestConfig& config,
          const py::object& data,
          int folds,
-         const std::string& metric) {
-        static_cast<void>(bt::score_metric(metric));
+         const py::object& metric) {
+        if (py::isinstance<py::str>(metric))
+          static_cast<void>(bt::score_metric(metric_name(metric)));
+        else
+          static_cast<void>(metric_name(metric));
         if (folds < 1) throw py::value_error("walk_forward: folds must be >= 1");
         std::vector<std::int64_t> out;
         if (folds == 1) return out;
@@ -1076,15 +1187,14 @@ void bind_backtest(py::module_& m) {
 
   m.def(
       "_walk_forward_report",
-      [](const py::dict& grid, const std::string& metric, const py::list& folds) {
+      [](const py::object& grid, const py::object& metric, const py::list& folds) {
         const PyGrid g = parse_grid(grid);
         bt::WalkForwardReport rep;
-        rep.metric = metric;
-        for (const auto& [k, values] : g.grid) {
-          if (!values.empty()) rep.param_names.push_back(k);
-        }
-        const std::vector<ParamMap> points = bt::expand_grid(g.grid);
+        rep.metric = metric_name(metric);
+        rep.param_names = g.keys;
+        const bt::SweepPoints& points = g.points;
         py::list fold_points;
+        py::list fold_results;
         for (const py::handle item : folds) {
           const auto t = item.cast<py::tuple>();
           bt::WalkForwardFold f;
@@ -1094,6 +1204,7 @@ void bind_backtest(py::module_& m) {
           if (results.size() != points.size())
             throw py::value_error("_walk_forward_report: one result per grid point");
           py::list pts;
+          fold_results.append(results);
           for (std::size_t i = 0; i < points.size(); ++i) {
             // Scoring reads the metrics and the window; the fills, equity and orders stay with the
             // Python results the report hands back.
@@ -1108,7 +1219,10 @@ void bind_backtest(py::module_& m) {
           rep.folds.push_back(std::move(f));
           fold_points.append(pts);
         }
-        bt::score_walk_forward(rep);
+        if (py::isinstance<py::str>(metric))
+          bt::score_walk_forward(rep);
+        else
+          score_by_callable(rep, metric.cast<py::function>(), fold_results);
         return report_dict(g, rep, &fold_points);
       },
       py::arg("grid"),

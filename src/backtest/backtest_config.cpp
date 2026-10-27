@@ -7,9 +7,11 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -598,6 +600,48 @@ void BacktestConfig::set_market_bps(double spread_bps, double mid_step_bps, doub
   g.base_spread_ticks = ticks(spread_bps / 2.0);
   g.mid_step_ticks = ticks(mid_step_bps);
   g.depth_ticks = std::max(1.0, depth_bps * ticks_per_bps);
+}
+
+bool BacktestConfig::set_setting(std::string_view key, std::string_view value) {
+  if (std::find(kSweepSettings.begin(), kSweepSettings.end(), key) == kSweepSettings.end())
+    return false;
+  double v = 0.0;
+  const char* const last = value.data() + value.size();
+  const auto [end, ec] = std::from_chars(value.data(), last, v);
+  if (ec != std::errc{} || end != last || !std::isfinite(v))
+    throw std::invalid_argument(fmt::format("{}: '{}' is not a number", key, value));
+  const auto fail = [&](std::string_view range) {
+    throw std::invalid_argument(fmt::format("{} must be {}, got {}", key, range, value));
+  };
+  sim::SimTransportConfig& t = transport;
+  if (key.ends_with("_us")) {
+    if (!(v >= 0.0 && v <= 1e12) || v != std::floor(v)) fail("a whole number of microseconds >= 0");
+    const Duration d = microseconds(static_cast<std::int64_t>(v));
+    if (key == "latency_fixed_us") {
+      t.order_out.fixed = d;
+      t.ack_in.fixed = d;
+    } else if (key == "latency_jitter_us") {
+      t.order_out.jitter = d;
+      t.ack_in.jitter = d;
+    } else if (key == "latency_md_us") {
+      t.md_in.fixed = d;
+    } else {
+      t.md_in.jitter = d;
+    }
+  } else if (key == "p_drop") {
+    if (!(v >= 0.0 && v < 1.0)) fail("in [0, 1)");
+    t.order_out.p_drop = v;
+  } else if (key == "queue_conservatism") {
+    if (!(v >= 0.0 && v <= 1.0)) fail("in [0, 1]");
+    t.queue_conservatism_bps = std::llround(v * 10'000.0);
+  } else {
+    if (!(std::fabs(v) <= 10'000.0)) fail("in [-10000, 10000] bps");
+    sim::FeeSchedule s = t.fees.default_schedule();
+    (key == "maker_fee_bps" ? s.maker_cbps : s.taker_cbps) =
+        static_cast<std::int32_t>(std::llround(v * 100.0));
+    t.fees = sim::FeeModel::uniform(s);
+  }
+  return true;
 }
 
 BacktestConfig BacktestConfig::single_instrument(std::string_view symbol, Price tick, Qty lot) {

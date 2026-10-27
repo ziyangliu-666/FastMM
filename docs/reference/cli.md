@@ -181,13 +181,22 @@ OPTIONS:
   --seed <n>                  synthetic market / latency model seed
   --duration <seconds>        synthetic horizon
   --journal-out <file>        record the session for fastmm-replay
-  --sweep <key=v1,v2,...>     a parameter's values, every combination with the other --sweep
-                              keys run (repeatable); under l2_queue and l3_queue the points
-                              share their passes over the data
+  --sweep <key=v1,v2,...>     a strategy parameter's or a backtest setting's values
+                              (latency_fixed_us, latency_jitter_us, latency_md_us,
+                              latency_md_jitter_us, p_drop, queue_conservatism,
+                              maker_fee_bps, taker_fee_bps), every combination with the
+                              other --sweep keys run (repeatable); under l2_queue and
+                              l3_queue the points share their passes over the data. --out
+                              writes sweep.jsonl
   --threads <n>               --sweep: worker threads (default: every core)
   --solo                      --sweep: run every point as a backtest of its own
   --verify <n>                --sweep: run this many points again as backtests of their own
                               and compare the results, fill for fill
+  --folds <k>                 --sweep as a walk-forward: the grid on this many consecutive
+                              slices of the data, the best point of each slice scored on the
+                              next
+  --metric <net_pnl|realized_pnl|sharpe_bar|spread_captured_bps> 
+                              --folds: what ranks the points (default net_pnl)
   --list-strategies           print registered strategies and their parameters
   --format <text|json>        output format of --list-strategies (default text)
 ```

@@ -2,6 +2,7 @@
 
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
+#include "fastmm/core/reject_counters.hpp"
 
 #include <fmt/format.h>
 
@@ -369,6 +370,12 @@ std::string BacktestResult::summary_json() const {
   u64("cancels", m.cancels);
   u64("replaces", m.replaces);
   u64("rejects", m.rejects);
+  s += "  \"risk_rejects\": {";
+  for (const auto& [reason, n] : nonzero_rejects(engine.risk_rejects_by_reason)) {
+    fmt::format_to(
+        std::back_inserter(s), "{}\"{}\": {}", s.ends_with('{') ? "" : ", ", to_string(reason), n);
+  }
+  s += "},\n";
   num("fill_ratio", m.fill_ratio);
   num("spread_captured_bps", m.spread_captured_bps);
   num("volume_base", m.volume_base);

@@ -1,7 +1,8 @@
 #pragma once
-// Parameter sweep (8.4/8.5): cartesian grid over strategy parameters run on a std::jthread
-// pool; every worker owns its own data cursor (source_factory) and backend, results come
-// back in grid order (first parameter varies slowest).
+// Parameter sweep (8.4/8.5): a list of points, or the cartesian grid that expands to one, over
+// strategy parameters and backtest settings, run on a std::jthread pool; every worker owns its own
+// data cursor (source_factory) and backend, results come back in the points' order (a grid's
+// first parameter varies slowest).
 //
 // walk_forward() runs the same grid on K consecutive time slices (folds) of the data and scores
 // the in-sample winner of fold i-1 on fold i: an out-of-sample check of the sweep's best row.
@@ -20,6 +21,8 @@
 namespace fastmm::bt {
 
 using ParamGrid = std::vector<std::pair<std::string, std::vector<std::string>>>;
+// The points of a sweep, in order: a grid expanded (expand_grid) or any list.
+using SweepPoints = std::vector<ParamMap>;
 using SourceFactory = std::function<std::unique_ptr<MdSource>()>;  // may return nullptr
 using RunFn = std::function<BacktestResult(const BacktestConfig&, MdSource*)>;
 
@@ -34,10 +37,21 @@ struct SweepPoint {
 using ResultHook = std::function<void(std::size_t index, BacktestResult& result)>;
 
 // Expands the grid in order: [{k1: v11, k2: v21}, {k1: v11, k2: v22}, ...].
-[[nodiscard]] std::vector<ParamMap> expand_grid(const ParamGrid& grid);
+[[nodiscard]] SweepPoints expand_grid(const ParamGrid& grid);
+
+// The configuration a point runs: `start` (shared_start() of the sweep's base) with each key of
+// `point` set, a key of kSweepSettings as that backtest setting (BacktestConfig::set_setting) and
+// any other as a strategy parameter; no output directory, journal or order rows.
+[[nodiscard]] BacktestConfig point_config(const BacktestConfig& start, const ParamMap& point);
 
 // Generic driver; `run` is called once per point on a worker thread. threads <= 0 uses
 // hardware_concurrency.
+std::vector<SweepPoint> sweep(const BacktestConfig& base,
+                              const SweepPoints& points,
+                              const SourceFactory& source_factory,
+                              const RunFn& run,
+                              int threads = 0,
+                              const ResultHook& done = {});
 std::vector<SweepPoint> sweep(const BacktestConfig& base,
                               const ParamGrid& grid,
                               const SourceFactory& source_factory,
@@ -58,9 +72,16 @@ std::vector<SweepPoint> sweep(const BacktestConfig& base,
       threads);
 }
 
-// A registered strategy's sweep. Under fill_model l2_queue the points share their passes over the
-// data (sweep_multiverse(), multiverse.hpp) with the results each gives alone; otherwise, or with
-// `separately`, every point is a backtest of its own.
+// A registered strategy's sweep. Under the queue fill models (l2_queue, l3_queue) the points share
+// their passes over the data (sweep_multiverse(), multiverse.hpp) with the results each gives
+// alone; otherwise, or with `separately`, every point is a backtest of its own.
+std::vector<SweepPoint> sweep_by_name(const BacktestConfig& base,
+                                      std::string strategy,
+                                      const SweepPoints& points,
+                                      const SourceFactory& source_factory = {},
+                                      int threads = 0,
+                                      bool separately = false,
+                                      const ResultHook& done = {});
 std::vector<SweepPoint> sweep_by_name(const BacktestConfig& base,
                                       std::string strategy,
                                       const ParamGrid& grid,
@@ -71,9 +92,10 @@ std::vector<SweepPoint> sweep_by_name(const BacktestConfig& base,
 
 // ---- walk-forward ------------------------------------------------------------------------------
 
-// Ranking metric of a run, higher is better: "net_pnl", "realized_pnl", "sharpe_bar" or
-// "spread_captured_bps". Throws std::invalid_argument for any other name.
-using ScoreFn = double (*)(const BacktestResult&);
+// Ranking metric of a run, higher is better. score_metric() names four, "net_pnl",
+// "realized_pnl", "sharpe_bar" and "spread_captured_bps", and throws std::invalid_argument for any
+// other name.
+using ScoreFn = std::function<double(const BacktestResult&)>;
 [[nodiscard]] ScoreFn score_metric(std::string_view name);
 
 struct WalkForwardFold {
@@ -92,7 +114,7 @@ struct WalkForwardFold {
 
 struct WalkForwardReport {
   std::string metric;
-  std::vector<std::string> param_names;  // grid order
+  std::vector<std::string> param_names;  // grid order; of a list of points, every key they set
   std::vector<WalkForwardFold> folds;
   // Means over folds 1..K-1 (NaN with one fold).
   double mean_in_sample = std::numeric_limits<double>::quiet_NaN();
@@ -121,12 +143,13 @@ struct WalkForwardReport {
                                                     Timestamp t0,
                                                     Timestamp t1);
 
-// Scores the points of every fold of `rep` by `rep.metric` and fills in best, chosen, the
-// in-sample / out-of-sample / hindsight scores, the means and the choice changes. With one fold,
-// its start_ts / end_ts are set from its results. walk_forward() ends with it; a caller that ran
-// the points itself (the Python package, for strategies written in Python) calls it directly.
-// Throws std::invalid_argument for an unknown metric.
-void score_walk_forward(WalkForwardReport& rep);
+// Scores the points of every fold of `rep` by `score_fn`, or by the metric named `rep.metric` when
+// `score_fn` is empty, and fills in best, chosen, the in-sample / out-of-sample / hindsight scores,
+// the means and the choice changes. With one fold, its start_ts / end_ts are set from its results.
+// walk_forward() ends with it; a caller that ran the points itself (the Python package, for
+// strategies written in Python) or ranks by a score of its own calls it directly. Throws
+// std::invalid_argument for an unknown metric.
+void score_walk_forward(WalkForwardReport& rep, const ScoreFn& score_fn = {});
 
 // Splits the data's event-time range into `folds` equal slices and runs the whole grid on each
 // one (a fresh backtest per point and fold, all on one pool of `threads` workers). Each fold
@@ -136,6 +159,13 @@ void score_walk_forward(WalkForwardReport& rep);
 // fill_model l2_queue: the coupled matching market cannot be cut and throws
 // std::invalid_argument.
 WalkForwardReport walk_forward(const BacktestConfig& base,
+                               const SweepPoints& points,
+                               const SourceFactory& source_factory,
+                               const RunFn& run,
+                               int folds,
+                               std::string_view metric = "net_pnl",
+                               int threads = 0);
+WalkForwardReport walk_forward(const BacktestConfig& base,
                                const ParamGrid& grid,
                                const SourceFactory& source_factory,
                                const RunFn& run,
@@ -143,14 +173,24 @@ WalkForwardReport walk_forward(const BacktestConfig& base,
                                std::string_view metric = "net_pnl",
                                int threads = 0);
 
-// walk_forward() of a registered strategy. Under fill_model l2_queue the points of each fold share
-// their passes over the fold's data (sweep_multiverse(), multiverse.hpp), with the same report.
+// walk_forward() of a registered strategy. Under the queue fill models the points of each fold
+// share their passes over the fold's data (sweep_multiverse(), multiverse.hpp), with the same
+// report. `done` sees each result, with index fold * points + point (ResultHook).
+WalkForwardReport walk_forward_by_name(const BacktestConfig& base,
+                                       std::string strategy,
+                                       const SweepPoints& points,
+                                       const SourceFactory& source_factory,
+                                       int folds,
+                                       std::string_view metric = "net_pnl",
+                                       int threads = 0,
+                                       const ResultHook& done = {});
 WalkForwardReport walk_forward_by_name(const BacktestConfig& base,
                                        std::string strategy,
                                        const ParamGrid& grid,
                                        const SourceFactory& source_factory,
                                        int folds,
                                        std::string_view metric = "net_pnl",
-                                       int threads = 0);
+                                       int threads = 0,
+                                       const ResultHook& done = {});
 
 }  // namespace fastmm::bt

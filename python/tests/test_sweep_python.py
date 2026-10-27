@@ -168,3 +168,63 @@ def test_hot_class_points_share_passes_and_match_their_own_backtests(example_con
     folds = fastmm.walk_forward(cfg, grid, folds=2, data="synthetic", strategy=BasicMMHot)
     assert folds["table"] == fastmm.walk_forward(cfg, grid, folds=2, data="synthetic",
                                                  strategy="basic_mm")["table"]
+
+
+@pytest.mark.parametrize("strategy", ["basic_mm", BasicMMExact, "hot"])
+def test_points_set_backtest_settings_and_come_as_a_list(example_config, strategy):
+    if strategy == "hot":
+        pytest.importorskip("numba")
+        from basic_mm_hot import BasicMMHot
+
+        strategy = BasicMMHot
+    cfg = _short(example_config, 8)
+    cfg.fill_model = "l2_queue"
+    grid = {"latency_fixed_us": [100, 3000], "maker_fee_bps": [-1.0, 2.0],
+            "half_spread_bps": [0.01]}
+    points = fastmm.sweep(cfg, grid, data="synthetic", strategy=strategy, threads=2, verify=2)
+    assert [p for p, _ in points] == fastmm._core._expand_grid(grid)
+    for point, result in points:
+        alone = cfg.copy()
+        alone.latency_fixed_us = point["latency_fixed_us"]
+        alone.maker_fee_bps = point["maker_fee_bps"]
+        r = fastmm.run_backtest(alone, data="synthetic", strategy=strategy,
+                                params={"half_spread_bps": 0.01})
+        assert r.outbound_sha256 == result.outbound_sha256
+        assert r.stats()["fees"] == result.stats()["fees"]
+    assert points[0][1].stats()["fees"] < 0 < points[1][1].stats()["fees"]
+
+    listed = [{"half_spread_bps": 0.03}, {"latency_fixed_us": 3000, "half_spread_bps": 0.01}]
+    some = fastmm.sweep(cfg, listed, data="synthetic", strategy=strategy, summary_only=True)
+    assert [p for p, _ in some] == listed
+    alone = cfg.copy()
+    alone.latency_fixed_us = 3000
+    r = fastmm.run_backtest(alone, data="synthetic", strategy=strategy,
+                            params={"half_spread_bps": 0.01})
+    assert some[1][1].outbound_sha256 == r.outbound_sha256
+    assert len(some[1][1].fills["ts"]) == 0 and some[1][1].stats()["fills"] > 0
+
+
+def test_walk_forward_ranks_by_a_function(example_config):
+    cfg = _short(example_config, 8)
+    cfg.fill_model = "l2_queue"
+
+    def fewest_fills(result):
+        return -result.stats()["fills"]
+
+    for strategy in ["basic_mm", BasicMMExact]:
+        rep = fastmm.walk_forward(cfg, GRID, folds=2, data="synthetic", metric=fewest_fills,
+                                  strategy=strategy, summary_only=True)
+        assert rep["metric"] == "fewest_fills"
+        for fold in rep["folds"]:
+            assert fold["scores"] == [-r.stats()["fills"] for _, r in fold["points"]]
+            assert fold["best"] == fold["points"][fold["scores"].index(max(fold["scores"]))][0]
+
+
+def test_grid_forms_and_setting_errors(example_config):
+    cfg = _short(example_config, 2)
+    with pytest.raises(TypeError, match="list of points"):
+        fastmm.sweep(cfg, [("half_spread_bps", 0.1)], data="synthetic")
+    with pytest.raises(ValueError, match="queue_conservatism"):
+        fastmm.sweep(cfg, {"queue_conservatism": [2]}, data="synthetic")
+    with pytest.raises(TypeError, match="metric"):
+        fastmm.walk_forward(cfg, GRID, folds=1, data="synthetic", metric=3)

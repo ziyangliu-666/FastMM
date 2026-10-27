@@ -87,7 +87,13 @@ using MultiverseFactory =
 // Empty when the configurations can share a pass, else why not.
 [[nodiscard]] std::string multiverse_refusal(const std::vector<BacktestConfig>& cfgs);
 
-// sweep_by_name() in multiverses: the same points, in grid order, with the same results.
+// sweep_by_name() in multiverses: the same points, in their order, with the same results.
+[[nodiscard]] std::vector<SweepPoint> sweep_multiverse(const BacktestConfig& base,
+                                                       std::string_view strategy,
+                                                       const SweepPoints& points,
+                                                       const SourceFactory& source_factory,
+                                                       int threads = 0,
+                                                       const ResultHook& done = {});
 [[nodiscard]] std::vector<SweepPoint> sweep_multiverse(const BacktestConfig& base,
                                                        std::string_view strategy,
                                                        const ParamGrid& grid,

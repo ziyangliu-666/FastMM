@@ -331,7 +331,8 @@ py::list sweep_hot_strategy(const std::vector<bt::BacktestConfig>& cfgs,
                             const py::list& programs,
                             const std::string& strategy_meta,
                             const py::list& slows,
-                            int threads) {
+                            int threads,
+                            bool summary_only) {
   std::vector<std::unique_ptr<HotRun>> runs;
   for (std::size_t i = 0; i < cfgs.size(); ++i) {
     runs.push_back(std::make_unique<HotRun>(
@@ -354,7 +355,13 @@ py::list sweep_hot_strategy(const std::vector<bt::BacktestConfig>& cfgs,
           return out;
         },
         factory,
-        threads);
+        threads,
+        [summary_only](std::size_t, bt::BacktestResult& r) {
+          if (!summary_only) return;
+          r.fills = {};
+          r.equity = {};
+          r.orders = {};
+        });
   });
   py::list out;
   for (std::size_t i = 0; i < runs.size(); ++i)
@@ -365,19 +372,22 @@ py::list sweep_hot_strategy(const std::vector<bt::BacktestConfig>& cfgs,
 void bind_hot(py::module_& m) {
   m.def(
       "_sweep_hot_strategy",
-      [](const bt::BacktestConfig& config,
+      [](const py::list& configs,
          const py::object& data,
          const std::string& name,
          const py::list& params,
          const py::list& programs,
          const std::string& metadata,
          const py::list& slows,
-         int threads) {
-        if (params.size() != programs.size() || params.size() != slows.size())
-          throw py::value_error("_sweep_hot_strategy: one program and one slow tier per point");
+         int threads,
+         bool summary_only) {
+        if (params.size() != programs.size() || params.size() != slows.size() ||
+            params.size() != configs.size())
+          throw py::value_error("_sweep_hot_strategy: one config, program and slow tier per point");
         std::vector<bt::BacktestConfig> cfgs;
-        for (const py::handle p : params) {
-          bt::BacktestConfig cfg = config;
+        for (std::size_t i = 0; i < params.size(); ++i) {
+          const py::handle p = params[i];
+          bt::BacktestConfig cfg = configs[i].cast<bt::BacktestConfig>();
           cfg.strategy = name;
           cfg.keep_orders = false;
           cfg.params.clear();
@@ -386,9 +396,9 @@ void bind_hot(py::module_& m) {
           cfgs.push_back(std::move(cfg));
         }
         if (cfgs.empty()) return py::list();
-        return sweep_hot_strategy(cfgs, data, programs, metadata, slows, threads);
+        return sweep_hot_strategy(cfgs, data, programs, metadata, slows, threads, summary_only);
       },
-      py::arg("config"),
+      py::arg("configs"),
       py::arg("data"),
       py::arg("name"),
       py::arg("params"),
@@ -396,6 +406,7 @@ void bind_hot(py::module_& m) {
       py::arg("metadata"),
       py::arg("slows"),
       py::arg("threads") = 0,
+      py::arg("summary_only") = false,
       "Internal: the points of a sweep of a compiled hot strategy in multiverses (one pass over "
       "the data per batch of points, backtest/multiverse.hpp); fastmm.sweep and walk_forward use "
       "it under the queue fill models.");

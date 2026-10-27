@@ -5,6 +5,7 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Changed
+- backtest: `fastmm-backtest --sweep` says first whether its points share passes, prints each point's risk rejects and kill reason, and prints no warnings of its runs.
 - backtest: the passes of a sweep that run at the same time read the data once: one more thread reads it, puts it in venue order and hands it to all of them, instead of each pass reading and ordering a copy of its own.
 - backtest: a sweep deals its points to its threads' passes in waves of at most 128 runs a pass, so the passes of a wave end together and no pass runs alone at the end, and it hands the memory a wave freed back to the system before the next wave starts.
 - backtest: `--threads` and `threads=` of a sweep are no longer capped at 32.
@@ -24,6 +25,12 @@ All notable changes are recorded here (Keep a Changelog format).
 - sim: the market-data wire starts at 256 KiB and grows when a burst fills it, and the next inbound message is looked for only in the wires that hold one.
 
 ### Added
+- backtest: a sweep's point sets backtest settings as well as strategy parameters: `latency_fixed_us`, `latency_jitter_us`, `latency_md_us`, `latency_md_jitter_us`, `p_drop`, `queue_conservatism`, `maker_fee_bps`, `taker_fee_bps` (`BacktestConfig::set_setting`), in `fastmm-backtest --sweep` and `fastmm.sweep`.
+- backtest: sweeps and walk-forwards take a list of points as well as a grid (`bt::SweepPoints`; a list of dicts in Python).
+- backtest: `fastmm-backtest --sweep --folds K [--metric M]` runs a walk-forward; `--out` writes `sweep.jsonl`, each point's values and `summary.json` on one line.
+- backtest: `summary.json` has `risk_rejects`, the risk checks' refusals by reason.
+- backtest: `bt::score_walk_forward` takes a score function; `fastmm.walk_forward(metric=)` takes a function of a `BacktestResult`.
+- python: `fastmm.sweep(summary_only=True)` and `fastmm.walk_forward(summary_only=True)` keep each point's metrics and drop its fills and equity bars.
 - backtest: `bt::ResultHook`: `bt::run_multiverse`, `bt::sweep` and `bt::sweep_by_name` hand each result to it as it is done, to keep only what the caller needs.
 - python: `BacktestConfig.keep_orders`.
 - bench: `fastmm-bench-multiverse --own-feed` and `--md-jitter-us`.

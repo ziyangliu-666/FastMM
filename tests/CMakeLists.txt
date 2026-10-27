@@ -426,7 +426,7 @@ if(TARGET fastmm-backtest)
   set(_btcusd ${PROJECT_SOURCE_DIR}/tests/fixtures/btcusd)
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${_btcusd}/basic_mm.toml ${_btcusd}/xmm.toml)
-  set(_sweep_ok "8 points in multiverses .*8 points run again alone: the same results, fill for fill")
+  set(_sweep_ok "8 points in multiverses.*8 points run again alone: the same results, fill for fill")
   foreach(_model l3_queue l2_queue)
     foreach(_strategy basic_mm xmm)
       file(READ ${_btcusd}/${_strategy}.toml _toml)

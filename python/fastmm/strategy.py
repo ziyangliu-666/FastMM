@@ -618,20 +618,20 @@ def _run_hot(config: "BacktestConfig", data: Any, instance: Strategy, name: str,
     return _hot_finish(name, result, error, slow, runner, slow_delay_ms)
 
 
-def _run_hot_points(config: "BacktestConfig", data: Any, cls: type,
-                    points: List[Dict[str, Any]], threads: int) -> List["BacktestResult"]:
-    """A fresh instance of a hot strategy class per point, every point in one pass over the data
-    (bt::run_multiverse), each with the result run_backtest gives it."""
+def _run_hot_points(points: List[Tuple["BacktestConfig", Dict[str, Any]]], data: Any, cls: type,
+                    threads: int, summary_only: bool = False) -> List["BacktestResult"]:
+    """A fresh instance of a hot strategy class per point, (config, params), every point in one
+    pass over the data (bt::run_multiverse), each with the result run_backtest gives it."""
     from ._hot import compiler  # imports numba
 
     spec = cls._fastmm_hot
     name = cls.strategy_name()
     instances: List[Strategy] = []
+    configs: List["BacktestConfig"] = []
     values: List[Dict[str, str]] = []
     slows: List[Optional[Dict[str, Any]]] = []
     runners: List[Any] = []
-    prepared = config
-    for params in points:
+    for config, params in points:
         instance = cls()
         merged: Dict[str, Any] = dict(config.params)
         merged.update(params)
@@ -643,12 +643,13 @@ def _run_hot_points(config: "BacktestConfig", data: Any, cls: type,
         prepared, param_values, _meta, slow, runner = _hot_prepare(
             config, instance, spec, 0, None, None, 4096)
         instances.append(instance)
+        configs.append(prepared)
         values.append(param_values)
         slows.append(slow)
         runners.append(runner)
     try:
-        outs = compiler.run_many(prepared, data, instances, name, spec, True, values, "", slows,
-                                 threads)
+        outs = compiler.run_many(configs, data, instances, name, spec, True, values, "", slows,
+                                 threads, summary_only)
     except Exception as e:
         _raise_on_start(name, runners, e)
         raise

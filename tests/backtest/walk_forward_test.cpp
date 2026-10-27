@@ -132,6 +132,16 @@ TEST_CASE(
   CHECK(rep.choice_changes == (rep.folds[2].chosen != rep.folds[1].chosen ? 1U : 0U));
   CHECK(rep.folds[0].points.front().result.metrics.fills > 0);
 
+  // A score of the caller's own ranks the same points again.
+  WalkForwardReport by_fees = rep;
+  score_walk_forward(by_fees, [](const BacktestResult& r) { return -r.metrics.fees; });
+  for (const WalkForwardFold& f : by_fees.folds) {
+    for (std::size_t p = 0; p < f.points.size(); ++p) {
+      CHECK(f.scores[p] == -f.points[p].result.metrics.fees);
+      CHECK(f.scores[p] <= f.scores[f.best]);
+    }
+  }
+
   // A fold is an ordinary backtest from a flat engine over the slice.
   const WalkForwardFold& f1 = rep.folds[1];
   BacktestConfig cfg = base;

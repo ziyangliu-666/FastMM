@@ -32,12 +32,24 @@
 #include "fastmm/sim/sim_transport.hpp"
 #include "fastmm/strategies/params.hpp"
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace fastmm::bt {
+
+// The backtest settings a sweep's point can vary besides the strategy's parameters
+// (BacktestConfig::set_setting). The Python BacktestConfig has an attribute of each name.
+inline constexpr std::array<std::string_view, 8> kSweepSettings = {"latency_fixed_us",
+                                                                   "latency_jitter_us",
+                                                                   "latency_md_us",
+                                                                   "latency_md_jitter_us",
+                                                                   "p_drop",
+                                                                   "queue_conservatism",
+                                                                   "maker_fee_bps",
+                                                                   "taker_fee_bps"};
 
 // Where the strategy's starting state comes from ([backtest] initial_state).
 enum class InitialState : std::uint8_t {
@@ -161,6 +173,12 @@ struct BacktestConfig {
   // of MarketGeneratorParams.
   void set_market_bps(double spread_bps, double mid_step_bps, double depth_bps);
 
+  // Sets one of kSweepSettings from its decimal value: latency_fixed_us and latency_jitter_us the
+  // order and ack paths of the venues without a [backtest.venues.<name>] entry, latency_md_us and
+  // latency_md_jitter_us their market data, p_drop the share of orders lost, queue_conservatism
+  // the queue model's, maker_fee_bps and taker_fee_bps one schedule for every instrument.
+  // Returns false for any other key; throws std::invalid_argument for a value out of range.
+  bool set_setting(std::string_view key, std::string_view value);
   // "key=value" strategy parameter override (CLI --param).
   void set_param(const std::string& key, const std::string& value) { params[key] = value; }
   // Seeds the synthetic market and the latency model.

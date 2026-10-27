@@ -1865,11 +1865,11 @@ class _SlowChannel:
         """
         Instrument symbols by id.
         """
-def _expand_grid(grid: dict) -> list:
+def _expand_grid(grid: typing.Any) -> list:
     """
-    Internal: the points of a sweep grid in fastmm.sweep's order, with the caller's values.
+    Internal: the points of a sweep grid or list in fastmm.sweep's order, with the caller's values.
     """
-def _fold_edges(config: BacktestConfig, data: typing.Any, folds: typing.SupportsInt | typing.SupportsIndex, metric: str) -> list[int]:
+def _fold_edges(config: BacktestConfig, data: typing.Any, folds: typing.SupportsInt | typing.SupportsIndex, metric: typing.Any) -> list[int]:
     """
     Internal: the folds + 1 edges of fastmm.walk_forward's folds over `data` (empty for one fold), after checking folds and metric.
     """
@@ -1917,11 +1917,15 @@ def _store_pnl(path: typing.Any, instrument: str = '', from_day: str = '', to_da
     """
     Internal: (columns, rows) of fastmm-pnl's pnl query; raw columns as exact decimals.
     """
-def _sweep_hot_strategy(config: BacktestConfig, data: typing.Any, name: str, params: list, programs: list, metadata: str, slows: list, threads: typing.SupportsInt | typing.SupportsIndex = 0) -> list:
+def _summary_only(result: BacktestResult) -> BacktestResult:
+    """
+    Internal: a copy of the result without its fills, equity bars and orders (fastmm.sweep(summary_only=True)).
+    """
+def _sweep_hot_strategy(configs: list, data: typing.Any, name: str, params: list, programs: list, metadata: str, slows: list, threads: typing.SupportsInt | typing.SupportsIndex = 0, summary_only: bool = False) -> list:
     """
     Internal: the points of a sweep of a compiled hot strategy in multiverses (one pass over the data per batch of points, backtest/multiverse.hpp); fastmm.sweep and walk_forward use it under the queue fill models.
     """
-def _walk_forward_report(grid: dict, metric: str, folds: list) -> dict:
+def _walk_forward_report(grid: typing.Any, metric: typing.Any, folds: list) -> dict:
     """
     Internal: fastmm.walk_forward's report from results run elsewhere; folds is [(start_ns, end_ns, [BacktestResult per grid point])], one entry for folds=1 with start_ns = end_ns = 0.
     """
@@ -1982,13 +1986,14 @@ def strategies() -> dict:
     """
     Registered strategies and their parameter schemas: {name: [{'name', 'type', 'default', 'min', 'max', 'doc'}, ...]}.
     """
-def sweep(config: BacktestConfig, grid: dict, data: typing.Any = None, strategy: str | None = None, threads: typing.SupportsInt | typing.SupportsIndex = 0) -> list:
+def sweep(config: BacktestConfig, grid: typing.Any, data: typing.Any = None, strategy: str | None = None, threads: typing.SupportsInt | typing.SupportsIndex = 0, summary_only: bool = False) -> list:
     """
-    Cartesian parameter sweep of a registered C++ strategy on a thread pool (GIL released). grid: {param: [values]}. Returns [(params, BacktestResult)] in grid order, first parameter varying slowest. Every worker opens its own cursor over `data` (same forms as run_backtest). threads <= 0 uses every hardware thread. Under fill_model l2_queue or l3_queue the points share their passes over the data, with the results each gives alone (backtest/multiverse.hpp). fastmm.sweep also takes a fastmm.Strategy class.
+    Parameter sweep of a registered C++ strategy on a thread pool (GIL released). grid: {name: [values]}, every combination, or a list of points [{name: value}]; a name is a strategy parameter or one of the BacktestConfig settings latency_fixed_us, latency_jitter_us, latency_md_us, latency_md_jitter_us, p_drop, queue_conservatism, maker_fee_bps and taker_fee_bps. Returns [(params, BacktestResult)] in the points' order, a grid's first name varying slowest. Every worker opens its own cursor over `data` (same forms as run_backtest). threads <= 0 uses every hardware thread. Under fill_model l2_queue or l3_queue the points share their passes over the data, with the results each gives alone (backtest/multiverse.hpp). summary_only: each result keeps its metrics, counts and markouts but not its fills, equity bars and orders. fastmm.sweep also takes a fastmm.Strategy class.
     """
-def walk_forward(config: BacktestConfig, grid: dict, folds: typing.SupportsInt | typing.SupportsIndex, data: typing.Any = None, metric: str = 'net_pnl', strategy: str | None = None, threads: typing.SupportsInt | typing.SupportsIndex = 0) -> dict:
+def walk_forward(config: BacktestConfig, grid: typing.Any, folds: typing.SupportsInt | typing.SupportsIndex, data: typing.Any = None, metric: typing.Any = 'net_pnl', strategy: str | None = None, threads: typing.SupportsInt | typing.SupportsIndex = 0, summary_only: bool = False) -> dict:
     """
-    Walk-forward sweep: the grid runs on `folds` consecutive time slices of `data`, and the best point of fold i-1 by `metric` (net_pnl, realized_pnl, sharpe_bar, spread_captured_bps) is scored on fold i. Returns a dict: metric, folds (start_ts, end_ts, best, chosen, in_sample, out_of_sample, hindsight, scores, points), mean_in_sample, mean_out_of_sample, mean_hindsight, choice_changes and table (the printable report). folds=1 runs exactly fastmm.sweep. The synthetic market needs fill_model='l2_queue' for folds > 1. This entry point runs a registered C++ strategy; fastmm.walk_forward also takes a fastmm.Strategy class.
+    Walk-forward sweep: the points (a grid or a list, as in sweep) run on `folds` consecutive time slices of `data`, and the best point of fold i-1 by `metric` is scored on fold i. metric: net_pnl, realized_pnl, sharpe_bar, spread_captured_bps, or a callable of a BacktestResult returning a number, higher is better. Returns a dict: metric, folds (start_ts, end_ts, best, chosen, in_sample, out_of_sample, hindsight, scores, points), mean_in_sample, mean_out_of_sample, mean_hindsight, choice_changes and table (the printable report). folds=1 runs exactly fastmm.sweep. The synthetic market needs fill_model='l2_queue' for folds > 1. This entry point runs a registered C++ strategy; fastmm.walk_forward also takes a fastmm.Strategy class.
     """
+_SWEEP_SETTINGS: tuple = ('latency_fixed_us', 'latency_jitter_us', 'latency_md_us', 'latency_md_jitter_us', 'p_drop', 'queue_conservatism', 'maker_fee_bps', 'taker_fee_bps')
 __version__: str = '0.9.0'
 _store_schema_version: int = 12

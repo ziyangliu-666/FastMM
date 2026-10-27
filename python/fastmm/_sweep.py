@@ -11,15 +11,21 @@ from __future__ import annotations
 
 import multiprocessing
 import os
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 from . import _core
 
-# In a worker process: the work of its pool (config, data, class, [(params, window)]).
-_JOB: Optional[Tuple[Any, Any, type, List[Tuple[Dict[str, Any], Any]]]] = None
+# A grid {name: [values]}, every combination, or a list of points [{name: value}].
+Grid = Union[Mapping[str, Sequence[Any]], Sequence[Mapping[str, Any]]]
+# What ranks a walk-forward's points: a metric's name or a function of a BacktestResult.
+Metric = Union[str, Callable[[Any], float]]
+
+# In a worker process: the work of its pool (config, data, class, [(params, window)], whether the
+# results keep only their summary).
+_JOB: Optional[Tuple[Any, Any, type, List[Tuple[Dict[str, Any], Any]], bool]] = None
 
 
-def _set_job(job: Tuple[Any, Any, type, List[Tuple[Dict[str, Any], Any]]]) -> None:
+def _set_job(job: Tuple[Any, Any, type, List[Tuple[Dict[str, Any], Any]], bool]) -> None:
     global _JOB
     _JOB = job
 
@@ -50,19 +56,35 @@ def _point_config(config: Any) -> Any:
     return cfg
 
 
-def _run_one(cfg: Any, data: Any, cls: type, params: Dict[str, Any], window: Any) -> Any:
+def _split(cfg: Any, point: Mapping[str, Any]) -> Tuple[Any, Dict[str, Any]]:
+    """The config and the strategy parameters of a point: its backtest settings set on a copy of
+    cfg, the rest returned."""
+    params = {k: v for k, v in point.items() if k not in _core._SWEEP_SETTINGS}
+    if len(params) == len(point):
+        return cfg, params
+    cfg = cfg.copy()
+    for k, v in point.items():
+        if k in _core._SWEEP_SETTINGS:
+            setattr(cfg, k, v)
+    return cfg, params
+
+
+def _run_one(cfg: Any, data: Any, cls: type, point: Dict[str, Any], window: Any,
+             summary_only: bool) -> Any:
     from .strategy import run_backtest
 
     if window is not None:
         data = _core._TimeSlice(data, window[0], window[1])
-    return run_backtest(cfg, data, strategy=cls, params=params)
+    cfg, params = _split(cfg, point)
+    result = run_backtest(cfg, data, strategy=cls, params=params)
+    return _core._summary_only(result) if summary_only else result
 
 
 def _run_task(i: int) -> Any:
     assert _JOB is not None
-    cfg, data, cls, tasks = _JOB
-    params, window = tasks[i]
-    return _run_one(cfg, data, cls, params, window)
+    cfg, data, cls, tasks, summary_only = _JOB
+    point, window = tasks[i]
+    return _run_one(cfg, data, cls, point, window, summary_only)
 
 
 def _workers(threads: int, n: int) -> int:
@@ -70,26 +92,30 @@ def _workers(threads: int, n: int) -> int:
     return max(1, min(w, n, 32))
 
 
-def _run_points(config: Any, data: Any, cls: type,
-                tasks: List[Tuple[Dict[str, Any], Any]], threads: int) -> List[Any]:
+def _run_points(config: Any, data: Any, cls: type, tasks: List[Tuple[Dict[str, Any], Any]],
+                threads: int, summary_only: bool) -> List[Any]:
 
     cfg = _point_config(config)
     workers = _workers(threads, len(tasks))
     if workers == 1 or "fork" not in multiprocessing.get_all_start_methods():
-        return [_run_one(cfg, data, cls, p, w) for p, w in tasks]
+        return [_run_one(cfg, data, cls, p, w, summary_only) for p, w in tasks]
     from concurrent.futures import ProcessPoolExecutor
 
     # A forked worker inherits the initializer's arguments as they are: nothing is pickled on the
     # way in, only the results on the way back.
+    job = (cfg, data, cls, tasks, summary_only)
     with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("fork"),
-                             initializer=_set_job, initargs=((cfg, data, cls, tasks),)) as pool:
+                             initializer=_set_job, initargs=(job,)) as pool:
         return list(pool.map(_run_task, range(len(tasks))))
 
 
-def sweep(config: Any, grid: Dict[str, Sequence[Any]], data: Any = None, strategy: Any = None,
-          threads: int = 0, verify: int = 0) -> List[Tuple[Dict[str, Any], Any]]:
-    """Cartesian parameter sweep. grid: {param: [values]}. Returns [(params, BacktestResult)] in
-    grid order, first parameter varying slowest.
+def sweep(config: Any, grid: Grid, data: Any = None, strategy: Any = None, threads: int = 0,
+          verify: int = 0, summary_only: bool = False) -> List[Tuple[Dict[str, Any], Any]]:
+    """Parameter sweep. grid: {name: [values]}, every combination, or a list of points
+    [{name: value}]. A name is a strategy parameter or one of the settings latency_fixed_us,
+    latency_jitter_us, latency_md_us, latency_md_jitter_us, p_drop, queue_conservatism,
+    maker_fee_bps and taker_fee_bps, set as the BacktestConfig attribute of that name. Returns
+    [(point, BacktestResult)] in the points' order, a grid's first name varying slowest.
 
     data: the forms run_backtest takes. strategy: None (config.strategy), a registered C++
     strategy name, a fastmm.Strategy subclass or a ``module:Class`` name. Under the queue fill
@@ -102,18 +128,22 @@ def sweep(config: Any, grid: Dict[str, Sequence[Any]], data: Any = None, strateg
     verify: run that many points, spread over the grid, again as backtests of their own and raise
     RuntimeError naming the first difference (fill, order, equity bar, count or outbound hash) if
     one gives another result.
+
+    summary_only: each result keeps its metrics, counts and markouts but not its fills, equity
+    bars and orders.
     """
     cls = _strategy_class(config, strategy)
     if cls is None:
-        out = _core.sweep(config, grid, data, strategy, threads)
+        out = _core.sweep(config, grid, data, strategy, threads, summary_only)
     else:
         points = _core._expand_grid(grid)
         if _shares_passes(config, cls):
-            results = _run_hot_points(_point_config(config), data, cls, points, threads)
+            results = _run_hot_points(config, data, cls, points, threads, summary_only)
         else:
-            results = _run_points(config, data, cls, [(p, None) for p in points], threads)
+            results = _run_points(config, data, cls, [(p, None) for p in points], threads,
+                                  summary_only)
         out = list(zip(points, results))
-    _verify(config, data, strategy, out, verify)
+    _verify(config, data, strategy, out, verify, summary_only)
     return out
 
 
@@ -123,43 +153,49 @@ def _shares_passes(config: Any, cls: type) -> bool:
 
 
 def _run_hot_points(config: Any, data: Any, cls: type, points: List[Dict[str, Any]],
-                    threads: int) -> List[Any]:
+                    threads: int, summary_only: bool) -> List[Any]:
     from .strategy import _run_hot_points as run
 
-    return run(config, data, cls, points, threads)
+    cfg = _point_config(config)
+    return run([_split(cfg, p) for p in points], data, cls, threads, summary_only)
 
 
 def _verify(config: Any, data: Any, strategy: Any, out: List[Tuple[Dict[str, Any], Any]],
-            n: int) -> None:
+            n: int, summary_only: bool) -> None:
     from .strategy import run_backtest
 
     if n <= 0 or not out:
         return
-    cfg = _point_config(config)
     for k in range(min(n, len(out))):
-        params, result = out[k * len(out) // min(n, len(out))]
+        point, result = out[k * len(out) // min(n, len(out))]
+        cfg, params = _split(_point_config(config), point)
         alone = run_backtest(cfg, data, strategy=strategy, params=params)
+        if summary_only:
+            alone = _core._summary_only(alone)
         diff = _core._result_difference(alone, result)
         if diff:
-            raise RuntimeError(f"fastmm.sweep: the point {params} gives another result alone: "
+            raise RuntimeError(f"fastmm.sweep: the point {point} gives another result alone: "
                                f"{diff}")
 
 
-def walk_forward(config: Any, grid: Dict[str, Sequence[Any]], folds: int, data: Any = None,
-                 metric: str = "net_pnl", strategy: Any = None, threads: int = 0) -> Dict[str, Any]:
-    """Walk-forward sweep: the grid runs on `folds` consecutive time slices of `data`, and the best
-    point of fold i-1 by `metric` (net_pnl, realized_pnl, sharpe_bar, spread_captured_bps) is
-    scored on fold i.
+def walk_forward(config: Any, grid: Grid, folds: int, data: Any = None, metric: Metric = "net_pnl",
+                 strategy: Any = None, threads: int = 0,
+                 summary_only: bool = False) -> Dict[str, Any]:
+    """Walk-forward sweep: the grid's points run on `folds` consecutive time slices of `data`, and
+    the best point of fold i-1 by `metric` is scored on fold i. metric: net_pnl, realized_pnl,
+    sharpe_bar, spread_captured_bps, or a function of a BacktestResult returning a number, higher
+    is better.
 
     Returns a dict: metric, folds (start_ts, end_ts, best, chosen, in_sample, out_of_sample,
     hindsight, scores, points), mean_in_sample, mean_out_of_sample, mean_hindsight, choice_changes
     and table (the printable report). folds=1 runs exactly fastmm.sweep. The synthetic market needs
-    fill_model='l2_queue' for folds > 1. strategy and threads are as in fastmm.sweep, each fold's
-    points sharing their passes as a sweep's do.
+    fill_model='l2_queue' for folds > 1. grid, strategy, threads and summary_only are as in
+    fastmm.sweep, each fold's points sharing their passes as a sweep's do.
     """
     cls = _strategy_class(config, strategy)
     if cls is None:
-        return _core.walk_forward(config, grid, folds, data, metric, strategy, threads)
+        return _core.walk_forward(config, grid, folds, data, metric, strategy, threads,
+                                  summary_only)
     edges = _core._fold_edges(config, data, folds, metric)
     points = _core._expand_grid(grid)
     if folds == 1:
@@ -172,9 +208,10 @@ def walk_forward(config: Any, grid: Dict[str, Sequence[Any]], folds: int, data: 
         results: List[Any] = []
         for w in windows:
             fold = data if w is None else _core._TimeSlice(data, w[0], w[1])
-            results += _run_hot_points(_point_config(config), fold, cls, points, threads)
+            results += _run_hot_points(config, fold, cls, points, threads, summary_only)
     else:
-        results = _run_points(config, data, cls, [(p, w) for w in windows for p in points], threads)
+        results = _run_points(config, data, cls, [(p, w) for w in windows for p in points], threads,
+                              summary_only)
     n = len(points)
     per_fold = [(spans[i][0], spans[i][1], results[i * n:(i + 1) * n]) for i in range(len(windows))]
     return _core._walk_forward_report(grid, metric, per_fold)

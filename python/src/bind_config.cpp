@@ -11,7 +11,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <string>
+#include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace fastmm::py_bind {
@@ -26,11 +29,6 @@ Duration seconds_from_float(double s, const char* what) {
   if (!std::isfinite(s) || s <= 0.0 || s > 1e9)
     throw py::value_error(std::string(what) + " must be a positive number of seconds");
   return nanoseconds(std::llround(s * kNsPerSecond));
-}
-
-std::int64_t micros_from_int(std::int64_t us, const char* what) {
-  if (us < 0) throw py::value_error(std::string(what) + " must be >= 0");
-  return us;
 }
 
 double to_seconds(Duration d) noexcept {
@@ -55,6 +53,21 @@ Price price_from_py(py::handle v, const char* what) {
   if (!std::isfinite(d) || d <= 0.0 || d > kMaxFixed)
     throw py::value_error(std::string(what) + " must be a positive finite price");
   return Price::from_double(d);
+}
+
+// The setters of the attributes a sweep's point can vary too (BacktestConfig::set_setting).
+template <class T>
+void set_setting(BacktestConfig& c, std::string_view key, T v) {
+  if constexpr (std::is_floating_point_v<T>) {
+    if (!std::isfinite(v)) throw py::value_error(std::string(key) + " must be finite");
+    char buf[32];
+    static_cast<void>(c.set_setting(
+        key,
+        std::string_view(buf,
+                         static_cast<std::size_t>(std::snprintf(buf, sizeof buf, "%.17g", v)))));
+  } else {
+    static_cast<void>(c.set_setting(key, std::to_string(v)));
+  }
 }
 
 py::dict params_dict(const ParamMap& params) {
@@ -301,62 +314,39 @@ void bind_config(py::module_& m) {
           [](const BacktestConfig& c) {
             return static_cast<double>(c.transport.queue_conservatism_bps) / 10'000.0;
           },
-          [](BacktestConfig& c, double v) {
-            if (!(v >= 0.0 && v <= 1.0))
-              throw py::value_error("queue_conservatism must be in [0, 1]");
-            c.transport.queue_conservatism_bps = std::llround(v * 10'000.0);
-          },
+          [](BacktestConfig& c, double v) { set_setting(c, "queue_conservatism", v); },
           "L2 queue model: 0 = cancels ahead always help, 1 = never.")
       .def_property(
           "latency_fixed_us",
           [](const BacktestConfig& c) { return c.transport.order_out.fixed.micros(); },
-          [](BacktestConfig& c, std::int64_t us) {
-            const Duration d = microseconds(micros_from_int(us, "latency_fixed_us"));
-            c.transport.order_out.fixed = d;
-            c.transport.ack_in.fixed = d;
-          },
+          [](BacktestConfig& c, std::int64_t us) { set_setting(c, "latency_fixed_us", us); },
           "Fixed order and ack latency, microseconds.")
       .def_property(
           "latency_jitter_us",
           [](const BacktestConfig& c) { return c.transport.order_out.jitter.micros(); },
-          [](BacktestConfig& c, std::int64_t us) {
-            const Duration d = microseconds(micros_from_int(us, "latency_jitter_us"));
-            c.transport.order_out.jitter = d;
-            c.transport.ack_in.jitter = d;
-          },
+          [](BacktestConfig& c, std::int64_t us) { set_setting(c, "latency_jitter_us", us); },
           "Mean lognormal order and ack latency jitter, microseconds.")
       .def_property(
           "latency_md_us",
           [](const BacktestConfig& c) { return c.transport.md_in.fixed.micros(); },
-          [](BacktestConfig& c, std::int64_t us) {
-            c.transport.md_in.fixed = microseconds(micros_from_int(us, "latency_md_us"));
-          },
+          [](BacktestConfig& c, std::int64_t us) { set_setting(c, "latency_md_us", us); },
           "Fixed market-data latency, microseconds.")
       .def_property(
           "latency_md_jitter_us",
           [](const BacktestConfig& c) { return c.transport.md_in.jitter.micros(); },
-          [](BacktestConfig& c, std::int64_t us) {
-            c.transport.md_in.jitter = microseconds(micros_from_int(us, "latency_md_jitter_us"));
-          },
+          [](BacktestConfig& c, std::int64_t us) { set_setting(c, "latency_md_jitter_us", us); },
           "Mean market-data latency jitter, microseconds.")
       .def_property(
           "p_drop",
           [](const BacktestConfig& c) { return c.transport.order_out.p_drop; },
-          [](BacktestConfig& c, double p) {
-            if (!(p >= 0.0 && p < 1.0)) throw py::value_error("p_drop must be in [0, 1)");
-            c.transport.order_out.p_drop = p;
-          },
+          [](BacktestConfig& c, double p) { set_setting(c, "p_drop", p); },
           "Probability an outbound order message is lost.")
       .def_property(
           "maker_fee_bps",
           [](const BacktestConfig& c) {
             return static_cast<double>(c.transport.fees.maker_cbps()) / 100.0;
           },
-          [](BacktestConfig& c, double bps) {
-            sim::FeeSchedule s = c.transport.fees.default_schedule();
-            s.maker_cbps = static_cast<std::int32_t>(cbps_from_bps(bps));
-            c.transport.fees = sim::FeeModel::uniform(s);
-          },
+          [](BacktestConfig& c, double bps) { set_setting(c, "maker_fee_bps", bps); },
           "Maker fee in bps (negative = rebate), 0.01 bps resolution. Setting it makes every "
           "instrument pay the same schedule; use set_instrument_fees() afterwards for "
           "per-instrument rates.")
@@ -365,11 +355,7 @@ void bind_config(py::module_& m) {
           [](const BacktestConfig& c) {
             return static_cast<double>(c.transport.fees.taker_cbps()) / 100.0;
           },
-          [](BacktestConfig& c, double bps) {
-            sim::FeeSchedule s = c.transport.fees.default_schedule();
-            s.taker_cbps = static_cast<std::int32_t>(cbps_from_bps(bps));
-            c.transport.fees = sim::FeeModel::uniform(s);
-          },
+          [](BacktestConfig& c, double bps) { set_setting(c, "taker_fee_bps", bps); },
           "Taker fee in bps, 0.01 bps resolution. Setting it clears per-instrument schedules.")
       .def(
           "set_instrument_fees",

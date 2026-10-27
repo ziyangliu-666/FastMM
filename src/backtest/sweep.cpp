@@ -2,6 +2,7 @@
 
 #include "fastmm/backtest/registrations.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -14,8 +15,8 @@
 
 namespace fastmm::bt {
 
-std::vector<ParamMap> expand_grid(const ParamGrid& grid) {
-  std::vector<ParamMap> out{ParamMap{}};
+SweepPoints expand_grid(const ParamGrid& grid) {
+  SweepPoints out{ParamMap{}};
   for (const auto& [name, values] : grid) {
     if (values.empty()) continue;
     std::vector<ParamMap> next;
@@ -67,16 +68,6 @@ void run_pool(std::size_t n, int threads, const SourceFactory& factory, const Ta
   if (error) std::rethrow_exception(error);
 }
 
-// `start` is shared_start(base): every point restores the same strategy state.
-BacktestConfig point_config(const BacktestConfig& start, const ParamMap& point) {
-  BacktestConfig cfg = start;
-  for (const auto& [k, v] : point) cfg.params[k] = v;
-  cfg.output_dir.clear();
-  cfg.journal_out.clear();
-  cfg.keep_orders = false;
-  return cfg;
-}
-
 // Higher is better; NaN loses to everything, ties go to the lower index.
 std::size_t argmax(const std::vector<double>& scores) {
   std::size_t best = 0;
@@ -91,7 +82,37 @@ Timestamp event_time(const EventHeader& h) noexcept {
   return h.exch_ts.valid() ? h.exch_ts : h.recv_ts;
 }
 
+// The keys of a list of points, for a report's labels.
+std::vector<std::string> point_names(const SweepPoints& points) {
+  std::vector<std::string> names;
+  for (const ParamMap& p : points) {
+    for (const auto& kv : p) {
+      if (std::find(names.begin(), names.end(), kv.first) == names.end()) names.push_back(kv.first);
+    }
+  }
+  return names;
+}
+
+std::vector<std::string> grid_names(const ParamGrid& grid) {
+  std::vector<std::string> names;
+  for (const auto& [k, values] : grid) {
+    if (!values.empty()) names.push_back(k);
+  }
+  return names;
+}
+
 }  // namespace
+
+BacktestConfig point_config(const BacktestConfig& start, const ParamMap& point) {
+  BacktestConfig cfg = start;
+  for (const auto& [k, v] : point) {
+    if (!cfg.set_setting(k, v)) cfg.params[k] = v;
+  }
+  cfg.output_dir.clear();
+  cfg.journal_out.clear();
+  cfg.keep_orders = false;
+  return cfg;
+}
 
 std::vector<SweepPoint> sweep(const BacktestConfig& base,
                               const ParamGrid& grid,
@@ -99,13 +120,22 @@ std::vector<SweepPoint> sweep(const BacktestConfig& base,
                               const RunFn& run,
                               int threads,
                               const ResultHook& done) {
+  return sweep(base, expand_grid(grid), source_factory, run, threads, done);
+}
+
+std::vector<SweepPoint> sweep(const BacktestConfig& base,
+                              const SweepPoints& points,
+                              const SourceFactory& source_factory,
+                              const RunFn& run,
+                              int threads,
+                              const ResultHook& done) {
   // The registry is not thread-safe for writers: register before any worker can look it up
   // (run_backtest by name registers too, which would otherwise race on the first sweep).
   register_builtin_strategies();
-  const std::vector<ParamMap> points = expand_grid(grid);
   std::vector<SweepPoint> results(points.size());
   for (std::size_t i = 0; i < points.size(); ++i) results[i].params = points[i];
   const BacktestConfig start = shared_start(base);
+  for (const ParamMap& p : points) static_cast<void>(point_config(start, p));  // bad values first
   std::mutex done_mutex;
   run_pool(points.size(), threads, source_factory, [&](std::size_t i, MdSource* source) {
     const BacktestConfig cfg = point_config(start, points[i]);
@@ -123,8 +153,9 @@ ScoreFn score_metric(std::string_view name) {
   if (name == "net_pnl") return [](const BacktestResult& r) { return r.metrics.net_pnl; };
   if (name == "realized_pnl") return [](const BacktestResult& r) { return r.metrics.realized_pnl; };
   if (name == "sharpe_bar") return [](const BacktestResult& r) { return r.metrics.sharpe_bar; };
-  if (name == "spread_captured_bps")
+  if (name == "spread_captured_bps") {
     return [](const BacktestResult& r) { return r.metrics.spread_captured_bps; };
+  }
   throw std::invalid_argument("walk_forward: unknown metric '" + std::string(name) +
                               "' (net_pnl, realized_pnl, sharpe_bar, spread_captured_bps)");
 }
@@ -264,8 +295,9 @@ std::unique_ptr<MdSource> fold_source(const BacktestConfig& base,
   return std::make_unique<OwnedSlice>(std::move(inner), t0, t1);
 }
 
-void score_walk_forward(WalkForwardReport& rep) {
-  const ScoreFn score = score_metric(rep.metric);
+void score_walk_forward(WalkForwardReport& rep, const ScoreFn& score_fn) {
+  const ScoreFn score = score_fn ? score_fn : score_metric(rep.metric);
+  rep.choice_changes = 0;
   const std::size_t k = rep.folds.size();
   if (k == 1) {
     WalkForwardFold& f = rep.folds[0];
@@ -310,18 +342,29 @@ WalkForwardReport walk_forward(const BacktestConfig& base,
                                int folds,
                                std::string_view metric,
                                int threads) {
+  WalkForwardReport rep =
+      walk_forward(base, expand_grid(grid), source_factory, run, folds, metric, threads);
+  rep.param_names = grid_names(grid);
+  return rep;
+}
+
+WalkForwardReport walk_forward(const BacktestConfig& base,
+                               const SweepPoints& points,
+                               const SourceFactory& source_factory,
+                               const RunFn& run,
+                               int folds,
+                               std::string_view metric,
+                               int threads) {
   if (folds < 1) throw std::invalid_argument("walk_forward: folds must be >= 1");
   static_cast<void>(score_metric(metric));  // an unknown metric fails before anything runs
   WalkForwardReport rep;
   rep.metric = std::string(metric);
-  for (const auto& [k, values] : grid) {
-    if (!values.empty()) rep.param_names.push_back(k);
-  }
+  rep.param_names = point_names(points);
   const auto k = static_cast<std::size_t>(folds);
   rep.folds.resize(k);
 
   if (k == 1) {
-    rep.folds[0].points = sweep(base, grid, source_factory, run, threads);
+    rep.folds[0].points = sweep(base, points, source_factory, run, threads);
   } else {
     register_builtin_strategies();
     const std::vector<Timestamp> edges = fold_edges(base, source_factory, folds);
@@ -330,7 +373,6 @@ WalkForwardReport walk_forward(const BacktestConfig& base,
     std::unique_ptr<MdSource> probe = source_factory ? source_factory() : nullptr;
     const SourceFactory factory = probe != nullptr ? source_factory : synthetic_stream(base);
     probe.reset();
-    const std::vector<ParamMap> points = expand_grid(grid);
     const std::size_t n = points.size();
     for (std::size_t i = 0; i < k; ++i) {
       rep.folds[i].start_ts = edges[i].ns;
@@ -339,6 +381,7 @@ WalkForwardReport walk_forward(const BacktestConfig& base,
       for (std::size_t p = 0; p < n; ++p) rep.folds[i].points[p].params = points[p];
     }
     const BacktestConfig start = shared_start(base);
+    for (const ParamMap& p : points) static_cast<void>(point_config(start, p));
     run_pool(k * n, threads, factory, [&](std::size_t t, MdSource* source) {
       const std::size_t fi = t / n;
       const std::size_t p = t % n;

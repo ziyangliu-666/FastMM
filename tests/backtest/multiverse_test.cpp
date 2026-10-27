@@ -100,6 +100,52 @@ TEST_CASE("backtest.multiverse: a sweep of the synthetic market and of more poin
   }
 }
 
+TEST_CASE("backtest.multiverse: a sweep's points set backtest settings, as a grid or a list") {
+  const BacktestConfig base = queue_config(11, seconds(15));
+  const SourceFactory factory = synthetic_factory(base);
+  const ParamGrid grid = {{"latency_fixed_us", {"100", "2000"}},
+                          {"queue_conservatism", {"0", "1"}},
+                          {"maker_fee_bps", {"-1", "2.5"}}};
+  const std::vector<SweepPoint> solo = sweep_by_name(base, "basic_mm", grid, factory, 2, true);
+  const std::vector<SweepPoint> mv = sweep_by_name(base, "basic_mm", grid, factory, 2);
+  REQUIRE(mv.size() == 8);
+  for (std::size_t i = 0; i < mv.size(); ++i) {
+    CAPTURE(i);
+    CHECK(mv[i].params == solo[i].params);
+    check_same(mv[i].result, solo[i].result);
+    CHECK(mv[i].result.params.count("latency_fixed_us") == 0);
+  }
+  CHECK(solo[0].result.metrics.fees < 0.0);  // the rebate
+  CHECK(solo[1].result.metrics.fees > 0.0);
+  CHECK(solo[0].result.outbound_sha256 != solo[4].result.outbound_sha256);  // the latency
+
+  const BacktestConfig c = point_config(base, {{"latency_fixed_us", "750"}, {"levels", "2"}});
+  CHECK(c.transport.order_out.fixed == microseconds(750));
+  CHECK(c.transport.ack_in.fixed == microseconds(750));
+  CHECK(c.params.at("levels") == "2");
+  CHECK_FALSE(c.keep_orders);
+
+  // A list: any points, each with the keys it sets.
+  const SweepPoints list = {{{"half_spread_bps", "0.01"}, {"latency_fixed_us", "500"}},
+                            {{"quote_qty", "0.002"}}};
+  const std::vector<SweepPoint> some = sweep_by_name(base, "basic_mm", list, factory, 2);
+  REQUIRE(some.size() == 2);
+  CHECK(some[0].params == list[0]);
+  BacktestConfig alone = point_config(shared_start(base), list[1]);
+  const std::unique_ptr<MdSource> source = factory();
+  check_same(some[1].result, run_backtest(alone, "basic_mm", source.get()));
+
+  for (const char* bad : {"-1", "1.5", "x"}) {
+    CAPTURE(bad);
+    CHECK_THROWS_AS(
+        sweep_by_name(base, "basic_mm", ParamGrid{{"latency_fixed_us", {bad}}}, factory, 1),
+        std::invalid_argument);
+  }
+  CHECK_THROWS_AS(
+      sweep_by_name(base, "basic_mm", ParamGrid{{"queue_conservatism", {"2"}}}, factory, 1),
+      std::invalid_argument);
+}
+
 TEST_CASE("backtest.multiverse: runs with their own seeds, latencies and conservatism") {
   // What a run draws and how it fills is its own; only the recorded market is shared.
   std::vector<BacktestConfig> cfgs;
