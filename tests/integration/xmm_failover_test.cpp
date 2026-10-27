@@ -273,9 +273,7 @@ TEST_CASE("xmm failover: B refuses, C takes the hedge, SIGKILL mid-hedge and a r
   // The log is written by the logger thread; wait for the line rather than read it once.
   CHECK(wait_until(
       [&] {
-        return log_of(f).find(
-                   "hedging moves from BTCUSDT (instrument 1) to BTCUSDT (instrument 2)") !=
-               std::string::npos;
+        return log_of(f).find("hedging moves from b:BTCUSDT to c:BTCUSDT") != std::string::npos;
       },
       10000));
 

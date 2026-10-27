@@ -183,13 +183,18 @@ class HedgeExecutor {
       }
       const Instrument& inst = ctx.instrument(id);
       if (inst.inverse() || !inst.contract_multiplier.is_positive()) {
-        FASTMM_LOG_ERROR(
-            "{}: {} is not a linear contract; not hedging", cfg_.name, inst.symbol.view());
+        FASTMM_LOG_ERROR("{}: {}:{} is not a linear contract; not hedging",
+                         cfg_.name,
+                         ctx.venue_name(inst.venue),
+                         inst.symbol.view());
         return false;
       }
       for (std::size_t j = 0; j < i; ++j) {
         if (leg(j).id == id) {
-          FASTMM_LOG_ERROR("{}: {} is named twice; not hedging", cfg_.name, inst.symbol.view());
+          FASTMM_LOG_ERROR("{}: {}:{} is named twice; not hedging",
+                           cfg_.name,
+                           ctx.venue_name(inst.venue),
+                           inst.symbol.view());
           return false;
         }
       }
@@ -313,6 +318,11 @@ class HedgeExecutor {
       unblock("flat");
       return;
     }
+    if (under_minimum(ctx, residual)) {
+      state_ = State::Waiting;
+      unblock("the residual is under the hedge minimum");
+      return;
+    }
     std::size_t first = n_hedges_;
     for (std::size_t i = 0; i < n_hedges_; ++i) {
       if (why(ctx, i, now) == Reason::Usable) {
@@ -323,10 +333,12 @@ class HedgeExecutor {
     if (first == n_hedges_) {
       if (!unavailable_) {
         unavailable_ = true;
-        FASTMM_LOG_WARN("{}: no hedge instrument can take {} ({} is {})",
+        const Instrument& h = ctx.instrument(hedges_[0].id);
+        FASTMM_LOG_WARN("{}: no hedge instrument can take {} ({}:{} is {})",
                         cfg_.name,
                         residual,
-                        ctx.instrument(hedges_[0].id).symbol.view(),
+                        ctx.venue_name(h.venue),
+                        h.symbol.view(),
                         to_string(why(ctx, 0, now)));
       }
       state_ = State::Unavailable;
@@ -363,13 +375,14 @@ class HedgeExecutor {
         held_ = true;
         ++stats_.hedges_held;
         FASTMM_LOG_WARN(
-            "{}: hedge {} {} @ {} held: no usable hedge venue's balance covers it ({} on {}); {} "
-            "unhedged until a balance report or a fill changes that",
+            "{}: hedge {} {} @ {} held: no usable hedge venue's balance covers it ({} on {}:{}); "
+            "{} unhedged until a balance report or a fill changes that",
             cfg_.name,
             req.side,
             req.qty,
             req.price,
             ctx.balance_room(req.instrument, req.side, req.price),
+            ctx.venue_name(ctx.instrument(req.instrument).venue),
             ctx.instrument(req.instrument).symbol.view(),
             residual);
       }
@@ -399,12 +412,13 @@ class HedgeExecutor {
     if (cut && !split_) {
       split_ = true;
       FASTMM_LOG_INFO(
-          "{}: [risk] admits {} {} @ {} of the {} to hedge on {}: it goes out in pieces",
+          "{}: [risk] admits {} {} @ {} of the {} to hedge on {}:{}: it goes out in pieces",
           cfg_.name,
           req.side,
           req.qty,
           req.price,
           residual,
+          ctx.venue_name(ctx.instrument(req.instrument).venue),
           ctx.instrument(req.instrument).symbol.view());
     }
   }
@@ -449,6 +463,18 @@ class HedgeExecutor {
       r += to_base(ctx.instrument(id), ctx.position(id).qty);
     }
     return r;
+  }
+
+  // The residual rounds under the lot or min_qty of every hedge instrument: no hedge order can
+  // take it, whichever instrument is usable.
+  template <class Ctx>
+  [[nodiscard]] bool under_minimum(const Ctx& ctx, Qty residual) const noexcept {
+    for (std::size_t i = 0; i < n_hedges_; ++i) {
+      const Instrument& inst = ctx.instrument(hedges_[i].id);
+      const Qty q = inst.round_qty(to_contracts(inst, residual.abs()));
+      if (q.is_positive() && q >= inst.min_qty) return false;
+    }
+    return true;
   }
 
   // Why hedge instrument `i` cannot take a hedge now (Reason::Usable: it can).
@@ -743,21 +769,20 @@ class HedgeExecutor {
     if (k > from) {
       ++stats_.failovers;
       const Reason r = why(ctx, from, now);
-      FASTMM_LOG_WARN(
-          "{}: hedging moves from {} (instrument {}) to {} (instrument {}): the first is {}",
-          cfg_.name,
-          ctx.instrument(a).symbol.view(),
-          a.value,
-          ctx.instrument(b).symbol.view(),
-          b.value,
-          r == Reason::Usable ? std::string_view{"short of balance"} : to_string(r));
-    } else {
-      FASTMM_LOG_WARN("{}: hedging back on {} (instrument {}) from {} (instrument {})",
+      FASTMM_LOG_WARN("{}: hedging moves from {}:{} to {}:{}: the first is {}",
                       cfg_.name,
-                      ctx.instrument(b).symbol.view(),
-                      b.value,
+                      ctx.venue_name(ctx.instrument(a).venue),
                       ctx.instrument(a).symbol.view(),
-                      a.value);
+                      ctx.venue_name(ctx.instrument(b).venue),
+                      ctx.instrument(b).symbol.view(),
+                      r == Reason::Usable ? std::string_view{"short of balance"} : to_string(r));
+    } else {
+      FASTMM_LOG_WARN("{}: hedging back on {}:{} from {}:{}",
+                      cfg_.name,
+                      ctx.venue_name(ctx.instrument(b).venue),
+                      ctx.instrument(b).symbol.view(),
+                      ctx.venue_name(ctx.instrument(a).venue),
+                      ctx.instrument(a).symbol.view());
     }
   }
 
@@ -776,29 +801,30 @@ class HedgeExecutor {
     for (std::size_t i = 0; i < n_hedges_; ++i) {
       if (i != k && now >= bench_until_[i]) other = true;
     }
-    const std::string_view sym = ctx.instrument(hedges_[k].id).symbol.view();
+    const Instrument& inst = ctx.instrument(hedges_[k].id);
+    const std::string_view venue = ctx.venue_name(inst.venue);
+    const std::string_view sym = inst.symbol.view();
     if (other) {
       bench_until_[k] = now + cfg_.bench.ns;
       count = 0;
       ++stats_.benches;
-      FASTMM_LOG_WARN(
-          "{}: {} hedges on {} (instrument {}) filled nothing within {} ms: it sits "
-          "out {} ms",
-          cfg_.name,
-          n,
-          sym,
-          hedges_[k].id.value,
-          cfg_.failure_window.millis(),
-          cfg_.bench.millis());
+      FASTMM_LOG_WARN("{}: {} hedges on {}:{} filled nothing within {} ms: it sits out {} ms",
+                      cfg_.name,
+                      n,
+                      venue,
+                      sym,
+                      cfg_.failure_window.millis(),
+                      cfg_.bench.millis());
       return;
     }
     halted_ = true;
     ++stats_.halts;
     FASTMM_LOG_ERROR(
-        "{}: {} hedges on {} filled nothing within {} ms: hedging stopped with {} unhedged; "
+        "{}: {} hedges on {}:{} filled nothing within {} ms: hedging stopped with {} unhedged; "
         "restart to resume",
         cfg_.name,
         n,
+        venue,
         sym,
         cfg_.failure_window.millis(),
         residual(ctx));
@@ -870,8 +896,9 @@ class HedgeExecutor {
       next_derisk_ns_ = now + cfg_.derisk_interval.ns;
       const auto sent = ctx.send(req);
       if (!sent) {
-        FASTMM_LOG_WARN("{}: de-risk {} {} {} @ {} refused: {}",
+        FASTMM_LOG_WARN("{}: de-risk {}:{} {} {} @ {} refused: {}",
                         cfg_.name,
+                        ctx.venue_name(inst.venue),
                         inst.symbol.view(),
                         req.side,
                         req.qty,

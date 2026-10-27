@@ -104,6 +104,7 @@ struct Ctx {
   [[nodiscard]] Timestamp now() const { return t; }
   [[nodiscard]] bool reconciling() const { return reconciling_now; }
   [[nodiscard]] bool venue_killed(VenueId v) const { return killed[v.value]; }
+  [[nodiscard]] std::string_view venue_name(VenueId) const { return "sim"; }
   [[nodiscard]] VenueHealthView venue_health(VenueId v) const {
     VenueHealthView h;
     h.gated = gated[v.value];
@@ -510,6 +511,24 @@ TEST_CASE("strategies.hedge_executor: a remainder under the minimum waits withou
   REQUIRE(c.sent.size() == 1);
   CHECK(c.sent[0].req.instrument == kC);
   CHECK(c.sent[0].req.qty == qt("0.0006"));
+}
+
+TEST_CASE("strategies.hedge_executor: a residual under every minimum waits, usable or not") {
+  Ctx c;
+  c.table.get(kB).min_qty = qt("1");     // 0.01 BTC
+  c.table.get(kC).min_qty = qt("0.01");  // 0.01 BTC
+  HedgeExecutor::Config cfg = config();
+  cfg.derisk_after = milliseconds(1000);
+  HedgeExecutor h = make(c, true, cfg);
+  c.killed[1] = true;
+  c.killed[2] = true;
+  source_fill(h, c, "0.001");
+  CHECK(h.state() == HedgeExecutor::State::Waiting);
+  c.advance(milliseconds(2000));
+  h.on_timer(c);
+  CHECK(c.sent.empty());
+  CHECK_FALSE(h.derisking());
+  CHECK(h.stats().derisk_episodes == 0);
 }
 
 TEST_CASE("strategies.hedge_executor: one order in flight across every hedge instrument") {

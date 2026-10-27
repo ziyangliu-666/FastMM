@@ -248,8 +248,10 @@ class Xmm : public StrategyBase<XmmParams> {
     const Instrument& hi = ctx.instrument(h_);
     if (qi.inverse() || hi.inverse() || !qi.contract_multiplier.is_positive() ||
         !hi.contract_multiplier.is_positive()) {
-      FASTMM_LOG_ERROR("xmm: {} and {} must both be linear contracts; not trading",
+      FASTMM_LOG_ERROR("xmm: {}:{} and {}:{} must both be linear contracts; not trading",
+                       ctx.venue_name(qi.venue),
                        qi.symbol.view(),
+                       ctx.venue_name(hi.venue),
                        hi.symbol.view());
       return;
     }
