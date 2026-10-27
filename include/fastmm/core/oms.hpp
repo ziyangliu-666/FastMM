@@ -194,10 +194,10 @@ class Oms {
                                              Timestamp now) noexcept {
     if (FASTMM_UNLIKELY(req.instrument.value >= kMaxInstruments))
       return fail(RejectReason::InstrumentDisabled);
-    if (FASTMM_UNLIKELY(by_id_.contains(id))) return fail(RejectReason::DuplicateId);
+    if (FASTMM_UNLIKELY(open_handle(id).valid())) return fail(RejectReason::DuplicateId);
     const Handle<Order> h = pool_.allocate();
     if (FASTMM_UNLIKELY(!h.valid())) return fail(RejectReason::PoolExhausted);
-    if (FASTMM_UNLIKELY(by_id_.insert(id, h).first == nullptr)) {
+    if (FASTMM_UNLIKELY(!add_open(id, h))) {
       pool_.free(h);
       return fail(RejectReason::PoolExhausted);
     }
@@ -254,8 +254,8 @@ class Oms {
     Order& o = pool_.get(h);
     if (!o.is_working()) return fail(RejectReason::InvalidState);
     if (new_id != o.cl_ord_id) {
-      if (by_id_.contains(new_id)) return fail(RejectReason::DuplicateId);
-      if (by_id_.insert(new_id, h).first == nullptr) return fail(RejectReason::PoolExhausted);
+      if (open_handle(new_id).valid()) return fail(RejectReason::DuplicateId);
+      if (!add_open(new_id, h)) return fail(RejectReason::PoolExhausted);
     }
     o.pending_cl_ord_id = new_id;
     o.pending_price = px;
@@ -605,12 +605,9 @@ class Oms {
   [[nodiscard]] bool is_live(Handle<Order> h) const noexcept { return pool_.is_live(h); }
   // Send and ack times of an open order.
   [[nodiscard]] const OrderTimes& times(Handle<Order> h) const noexcept { return times_[h.idx].t; }
-  [[nodiscard]] Handle<Order> find(ClientOrderId id) const noexcept {
-    const Handle<Order>* p = by_id_.find(id);
-    return p == nullptr ? Handle<Order>{} : *p;
-  }
+  [[nodiscard]] Handle<Order> find(ClientOrderId id) const noexcept { return open_handle(id); }
   [[nodiscard]] OrderClass classify(ClientOrderId id) const noexcept {
-    if (by_id_.contains(id)) return OrderClass::Open;
+    if (open_handle(id).valid()) return OrderClass::Open;
     if (find_terminal(id) != nullptr) return OrderClass::RecentlyTerminal;
     return OrderClass::Unknown;
   }
@@ -708,15 +705,41 @@ class Oms {
     }
   }
 
-  // The newest terminal record of `id`, through the index: an id the OMS never had (another
-  // client's order on a shared account) costs one hash probe, not a walk of the ring.
+  // ---- ids_ -------------------------------------------------------------------------------
+
+  // The pool slot of the open order `id` names (its own id or a pending replace's).
+  [[nodiscard]] Handle<Order> open_handle(ClientOrderId id) const noexcept {
+    const std::uint32_t* v = ids_.find(id);
+    return v == nullptr || (*v & kTerminalRef) != 0 ? Handle<Order>{} : Handle<Order>{*v};
+  }
+  // Maps `id` to the open order `h`, over a terminal record the id may still name. False when the
+  // map is full.
+  [[nodiscard]] bool add_open(ClientOrderId id, Handle<Order> h) noexcept {
+    return ids_.assign(id, h.idx) != nullptr;
+  }
+  // Unmaps `id` if it names an open order (not if it already names its terminal record).
+  void drop_open(ClientOrderId id) noexcept {
+    const std::uint32_t* v = ids_.find(id);
+    if (v != nullptr && (*v & kTerminalRef) == 0) ids_.erase(id);
+  }
+  [[nodiscard]] static constexpr std::uint32_t terminal_ref(std::uint64_t pos) noexcept {
+    return kTerminalRef | static_cast<std::uint32_t>(pos & (kRecentlyTerminal - 1));
+  }
+  // The ring position of the newest terminal record of `id`: next_pos(), where at_pos() finds
+  // nothing, when `id` names none.
+  [[nodiscard]] std::uint64_t terminal_pos(ClientOrderId id) const noexcept {
+    const std::uint32_t* v = ids_.find(id);
+    if (v == nullptr || (*v & kTerminalRef) == 0) return recently_terminal_.next_pos();
+    const std::uint64_t head = recently_terminal_.head_pos();
+    return head + ((*v - head) & (kRecentlyTerminal - 1));
+  }
+  // The newest terminal record of `id`: an id the OMS never had (another client's order on a
+  // shared account) costs one hash probe, not a walk of the ring.
   [[nodiscard]] const TerminalRecord* find_terminal(ClientOrderId id) const noexcept {
-    const std::uint64_t* pos = terminal_pos_.find(id);
-    return pos == nullptr ? nullptr : recently_terminal_.at_pos(*pos);
+    return recently_terminal_.at_pos(terminal_pos(id));
   }
   [[nodiscard]] TerminalRecord* find_terminal(ClientOrderId id) noexcept {
-    const std::uint64_t* pos = terminal_pos_.find(id);
-    return pos == nullptr ? nullptr : recently_terminal_.at_pos(*pos);
+    return recently_terminal_.at_pos(terminal_pos(id));
   }
 
   // Adds `r` to the recently terminal orders. The oldest one leaves when they are full, and with it
@@ -731,14 +754,14 @@ class Oms {
         ++stats_.synthetic_forgotten;
         --stats_.synthetic_pending;
       }
-      // The index names the newest record of an id: drop it only if that is the one leaving.
-      const std::uint64_t* pos = terminal_pos_.find(gone.cl_ord_id);
-      if (pos != nullptr && *pos == recently_terminal_.head_pos())
-        terminal_pos_.erase(gone.cl_ord_id);
+      // An id names its newest record: unmap it only if that is the one leaving.
+      const std::uint32_t* v = ids_.find(gone.cl_ord_id);
+      if (v != nullptr && *v == terminal_ref(recently_terminal_.head_pos()))
+        ids_.erase(gone.cl_ord_id);
     }
-    const std::uint64_t pos = recently_terminal_.next_pos();
+    // The id that named the open order names its terminal record from now on.
+    static_cast<void>(ids_.assign(r.cl_ord_id, terminal_ref(recently_terminal_.next_pos())));
     recently_terminal_.push(r);
-    terminal_pos_.assign(r.cl_ord_id, pos);
   }
 
   // A fill for an order that already ended: a cancel ack (or a cancel reject for an order the venue
@@ -765,11 +788,12 @@ class Oms {
 
   // Finds an open order; sets u.known if the id is open or recently terminal.
   Handle<Order> lookup(ClientOrderId id, OmsUpdate& u) noexcept {
-    const Handle<Order>* p = by_id_.find(id);
-    if (p != nullptr) {
+    const std::uint32_t* v = ids_.find(id);
+    if (v == nullptr) return Handle<Order>{};
+    if ((*v & kTerminalRef) == 0) {
       u.known = true;
-      u.handle = *p;
-      return *p;
+      u.handle = Handle<Order>{*v};
+      return u.handle;
     }
     const TerminalRecord* r = find_terminal(id);
     if (r != nullptr) {
@@ -817,7 +841,7 @@ class Oms {
       e = Estimate{};
     }
     if (rekey) {
-      by_id_.erase(o.cl_ord_id);
+      drop_open(o.cl_ord_id);
       o.cl_ord_id = o.pending_cl_ord_id;
     }
     if (new_venue_order) o.cum_qty = Qty{};
@@ -840,7 +864,7 @@ class Oms {
   }
   void clear_pending(Order& o) noexcept {
     if (o.pending_cl_ord_id.valid() && o.pending_cl_ord_id != o.cl_ord_id)
-      by_id_.erase(o.pending_cl_ord_id);
+      drop_open(o.pending_cl_ord_id);
     o.pending_cl_ord_id = ClientOrderId{};
     o.pending_price = Price{};
     o.pending_qty = Qty{};
@@ -858,11 +882,10 @@ class Oms {
     --open_per_inst_[o.instrument.value];
     const std::size_t s = static_cast<std::size_t>(o.side);
     open_qty_[o.instrument.value][s] -= o.leaves_qty();
-    by_id_.erase(o.cl_ord_id);
     if (o.pending_cl_ord_id.valid() && o.pending_cl_ord_id != o.cl_ord_id)
-      by_id_.erase(o.pending_cl_ord_id);
-    // The estimate goes with the order into its terminal record: executions of it are told from
-    // foreign ones for as long as that record lasts.
+      drop_open(o.pending_cl_ord_id);
+    // The estimate goes with the order into its terminal record, which its id names from now on:
+    // executions of it are told from foreign ones for as long as that record lasts.
     remember_terminal(TerminalRecord{o.cl_ord_id,
                                      o.price,
                                      o.qty,
@@ -920,10 +943,14 @@ class Oms {
   // recompute_best_own.
   using InstBits = BucketBits<kMaxOpenOrders, kMaxInstruments>;
   InstBits by_inst_;
-  OpenHashMap<ClientOrderId, Handle<Order>, kMaxOpenOrders * 4> by_id_;  // ids + pending ids
+  // Each open order's ids (its own and a pending replace's) to its pool slot, and each recently
+  // terminal order's id to its newest record in recently_terminal_ (kTerminalRef | ring slot). An
+  // order that ends keeps its entry, which names the record from then on, so terminate() moves no
+  // id between maps; the record leaving the ring takes the entry out.
+  static constexpr std::uint32_t kTerminalRef = 1U << 31;
+  static_assert(kMaxOpenOrders < kTerminalRef && kRecentlyTerminal <= kTerminalRef);
+  OpenHashMap<ClientOrderId, std::uint32_t, kMaxOpenOrders * 4> ids_;
   RingBuffer<TerminalRecord, kRecentlyTerminal> recently_terminal_;
-  // cl_ord_id -> position in recently_terminal_ of its newest record.
-  OpenHashMap<ClientOrderId, std::uint64_t, kRecentlyTerminal * 2> terminal_pos_;
   // On the heap: its ring of ids alone is 512 KiB.
   std::unique_ptr<RecentMap<std::uint64_t, std::uint8_t, kExecMemory>> exec_seen_ =
       std::make_unique<RecentMap<std::uint64_t, std::uint8_t, kExecMemory>>();

@@ -491,6 +491,71 @@ TEST_CASE("core.oms: recently-terminal ring evicts oldest") {
   CHECK(oms.on_fill(fill(id, 1, 1, 0, "first")).action == OmsAction::None);
 }
 
+// One map holds every id: an open order's (its own and a pending replace's) and a recently terminal
+// order's, whose entry names the order's newest record from the moment it ends.
+TEST_CASE("core.oms: an id names its open order, then its newest terminal record") {
+  Oms oms;
+  SUBCASE("an id ended, reused and ended again names the newer record") {
+    const ClientOrderId id = oms.next_cl_ord_id();
+    static_cast<void>(oms.submit(req(Side::Buy, 100, 1), id, {}));
+    oms.on_reject(reject(id));
+    CHECK(oms.classify(id) == OrderClass::RecentlyTerminal);
+    REQUIRE(oms.submit(req(Side::Sell, 101, 2), id, {}));
+    CHECK(oms.classify(id) == OrderClass::Open);
+    CHECK(oms.submit(req(Side::Sell, 101, 2), id, {}).error() == RejectReason::DuplicateId);
+    oms.on_ack(ack(id));
+    oms.on_cancel_ack(cancel_ack(id));
+    // The first record leaves the ring; the id still names the second.
+    for (std::size_t i = 0; i + 1 < kRecentlyTerminal; ++i) {
+      const ClientOrderId other = oms.next_cl_ord_id();
+      static_cast<void>(oms.submit(req(Side::Buy, 1, 1), other, {}));
+      oms.on_reject(reject(other));
+    }
+    CHECK(oms.classify(id) == OrderClass::RecentlyTerminal);
+    const OmsUpdate u = oms.on_fill(fill(id, 101, 2, 2, "late"));
+    CHECK(u.action == OmsAction::LateFill);
+    CHECK(u.order.side == Side::Sell);
+    CHECK(u.order.qty == qt(2));
+    // The second leaves too.
+    const ClientOrderId last = oms.next_cl_ord_id();
+    static_cast<void>(oms.submit(req(Side::Buy, 1, 1), last, {}));
+    oms.on_reject(reject(last));
+    CHECK(oms.classify(id) == OrderClass::Unknown);
+  }
+  SUBCASE("a cancel-replace: the old id leaves, the new one names the order") {
+    const ClientOrderId id = oms.next_cl_ord_id();
+    const auto h = oms.submit(req(Side::Buy, 100, 1), id, {});
+    oms.on_ack(ack(id));
+    const ClientOrderId next = oms.next_cl_ord_id();
+    REQUIRE(oms.request_replace(*h, next, px(99), qt(1)));
+    CHECK(oms.find(id) == *h);
+    CHECK(oms.find(next) == *h);
+    oms.on_ack(ack(next, "V2"));
+    CHECK(oms.classify(id) == OrderClass::Unknown);
+    CHECK(oms.find(next) == *h);
+    oms.on_cancel_ack(cancel_ack(next));
+    CHECK(oms.classify(next) == OrderClass::RecentlyTerminal);
+    CHECK(!oms.find(next).valid());
+  }
+  SUBCASE("a full ring, a full pool and a replace in flight on every order fit") {
+    for (std::size_t i = 0; i < kRecentlyTerminal; ++i) {
+      const ClientOrderId other = oms.next_cl_ord_id();
+      static_cast<void>(oms.submit(req(Side::Buy, 1, 1), other, {}));
+      oms.on_reject(reject(other));
+    }
+    std::vector<Handle<Order>> open;
+    for (std::size_t i = 0; i < kMaxOpenOrders; ++i) {
+      const ClientOrderId id = oms.next_cl_ord_id();
+      const auto h = oms.submit(req(Side::Buy, 1, 1), id, {});
+      REQUIRE(h);
+      oms.on_ack(ack(id));
+      open.push_back(*h);
+    }
+    for (const Handle<Order> h : open)
+      REQUIRE(oms.request_replace(h, oms.next_cl_ord_id(), px(2), qt(1)));
+  }
+}
+
 TEST_CASE("core.oms: pool exhaustion") {
   Oms oms;
   for (std::size_t i = 0; i < kMaxOpenOrders; ++i)
