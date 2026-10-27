@@ -157,6 +157,10 @@ class BinanceDataset final : public MdSource {
 // Default cache root: $FASTMM_DATA_HOME, else $XDG_CACHE_HOME/fastmm/data, else
 // ~/.cache/fastmm/data.
 [[nodiscard]] std::string default_data_dir();
+// The command that downloads what a source reads into the cache root `dir`: the script in a
+// source checkout (python/fastmm/data/__main__.py under the working directory), else
+// `python3 -m fastmm.data fetch`, with `--dir` unless `dir` is the default.
+[[nodiscard]] std::string fetch_command(std::string_view dir);
 // Every date from `first` to `last` inclusive, as "YYYY-MM-DD". Throws std::runtime_error on a
 // malformed date or a range that runs backwards.
 [[nodiscard]] std::vector<std::string> date_range(std::string_view first, std::string_view last);

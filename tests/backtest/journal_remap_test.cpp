@@ -217,8 +217,11 @@ TEST_CASE("backtest.journal_remap: the events carry the configuration's ids and 
   CHECK(src.note() == "journal: remap: 2 of 2 instruments in the configuration, 0 events dropped");
   CHECK(src.md_events() == 4);
 
-  // The same through the spec; without a configuration the option is refused.
+  // The same through the spec, where it is the default, and a bare path; without a
+  // configuration the option is refused.
   CHECK(drain(*open_data("journal:" + path + ",remap=1", &cfg)) == want);
+  CHECK(drain(*open_data("journal:" + path, &cfg)) == want);
+  CHECK(drain(*open_data(path, &cfg)) == want);
   CHECK(drain(*open_data("journal:" + path + ",remap=0", &cfg)).front().instrument == 0);
   CHECK_THROWS_WITH_AS(static_cast<void>(open_data("journal:" + path + ",remap=1")),
                        doctest::Contains("remap needs the configuration's instruments"),
@@ -281,4 +284,18 @@ TEST_CASE("backtest.journal_remap: recorded latencies, balances and flows follow
   CHECK(s.flows.front().hdr.venue == VenueId{1});
   REQUIRE(s.balances_at().size() == 1);
   CHECK(s.balances_at().front().venue == VenueId{1});
+}
+
+TEST_CASE("backtest.journal_remap: a configuration numbered as the journal changes nothing") {
+  const std::string path = fresh("journal_remap_same.fmj");
+  const InstrumentTable rec = recorded();
+  {
+    Writer w(path, rec);
+    w.trade(0, 1);
+    w.trade(1, 2);
+  }
+  JournalSource src(path, false, true, &rec);
+  CHECK(drain(src) == std::vector<Seen>{{EventType::Trade, 0, 0, sizeof(TradeMsg)},
+                                        {EventType::Trade, 1, 0, sizeof(TradeMsg)}});
+  CHECK(src.note().empty());
 }

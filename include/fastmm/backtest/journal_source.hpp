@@ -25,8 +25,9 @@
 // backtest configuration's table, every event's instrument id becomes that of the instrument with
 // the same symbol there (the recording's venue first, else any venue listing the symbol) and its
 // venue that instrument's; an event whose symbol the configuration lacks is dropped, and note()
-// counts them. The copy holds up to kMaxMsgBytes: a recorded snapshot can be deeper than an
-// EventBuf. Remap applies after strip_own.
+// counts them. A configuration that numbers every instrument the journal lists as the journal
+// does changes nothing. The copy holds up to kMaxMsgBytes: a recorded snapshot can be deeper than
+// an EventBuf. Remap applies after strip_own.
 #include "fastmm/backtest/data_source.hpp"
 #include "fastmm/backtest/own_orders.hpp"
 #include "fastmm/core/instrument.hpp"

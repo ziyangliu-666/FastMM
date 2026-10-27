@@ -20,6 +20,7 @@
 #include "fastmm/strategies/registry.hpp"
 
 #include <memory>
+#include <span>
 #include <string_view>
 
 namespace fastmm::bt {
@@ -151,6 +152,12 @@ class BacktestRunner {
 
 // The SyntheticSource a run with `source == nullptr` replays under the L2 queue fill model.
 [[nodiscard]] SyntheticSourceConfig synthetic_source_config(const BacktestConfig& cfg);
+
+// Logs a warning for each instrument the data gave no events, and for the events that named an
+// instrument id past the table. by_instrument: events per id, its last entry those past the table
+// (sim::SimDriver::by_instrument()).
+void warn_unfed_instruments(const InstrumentTable& instruments,
+                            std::span<const std::uint64_t> by_instrument);
 
 // Resolves `--data` through the data-source registry (data_registry.hpp): "<name>:<args>",
 // or a bare *.fmj / *.csv path. "synthetic" (and "") open to nullptr, which selects the market

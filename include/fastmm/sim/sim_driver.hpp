@@ -31,8 +31,10 @@
 #include "fastmm/sim/param_schedule.hpp"
 #include "fastmm/sim/sim_transport.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace fastmm::sim {
 
@@ -141,6 +143,13 @@ class SimDriver {
     pending_ = nullptr;
     source_done_ = false;
   }
+  // The source's events per instrument id, of `n` instruments: by_instrument()[i] for id i < n,
+  // and its last entry for the ids at or past n. An event of no instrument (a venue's connection
+  // state) is not counted.
+  void count_by_instrument(std::size_t n) { by_instrument_.assign(n + 1, 0); }
+  [[nodiscard]] const std::vector<std::uint64_t>& by_instrument() const noexcept {
+    return by_instrument_;
+  }
   // Coupled mode: the generator drives the transport's matching engine as account 0 and the
   // aggregator publishes the shared book. `seed_levels` orders per side are placed first.
   void set_generator(MarketGenerator* g, int seed_levels = 20) noexcept {
@@ -186,6 +195,9 @@ class SimDriver {
       if (source_ != nullptr && pending_ == nullptr && !source_done_) {
         pending_ = source_->next();
         source_done_ = pending_ == nullptr;  // never poll an exhausted source again
+        if (pending_ != nullptr && pending_->instrument.valid())
+          ++by_instrument_[std::min<std::size_t>(pending_->instrument.value,
+                                                 by_instrument_.size() - 1)];
       }
       const Timestamp t_gen = generator_ != nullptr ? generator_->next_ts() : Timestamp::max();
       const Timestamp t_src = pending_ != nullptr ? source_time(*pending_) : Timestamp::max();
@@ -417,6 +429,7 @@ class SimDriver {
   MdSource* source_ = nullptr;
   const EventHeader* pending_ = nullptr;
   bool source_done_ = false;
+  std::vector<std::uint64_t> by_instrument_ = std::vector<std::uint64_t>(1);
   const Timestamp* world_ = nullptr;
   MarketGenerator* generator_ = nullptr;
   JournalFileWriter* journal_ = nullptr;

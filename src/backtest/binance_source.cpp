@@ -177,6 +177,14 @@ std::string default_data_dir() {
   return ".fastmm-data";
 }
 
+std::string fetch_command(std::string_view dir) {
+  std::string out = std::filesystem::exists("python/fastmm/data/__main__.py")
+                        ? "python3 python/fastmm/data/__main__.py fetch"
+                        : "python3 -m fastmm.data fetch";
+  if (dir != default_data_dir()) out.append(" --dir ").append(dir);
+  return out;
+}
+
 std::vector<std::string> date_range(std::string_view first, std::string_view last) {
   const std::int64_t a = parse_date(first);
   const std::int64_t b = parse_date(last);
@@ -384,8 +392,9 @@ BinanceDataset::BinanceDataset(const BinanceSourceConfig& cfg) {
         std::string msg = "no ";
         msg.append(kind).append(" for ").append(cfg.symbol).append(" on ").append(date);
         msg.append(" at ").append(path);
-        msg.append("\n  fetch it with: python3 -m fastmm.data fetch --symbol ");
-        msg.append(cfg.symbol).append(" --date ").append(date);
+        msg.append("\n  fetch it with: ").append(fetch_command(cfg.dir));
+        if (cfg.market == BinanceMarket::Spot) msg.append(" --market spot");
+        msg.append(" --symbol ").append(cfg.symbol).append(" --date ").append(date);
         fail(msg);
       }
       owned_.push_back(is_book ? std::unique_ptr<MdSource>(new BinanceBookTickerSource(path, cfg))

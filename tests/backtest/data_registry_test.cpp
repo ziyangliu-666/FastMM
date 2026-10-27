@@ -324,6 +324,38 @@ TEST_CASE("backtest.data: convert writes a journal that replays the same events"
   }
 }
 
+TEST_CASE("backtest.data: convert merges the sources of a spec of several") {
+  const std::string dir = write_cache(
+      "bt_conv_merge",
+      binance_daily_key(BinanceMarket::UsdmFutures, "bookTicker", "BTCUSDT", "2024-03-27", ".csv"),
+      kBookTicker);
+  InstrumentTable instruments;
+  for (const std::uint8_t v : {std::uint8_t{0}, std::uint8_t{1}}) {
+    Instrument i{};
+    i.symbol = "BTCUSDT";
+    i.tick = px("0.1");
+    i.lot = qt("0.001");
+    i.flags = Instrument::kEnabled;
+    i.venue = VenueId{v};
+    REQUIRE(instruments.add(i));
+  }
+  const std::string one = "binance:BTCUSDT,2024-03-27,trades=false,dir=" + dir;
+  const std::string out = (test::tmp_dir() / "bt_conv_merge.fmj").string();
+  CHECK(convert_data(one + ",venue=0; " + one + ",venue=1", out, instruments) == 6);
+  JournalSource merged(out);
+  std::size_t on_second = 0;
+  while (const EventHeader* h = merged.next()) on_second += h->instrument.value == 1 ? 1 : 0;
+  CHECK(on_second == 3);
+}
+
+TEST_CASE("backtest.data: a missing file names the command that fetches it") {
+  const std::string dir = (test::tmp_dir() / "bt_fetch_hint").string();
+  CHECK_THROWS_WITH_AS(
+      static_cast<void>(open_data("binance:SOLUSDT,2024-03-27,market=spot,dir=" + dir)),
+      doctest::Contains("fetch --dir " + dir + " --market spot --symbol SOLUSDT --date 2024-03-27"),
+      std::runtime_error);
+}
+
 TEST_CASE("backtest.data: date_range and parse_utc_time") {
   const std::vector<std::string> d = date_range("2024-02-28", "2024-03-01");
   REQUIRE(d.size() == 3);

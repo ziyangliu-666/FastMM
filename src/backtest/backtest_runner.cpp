@@ -706,8 +706,10 @@ void BacktestSession::begin(const sim::EngineHooks& hooks,
   } else if (source_ != nullptr && cfg_.reorder_window.ns > 0) {
     lp.ordered = std::make_unique<sim::VenueOrderSource>(*source_, cfg_.reorder_window);
     driver.set_source(lp.ordered.get());
+    driver.count_by_instrument(cfg_.instruments.size());
   } else if (source_ != nullptr) {
     driver.set_source(source_);
+    driver.count_by_instrument(cfg_.instruments.size());
   }
   if (impl_->journal_file) driver.set_journal_writer(impl_->journal_file.get());
   sim::ParamSchedule* schedule = params_;
@@ -915,6 +917,8 @@ BacktestResult BacktestSession::end(std::string_view strategy_name) {
   const Timestamp start = lp.start;
   const auto wall0 = lp.wall0;
   driver.finish();
+  if (driver.by_instrument().size() > 1)
+    warn_unfed_instruments(cfg_.instruments, driver.by_instrument());
   // The strategy's state at the end ([strategy] state_file): the next backtest, or a live session,
   // starts from it. Captures during the run are superseded by this one.
   if (runner != nullptr && !cfg_.engine.state_file.empty()) {
@@ -1022,6 +1026,25 @@ std::string_view trim(std::string_view s) noexcept {
 std::unique_ptr<MdSource> open_one(std::string_view spec, const InstrumentTable* instruments);
 }  // namespace
 
+void warn_unfed_instruments(const InstrumentTable& instruments,
+                            std::span<const std::uint64_t> by_instrument) {
+  for (const Instrument& i : instruments) {
+    if (i.id.value < by_instrument.size() && by_instrument[i.id.value] == 0) {
+      FASTMM_LOG_WARN("backtest: the data has no events for instrument {} ({} on venue {})",
+                      i.id.value,
+                      i.symbol.view(),
+                      i.venue.value);
+    }
+  }
+  if (by_instrument.size() > instruments.size() && by_instrument.back() != 0) {
+    FASTMM_LOG_WARN(
+        "backtest: {} events of the data name an instrument id the configuration lacks (it has "
+        "{} instruments)",
+        by_instrument.back(),
+        instruments.size());
+  }
+}
+
 std::unique_ptr<MdSource> open_data(std::string_view spec, const InstrumentTable* instruments) {
   spec = trim(spec);
   if (spec.find(';') != std::string_view::npos) {
@@ -1058,7 +1081,8 @@ std::unique_ptr<MdSource> open_one(std::string_view spec, const InstrumentTable*
   }
   // A bare path: infer the source from the extension.
   const std::string path(spec);
-  if (ends_with(spec, ".fmj")) return std::make_unique<JournalSource>(path);
+  if (ends_with(spec, ".fmj"))
+    return std::make_unique<JournalSource>(path, false, true, instruments);
   if (ends_with(spec, ".csv")) return std::make_unique<CsvSource>(path);
   std::string known;
   for (const DataSourceEntry& e : DataSourceRegistry::instance().entries())

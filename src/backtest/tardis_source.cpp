@@ -2,6 +2,8 @@
 
 #include "csv_fields.hpp"
 
+#include "fastmm/backtest/binance_source.hpp"
+
 #include <filesystem>
 #include <stdexcept>
 
@@ -194,7 +196,8 @@ TardisDataset::TardisDataset(const TardisSourceConfig& cfg) {
         std::string msg = "no ";
         msg.append(data_type).append(" for ").append(cfg.exchange).append(" ").append(cfg.symbol);
         msg.append(" on ").append(date).append(" at ").append(path);
-        msg.append("\n  fetch it with: python3 -m fastmm.data fetch --source tardis --exchange ");
+        msg.append("\n  fetch it with: ").append(fetch_command(cfg.dir));
+        msg.append(" --source tardis --exchange ");
         msg.append(cfg.exchange).append(" --symbol ").append(cfg.symbol);
         msg.append(" --date ").append(date);
         fail(msg);

@@ -438,12 +438,17 @@ if(TARGET fastmm-backtest)
     fastmm_cli_test(apps.fastmm-backtest.sweep_recorded.basic_mm.${_model} EXPECT_RC 0
       CMD $<TARGET_FILE:fastmm-backtest> --config ${_cfg_basic_mm} --sweep half_spread_bps=0,0.3
           --sweep levels=1,2 --sweep quote_qty=1,4 --threads 3 --verify 8
-      EXPECT_REGEX "${_sweep_ok}")
+      EXPECT_REGEX "${_sweep_ok}" REJECT_REGEX "the data has no events|instrument id the configuration lacks")
     fastmm_cli_test(apps.fastmm-backtest.sweep_recorded.xmm.${_model} EXPECT_RC 0
       CMD $<TARGET_FILE:fastmm-backtest> --config ${_cfg_xmm} --sweep edge_bps=0,0.2
           --sweep quote_qty=1,3 --sweep basis_halflife_s=10,60 --threads 3 --verify 8
-      EXPECT_REGEX "${_sweep_ok}")
+      EXPECT_REGEX "${_sweep_ok}" REJECT_REGEX "the data has no events|instrument id the configuration lacks")
   endforeach()
+  # Coinbase's data alone: Bitstamp's instrument gets no events, and the run says so.
+  fastmm_cli_test(apps.fastmm-backtest.instrument_without_data EXPECT_RC 0
+    CMD $<TARGET_FILE:fastmm-backtest> --config ${_cfg_xmm}
+        --data csv:${_btcusd}/coinbase-btcusd.csv,venue=1 --out -
+    EXPECT_REGEX "the data has no events for instrument 0 \\(BTCUSD on venue 0\\)")
   # Quoting on Coinbase, whose trades fill passive orders under l2_queue only.
   fastmm_cli_test(apps.fastmm-backtest.sweep_recorded.xmm.l2_queue.quote_coinbase EXPECT_RC 0
     CMD $<TARGET_FILE:fastmm-backtest> --config ${_cfg_xmm} --param quote_instrument=1

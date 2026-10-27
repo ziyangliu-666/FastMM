@@ -1,5 +1,6 @@
 #include "fastmm/backtest/data_registry.hpp"
 
+#include "fastmm/backtest/backtest_runner.hpp"
 #include "fastmm/backtest/binance_source.hpp"
 #include "fastmm/backtest/csv_source.hpp"
 #include "fastmm/backtest/itch_source.hpp"
@@ -154,7 +155,7 @@ std::unique_ptr<MdSource> open_synthetic(const DataSourceOptions& o) {
 
 std::unique_ptr<MdSource> open_journal(const DataSourceOptions& o) {
   o.reject_unknown({"path", "strip_own", "parts", "remap"});
-  const bool remap = o.get_bool("remap", false);
+  const bool remap = o.get_bool("remap", o.instruments() != nullptr);
   if (remap && o.instruments() == nullptr)
     bad("journal: remap needs the configuration's instruments");
   return std::make_unique<JournalSource>(std::string(o.require("path")),
@@ -360,13 +361,7 @@ std::uint64_t convert_data(std::string_view spec,
                            const std::string& out,
                            const InstrumentTable& instruments,
                            std::uint64_t seed) {
-  register_builtin_data_sources();
-  const std::size_t colon = spec.find(':');
-  const DataSourceEntry* entry = DataSourceRegistry::instance().find(spec.substr(0, colon));
-  if (entry == nullptr) bad("'" + std::string(spec) + "' names no registered source");
-  DataSourceOptions opts = DataSourceOptions::parse(spec, entry->positional);
-  opts.set_instruments(&instruments);
-  std::unique_ptr<MdSource> source = entry->open(opts);
+  std::unique_ptr<MdSource> source = open_data(spec, &instruments);
   if (source == nullptr) bad("'" + std::string(spec) + "' has no events to convert");
   return write_md_journal(*source, out, instruments, seed, "data");
 }

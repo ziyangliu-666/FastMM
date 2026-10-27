@@ -91,7 +91,12 @@ JournalSource::JournalSource(const std::string& path,
       map_.push_back(c == nullptr ? kUnmapped : c->id.value);
       map_venue_.push_back(c == nullptr ? VenueId{} : c->venue);
     }
-    rbuf_.resize((kMaxMsgBytes + 7) / 8);
+    // A configuration that numbers every instrument as the journal does leaves the ids as recorded.
+    remap_ = false;
+    for (std::size_t j = 0; j < map_.size(); ++j) {
+      remap_ = remap_ || map_[j] != j || map_venue_[j] != parts_.front().instruments()[j].venue;
+    }
+    if (remap_) rbuf_.resize((kMaxMsgBytes + 7) / 8);
   }
   // A backtest's journal from format v5 on records the market data as recorded: none of ours in it.
   if (strip_own && !feed_shows_own(parts_.front().header()) &&

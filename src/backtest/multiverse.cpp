@@ -737,7 +737,13 @@ class Pass {
            const sim::VenueOrderSource* ordered,
            std::vector<BacktestResult>& out,
            const ResultHook& done) {
-    const EventHeader* ev = events.next();
+    std::vector<std::uint64_t> by_instrument(first_.instruments.size() + 1);
+    const auto count = [&](const EventHeader* h) {
+      if (h != nullptr && h->instrument.valid())
+        ++by_instrument[std::min<std::size_t>(h->instrument.value, by_instrument.size() - 1)];
+      return h;
+    };
+    const EventHeader* ev = count(events.next());
     for (;;) {
       const SimKey src = ev != nullptr ? SimKey{event_time(*ev), SimKey::kSource} : SimKey::never();
       FeedGroup* g = nullptr;
@@ -764,8 +770,9 @@ class Pass {
       }
       if (ev == nullptr) break;
       recorded_event(*ev, src);
-      ev = events.next();
+      ev = count(events.next());
     }
+    warn_unfed_instruments(first_.instruments, by_instrument);
     next_src_ = Timestamp::max();
     for (const std::unique_ptr<FeedGroup>& fg : groups_) fg->next_shared = Timestamp::max();
     for (Run& r : runs_) {
