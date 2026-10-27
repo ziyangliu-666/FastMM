@@ -3898,8 +3898,10 @@ class Engine {
   // What the messages the engine was not handed would have left: the risk engine's mids, book times
   // and last trades, the positions' marks, the feed's lag, the counts. Each of these takes the last
   // value of its message, so taking the last one is taking them all.
-  void catch_up() noexcept {
-    if (market_ == nullptr || market_->counts.messages == market_seen_.messages) return;
+  FASTMM_FORCE_INLINE void catch_up() noexcept {
+    if (market_ != nullptr && market_->counts.messages != market_seen_.messages) catch_up_market();
+  }
+  FASTMM_NOINLINE void catch_up_market() noexcept {
     const std::uint64_t seen = market_seen_.messages;
     const std::size_t n = instruments_.size();
     for (std::uint32_t i = 0; i < n; ++i) {
@@ -4192,8 +4194,10 @@ class Engine {
     return e;
   }
   // md_interest() after a step, for an engine that follows a market.
-  void update_interest() noexcept {
-    if (market_ == nullptr) return;
+  FASTMM_FORCE_INLINE void update_interest() noexcept {
+    if (market_ != nullptr) update_market_interest();
+  }
+  FASTMM_NOINLINE void update_market_interest() noexcept {
     const bool every = journal_.enabled() || cfg_.max_param_age.ns > 0 || feed_lag_limit_.ns > 0 ||
                        queue_on_ || fx_on_ || perp_.marking() || quotes_.starved();
     if (every != interest_.every) {

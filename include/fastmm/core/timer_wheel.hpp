@@ -89,38 +89,17 @@ class TimerWheel {
   void warm_up() noexcept { pool_.warm_up(); }
 
   // Fires every timer with expiry <= now, in slot order. F(TimerId, std::uint64_t user_data).
+  // Inline only as far as finding nothing due, the common case.
   template <class F>
-  std::size_t poll(Timestamp now, F&& f) noexcept {
-    std::size_t fired = 0;
+  FASTMM_FORCE_INLINE std::size_t poll(Timestamp now, F&& f) noexcept {
     const std::int64_t now_ms = now.ns / kSlotNs;
     if (now_ms < cur_ms_) return 0;
-    // After a stall longer than the horizon every slot is visited exactly once anyway, so
-    // jump the cursor forward; this also lets promote_overflow() see the right window.
-    if (now_ms - cur_ms_ > static_cast<std::int64_t>(kSlots))
-      cur_ms_ = now_ms - static_cast<std::int64_t>(kSlots);
-    // Bring overflow timers that are now within the horizon into the wheel.
-    if (now_ms + static_cast<std::int64_t>(kSlots) > overflow_min_ms_) promote_overflow();
-    // Nothing is due when the earliest expiry is known to be later: the cursor moves on without
-    // the walk, which would visit every ms slot since the last poll and fire nothing.
-    if (!next_stale_ && now < next_) {
+    if (FASTMM_LIKELY(!next_stale_ && now < next_ &&
+                      now_ms + static_cast<std::int64_t>(kSlots) <= overflow_min_ms_)) {
       cur_ms_ = now_ms;
       return 0;
     }
-    const std::int64_t steps = now_ms - cur_ms_;
-    // Process slots cur_ms_ .. now_ms inclusive (the current slot may have new timers). The walk's
-    // next timer is walk_next_, which unlink() moves on when a callback cancels that timer.
-    for (std::int64_t s = 0; s <= steps; ++s) {
-      const std::int64_t ms = cur_ms_ + s;
-      const std::size_t slot = static_cast<std::size_t>(ms) & (kSlots - 1);
-      for (std::uint32_t idx = slots_[slot]; idx != kNullHandle; idx = walk_next_) {
-        Timer& t = pool_.get(Handle<Timer>{idx});
-        walk_next_ = t.next;
-        if (t.expiry <= now) fired += fire(idx, t, now, f);
-      }
-    }
-    walk_next_ = kNullHandle;
-    cur_ms_ = now_ms;
-    return fired;
+    return poll_due(now, now_ms, f);
   }
 
   // A replay: the journal says timer `id` fired at `now`. It ends or repeats as poll() would have
@@ -172,6 +151,39 @@ class TimerWheel {
   }
 
  private:
+  // poll() once something may be due: the walk over the slots since the last poll.
+  template <class F>
+  FASTMM_NOINLINE std::size_t poll_due(Timestamp now, std::int64_t now_ms, F& f) noexcept {
+    std::size_t fired = 0;
+    // After a stall longer than the horizon every slot is visited exactly once anyway, so
+    // jump the cursor forward; this also lets promote_overflow() see the right window.
+    if (now_ms - cur_ms_ > static_cast<std::int64_t>(kSlots))
+      cur_ms_ = now_ms - static_cast<std::int64_t>(kSlots);
+    // Bring overflow timers that are now within the horizon into the wheel.
+    if (now_ms + static_cast<std::int64_t>(kSlots) > overflow_min_ms_) promote_overflow();
+    // Nothing is due when the earliest expiry is known to be later: the cursor moves on without
+    // the walk, which would visit every ms slot since the last poll and fire nothing.
+    if (!next_stale_ && now < next_) {
+      cur_ms_ = now_ms;
+      return 0;
+    }
+    const std::int64_t steps = now_ms - cur_ms_;
+    // Process slots cur_ms_ .. now_ms inclusive (the current slot may have new timers). The walk's
+    // next timer is walk_next_, which unlink() moves on when a callback cancels that timer.
+    for (std::int64_t s = 0; s <= steps; ++s) {
+      const std::int64_t ms = cur_ms_ + s;
+      const std::size_t slot = static_cast<std::size_t>(ms) & (kSlots - 1);
+      for (std::uint32_t idx = slots_[slot]; idx != kNullHandle; idx = walk_next_) {
+        Timer& t = pool_.get(Handle<Timer>{idx});
+        walk_next_ = t.next;
+        if (t.expiry <= now) fired += fire(idx, t, now, f);
+      }
+    }
+    walk_next_ = kNullHandle;
+    cur_ms_ = now_ms;
+    return fired;
+  }
+
   static constexpr std::uint32_t kOverflow = 0xFFFF'FFFEU;
   static constexpr std::uint32_t kUnlinked = 0xFFFF'FFFDU;
 
