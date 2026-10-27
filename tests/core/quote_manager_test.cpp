@@ -427,6 +427,70 @@ TEST_CASE("core.quote_manager: a requote that meets pending orders is applied wh
   }
 }
 
+// reconcile() visits the levels the ladder asks for and those whose slot still holds something.
+TEST_CASE("core.quote_manager: a shorter ladder cancels the levels it drops, pending or not") {
+  const Instrument inst = make_inst();
+  QuoteParams p;
+  p.min_requote_interval = Duration{};
+  QuoteManager qm(p);
+  Harness h;
+  const auto ladder = [&](int n) {
+    DesiredQuotes d;
+    for (int i = 0; i < n; ++i) {
+      d.bids.push_back({Price::from_raw(px("100").raw - (i + 1) * px("0.01").raw), qt("1")});
+      d.asks.push_back({Price::from_raw(px("100").raw + (i + 1) * px("0.01").raw), qt("1")});
+    }
+    return d;
+  };
+  const auto cancel_acks = [&](Timestamp now) {
+    for (const ClientOrderId id : ids_in_state(h.oms, OrderState::PendingCancel))
+      qm.on_order_update(h.oms.on_cancel_ack(cancel_ack_msg(id)), inst, h.oms, now, h);
+  };
+  const auto empty_above = [&](std::uint32_t from) {
+    bool empty = true;
+    for (const Side s : {Side::Buy, Side::Sell}) {
+      for (std::uint32_t lvl = from; lvl < kMaxQuoteLevels; ++lvl)
+        empty = empty && !qm.slot_handle(inst.id, s, lvl).valid();
+    }
+    return empty;
+  };
+
+  SUBCASE("working orders") {
+    CHECK(qm.reconcile(inst, ladder(3), h.oms, Timestamp{}, h) == 6);
+    h.ack_all();
+    CHECK(qm.reconcile(inst, ladder(1), h.oms, Timestamp{1}, h) == 4);
+    CHECK(h.count(QuoteActionKind::Cancel) == 4);
+    cancel_acks(Timestamp{2});
+    CHECK(empty_above(1));
+    CHECK(h.oms.open_count() == 2);
+  }
+  SUBCASE("orders still pending when the ladder shrank") {
+    CHECK(qm.reconcile(inst, ladder(3), h.oms, Timestamp{}, h) == 6);
+    CHECK(qm.reconcile(inst, ladder(1), h.oms, Timestamp{1}, h) == 0);
+    CHECK(qm.reconcile(inst, ladder(1), h.oms, Timestamp{2}, h) == 0);
+    for (const ClientOrderId id : ids_in_state(h.oms, OrderState::PendingNew))
+      qm.on_order_update(h.oms.on_ack(ack_msg(id)), inst, h.oms, Timestamp{3}, h);
+    CHECK(h.count(QuoteActionKind::Cancel) == 4);
+    cancel_acks(Timestamp{4});
+    CHECK(empty_above(1));
+    CHECK(h.oms.open_count() == 2);
+  }
+  SUBCASE("a stale handle above the ladder is cleared, and the levels come back") {
+    CHECK(qm.reconcile(inst, ladder(3), h.oms, Timestamp{}, h) == 6);
+    h.ack_all();
+    // The venue ends level 2's orders without the QuoteManager seeing the updates.
+    for (const Side s : {Side::Buy, Side::Sell}) {
+      OrderCancelAckMsg m = cancel_ack_msg(h.oms.get(qm.slot_handle(inst.id, s, 2)).cl_ord_id);
+      static_cast<void>(h.oms.on_cancel_ack(m));
+    }
+    h.actions.clear();
+    CHECK(qm.reconcile(inst, ladder(2), h.oms, Timestamp{1}, h) == 0);
+    CHECK(empty_above(2));
+    CHECK(qm.reconcile(inst, ladder(3), h.oms, Timestamp{2}, h) == 2);
+    CHECK(h.count(QuoteActionKind::New) == 2);
+  }
+}
+
 TEST_CASE("core.quote_manager: resume re-applies quotes paused with keep_desired only") {
   const Instrument inst = make_inst();
   QuoteParams p;

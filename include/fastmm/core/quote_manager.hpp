@@ -43,6 +43,7 @@
 #include "fastmm/core/oms.hpp"
 #include "fastmm/core/time.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -179,9 +180,13 @@ class QuoteManager {
     st.desired = desired;
     std::uint32_t actions = 0;
     for (Side side : {Side::Buy, Side::Sell}) {
+      const auto s = static_cast<std::size_t>(side);
       const auto& want = st.desired.side(side);
-      for (std::uint32_t lvl = 0; lvl < kMaxQuoteLevels; ++lvl) {
-        Slot& slot = st.slots[static_cast<std::size_t>(side)][lvl];
+      // A level the ladder does not ask for and whose slot is empty has nothing to reconcile.
+      const std::uint32_t n = std::max(static_cast<std::uint32_t>(want.size()), st.used[s]);
+      std::uint32_t used = 0;
+      for (std::uint32_t lvl = 0; lvl < n; ++lvl) {
+        Slot& slot = st.slots[s][lvl];
         const bool has_want = lvl < want.size() && want[lvl].qty.is_positive();
         actions += reconcile_slot(inst,
                                   st,
@@ -193,7 +198,9 @@ class QuoteManager {
                                   st.desired.account(side, lvl),
                                   now,
                                   place);
+        if (!slot.empty()) used = lvl + 1;
       }
+      st.used[s] = used;
     }
     return actions;
   }
@@ -346,9 +353,16 @@ class QuoteManager {
     VenueId want_account{};   // ... and its account (DesiredQuotes::account)
     bool apply_want = false;  // `want` is pending (qty 0: no quote on this level)
     bool awaiting_terminal = false;
+    // No order and nothing to apply: reconciling the slot against no level changes nothing.
+    [[nodiscard]] bool empty() const noexcept {
+      return !handle.valid() && !apply_want && !awaiting_terminal;
+    }
   };
   struct InstState {
     Slot slots[2][kMaxQuoteLevels];
+    // Per side, 1 + the highest level whose slot was not empty after the last reconcile(). A slot
+    // only fills at a level the ladder asks for, so no slot above max(used, ladder) holds anything.
+    std::uint32_t used[2] = {};
     DesiredQuotes desired;
     bool pulled = false;
     bool resumable = false;  // paused by pull_quotes(keep_desired): resume() re-applies `desired`
