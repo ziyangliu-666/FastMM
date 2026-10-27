@@ -3,12 +3,9 @@
 - **[Strategies in C++ or Python](how-to/strategies/python-hot-hooks.md).** Python hooks marked `@fastmm.hot` compile to machine code with Numba.
 - **[One strategy file for backtest and live](explanation/determinism.md).** Replays are deterministic, and the simulated exchange models queue position.
 - **[Account pools](reference/venues.md#account-pools).** Several sub-accounts trade behind one venue, and orders spread across them.
-- **[Gateway](how-to/operations/run-behind-a-gateway.md).** One `fastmm-gateway` holds the exchange connections; several strategy processes attach to it and can stop or restart without dropping them.
-- **[Live control](how-to/operations/operate-a-running-session.md).** `fastmm-ctl` changes a running session's parameters without a restart.
+- **[Gateway](how-to/operations/run-behind-a-gateway.md).** One `fastmm-gateway` holds the exchange connections; strategy processes attach to it and restart without dropping them.
 - **[A/B tests](how-to/strategies/ab-test.md).** Parameter sets run side by side, split by instrument, by time block or both, and are compared on markouts and net with paired intervals.
-- **[Low-latency tuning](how-to/operations/running-in-production.md#host-tuning).** Core pinning, busy polling, and AF_XDP or DPDK receive for UDP multicast feeds. Order entry runs on the kernel TCP stack, which OpenOnload or XLIO can replace through `LD_PRELOAD`.
-
-<video class="fastmm-video" controls preload="none" poster="assets/explainer-poster.jpg" src="https://github.com/ziyangliu-666/FastMM/releases/download/v0.5.1/fastmm-explainer.mp4"></video>
+- **[Low-latency tuning](how-to/operations/running-in-production.md#host-tuning).** Core pinning, busy polling, AF_XDP or DPDK for market data, OpenOnload or XLIO for orders.
 
 ## Quickstart
 
@@ -19,7 +16,7 @@ fastmm init my-mm && cd my-mm
 python backtest.py
 ```
 
-The wheel needs Linux x86-64 and CPython 3.10 or later, and no keys. On Debian and Ubuntu, `sudo apt install python3-venv` first. To write the strategy in C++, see the [Quick start in C++](getting-started/cpp-quickstart.md); to build the C++ programs, [Install](getting-started/install.md#build-from-source).
+The wheel needs Linux x86-64 and Python 3.10 or later. On Debian and Ubuntu, `sudo apt install python3-venv` first. To write the strategy in C++, see the [Quick start in C++](getting-started/cpp-quickstart.md); to build the C++ programs, [Install](getting-started/install.md#build-from-source).
 
 The same strategy trades live against the simulated exchange on this machine:
 
