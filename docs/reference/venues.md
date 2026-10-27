@@ -1,6 +1,6 @@
 # Venue connectors
 
-FastMM ships twelve connectors behind the control-path `fastmm::venues::Venue` interface (`include/fastmm/venues/venue.hpp`). Eleven are crypto venues:
+FastMM ships thirteen connectors behind the control-path `fastmm::venues::Venue` interface (`include/fastmm/venues/venue.hpp`). Eleven are crypto venues:
 
 | Venue | Markets | Orders | Environment |
 |---|---|---|---|
@@ -16,12 +16,13 @@ FastMM ships twelve connectors behind the control-path `fastmm::venues::Venue` i
 | Hyperliquid | perpetuals | WebSocket | production (`configs/hyperliquid.toml`); testnet with `testnet = true` |
 | Lighter | perpetuals | WebSocket | production (`configs/lighter.toml`); testnet with `testnet = true` |
 
-The twelfth reads Nasdaq TotalView-ITCH market data and enters orders over OUCH 5.0 to `fastmm-sim-itch` ([below](#nasdaq-totalview-itch-nasdaq_itch)); Binance Spot also runs against the local simulator `fastmm-sim-exchange`.
+Two trade US stocks: `alpaca` on an Alpaca paper or live account with IEX market data ([below](#alpaca-us-stocks-alpaca)), and `nasdaq_itch`, which reads Nasdaq TotalView-ITCH market data and enters orders over OUCH 5.0 to `fastmm-sim-itch` ([below](#nasdaq-totalview-itch-nasdaq_itch)). Binance Spot also runs against the local simulator `fastmm-sim-exchange`.
 
 Each connector registers itself in the venue registry (`include/fastmm/venues/registry.hpp`) under the `kind` a `[venues.<name>]` section names, and `make_venue()` resolves through it:
 
 | kind | connector |
 |---|---|
+| `alpaca` | `alpaca::AlpacaVenue` |
 | `binance_spot`, `binance`, `sim` | `binance::BinanceVenue` |
 | `binance_usdm` | `binance_usdm::BinanceUsdmVenue` |
 | `bybit`, `bybit_spot` | `bybit::BybitVenue` |
@@ -646,6 +647,39 @@ Perpetual funding is not booked. Deribit has no per-payment event: funding accru
 ### Errors
 
 `deribit_error_map.hpp` follows the "Complete RPC Error Codes Reference" table. Among others: 11054 post_only_reject, 10009/10039 insufficient funds, 10004/11044 unknown order (10004 reconciles), 10043/10026 tick, 10005-10007 price bands, 10028 rate limit, 13004/13021 fatal, 13009 re-authenticate, and 10040/10041/10047/11051/13028 back off.
+
+## Alpaca US stocks (`alpaca`)
+
+`kind = "alpaca"`: US-listed stocks and ETFs through Alpaca's Trading API, with market data from Alpaca's free IEX stream (`configs/alpaca-paper.toml`, [Trade US stocks on Alpaca](../how-to/venues/trade-us-stocks-on-alpaca.md)). The defaults are the paper account's endpoints; `testnet = true`, the default, refuses the live trading host `api.alpaca.markets`. Sources: <https://docs.alpaca.markets/reference> and the streaming pages, read 2026-10-27; every payload below was recorded on a paper account (`tests/fixtures/alpaca/`). Code: `include/fastmm/venues/alpaca/`.
+
+| channel | endpoint | purpose |
+|---|---|---|
+| md | `ws_url` (`wss://stream.data.alpaca.markets/v2/iex`) | `quotes`, `trades`; `v2/test` streams the symbol `FAKEPACA` at any hour |
+| trade | `ws_private_url` (`wss://paper-api.alpaca.markets/stream`) | `trade_updates`: order states and executions, in binary frames |
+| rest | `rest_url` (`https://paper-api.alpaca.markets`) | the requests below |
+
+| request | use |
+|---|---|
+| `GET /v2/clock`, `GET /v2/assets/<symbol>` | clock offset, reference data |
+| `POST /v2/orders` | new order |
+| `PATCH /v2/orders/<id>` | replace |
+| `DELETE /v2/orders/<id>` | cancel, kill switch, trading-stream loss |
+| `GET /v2/orders?status=open&symbols=` | reconciliation, kill switch |
+| `GET /v2/positions` | reconciliation |
+| `GET /v2/account/activities/FILL` | fill replay, newest first, paged by `page_token` |
+| `GET /v2/orders/<id>` | the client id of an order a replayed fill names |
+
+* Keys: every REST request carries `APCA-API-KEY-ID` and `APCA-API-SECRET-KEY`; both WebSockets send `{"action":"auth","key":..,"secret":..}` first. A refused key on the trading stream is fatal for the venue. The market-data stream needs the keys too, so a dry run keeps them (`market_data_keys` in the registry entry) and sends no order.
+* Reference data: tick $0.01 (Rule 612 at or above $1.00; sub-dollar stocks are not handled), lot 1 share unless the configured lot is a fraction and the asset is `fractionable`, `asset_class` equity. An asset that is not `active` and `tradable` is disabled.
+* Market data: every IEX quote is a one-level book snapshot of IEX's own top of book, which is often wider than the national best bid and offer that paper fills use. Sizes are as the feed sends them. Trades carry no aggressor. The stream sends nothing on subscribing and nothing for a symbol outside IEX's hours, so a book exists from the symbol's first quote. The free plan allows one market-data connection per account: a second one is refused with error 406. Client pings every 5 s keep a quiet connection from going `Stale`.
+* Orders: `client_order_id` is FastMM's client order id. Alpaca has no post-only order: `PostOnly` goes as a plain limit. `Gtc` and `Day` orders go as `time_in_force` (`day` by default), IOC and FOK as themselves, market orders as `day`; `extended_hours = true` adds `"extended_hours":true` to resting limit orders. A replace is `PATCH` with the new price, quantity and client id: Alpaca makes a new order with a new id, which the reply acknowledges, and ends the old one with the event `replaced`. A cancel names the venue's order id; one sent before the id is known waits for it. `DELETE` answers 204 also for an order that is over.
+* trade_updates: `new` is an acknowledgement, `fill` and `partial_fill` a fill with this execution's price and quantity and the order's `filled_qty` as cumulative quantity, `canceled` a cancel acknowledgement, `expired` and `done_for_day` an expiry, `rejected` a reject. Fills carry no fee (Alpaca charges no commission; regulatory fees are summed per day and posted after the close) and no maker or taker flag. Orders with other client ids are ignored.
+* Reconciliation: the account's FILL activities since the watermark are replayed first. An activity's id is `<New York time>::<execution_id>`, and the part after `::` is the execution id the stream reported, so a fill is booked once whichever brings it. Then the open orders of the subscribed symbols and, from `GET /v2/positions`, the position of every subscribed symbol (zero when flat), so a restarted session trades from the broker's position. On trading-stream loss the connector cancels the symbols' open orders (`cancel_on_order_channel_loss`) and reconciles when the stream is back.
+* Kill switch: the open orders of the subscribed symbols, each cancelled, over its own blocking connection, repeated until the list is empty, at most 3 rounds.
+* Rate limits: Alpaca allows 200 requests a minute per account. The connector caps new orders and replaces at 80 % of `requests_per_minute`; a 429 pauses order entry for 10 s.
+* Venue rules a strategy meets as rejects (`map_error` in `alpaca_rest.hpp`): a buy priced at or above the account's open sell in the symbol, or a sell at or below its open buy, is refused as a potential wash trade (`SelfTradePrevention`); a short sale is refused while a buy of the symbol is open (`SelfTradePrevention`); a sell larger than the long position not held by other sell orders is refused (`InsufficientBalance`). From a flat position the account therefore quotes one side at a time; with a long position at least the ask size, both.
+* Dead man's switch: none. Orders a process left resting stay until the next session's start-up sweep cancels them or the day ends (`day` orders).
+* Not handled: sessions and halts (the engine does not know the market's hours; a quote outside them waits or, with `extended_hours`, trades in the extended session), LULD bands, short-sale restrictions, buying power, sub-dollar ticks, the SIP feed, options and crypto on Alpaca.
 
 ## Nasdaq TotalView-ITCH (`nasdaq_itch`)
 

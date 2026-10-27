@@ -32,8 +32,9 @@ VenueSection section(std::string kind) {
 
 TEST_CASE("venues.registry: every shipped connector resolves through its kind and aliases") {
   const VenueRegistry r = builtins();
-  CHECK(r.entries().size() == 12);
-  for (const char* kind : {"binance_spot",
+  CHECK(r.entries().size() == 13);
+  for (const char* kind : {"alpaca",
+                           "binance_spot",
                            "binance_usdm",
                            "bybit",
                            "coinbase_advanced",
@@ -63,7 +64,7 @@ TEST_CASE("venues.registry: a connector declares whether it needs credentials") 
   CHECK(r.find("nasdaq_itch")->caps.credentials == false);
   CHECK(r.find("nasdaq_itch")->caps.polls == true);
   CHECK(r.find("nasdaq_itch")->caps.positions == false);
-  for (const char* kind : {"binance_spot", "binance_usdm", "bybit", "deribit", "okx"}) {
+  for (const char* kind : {"alpaca", "binance_spot", "binance_usdm", "bybit", "deribit", "okx"}) {
     CAPTURE(kind);
     CHECK(r.find(kind)->caps.credentials);
     CHECK(r.find(kind)->caps.order_entry);
@@ -125,9 +126,10 @@ not_a_real_key = 1
 
   // An unknown kind names the ones that are registered.
   const Config unknown = Config::parse("[venues.b]\nkind = \"nope\"\n");
-  CHECK_THROWS_WITH_AS(validate_venues(unknown, r),
-                       doctest::Contains("unsupported kind 'nope' (registered: binance_spot"),
-                       std::invalid_argument);
+  CHECK_THROWS_WITH_AS(
+      validate_venues(unknown, r),
+      doctest::Contains("unsupported kind 'nope' (registered: alpaca, binance_spot"),
+      std::invalid_argument);
 }
 
 TEST_CASE("venues.registry: a pool member needs a connector that runs as one") {
@@ -203,7 +205,8 @@ TEST_CASE("venues.registry: stale_ms past dead_ms is refused when the connector 
   const VenueRegistry r = builtins();
   VenueFactoryOptions opts;
   opts.dry_run = true;
-  for (const char* kind : {"binance_spot",
+  for (const char* kind : {"alpaca",
+                           "binance_spot",
                            "binance_usdm",
                            "bybit",
                            "coinbase_advanced",

@@ -1,0 +1,10 @@
+{
+ "_source": "recorded",
+ "_recorded_from": "the Alpaca paper account: wss://paper-api.alpaca.markets/stream (trade_updates) while orders were placed, replaced, cancelled and filled over REST, and wss://stream.data.alpaca.markets/v2/test (FAKEPACA quotes and trades)",
+ "_recorded_at": "2026-10-27T06:55Z",
+ "files": {
+  "trade_updates.jsonl": "recorded, one frame per line (the paper stream sends them as binary WebSocket frames): two sessions' authorization and listening, then replaced, canceled, pending_new, new and fill; order ids, asset ids and execution ids replaced by 00000000-0000-4000-8000-<n>, client ids by FastMM ids, event ids renumbered",
+  "md_test_stream.jsonl": "recorded, one frame per line: connected, authenticated, subscription, then quotes and trades of FAKEPACA, two to a frame and one",
+  "REST replies (tests/venues/alpaca_test.cpp)": "recorded from the paper account on 2026-10-27 (POST and GET orders, positions, FILL activities, assets, clock, the 403 and 422 errors) with the same id replacement"
+ }
+}

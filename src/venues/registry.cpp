@@ -9,6 +9,7 @@
 namespace fastmm::venues {
 
 // Registration functions of the connectors FastMM ships, one translation unit each.
+void register_alpaca_venue(VenueRegistry& r);
 void register_binance_venue(VenueRegistry& r);
 void register_binance_usdm_venue(VenueRegistry& r);
 void register_bybit_venue(VenueRegistry& r);
@@ -188,6 +189,7 @@ std::string VenueRegistry::kinds() const {
 }
 
 void register_builtin_venues(VenueRegistry& r) {
+  register_alpaca_venue(r);
   register_binance_venue(r);
   register_binance_usdm_venue(r);
   register_bybit_venue(r);

@@ -238,7 +238,7 @@ Then two lines in `src/venues/registry.cpp`: a declaration of `register_foo_venu
 | `aliases` | other `kind` values that select it (`binance_spot` answers to `binance` and `sim`) |
 | `summary` | one line for the connector table in [Configuration](../../reference/configuration.md#connectors) |
 | `keys` | the `[venues.<name>]` keys the venue owns, beyond the generic ones |
-| `caps` | `credentials`, `order_entry`, `replace`, `positions`, `polls`, `executions`: what this connector can do |
+| `caps` | `credentials`, `market_data_keys`, `order_entry`, `replace`, `positions`, `position_snapshot`, `polls`, `executions`: what this connector can do |
 | `make` | the factory, called after the section's keys have been validated |
 
 The core reads `caps` instead of testing `kind`: `credentials = false` is why `fastmm-live` never asks `nasdaq_itch` for an API key, `polls = true` is why its sockets are driven from `Venue::poll()`, and `executions = true` lets a restart restore the venue's position. They say what the connector *can* do; whether a given instance does is `Venue::caps()`, which sees the configuration (a dry run, `order_entry = "none"`, missing credentials).

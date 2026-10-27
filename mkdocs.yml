@@ -164,6 +164,7 @@ nav:
           - how-to/strategies/python-slow-methods.md
           - how-to/strategies/python-live.md
       - Venues:
+          - how-to/venues/trade-us-stocks-on-alpaca.md
           - how-to/venues/add-a-venue.md
       - Operations:
           - Go live:

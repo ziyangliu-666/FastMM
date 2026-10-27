@@ -1,13 +1,15 @@
 // Venue connector hot paths do not allocate after warm-up: the market-data parser, the private
-// (user stream) parser and the order encoder of Binance, Bybit, OKX, Deribit and Coinbase (both
-// APIs), on the recorded fixtures in tests/fixtures/<venue>/. The first pass over the frames is
-// the warm-up (parser buffers reach their working size); the measured rounds must then decode and
-// encode everything without a single allocation.
+// (user stream) parser and the order encoder of Binance, Bybit, OKX, Deribit, Coinbase (both
+// APIs) and Alpaca, on the recorded fixtures in tests/fixtures/<venue>/. The first pass over the
+// frames is the warm-up (parser buffers reach their working size); the measured rounds must then
+// decode and encode everything without a single allocation.
 #if defined(FASTMM_HOTPATH_VENUES)
 
 #include "../venues/venue_test_util.hpp"
 #include "alloc_counter.hpp"
 
+#include "fastmm/venues/alpaca/alpaca_md.hpp"
+#include "fastmm/venues/alpaca/alpaca_rest.hpp"
 #include "fastmm/venues/binance/binance_auth.hpp"
 #include "fastmm/venues/binance/binance_md_parser.hpp"
 #include "fastmm/venues/binance/binance_order_encoder.hpp"
@@ -637,6 +639,67 @@ TEST_CASE("hotpath.noalloc: Coinbase Advanced market-data parser and feed, user 
     NoAllocScope guard;
     for (int k = 0; k < kRounds; ++k) {
       if (!enc.encode_new(all[0], rq) || rq.body_n == 0) ++failed;
+    }
+  }
+  CHECK(failed == 0);
+}
+
+TEST_CASE("hotpath.noalloc: Alpaca market-data parser, trade_updates parser and order encoder") {
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("SPY", 0, "SPY", "USD")));
+  REQUIRE(instruments.add(make_instrument("FAKEPACA", 0, "FAKEPACA", "USD")));
+  SymbolTable symbols;
+  REQUIRE(symbols.build(instruments));
+  // The recorded test stream's quote and trade frames, and the recorded trade_updates.
+  const auto lines = [](const char* rel, const char* keep) {
+    std::vector<PaddedJson> out;
+    const std::string raw = fastmm::test::fixture(rel);
+    std::size_t pos = 0;
+    while (pos < raw.size()) {
+      std::size_t end = raw.find('\n', pos);
+      if (end == std::string::npos) end = raw.size();
+      const std::string line = raw.substr(pos, end - pos);
+      pos = end + 1;
+      if (line.find(keep) != std::string::npos) out.emplace_back(line);
+    }
+    return out;
+  };
+  const std::vector<PaddedJson> md_frames =
+      lines("alpaca/md_test_stream.jsonl", R"("S":"FAKEPACA")");
+  REQUIRE(md_frames.size() == 4);
+  {
+    alpaca::AlpacaMdParser md(symbols, VenueId{0});
+    check_decoder_noalloc(md, md_frames);
+  }
+  const std::vector<PaddedJson> updates =
+      lines("alpaca/trade_updates.jsonl", R"("stream":"trade_updates")");
+  REQUIRE(updates.size() == 5);
+  alpaca::TradeUpdateParser parser;
+  alpaca::TradeUpdate u;
+  for (const PaddedJson& f : updates) REQUIRE(parser.parse(f.view(), u));
+  int failed = 0;
+  {
+    NoAllocScope guard;
+    for (int k = 0; k < kRounds; ++k) {
+      for (const PaddedJson& f : updates) {
+        if (!parser.parse(f.view(), u)) ++failed;
+      }
+    }
+  }
+  CHECK(failed == 0);
+  // Orders go over REST (the request itself allocates); the bodies are written into fixed buffers.
+  const alpaca::AlpacaOrderEncoder enc(symbols, {});
+  const Commands cmds(InstrumentId{0}, VenueId{0}, "765.37", "2");
+  const std::array<OrderCommand, 3> all = cmds.all();
+  alpaca::OrderRequest rq;
+  REQUIRE(enc.encode_new(all[0], rq));
+  {
+    NoAllocScope guard;
+    for (int k = 0; k < kRounds; ++k) {
+      if (!enc.encode_new(all[0], rq) || rq.body_n == 0) ++failed;
+      if (!alpaca::AlpacaOrderEncoder::encode_replace(
+              all[2], "11111111-2222-4333-8444-555555555555", rq))
+        ++failed;
     }
   }
   CHECK(failed == 0);

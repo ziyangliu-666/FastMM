@@ -9,6 +9,8 @@ All notable changes are recorded here (Keep a Changelog format).
 - backtest: a sweep's log lines carry the simulated time of the run that wrote them and name its point (`#n`, `LogRunScope`).
 - backtest: the walk-forward table gives each fold's first instant in UTC, not seconds from the data's start.
 - python: `sweep_frame` adds `kill_reason` and each horizon's `markout_bps_<label>`.
+- live: a restart takes a stock's position from its venue's report, as it does a derivative's.
+- live: a dry run keeps the keys of a venue whose market data needs them (`market_data_keys`).
 - backtest: the passes of a sweep that run at the same time read the data once: one more thread reads it, puts it in venue order and hands it to all of them, instead of each pass reading and ordering a copy of its own.
 - backtest: a sweep deals its points to its threads' passes in waves of at most 128 runs a pass, so the passes of a wave end together and no pass runs alone at the end, and it hands the memory a wave freed back to the system before the next wave starts.
 - backtest: `--threads` and `threads=` of a sweep are no longer capped at 32.
@@ -35,6 +37,10 @@ All notable changes are recorded here (Keep a Changelog format).
 - backtest: `summary.json` has `risk_rejects`, the risk checks' refusals by reason.
 - backtest: `bt::score_walk_forward` takes a score function; `fastmm.walk_forward(metric=)` takes a function of a `BacktestResult`.
 - python: `fastmm.sweep(summary_only=True)` and `fastmm.walk_forward(summary_only=True)` keep each point's metrics and drop its fills and equity bars.
+- venues: `alpaca`, US stocks on an Alpaca paper or live account with IEX quotes and trades.
+- venues: `alpaca` replaces with PATCH and reconciles from FILL activities and positions.
+- configs: `alpaca-paper.toml`, `basic_mm` on SPY with an Alpaca paper account.
+- scripts: `alpaca-paper-check.sh` runs the opt-in `live.alpaca` check on a paper account.
 - backtest: `bt::ResultHook`: `bt::run_multiverse`, `bt::sweep` and `bt::sweep_by_name` hand each result to it as it is done, to keep only what the caller needs.
 - python: `BacktestConfig.keep_orders`.
 - bench: `fastmm-bench-multiverse --own-feed` and `--md-jitter-us`.

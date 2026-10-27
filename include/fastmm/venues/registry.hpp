@@ -59,12 +59,14 @@ struct VenueFactoryOptions {
 // given instance does is Venue::caps() (a dry run, order_entry = "none", missing credentials).
 struct VenueCapabilities {
   bool credentials = true;  // needs api_key / api_secret outside a dry run
+  // Its market data needs the account's keys too (Alpaca): a dry run keeps api_key and api_secret.
+  bool market_data_keys = false;
   bool order_entry = true;  // can send orders at all
   bool replace = false;     // can amend a resting order in place
   bool positions = false;   // reports positions from the venue
-  // Its reconciliation reports the position of every subscribed derivative, flat ones too, before
-  // the engine sends an order: a position the session restored from the store is replaced by the
-  // venue's own before it is traded on. Spot instruments are never reported this way.
+  // Its reconciliation reports the position of every subscribed derivative or stock, flat ones too,
+  // before the engine sends an order: a position the session restored from the store is replaced by
+  // the venue's own before it is traded on. Spot instruments are never reported this way.
   bool position_snapshot = false;
   bool polls = false;  // Venue::poll() drives its sockets; the reactor never wakes for them
   // Can fetch what the account executed since a point in time, so a reconciliation replays the

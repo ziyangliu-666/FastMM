@@ -55,6 +55,8 @@ class FakeVenueServer final : public net::WsSessionHandler {
   void route(const std::string& method, const std::string& path, net::HttpRouteHandler h) {
     server_.route(method, path, std::move(h));
   }
+  // Every request no route matches (paths with an id in them).
+  void fallback(net::HttpRouteHandler h) { server_.set_default_handler(std::move(h)); }
   void on_ws_open(const std::string& path, OpenFn fn) { open_fns_[path] = std::move(fn); }
   void on_ws_text(const std::string& path, TextFn fn) { text_fns_[path] = std::move(fn); }
   // Every upgrade's query is recorded under "upgrade:<path>"; `fn` may refuse it (404).
@@ -98,6 +100,10 @@ class FakeVenueServer final : public net::WsSessionHandler {
     run_on_server([this, path, data = std::move(data)] {
       for (net::WsSession* s : sessions_[path]) s->send_binary(data);
     });
+  }
+  // The same from the server thread itself (a route handler).
+  void send_binary_here(const std::string& path, const std::vector<std::byte>& data) {
+    for (net::WsSession* s : sessions_[path]) s->send_binary(data);
   }
   void close_sessions(const std::string& path) {
     run_on_server([this, path] {

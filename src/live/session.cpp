@@ -591,7 +591,7 @@ struct RestoreVenue {
 };
 
 // The instruments restore_positions restores, with whether their venue reports the position itself
-// before the engine sends an order (a derivative on a venue with a position snapshot).
+// before the engine sends an order (a derivative or a stock on a venue with a position snapshot).
 std::vector<RestoredInstrument> restored_instruments(const InstrumentTable& instruments,
                                                      std::span<const RestoreVenue> venues) {
   std::vector<RestoredInstrument> out;
@@ -599,10 +599,9 @@ std::vector<RestoredInstrument> restored_instruments(const InstrumentTable& inst
     if (in.venue.value >= venues.size()) continue;
     const RestoreVenue& v = venues[in.venue.value];
     if (!v.can_replay) continue;
-    const bool derivative = in.asset_class == AssetClass::Perpetual ||
-                            in.asset_class == AssetClass::Future ||
-                            in.asset_class == AssetClass::Option;
-    out.push_back({v.name, in.symbol.view(), v.position_snapshot && derivative});
+    // Derivatives, and stocks (a broker holds them as a signed position, shorts included).
+    const bool reported = in.is_derivative() || in.asset_class == AssetClass::Equity;
+    out.push_back({v.name, in.symbol.view(), v.position_snapshot && reported});
   }
   return out;
 }
@@ -731,15 +730,17 @@ bool resolve_venue_env(Config& cfg, bool dry_run, const char* prog) {
       const auto it = v.extra.find(key);
       return it == v.extra.end() ? std::string_view{} : std::string_view(it->second);
     };
-    // Ed25519 keys have no secret (the private key comes from private_key_file / _env), and
-    // Binance SBE market data needs the API key even in a dry run.
+    // Ed25519 keys have no secret (the private key comes from private_key_file / _env). Binance
+    // SBE market data needs the API key even in a dry run, and a venue whose market data needs
+    // the account's keys (VenueCapabilities::market_data_keys) keeps both.
     const bool ed25519 = extra("key_type") == "ed25519";
     const bool sbe_md = extra("md_format") == "sbe";
     // The venue declares whether it needs credentials at all (venues/registry.hpp); nasdaq_itch,
     // for one, takes market data without keys and logs OUCH in with ouch_username / ouch_password.
     const venues::VenueEntry* entry = venues::VenueRegistry::instance().find(v.kind);
     const bool needs_keys = entry == nullptr || entry->caps.credentials;
-    if (dry_run || v.public_only) {
+    const bool md_keys = entry != nullptr && entry->caps.market_data_keys;
+    if ((dry_run || v.public_only) && !md_keys) {
       if (!sbe_md) v.api_key.clear();
       v.api_secret.clear();
       v.api_passphrase.clear();

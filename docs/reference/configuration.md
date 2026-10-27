@@ -232,6 +232,7 @@ knows only the generic keys above. A project can register its own connector and 
 <!-- BEGIN config-keys connectors -->
 | `kind` | Aliases | Connector | API keys | Order entry | Replace | Positions |
 |---|---|---|---|---|---|---|
+| `alpaca` |  | Alpaca US stocks (paper or live account, IEX data) | yes | yes | yes | yes |
 | `binance_spot` | `binance`, `sim` | Binance Spot (testnet, Demo Mode, or the Binance-compatible simulator with kind = "sim") | yes | yes | yes | yes |
 | `binance_usdm` |  | Binance USDⓈ-M perpetual futures (Demo Trading) | yes | yes | yes | yes |
 | `bybit` | `bybit_spot` | Bybit v5 spot and linear perpetuals (testnet) | yes | yes | yes | yes |
@@ -248,6 +249,22 @@ knows only the generic keys above. A project can register its own connector and 
 
 `Replace` and `Order entry` are what the connector can do; a session may not, depending on its
 configuration (a dry run, `order_entry = "none"`, missing credentials).
+
+#### `alpaca`
+
+<!-- BEGIN config-keys venue:alpaca -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `ws_private_url` | string |  | WebSocket URL of trade_updates (order states and executions); empty = wss://paper-api.alpaca.markets/stream |
+| `stale_ms` | integer |  | no traffic, pongs included, for this long marks the feed stale and pulls the venue's quotes, ms (default 15000) |
+| `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms (default 30000; pings go every 5 s) |
+| `requests_per_minute` | integer |  | client-side cap on new orders and replaces, per minute; the venue allows 200 requests a minute (default 200, 80 % of it used) |
+| `time_in_force` | string |  | what a resting order is sent as: day (default) \| gtc |
+| `extended_hours` | boolean |  | resting limit orders may trade before and after the regular session (default false) |
+| `trades` | boolean |  | subscribe to trades as well as quotes (default true) |
+| `allow_offline_reference_data` | boolean |  | start without the asset endpoint, using the configured tick and lot (default false) |
+| `cancel_on_order_channel_loss` | boolean |  | cancel the session's open orders over REST when trade_updates drops (default true) |
+<!-- END config-keys -->
 
 #### `binance_spot`
 
