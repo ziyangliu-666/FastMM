@@ -40,6 +40,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - bench: `fastmm-bench-l3-itch` takes `--max-overflow` and `--from`, reports book errors by kind and the peak overflow levels, and reads files over 4 GiB.
 
 ### Fixed
+- backtest: a walk-forward fold of order-by-order data runs under `l3_queue` and starts on the orders resting at its first instant.
 - backtest: a run sharing a pass takes a message behind those already in its engine's feed (an `[ab]` arm's parameters at the start), as it does alone.
 - core: an L3 book crossed by more than its price window keeps its window on the touch it holds instead of centring between the touches and holding neither.
 - venues: while `nasdaq_itch` waits for a snapshot it buffers only its stocks' messages, not the whole market's, so `recovery_buffer_packets` no longer fills in seconds at the open.

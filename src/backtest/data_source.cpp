@@ -3,6 +3,7 @@
 #include "fastmm/core/book/l2_book.hpp"
 
 #include <cstring>
+#include <list>
 #include <map>
 #include <tuple>
 #include <utility>
@@ -25,6 +26,10 @@ void stamp(EventHeader& h, Timestamp t) noexcept {
 struct TimeSliceSource::Primer {
   using Key = std::tuple<std::uint8_t, std::uint32_t>;  // venue, instrument
   std::map<Key, L2Book<256>> books;
+  // The recorded orders resting at t0, in arrival order (the queue order within each level), and
+  // where each is by (venue, order ref).
+  std::list<OrderAddL3Msg> orders;
+  std::map<std::pair<std::uint8_t, std::uint64_t>, std::list<OrderAddL3Msg>::iterator> by_ref;
   // Last message of every other kind: (type, venue, instrument) -> bytes.
   std::map<std::tuple<std::uint16_t, std::uint8_t, std::uint32_t>, std::vector<std::byte>> last;
   std::vector<std::vector<std::byte>> out;  // what next() yields before the slice itself
@@ -39,6 +44,37 @@ struct TimeSliceSource::Primer {
         break;
       case EventType::Trade:
         break;  // history, not state
+      case EventType::OrderAddL3: {
+        const auto& m = msg_cast<OrderAddL3Msg>(&h);
+        by_ref[{h.venue.value, m.order_ref}] = orders.insert(orders.end(), m);
+        break;
+      }
+      case EventType::OrderExecL3: {
+        const auto& m = msg_cast<OrderExecL3Msg>(&h);
+        reduce(h.venue.value, m.order_ref, m.exec_qty);
+        break;
+      }
+      case EventType::OrderCancelL3: {
+        const auto& m = msg_cast<OrderCancelL3Msg>(&h);
+        reduce(h.venue.value, m.order_ref, m.canceled_qty.is_zero() ? Qty::max() : m.canceled_qty);
+        break;
+      }
+      case EventType::OrderReplaceL3: {
+        const auto& m = msg_cast<OrderReplaceL3Msg>(&h);
+        const auto it = by_ref.find({h.venue.value, m.old_order_ref});
+        if (it == by_ref.end()) break;
+        OrderAddL3Msg add = *it->second;
+        orders.erase(it->second);
+        by_ref.erase(it);
+        add.hdr = h;
+        add.hdr.type = EventType::OrderAddL3;
+        add.hdr.len = sizeof(OrderAddL3Msg);
+        add.order_ref = m.new_order_ref;
+        add.price = m.price;
+        add.qty = m.qty;
+        by_ref[{h.venue.value, m.new_order_ref}] = orders.insert(orders.end(), add);
+        break;
+      }
       default: {
         auto& bytes = last[{static_cast<std::uint16_t>(h.type), h.venue.value, h.instrument.value}];
         const auto* p = reinterpret_cast<const std::byte*>(&h);
@@ -48,7 +84,24 @@ struct TimeSliceSource::Primer {
     }
   }
 
+  void reduce(std::uint8_t venue, std::uint64_t ref, Qty qty) {
+    const auto it = by_ref.find({venue, ref});
+    if (it == by_ref.end()) return;
+    if (qty >= it->second->qty) {
+      orders.erase(it->second);
+      by_ref.erase(it);
+    } else {
+      it->second->qty -= qty;
+    }
+  }
+
+  // The resting orders first, as an order-by-order source starts (ItchSource), then the books.
   void build(Timestamp t0) {
+    for (OrderAddL3Msg& m : orders) {
+      stamp(m.hdr, t0);
+      const auto* p = reinterpret_cast<const std::byte*>(&m);
+      out.emplace_back(p, p + sizeof(OrderAddL3Msg));
+    }
     for (const auto& [key, book] : books) {
       const auto nb = static_cast<std::uint32_t>(book.depth(Side::Buy));
       const auto na = static_cast<std::uint32_t>(book.depth(Side::Sell));

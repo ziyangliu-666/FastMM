@@ -12,6 +12,7 @@
 #include "fastmm/backtest/backtest_runner.hpp"
 #include "fastmm/backtest/multiverse.hpp"
 #include "fastmm/backtest/result.hpp"
+#include "fastmm/backtest/sweep.hpp"
 #include "fastmm/config/config.hpp"
 #include "fastmm/core/rng.hpp"
 
@@ -450,6 +451,40 @@ pull_on_stale_ms = 0
                           {"requote_threshold_ticks", {"0", "1", "2"}}};
   check_exact(
       variants(base, grid, 48, stress_seed(106)), "basic_mm", itch_session(stress_seed(21), base));
+}
+
+TEST_CASE(
+    "backtest.multiverse.exact: walk-forward folds under l3_queue start on the resting orders") {
+  const BacktestConfig base = config_of(itch_config(R"(
+[strategy]
+name = "basic_mm"
+[strategy.params]
+half_spread_bps = 1
+skew_bps_per_unit = 0.5
+quote_qty = 100
+max_inventory = 300
+requote_threshold_ticks = 1
+pull_on_stale_ms = 0
+)"));
+  const ParamGrid grid = {{"half_spread_bps", {"0.5", "3"}}, {"quote_qty", {"100", "200"}}};
+  const SourceFactory data = itch_session(stress_seed(23), base);
+  const WalkForwardReport rep = walk_forward_by_name(base, "basic_mm", grid, data, 3, "net_pnl", 2);
+  REQUIRE(rep.folds.size() == 3);
+  const BacktestConfig start = shared_start(base);
+  std::uint64_t fills = 0;
+  for (const WalkForwardFold& f : rep.folds) {
+    for (const SweepPoint& p : f.points) {
+      BacktestConfig c = start;
+      for (const auto& [k, v] : p.params) c.params[k] = v;
+      const std::unique_ptr<MdSource> fold =
+          fold_source(base, data(), Timestamp{f.start_ts}, Timestamp{f.end_ts});
+      CAPTURE(f.start_ts);
+      CHECK(result_difference(run_backtest(c, "basic_mm", fold.get()), p.result).empty());
+      fills += p.result.fills.size();
+    }
+  }
+  // The folds after the first fill orders that joined queues of orders resting before them.
+  CHECK(fills > 0);
 }
 
 TEST_CASE("backtest.multiverse.exact: avellaneda_stoikov and lead_mm under l3_queue") {

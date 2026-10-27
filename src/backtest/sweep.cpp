@@ -222,6 +222,7 @@ class OwnedSlice final : public MdSource {
   const EventHeader* next() override { return slice_.next(); }
   void reset() override { slice_.reset(); }
   [[nodiscard]] Timestamp start_ts() const override { return slice_.start_ts(); }
+  [[nodiscard]] bool order_by_order() const override { return slice_.order_by_order(); }
 
  private:
   std::unique_ptr<MdSource> inner_;

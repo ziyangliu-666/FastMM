@@ -189,8 +189,9 @@ class ChainSource final : public MdSource {
 
 // The events of `inner` in [t0, t1) of event time (exch_ts, recv_ts when unset), for walk-forward
 // folds. The part before t0 is read but not yielded: it only rebuilds the book of every
-// (venue, instrument) and keeps the last message of every other kind except trades, and those
-// states come out first, stamped t0 (one BookSnapshot per book, then the rest in key order).
+// (venue, instrument), the recorded orders resting at t0 of an order-by-order source and the last
+// message of every other kind except trades, and those states come out first, stamped t0 (the
+// resting orders in arrival order, one BookSnapshot per book, then the rest in key order).
 // A fold therefore starts on the book the full run would have had at t0. Ends at the first
 // event at or after t1. `inner` is borrowed; reset() rewinds it.
 class TimeSliceSource final : public MdSource {
@@ -202,6 +203,7 @@ class TimeSliceSource final : public MdSource {
   const EventHeader* next() override;
   void reset() override;
   [[nodiscard]] Timestamp start_ts() const override { return t0_; }
+  [[nodiscard]] bool order_by_order() const override { return inner_.order_by_order(); }
 
  private:
   struct Primer;

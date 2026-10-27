@@ -146,7 +146,7 @@ rep = fastmm.walk_forward(cfg, grid, folds=4, data="synthetic", metric="net_pnl"
 print(rep["table"])
 ```
 
-The event-time range of `data` is cut into `folds` equal consecutive slices and the whole grid runs on each slice, every run a fresh backtest from a flat engine. A slice starts on the book the full stream had at its first instant (earlier events are read to build it, not traded) and ends at the next slice. For fold i ≥ 1, the best point of fold i−1 by `metric` (`net_pnl`, `realized_pnl`, `sharpe_bar` or `spread_captured_bps`; ties go to the earlier grid point) is the choice, scored on fold i. The choice uses fold i−1 alone rather than every earlier fold: the grid already ran there, the rule works for metrics that do not add up across folds (a Sharpe ratio), and it is what re-running the sweep on the latest data before trading does.
+The event-time range of `data` is cut into `folds` equal consecutive slices and the whole grid runs on each slice, every run a fresh backtest from a flat engine. A slice starts on the book the full stream had at its first instant, and on the orders resting then when the data has every order (earlier events are read to build them, not traded) and ends at the next slice. For fold i ≥ 1, the best point of fold i−1 by `metric` (`net_pnl`, `realized_pnl`, `sharpe_bar` or `spread_captured_bps`; ties go to the earlier grid point) is the choice, scored on fold i. The choice uses fold i−1 alone rather than every earlier fold: the grid already ran there, the rule works for metrics that do not add up across folds (a Sharpe ratio), and it is what re-running the sweep on the latest data before trading does.
 
 ```text
 walk-forward: 4 folds, 8 points, metric net_pnl, chosen on the previous fold
