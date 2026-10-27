@@ -269,7 +269,7 @@ def main():
                     f"{today}: {setup}. Times are per iteration; for the codec benchmarks an "
                     "iteration is a batch of 64 operations, for `BM_L2_ApplyDelta/20` a 20-level "
                     "delta, for `BM_EngineStep_Sim` a 32-event step. Method: "
-                    "[Benchmarks](../docs/explanation/benchmarks.md).\n\n"
+                    "[README.md](README.md#method-of-the-micro-benchmarks).\n\n"
                     + render_full(rows) + "\n")
     if a.docs:
         page = Path(a.docs)

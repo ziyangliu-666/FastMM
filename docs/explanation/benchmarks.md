@@ -29,7 +29,7 @@ Time per operation.
 
 ## End to end over veth
 
-`fastmm-sim-itch` sends ITCH over MoldUDP64 multicast to `fastmm-live` in another network namespace, across a veth pair; `basic_mm` answers with OUCH 5.0 orders over TCP. Preset `release`, `configs/nasdaq-itch-sim.toml`, kernel receive, `spin_mode = "busy"`, simulator on CPU 0, engine on CPU 1, network thread on CPU 3 (the engine core's second hyperthread), three runs of 30 s, 2026-09-29.
+`fastmm-sim-itch` sends ITCH over multicast to `fastmm-live` in another network namespace, across a veth pair; `basic_mm` answers with OUCH 5.0 orders over TCP. Engine, network thread and simulator each have their own CPU; three runs of 30 s, 2026-09-29.
 
 <!-- BEGIN bench-e2e -->
 | Interval | samples a run | p50 | p99 | p99.9 |
@@ -44,14 +44,12 @@ Range over 3 runs.
 
 ## What each number times
 
-Tick to order (`BM_TickToOrder_Sim`) starts when a book delta is pushed into the engine's feed and ends when the last order it caused is serialised into the transport. In between: the L2 book, the strategy hook, the quote diff, the pre-trade risk checks, the OMS and the encoding of one cancel per side. In the simulator the transport copies each message into a 192-byte scheduler slot, the stand-in for the live engine's outbound ring. The venue, acks and the untimed settle loop between ticks are outside it. The simulator's outbound SHA-256, a determinism check the live engine does not compute, is off; `BM_TickToOrder_SimHash` turns it on.
+| Number | Starts | Ends |
+|---|---|---|
+| Tick to order | a book delta pushed into the engine's feed | the last order it caused serialised into the transport: book, strategy, quote diff, risk, OMS and encoding of one cancel per side |
+| Wire to wire | the simulator sends an ITCH datagram | the simulator reads the order it caused |
+| Kernel receive to T0 | the kernel's receive timestamp | the network thread takes the frame |
+| T0 to T5 | the network thread takes the frame | the order is in the engine's outbound ring ([Status file](../reference/status-file.md#latency-intervals)) |
+| T0 to `write` returning | the network thread takes the frame | the system call that sent the order returns; on veth it includes the simulator's TCP receive |
 
-Wire to wire is measured by the simulator with its own TSC: from right before the `sendmmsg` that sent an ITCH datagram to right after the read that returned the order it caused. Each order carries the MoldUDP64 sequence number that triggered it in its ClOrdID, so the simulator matches them. `fastmm-live` measures the other rows: the kernel receive timestamp to T0 on the network thread, T0 to T5 on the engine ([Status file](../reference/status-file.md#latency-intervals)), and T0 to the return of the `write` that carried the order. On veth that `write` runs the simulator's TCP receive path inside the system call, which is most of the gap between T5 and wire to wire.
-
-## Method
-
-`scripts/bench.sh` pins each benchmark to one core, except the few that need a second thread (`FASTMM_BENCH_NEEDS_CORES`, `bench/bench_pin.hpp`). The machine ran nothing else, without `isolcpus` or a fixed CPU frequency. Each benchmark ran five repetitions in each of three rounds, and `tools/bench_table.py` pools them.
-
-Where a benchmark keeps a per-operation `rdtsc` histogram (buckets about 2 % wide), the tables give its percentiles; otherwise p50 is the median over repetitions of Google Benchmark's mean time. The codec benchmarks time 64 operations per `rdtsc` pair. Two processes of one binary differ by 2 to 5 %, so compare a change over several interleaved processes per side.
-
-Across two hosts: [Two-host benchmark](../how-to/operations/two-host-benchmark.md).
+Each benchmark runs pinned to one core on an otherwise idle machine; methods and commands: [`bench/README.md`](../../bench/README.md#method-of-the-micro-benchmarks). Two processes of one binary differ by 2 to 5 %. Across two hosts: [Two-host benchmark](../how-to/operations/two-host-benchmark.md).

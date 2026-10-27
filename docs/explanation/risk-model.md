@@ -1,14 +1,27 @@
 # Risk model
 
-The risk layer decides whether each new order and replace the engine is about to send may go. The code is `include/fastmm/core/risk.hpp`; the limits are the `[risk]` section of the [Configuration](../reference/configuration.md#risk).
+Every new order and every replace passes a fixed list of checks before it leaves the engine; the first one that fails refuses the order. The limits are the `[risk]` section of the [Configuration](../reference/configuration.md#risk).
 
 ## Where the checks sit
 
-Every new order and every replace passes through `RiskEngine` on the engine thread, after the strategy decided and before the OMS records the order: quotes from the quote manager and direct orders from `ctx.send` alike. A refused order is never sent. The strategy sees the `RejectReason` in the `Result` of `ctx.send`, or a quote that does not appear; the engine counts rejects per reason (`fastmm-top`, the shutdown summary) and logs the first reject of each reason, then at most one line per reason every 10 s.
+The checks run on the engine thread, after the strategy decides and before the OMS records the order. Quotes from the quote manager and orders from `ctx.send` take the same path.
+
+```mermaid
+flowchart LR
+    S[Strategy] --> Q[Quote manager]
+    S --> C[ctx.send]
+    Q --> R{Risk checks}
+    C --> R
+    R -- pass --> O[OMS] --> V[Venue]
+    R -- refuse --> X[RejectReason to the strategy]
+    S -. cancels skip the checks .-> O
+```
+
+A refused order is never sent. The strategy sees the `RejectReason` in the `Result` of `ctx.send`, or a quote that does not appear. The engine counts rejects per reason in `fastmm-top` and the shutdown summary, and logs at most one line per reason every 10 s.
 
 Cancels skip the checks, also after the kill switch has tripped, so a strategy or the engine can always reduce what is in the market.
 
-The checks are integer compares on state the engine already keeps; price bounds are recomputed on every book and trade update. `BM_Risk_CheckNew_Pass`, an order that passes all checks, takes 6.7 ns ([Benchmarks](benchmarks.md)).
+The checks are integer compares on state the engine already keeps, and an order that passes all of them takes 7.1 ns ([Benchmarks](benchmarks.md)).
 
 ## The checks, in order
 
@@ -41,68 +54,110 @@ The first failing check decides the reason.
 | 23 | `RateLimit` | a pool order's account cannot send it now: its connector is paused or an order window is at its cap (`ctx.order_budget`) | |
 | 24 | `RateLimit` | the token bucket is empty | `orders_per_sec`, `burst` |
 
-- A limit of 0 turns its check off; the checks against the instrument's reference data always run. Every limit defaults to off, so `fastmm-live` with real keys refuses to start without `max_position` (or `max_order_notional`) and `max_loss`, unless `[risk] allow_unlimited = true` ([Configuration](../reference/configuration.md#risk)).
-- A replace excludes the existing order's remaining quantity from the position prediction and is not counted against `max_open_orders`.
-- Only an order that passes every check takes a token from the bucket: one refused for any other reason, a full or paused pool account included, leaves the tokens to the orders that are sent.
-- `MaxPosition` counts same-side open orders, so a quote ladder cannot exceed `max_position` even if it fills entirely.
-- Market orders skip the price checks (4, 9, 10, 20).
-- The notional of checks 6 and 12 is in the instrument's settlement currency: `price * qty * multiplier` for a linear contract, `qty * multiplier / price` (the base coin) for an inverse one.
-- Checks 14 to 16 pass the part of an order that, after our open orders on its side, takes its instrument's position towards zero, as `MaxPosition` counts them. The rest opens exposure: long 1 and selling 3, the 2 past zero are checked as a new order, the gross cap on their notional (the close is not credited) and the net cap on the net the whole order leaves. An order that only closes passes even where it moves a hedged net further from zero.
-- Checks 15 and 16 compare in the reporting currency when `[accounting]` converts ([Currencies](#currencies)): the order's notional at its currency's rate, on top of the converted totals.
+A limit of 0 turns its check off, and every limit defaults to off. The checks against the instrument's reference data always run. `fastmm-live` with real keys refuses to start without `max_position` or `max_order_notional`, and `max_loss`, unless `[risk] allow_unlimited = true`.
+
+- Market orders skip the price checks 4, 9, 10 and 20.
+- A replace leaves the existing order's remaining quantity out of the position prediction and does not count against `max_open_orders`.
+- `MaxPosition` counts same-side open orders, so a quote ladder cannot pass `max_position` even if it fills entirely.
+- Only an order that passes every check takes a token from the bucket. An order refused for another reason, a full or paused pool account included, leaves the tokens to the orders that are sent.
+- The notional of checks 6 and 12 is in the instrument's settlement currency: `price * qty * multiplier` for a linear contract, `qty * multiplier / price` for an inverse one.
+- Checks 14 to 16 pass the part of an order that takes its position towards zero, after our open orders on that side. The rest opens exposure and is checked as a new order.
+- Long 1 and selling 3, the 2 past zero meet the gross cap on their own notional, and the net cap on the net the whole order leaves. An order that only closes passes, even where it moves a hedged net further from zero.
+- Checks 15 and 16 compare in the reporting currency when `[accounting]` converts ([Currencies](#currencies)).
 
 ## Feed-lag gate
 
-The stale-market-data check (7) measures the time since the book last changed. During venue congestion messages keep arriving, each tens of milliseconds old, so it never fires. The feed-lag gate measures the age of each message instead (`include/fastmm/core/venue_health.hpp`):
+The feed-lag gate stops resting orders while a venue's market data arrives late. Check 7 cannot catch this: during congestion messages keep arriving, each tens of milliseconds old, so the book never looks stale.
 
-- Every market-data message with a venue time (book deltas, trades, tickers; snapshots excluded) gives a lag `recv_ts - exch_ts`. The host and venue clocks differ by an unknown constant, so the lag is compared with its baseline, the minimum over the last 8 s (eight 1 s buckets on the engine clock). A host clock step moves every lag by the step: a step down is absorbed at once, a step up after at most 8 s. A congestion episode shorter than 8 s does not raise the baseline.
-- With `[risk] max_feed_lag_ms` set, a message whose lag exceeds the baseline by more than the limit engages the gate for its venue, and every such message holds it for 100 ms more. While it holds, the venue's quotes are pulled, `set_quotes` on its instruments returns false and new orders and replaces that could rest are refused (`FeedLag`, check 8). IOC, FOK and market orders pass, and so does an order that, with our open orders on its side, takes the position towards zero without crossing it. The first message 100 ms after the last late one releases it; the strategy's next `set_quotes` places the quotes again.
-- The inputs are the journaled message headers and the engine clock, so a replay gates at the same events. A backtest over a live journal gates only with `[backtest] md_arrival = "recorded"`, which delivers each message at its recorded `recv_ts`.
-- Venue times of the WebSocket JSON streams are in milliseconds, so the lag has 1 ms steps there; SBE streams carry microseconds.
+The gate measures each message's lag, its receive time minus its venue time, for book deltas, trades and tickers. Host and venue clocks differ by an unknown constant, so the lag is compared with a baseline: the minimum lag over the last 8 s. A congestion episode shorter than 8 s does not raise the baseline.
+
+With `[risk] max_feed_lag_ms` set, a message whose lag exceeds the baseline by more than the limit engages the gate for its venue, and every such message holds it 100 ms more. While it holds:
+
+- the venue's quotes are pulled and `set_quotes` on its instruments returns false;
+- new orders and replaces that could rest are refused with `FeedLag`;
+- IOC, FOK and market orders pass, and so does an order that takes the position towards zero without crossing it.
+
+The first message 100 ms after the last late one releases the gate, and the strategy's next `set_quotes` places the quotes again.
+
+| Case | Behaviour |
+|---|---|
+| Host clock steps down | absorbed at once |
+| Host clock steps up | absorbed after at most 8 s |
+| WebSocket JSON streams | venue times in milliseconds, so the lag moves in 1 ms steps |
+| SBE streams | venue times in microseconds |
+| Replay | gates at the same events, from the journaled headers and engine clock |
+| Backtest over a live journal | gates only with `[backtest] md_arrival = "recorded"` |
 
 ## Balance check
 
-Connectors report the account's balances as `BalanceMsg` events on the order ring: a snapshot after every reconciliation (and at start-up), and the private stream's updates where the venue has one ([Venues](../reference/venues.md#balances)); in a backtest the simulated venue sends them ([Backtesting](backtesting.md#balances)). The engine keeps one row per venue and asset: the base and quote of each spot instrument, the settlement asset of each derivative, and an account row for a venue that reports account-wide margin (`include/fastmm/core/balance_book.hpp`). The events are journaled; a replay rebuilds the same rows.
+Check 21 refuses an order that the account's free balance on its venue does not cover. The engine keeps one balance row per venue and asset: the base and quote of each spot instrument, the settlement asset of each derivative, and an account row for venues that report account-wide margin.
 
-A report is the account as of its venue time and counts the orders the venue had acknowledged. An order still waiting for its ack keeps its hold on top of the report until the ack says whether the report had it (stamped at or before the report's time). Until the next report the engine moves the row with its own events, except those the venue stamped at or before the report's time (the report has them); the events of an order the venue has not acknowledged always count:
+Connectors report balances as snapshots after every reconciliation and at start-up, plus the private stream's updates where the venue has one ([Venues](../reference/venues.md#balances)). In a backtest the simulated venue sends them ([Backtesting](backtesting.md#balances)). The reports are journaled, so a replay rebuilds the same rows.
 
-- An order holds part of a row, moving it from free to locked: a spot buy its notional plus the taker fee (`fees(id)`) in the quote asset, a spot sell its quantity in the base asset, a derivative its notional times `[[instruments]] initial_margin` in its margin row, the larger of its instrument's buy and sell sides. Reduce-only derivative orders hold nothing. An order's end releases its hold; a fill releases the filled part and an amend changes it.
-- A fill moves the assets: a spot buy adds the base (less a base-asset fee) and takes the notional (and a quote-asset fee) from the quote, a sell the reverse. A derivative fill moves the position's initial margin at the fill price into locked and takes a fee in the settlement asset.
+Between reports the engine moves each row with its own order events:
 
-The estimate counts twice an event that reaches the engine after a report that already had it and carries no venue time, and the hold of an order whose ack carries none, until the next report. Push venues send an update after every order change. So the connectors stamp the acks and cancel acks they take from order responses with a venue time from the response that is no earlier than the order's effect on the balance: Binance Spot `transactTime`, Binance USDⓈ-M `updateTime`, OKX the order's `ts`, Bybit the `Timenow` header (REST: `time`), Deribit `usOut`, Coinbase Exchange `created_at`. A report that arrives before the ack then does not leave the order held twice; a later stamp than the report's at worst does, an earlier one could release a hold the report did not have. Coinbase Advanced Trade's responses carry no time and its acks stay unstamped; Gemini acks come from its order stream, which is stamped. Where a balance snapshot is stamped with the connector's clock as the reply arrives (Binance, Coinbase), an order the venue took while that reply was on its way reads as in the snapshot.
+| Event | Spot buy | Spot sell | Derivative |
+|---|---|---|---|
+| Order rests | holds notional plus taker fee, in quote | holds quantity, in base | holds notional × `[[instruments]] initial_margin` of the instrument's larger side, in its margin row; reduce-only holds nothing |
+| Fill | adds base less any base fee, takes notional and any quote fee from quote | the reverse | moves the position's initial margin at the fill price into locked, takes the fee in the settlement asset |
+| Order ends | releases its hold | releases its hold | releases its hold |
 
-A report can also arrive after an event the venue stamped later than the report: Binance's WS API answers an order 1-5 ms before the user stream pushes the account, so the push from before a new order (or before a cancel) can come after its ack. What the estimate moved for such events is moved again on top of every report older than them, until a report stamped at or after them arrives; the report does not drop a new order's hold, or hold a cancelled order again.
+A fill releases the filled part of the hold and an amend changes it.
 
-Check 21 refuses an order whose hold, less what the order it replaces holds, exceeds the row's free estimate; for a derivative, what it adds to its instrument's larger side, and only while the available margin is zero or more. A derivative order that is reduce-only or reduces the position passes, and so does one without `initial_margin` while the available margin is positive. A row the venue has not reported refuses nothing, so a venue without balance reports is not checked. `[risk] check_balance = false` keeps the rows and turns the check off.
+A report counts the orders the venue had acknowledged by the report's venue time. The engine skips its own events the venue stamped at or before that time, and keeps the hold of an order not yet acknowledged. Connectors stamp acks with a venue time from the order response, so a report arriving before the ack does not hold the order twice.
 
-A requote on a venue without replace (`[engine] supports_replace = false`) cancels the resting order and sends its new one only once the cancel's ack has released the old order's hold, so the check sees the balance without it and the two never rest together. If the old order filled instead, the new one is checked against the balance after the fill: one the balance no longer covers is withheld rather than refused, and the strategy's next quotes decide. `fastmm-gateway` checks the account's balance over every attached strategy's orders as well ([Account guards](../how-to/operations/run-behind-a-gateway.md#account-guards)).
+A report can also arrive after an event the venue stamped later. Binance's WebSocket API answers an order 1 to 5 ms before the user stream pushes the account. The engine reapplies such events on top of every older report, so a new order keeps its hold and a cancelled order is not held again.
+
+Two cases can double-count until the next report: an event with no venue time that reaches the engine after a report that already had it, and the hold of an order whose ack carries no time. Coinbase Advanced Trade's responses carry no time, so its acks stay unstamped.
+
+The check itself:
+
+- An order is refused when its hold, less what the order it replaces holds, exceeds the row's free estimate.
+- A derivative order counts what it adds to its instrument's larger side, and is checked only while available margin is zero or more.
+- A derivative order that is reduce-only or reduces the position passes, as does one without `initial_margin` while available margin is positive.
+- A row the venue has not reported refuses nothing, so a venue without balance reports is not checked.
+- `[risk] check_balance = false` keeps the rows and turns the check off.
+
+On a venue without replace (`[engine] supports_replace = false`), a requote cancels the resting order and sends the new one after the cancel ack releases the old hold. The two never rest together. If the old order filled instead, the new one is checked against the balance after the fill, and one the balance no longer covers is withheld rather than refused.
+
+`fastmm-gateway` checks the account's balance over every attached strategy's orders as well ([Account guards](../how-to/operations/run-behind-a-gateway.md#account-guards)).
 
 ## Currencies
 
-`Price`, `Qty` and `Notional` carry no currency. PnL, fees, `max_order_notional`, `min_notional` and `max_loss` are all denominated in the instrument's **settlement currency**: the quote currency for a linear contract, the base coin for an inverse (coin-margined) one.
+PnL, fees, `max_order_notional`, `min_notional` and `max_loss` are in the instrument's **settlement currency**: the quote currency for a linear contract, the base coin for an inverse one. Prices, quantities and notionals carry no currency of their own.
 
-Without `[accounting]`, instruments of one session must settle in the same currency (an inverse perpetual and options quoted in its coin, Deribit's `BTC-PERPETUAL` and BTC options, both settle in BTC); otherwise the PnL totals add unrelated numbers and `max_loss` compares the sum with one limit. `fastmm-live` checks this after the venues' reference data has loaded (`InstrumentTable::settlement_mix()`): with `max_loss` set it refuses to start, otherwise it warns.
+Without `[accounting]`, the instruments of one session must settle in the same currency. Deribit's `BTC-PERPETUAL` and BTC options both settle in BTC, so they mix. With mixed currencies and `max_loss` set, `fastmm-live` refuses to start once reference data has loaded; without `max_loss` it warns.
 
-With `[accounting]` ([Configuration](../reference/configuration.md#accounting)) they can mix. Positions, PnL and fees stay in each instrument's currency (`PositionTracker` also keeps them summed per currency); the totals, `max_loss` and the exposure caps are in the reporting currency, each other currency converted at the mid of its FX source's book (`core/fx.hpp`). The conversion runs where the totals change, on a fill, a mark or a new rate, not per order. The rules fail closed:
+With `[accounting]` ([Configuration](../reference/configuration.md#accounting)) currencies can mix. Positions, PnL and fees stay in each instrument's currency. The totals, `max_loss` and the exposure caps are in the reporting currency, converted at the mid of each currency's FX source book whenever a fill, mark or rate changes them.
 
-- A rate is unknown until its source's book is valid. While it is invalid, or has not updated for `[accounting] stale_fx_ms` (default 60 s), an order that opens exposure in that currency is refused (`FxRateUnknown`); one that only takes its position towards zero passes, and so does a flatten.
-- PnL already booked stays converted at the last valid rate: a stale source does not hide a loss that was already measured, and `max_loss` keeps being evaluated on it. A currency whose rate was never known counts as zero; nothing can be traded in it before it is known, so only a restored or reconciled position can sit there.
-- With neither `max_loss` nor an exposure cap set, the rate refuses nothing: the conversion only feeds the reports.
+The conversion fails closed:
+
+- A rate is unknown until its source book is valid. While it is invalid or older than `[accounting] stale_fx_ms` (60 s by default), orders that open exposure in that currency are refused with `FxRateUnknown`. Orders towards zero and flattens pass.
+- PnL already booked stays converted at the last valid rate, so a stale source does not hide a loss and `max_loss` keeps reading it.
+- A currency whose rate was never known counts as zero. Nothing can trade in it before then, so only a restored or reconciled position can sit there.
+- With neither `max_loss` nor an exposure cap set, the rate refuses nothing and only feeds the reports.
 
 ## Net position per underlying
 
-`[risk.underlying.<BASE>] max_net` limits the net position in one base asset over every instrument of the session that has that `base`, on every venue ([Configuration](../reference/configuration.md#riskunderlying)). Long 0.3 BTC on Binance USD-M and short 0.3 BTC on Bybit is 0 BTC. The unit is the base asset, so the limit needs no price and no `[accounting]`.
+`[risk.underlying.<BASE>] max_net` limits the net position in one base asset across every instrument with that `base`, on every venue ([Configuration](../reference/configuration.md#riskunderlying)). Long 0.3 BTC on Binance USD-M and short 0.3 BTC on Bybit is 0 BTC. The unit is the base asset, so the limit needs no price and no `[accounting]`.
 
-- Base units: A linear contract (or spot) counts `qty * contract_multiplier`: 30 OKX `BTC-USDT-SWAP` contracts of 0.01 BTC are 0.3 BTC. An inverse contract counts `qty * multiplier / mark`, its value in the base coin at the current mark: 150 contracts of 100 USD at 50000 are 0.3 BTC, and the same position is 0.375 BTC at 40000.
-- The check is the underlying's version of `max_position`: the position now, plus the open orders on the order's side over every instrument of the underlying, plus the order (a replace excludes the order it replaces). The order is refused when the absolute value of that would pass `max_net` and be further from zero than the position is now; an order that brings the underlying towards zero always passes, also while it is over the limit.
-- Marks: The mark is the instrument's last valid mid, not older than `stale_md_ms` when that is set. An inverse contract with a position or open orders and no such mark makes the whole underlying unmeasurable: every order on it is refused (`UnderlyingMarkUnknown`) until the book is back. A flatten is not checked.
-- Options do not count: Their exposure in the underlying is a delta, which needs a pricing model the engine does not have; an option neither adds to the net nor is checked. A `[risk.underlying]` section whose base asset only options have is a configuration error.
-- What is not counted: balances and margin in the base coin (the collateral of an inverse contract is BTC too), and positions held outside the session. Behind `fastmm-gateway`, `[gateway.underlying]` holds the account's net over every strategy ([Run behind a gateway](../how-to/operations/run-behind-a-gateway.md#account-guards)).
+| Instrument | Counts as | Example |
+|---|---|---|
+| Spot or linear contract | `qty * contract_multiplier` | 30 OKX `BTC-USDT-SWAP` of 0.01 BTC = 0.3 BTC |
+| Inverse contract | `qty * multiplier / mark` | 150 contracts of 100 USD = 0.3 BTC at 50,000 USD, 0.375 BTC at 40,000 USD |
+| Option | not counted, not checked | its exposure is a delta, which needs a pricing model |
 
-Without the section the check costs a branch per order. With it, each order sums the underlying's instruments (a few array reads per instrument); `fastmm-ctl limits underlying.BTC.max_net=...` changes a limit at run time, for an underlying the configuration names (`max_net = 0` names one without a limit).
+The check is the underlying's version of `max_position`. It adds the position now, the open orders on the order's side across the underlying's instruments, and the order. The order is refused when that would pass `max_net` and be further from zero than now; an order towards zero always passes, even over the limit.
+
+The mark is the instrument's last valid mid, no older than `stale_md_ms` when that is set. An inverse contract with a position or open orders and no such mark refuses every order on its underlying (`UnderlyingMarkUnknown`) until the book returns. A flatten is not checked.
+
+The check does not count balances or margin held in the base coin, or positions outside the session. A `[risk.underlying]` section for a base that only options have is a configuration error. Behind `fastmm-gateway`, `[gateway.underlying]` holds the account's net over every strategy ([Run behind a gateway](../how-to/operations/run-behind-a-gateway.md#account-guards)).
+
+`fastmm-ctl limits underlying.BTC.max_net=...` changes a limit at run time, for an underlying the configuration names; `max_net = 0` names one without a limit.
 
 ## Inverse contracts
 
-An inverse contract's size is quoted in the quote currency (Deribit `BTC-PERPETUAL`: 10 USD per contract) and settles in the base coin, so its PnL is not linear in the price:
+An inverse contract's size is in the quote currency and it settles in the base coin, so its PnL is not linear in the price. Deribit `BTC-PERPETUAL` is 10 USD per contract.
 
 ```text
 realized   = qty * multiplier * (1 / avg_entry - 1 / exit)     coins
@@ -110,39 +165,52 @@ unrealized = qty * multiplier * (1 / avg_entry - 1 / mark)     coins
 notional   = qty * multiplier / price                          coins
 ```
 
-The average entry price of an inverse position is the size-weighted harmonic mean: two lots of 10 contracts at 50000 and 40000 average to 44444.44444444, not 45000. `Instrument::pnl_per_tick()` is zero for an inverse contract; its tick value depends on the price.
+The average entry price is the size-weighted harmonic mean: 10 contracts at 50,000 and 10 at 40,000 average to 44,444.44, not 45,000. The tick value depends on the price, so `pnl_per_tick()` is zero for an inverse contract.
 
-`Instrument::kInverse` is set from Deribit reference data, not from the configuration. An inverse contract on another connector is booked as a linear one.
+The inverse flag comes from Deribit reference data, not from the configuration. An inverse contract on another connector is booked as linear.
 
 ## Valuation at the venue mark
 
-A derivative's venue publishes a mark price (`PerpStateMsg`, [Venues](../reference/venues.md#mark-index-and-funding)); liquidations and the venue's own unrealized PnL use it. With `[accounting] mark = "venue"` (the default) a position whose instrument has a mark younger than `stale_mark_ms` (default 15 s) is valued at it: its unrealized PnL, the net PnL `max_loss` measures and the exposure the notional caps sum (`include/fastmm/core/perp_book.hpp`). A new mark revalues the position and checks `max_loss` at once; book updates do not move it. When the mark goes stale the next book update values the position at the mid again, logged and counted, until a fresh mark arrives. An instrument without marks (spot) is valued at its mid. `mark = "mid"` values every position at its mid, as before the marks existed.
+With `[accounting] mark = "venue"`, the default, a derivative position is valued at the venue's published mark price while the mark is younger than `stale_mark_ms` (15 s by default). Liquidations and the venue's own unrealised PnL use the same mark ([Venues](../reference/venues.md#mark-index-and-funding)).
 
-The decision runs on the engine clock, which the journal records, so a replay values and trips at the same events. `fastmm-gateway`'s account follows the same setting with its own clock, so `[gateway] max_loss` and the exposure caps see the same values as the strategies'. The price collar, the fat-finger check, `[risk.underlying]` and the FX rates keep the mid.
+The mark sets the unrealised PnL, the net PnL `max_loss` measures and the exposure the notional caps sum. A new mark revalues the position and checks `max_loss` at once; book updates do not move it. When the mark goes stale, the next book update values the position at the mid, logged and counted, until a fresh mark arrives.
+
+Spot and other instruments without marks are valued at the mid. `mark = "mid"` values every position at its mid.
+
+The price collar, the fat-finger check, `[risk.underlying]` and the FX rates use the mid in either mode. The decision runs on the engine clock, which the journal records, so a replay values and trips at the same events. `fastmm-gateway` follows the same setting, so its `max_loss` and caps see the strategies' values.
 
 ## The kill switch
 
-The kill switch is a 32-bit flag word that any thread can set: bit 0 is global, bit 1 + v is venue v. While a bit is set, checks 1 and 2 refuse every new order and replace, with one exception: the global bit lets through the reduce-only orders of an operator's `flatten`, so a killed session can still work its position off; a venue's bit refuses them too. Tripping the global bit also turns quoting off (`on_quoting(false)`), pulls every quote and cancels every working order; tripping a venue's bit does that for that venue's instruments only. The engine records why each bit was first set (a `KillReason`, shown by `fastmm-top`).
+The kill switch has one global bit and one bit per venue, and any thread can set them. While a bit is set, checks 1 and 2 refuse every new order and replace. The global bit lets through the reduce-only orders of an operator's `flatten`; a venue bit refuses them too.
 
-The global switch trips when:
+Tripping the global bit turns quoting off (`on_quoting(false)`), pulls every quote and cancels every working order. Tripping a venue bit does the same for that venue's instruments. `fastmm-top` shows the reason each bit was first set.
 
-- the session shuts down: Ctrl-C, SIGTERM, `--duration` or an order ring overflow (the control thread requests it, then cancels all orders on every venue over a separate REST connection);
-- `[risk] max_loss` is reached: net PnL (realised plus unrealised, valued at the venue's mark or the mid ([Valuation](#valuation-at-the-venue-mark)), minus fees) plus the PnL carried over from earlier sessions is re-evaluated on every book update, venue mark, fill, funding payment and position snapshot;
-- the outbound ring to a venue or the journal ring is full, because the engine can no longer guarantee that what it sends is what it records;
-- every venue with instruments has been killed;
-- a strategy hook reports an error (`StrategyError`, Python hot hooks);
-- the session's 32-bit client order id sequence is used up.
+| Switch | Trips when |
+|---|---|
+| Global | the session shuts down: Ctrl-C, SIGTERM, `--duration` or an order ring overflow; all orders are then cancelled over a separate REST connection |
+| Global | `[risk] max_loss` is reached |
+| Global | an outbound ring to a venue or the journal ring is full, so what is sent may no longer match what is recorded |
+| Global | every venue with instruments has been killed |
+| Global | a strategy hook reports an error (`StrategyError`, Python hot hooks) |
+| Global | the session's 32-bit client order id sequence is used up |
+| Venue | its connector reports an error that makes the venue unusable: bad key, signature or permission, failed authentication, a Binance IP ban |
+| Venue | the venue-side dead man's switch could not be refreshed in time |
+| Venue | a multicast feed cannot rebuild its books |
+| Every venue | behind `fastmm-gateway`, the gateway's `max_loss` or an operator's `kill` (`GatewayMaxLoss`, `GatewayOperator`) |
 
-A venue's switch trips when its connector reports an error that makes the venue unusable (a bad key, signature or permission, failed authentication, a Binance IP ban), when the venue-side dead man's switch could not be refreshed in time, or when a multicast feed cannot rebuild its books. Behind `fastmm-gateway`, the gateway's `max_loss` or an operator's `kill` trips every venue of every attached strategy (`GatewayMaxLoss`, `GatewayOperator`). The command travels through the venue's order ring, so it is journaled and a replay trips it at the same point.
+`max_loss` compares net PnL with the limit on every book update, venue mark, fill, funding payment and position snapshot. Net PnL is realised plus unrealised, valued at the venue mark or the mid ([Valuation](#valuation-at-the-venue-mark)), minus fees, plus the PnL carried from earlier sessions.
 
-A `max_loss` trip is latched on disk (`[engine] kill_file`) together with the cumulative realized PnL and fees of every session since the file was last cleared. The next start reads that carry into the budget and refuses to trade while the trip is latched. Unrealized PnL is not carried; the position is remeasured from the venue's view after the restart.
+A `max_loss` trip is latched on disk in `[engine] kill_file`, with the cumulative realised PnL and fees of every session since the file was last cleared. The next start reads that carry into the budget and refuses to trade while the trip is latched. Unrealised PnL is not carried; the position is remeasured from the venue after the restart.
 
-Nothing resets a kill switch automatically. After a kill the engine tripped itself (every cause but the shutdown), `[engine] on_kill` decides whether `fastmm-live` shuts down. The default, `exit`, cancels all orders and exits with code 6. [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md) has the behaviour, the log lines and the shutdown sequence.
+Gateway kill commands travel through the venue's order ring, so they are journaled and a replay trips at the same point.
+
+Nothing resets a kill switch automatically. After a kill the engine tripped itself, every cause but shutdown, `[engine] on_kill` decides whether `fastmm-live` exits. The default, `exit`, cancels all orders and exits with code 6. [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md) has the log lines and the shutdown sequence.
 
 ## What the layer does not do
 
-- It does not replace the strategy's own limits. `first_mm` stops quoting a side at `max_position`; `[risk] max_position` is a second, independent limit that holds even when the strategy has a bug. Set the risk limit above the strategy's.
-- Position limits are per instrument, and per base asset with `[risk.underlying]`. The portfolio-wide limits are `max_gross_notional`, `max_net_notional` and `max_loss`, over one session; with instruments in more than one settlement currency they need `[accounting]` ([Currencies](#currencies)). Across strategies only `fastmm-gateway`'s `[gateway]` limits see the account.
-- It knows no venue rules beyond reference data, the account's balances and margin (check 21, [Balance check](#balance-check)) and its own order rate limit (check 22). The connectors back off on the venue's rate-limit responses ([Venue connectors](../reference/venues.md)), and the engine pauses a side after venue rejects (`[engine] reject_backoff_ms`). Cancels never take a token. A quote (`set_quotes`) short of one is not refused: it waits, and the engine places the waiting instruments' latest quotes in the order they ran out as the bucket refills; `[engine] quote_token_reserve` keeps tokens for orders the strategy sends itself and for quotes that reduce the position.
-- It does not protect against a venue that stops answering. Order-channel loss triggers a REST cancel-all in the connector; beyond that, see [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md).
-- It does not share an account. Open orders it does not know on its symbols are cancelled at start-up and after a reconnect (`[engine] cancel_unknown`), and the cancel-alls take every order on the symbol.
+- It does not replace the strategy's own limits. `first_mm` stops quoting a side at `max_position`; `[risk] max_position` is a second limit that holds when the strategy has a bug. Set the risk limit above the strategy's.
+- Position limits are per instrument, and per base asset with `[risk.underlying]`. The portfolio limits `max_gross_notional`, `max_net_notional` and `max_loss` cover one session, and need `[accounting]` across settlement currencies. Across strategies only `fastmm-gateway`'s `[gateway]` limits see the account.
+- It knows no venue rules beyond reference data, the account's balances (check 21) and its own order rate limit (check 24). Connectors back off on the venue's rate-limit responses ([Venue connectors](../reference/venues.md)), and the engine pauses a side after venue rejects (`[engine] reject_backoff_ms`).
+- Cancels never take a token. A `set_quotes` short of a token is not refused: it waits, and the engine places the latest waiting quotes as the bucket refills. `[engine] quote_token_reserve` keeps tokens for the strategy's own orders and for quotes that reduce the position.
+- It does not protect against a venue that stops answering. Loss of the order channel triggers a REST cancel-all in the connector; beyond that, see [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md).
+- It does not share an account. Unknown open orders on its symbols are cancelled at start-up and after a reconnect (`[engine] cancel_unknown`), and cancel-alls take every order on the symbol.

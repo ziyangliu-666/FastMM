@@ -2,11 +2,11 @@
 
 <video class="fastmm-video" controls preload="none" poster="../../assets/intro-poster.jpg" src="https://github.com/ziyangliu-666/FastMM/releases/download/v0.5.1/fastmm-intro.mp4"></video>
 
-One `fastmm-live` session on Binance, 45 hours 39 minutes without a restart, on 2 physical cores ([Cores](../how-to/operations/running-in-production.md#cores)). The engine alone: [Benchmarks](benchmarks.md).
+In a live `fastmm-live` session on Binance, market data became an order in 6.7 µs at the median. The session ran 45 hours 39 minutes without a restart on 2 physical cores ([Cores](../how-to/operations/running-in-production.md#cores)). The engine alone: [Benchmarks](benchmarks.md).
 
 ## Market data to order
 
-From the market-data frame read (T0) to the order handed to the network thread (T5) ([latency intervals](../reference/status-file.md#latency-intervals)):
+From the market-data frame read (T0) to the order handed to the network thread (T5), as the [status file](../reference/status-file.md#latency-intervals) reports them:
 
 | Interval | Count | p50 | p99 | p99.9 |
 |---|---:|---:|---:|---:|
@@ -17,7 +17,7 @@ From the market-data frame read (T0) to the order handed to the network thread (
 | Send (T4 to T5) | 1,728,607 | 0.50 µs | 1.7 µs | 23.6 µs |
 | Tick to trade (T0 to T5) | 1,706,236 | 6.7 µs | 81.9 µs | 4.06 ms |
 
-T1 is stamped on a network thread and T2 on the engine thread, so book apply and tick to trade include the time an event waits in the ring while the engine is busy or descheduled.
+Book apply and tick to trade include the time an event waits in the ring while the engine is busy or descheduled, because T1 is stamped on a network thread and T2 on the engine thread.
 
 ## On the wire
 
@@ -33,7 +33,7 @@ From T0 to the return of the `write` that carried the signed, TLS-encrypted orde
 
 ## Load
 
-| | |
+| Over the session | Count |
 |---|---|
 | Market-data messages | 1.03 billion, about 6,300 a second; 0 dropped, 0 malformed |
 | Engine events | 328 million |

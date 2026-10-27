@@ -1,110 +1,72 @@
 # Backtesting
 
-`fastmm-backtest` prints the net PnL, where it came from, and what each fill was worth afterwards. Read the decomposition and the markouts before the net PnL: a passive quoter can show a positive spread capture and a positive net PnL while losing on every fill it gets.
+`fastmm-backtest` prints the net PnL, where it came from, and what each fill was worth afterwards. Read the decomposition and the markouts before the net PnL: a passive quoter can show positive spread capture and positive net PnL while losing on every fill.
+
+```mermaid
+flowchart LR
+    data[(Recorded or<br/>synthetic market)] --> order[Venue-time order]
+    order --> venue[Simulated venue<br/>books, queues, fills]
+    venue -- market data,<br/>after latency --> engine[Engine and strategy]
+    engine -- orders,<br/>after latency --> venue
+    venue -- acks, fills,<br/>balances --> engine
+    engine --> out[Summary, markouts,<br/>fills.csv, journal]
+```
 
 ## Model assumptions
 
-The simulated venue ([Simulated exchange](../reference/sim-exchange.md)) and the synthetic market generator model latency and book mechanics. The run assumes four properties of the market:
+The simulated venue models latency and book mechanics. It assumes four things about the market:
 
 | Assumption | Consequence |
 |---|---|
 | Your orders have no market impact: the flow does not react to your quotes | Fill rates and queue positions are optimistic; in a real book the size you add changes who trades with you |
-| The latent mid is a symmetric random walk with no drift and no autocorrelation | Adverse selection only appears through the queue and the latency, never because the flow knew something |
-| The counterparty side of each synthetic order is a coin flip | Order flow carries no information, so a strategy that predicts flow measures as worthless here and a strategy that ignores it measures as fine |
-| There is no informed flow and no toxic counterparty | The markouts you measure here are a floor on the adverse selection you will see live, not an estimate of it |
+| The synthetic mid is a symmetric random walk with no drift and no autocorrelation | Adverse selection only appears through the queue and the latency, never because the flow knew something |
+| The counterparty side of each synthetic order is a coin flip | Order flow carries no information: a strategy that predicts flow measures as worthless here, one that ignores it as fine |
+| There is no informed flow and no toxic counterparty | The markouts measured here are a floor on the adverse selection you will see live, not an estimate of it |
 
-The synthetic market's shape is set in basis points of its starting mid ([`[sim]`](../reference/configuration.md#sim)): by default its book is 1.7 to 3.4 bps wide and a quote inside the touch captures most of a basis point a fill, less than a 10 bps fee. `configs/backtest-example.toml` keeps the one-tick market its fixtures record instead, 0.003 bps wide at a mid of 60,000 USDT and a tick of 0.01 USDT, where no passive strategy can capture more than a fraction of a basis point, whatever it quotes. And `fill_model = "l2_queue"` replays recorded levels with no counterparties at all ([Configuration](../reference/configuration.md#backtest)). The simulated venue checks a post-only order, and fills a taker, against its book at the order's arrival in venue time: the depth, or the book ticker's touch and the depth behind it where the ticker is newer than the depth or the depth still shows a level on the near side of the ticker's (the depth stream is throttled and can miss the removal of a level; the ticker follows every change of the top). Its queue position starts at the displayed quantity at the order's price, or the touch's of a book ticker newer than the depth, less what the trades printed since took, and is capped by the ticker; `ctx.queue_ahead` runs the same model on the data the strategy sees ([Strategy API](../reference/strategy-api.md#execution-view)). A resting order fills when a trade prints at its price beyond the queue ahead of it, or through its price, and when the opposite side of the book comes to it: an ask recorded at or below our resting bid was an order that, with ours on the book, would have traded with it at our price before it rested, and the recording has no print for it. Such an order fills, as maker at its price, with the opposite quantity at or through its price that is new since the last update (`cross_fills` in the run's venue statistics); the quantity it took as a taker on arrival, or that was there before it arrived, does not count. Without this a bid the price fell through waited for a seller to trade below it, and the cancel sent as the market moved won a race it lost live. [Calibrating against live sessions](#calibrating-against-live-sessions) measures how close it comes.
+The fill model decides how a resting order fills ([Configuration](../reference/configuration.md#backtest)):
+
+| `fill_model` | Data | A resting order fills when |
+|---|---|---|
+| `matching` (default) | synthetic or recorded | an incoming order matches it in the venue's own matching engine; the market goes on from the book our orders changed |
+| `l2_queue` | price levels | the trades at its price exceed the queue ahead of it, a trade prints through its price, or the opposite side of the book comes to it |
+| `l3_queue` | every order ([`itch`](../reference/data-sources.md#itch)) | the recorded orders ahead of it are gone and an execution reaches it ([The queue from every order](#the-queue-from-every-order)) |
+
+The synthetic market's shape is set in bps of its starting mid ([`[sim]`](../reference/configuration.md#sim)). By default its book is 1.7 to 3.4 bps wide, and a quote inside the touch captures most of a basis point a fill, less than a 10 bps fee. `configs/backtest-example.toml` keeps the one-tick market its fixtures record: 0.003 bps wide at a mid of 60,000 USDT and a tick of 0.01 USDT. There no passive strategy captures more than a fraction of a basis point.
+
+### How an order fills on recorded levels
+
+The simulated venue checks a post-only order, and fills a taker, against its book at the order's arrival in venue time. The depth stream is throttled and can miss the removal of a level, so where the book ticker is newer, the venue uses the ticker's touch.
+
+| Step | Rule |
+|---|---|
+| Queue position at arrival | the displayed quantity at the order's price, less what trades took since, capped by a newer book ticker's touch |
+| Fill from a trade | a trade at its price beyond the queue ahead, or any trade through its price |
+| Fill from a crossing book | the opposite side reaches its price: the order fills as maker with the new quantity at or through its price (`cross_fills` in the run's venue statistics) |
+
+The crossing-book rule matters. An ask recorded at or below our resting bid would have traded with our bid before it rested, and the recording has no print for it. Without the rule, a bid the price fell through waited for a seller below it, and a cancel sent as the market moved won a race it lost live. `ctx.queue_ahead` gives the strategy the same queue estimate on the data it sees ([Strategy API](../reference/strategy-api.md#execution-view)). [Calibrating against live sessions](#calibrating-against-live-sessions) measures how close the model comes.
 
 ## Our orders in the feed
 
-A live venue's depth and book ticker streams show our resting orders; a strategy that reads the touch sees its own quote there. With recorded data (`[backtest] own_orders_in_feed`, on by default) the simulated venue does the same. It sends the recorded messages as recorded and, once our resting quantity on an instrument has changed, an `OwnLevels` message with our quantity at the prices that changed, right ahead of the instrument's next message and arriving with it. The engine shows that quantity in the book and in the book tickers the strategy reads: a level holds the recorded quantity plus ours, a price of ours the recording has no level at is a level of its own (past the 256 a side if need be), and a ticker's top is the better of the recorded one and our best order, the two added at the same price. Our quantity at or through the recorded opposite touch is not shown: a live venue would have matched it, as the fill model does with the quantity that came in after it. The engine follows our quantity in the feed as on a live venue (`ctx.own_qty`), and the synthetic market's book holds our orders in any case.
+A live venue's depth and book ticker show our resting orders, so a strategy reading the touch sees its own quote there. With recorded data the simulated venue does the same (`[backtest] own_orders_in_feed`, on by default). The synthetic market's book holds our orders in any case.
 
-Every run over the same data thus reads the same recorded messages, and the runs of a sweep share them whether their feeds show their orders or not ([Many runs in one pass](#many-runs-in-one-pass)).
+| In the book the strategy reads | Shown as |
+|---|---|
+| A recorded level where we rest | the recorded quantity plus ours |
+| A price of ours with no recorded level | a level of its own, past the 256 a side if need be |
+| The book ticker's top | the better of the recorded top and our best order, summed at the same price |
+| Our quantity at or through the recorded opposite touch | not shown: a live venue would have matched it |
 
-Without it a strategy acts on a book a live venue never showed. `lead_mm` never improves on its own order (a live book shows it at the touch); when the level it had improved on goes, a feed without our order shows the next level as the touch, and the strategy moves its quote down to it and back, a cancel and a new order each time.
+Without it a strategy acts on a book a live venue never showed. `lead_mm` never improves on its own order, because a live book shows it at the touch. When the level it had improved on goes, a feed without our order shows the next level as the touch, and the strategy chases it down and back with a cancel and a new order each time.
+
+The recorded messages themselves are never changed, so every run over the same data reads the same messages ([Many runs in one pass](#many-runs-in-one-pass)). `ctx.own_qty` follows our quantity in the feed as on a live venue.
 
 ## Venue time
 
-A recording is in receive order, and its streams reach the recorder with different delays: in a recorded Binance Spot session, 46 % of trades arrive after a book ticker the venue stamped later (by 0.5 ms at the median, 40 ms at the 99th percentile). Taken in that order, an order that reached the simulated venue in between would be filled by a trade printed before it arrived, and cancelled before a trade printed while it rested. The simulated venue therefore takes recorded events in venue-time order (`sim/venue_order.hpp`): events wait until none still unread can be earlier, assuming none was received more than `[backtest] reorder_window_ms` (default 1000) after its venue time. The strategy still gets them in recorded order, at their recorded times under `md_arrival = "recorded"`. The run's report counts the events reordered and those later than the window; a trade later than the window still fills only orders that had arrived by its time (`core/queue_model.hpp`), and under `matching` a recorded level or trade that reaches a resting order fills it at the later of the two arrivals.
+A recording is in receive order, and its streams reach the recorder with different delays. In a recorded Binance Spot session, 46 % of trades arrive after a book ticker the venue stamped later: by 0.5 ms at the median, 40 ms at the 99th percentile. Replayed in that order, a trade printed before an order arrived could fill it.
 
-## Many runs in one pass
+The simulated venue therefore takes recorded events in venue-time order. An event waits until no unread event can be earlier, assuming none was received more than `[backtest] reorder_window_ms` (default 1000 ms) after its venue time. The strategy still gets events in recorded order, and at their recorded times under `md_arrival = "recorded"`.
 
-Under the queue fill models (`l2_queue`, `l3_queue`) the recorded market does not depend on our orders: every run over the same data reads the same events, puts them in the same venue order, keeps the same venue books and, under `l3_queue`, the same record of every recorded order. A sweep's points, a walk-forward's folds and the arms of an `[ab]` branch test therefore share their passes over the data (`backtest/multiverse.hpp`). One cursor reads the events and one `sim::SimWorld` applies each to the venue's books and orders. An index of the orders the runs rest at the venue, by instrument, side and price, hands a recorded event only to the runs whose orders it can reach: a cancel or an execution ahead of them, a trade at or through their price, a book that crosses them.
-
-The market data forwarded to the engines is shared as well among the runs whose venues have the same market-data path: the same fixed latency, the same arrival rule and, with jitter, the same seed, since the feed's delays come from a stream of their own (`sim::MdPath`) that depends on the seed and the data alone; a sweep's points share one seed and so one feed. They read one copy in arrival order, one set of engine books, and one `MarketView` (`core/market_view.hpp`) with what every message changes besides the books, such as each instrument's last mid, touch and trade, the feed's lag and the counts. An engine is handed a message only when its `MdInterest` asks for it: the instruments and mid bands its strategy watches (`watch` and `quiet_book`, [Strategy API](../reference/strategy-api.md#context)), the band its positions' marks can move in before `max_loss` trips, and the settings that act on every message (a journal, `max_param_age_ms`, a feed-lag limit, FX conversion, perpetual marks, the strategy's queue estimate). Before an engine takes anything it catches up with the messages it was not given, which leaves it as taking each of them would have. `basic_mm` asks for its book once the mid has moved its requote threshold, `lead_mm` ignores the instruments it neither quotes nor leads with; a strategy that declares nothing is handed every message, and the result is the same either way. Every message a run is handed calls its strategy, so a strategy that declares nothing or that needs every update, such as one keeping an average of a basis, shares only the data, the venue's books and the engine books, and the rest of its cost is its own ([Sweep performance](sweep-performance.md#one-thread)). A hot Python strategy declares its band with `ctx.quiet_book` ([Python strategy API](../reference/python-api.md#ctx)); a plain one cannot.
-
-A run whose feed shows its orders reads the same books ([Our orders in the feed](#our-orders-in-the-feed)): its `OwnLevels` messages come to it alone, each right before the message it goes ahead of, and its engine adds its quantity to the shared books during its own steps and takes it out again after them. Its mid band becomes a box on the market's touch, within which the book with its orders in it keeps its mid inside the band and its orders stay shown or hidden as they are (`Engine::own_box`); while its quotes are the touch, the market moving behind them does not wake it.
-
-Each run keeps its own engine, strategy, simulated venue links, accounts, latency draws and seed. The runs step in lockstep on the order of the events they share, and at one instant in the order a run alone takes its kinds of events, so each run gets the result `run_backtest()` gives its configuration: fills, orders, equity bars, markouts, cash, positions and outbound hash. `tests/backtest/multiverse_exact_test.cpp` compares them field by field (`bt::result_difference`) for `basic_mm`, `avellaneda_stoikov`, `lead_mm`, `xmm` and `options_mm` under both queue models, with variants that differ in parameters, fixed and jittered latencies, their orders in the feed or not, books 256 levels deep and loss limits that trip, in passes on several threads. `fastmm-backtest --sweep ... --verify 4` and `fastmm.sweep(..., verify=4)` run 4 points of a real sweep again as backtests of their own and fail on the first difference. The tests run both, and `fastmm.walk_forward`, over two minutes of BTC/USD recorded from Bitstamp's order-by-order feed and Coinbase's book ([`tests/fixtures/btcusd`](../../tests/fixtures/btcusd/fixtures.meta.json)), with `basic_mm` on one venue and `xmm` on both, under both queue models.
-
-`fastmm-backtest --sweep half_spread_bps=1,2,4 --sweep quote_qty=100,200` runs a grid this way and `--solo` runs each point as a backtest of its own; `fastmm.sweep`, `fastmm.walk_forward` (each fold in its own passes), `bt::sweep_by_name`, `bt::walk_forward_by_name` and `bt::run_multiverse` share passes whenever the fill model is a queue model and the strategy is C++ or a Python class with `@fastmm.hot` hooks. Under `matching`, the default, the market goes on from the book our orders changed, so each point is a backtest of its own; the sweep's first line says which way its points run. A sweep runs its passes on threads, by default one on every core (`--threads N`, `threads=N` in Python), and one more thread reads the data: it reads each event once, puts the events in venue order and hands them to every pass under way, each of which keeps its own venue books, engine books and runs. A pass holds at most 128 runs. The points are dealt to the passes in turn, so the passes end together, and a sweep of more points than its threads hold goes in waves, each of which reads the data again. Only the runs of the wave under way are in memory, each with its engine, its venue and its result. A sweep's points keep no order rows (`BacktestConfig::keep_orders`): their metrics count the orders as they go and their outbound hash covers them, and their fills and equity bars stay. Every sweep hands each point's result, as it is done, to an optional `bt::ResultHook` that may drop what its caller does not need; `fastmm-backtest --sweep` keeps the metrics it prints, and the whole result of the points `--verify` runs again. A run in a pass costs what its own strategy and orders cost; [Sweep performance](sweep-performance.md) has the numbers: time, memory, how a sweep scales with cores and why no part of it runs on a GPU.
-
-A point sets strategy parameters and eight backtest settings, named as the `BacktestConfig` attributes: `latency_fixed_us`, `latency_jitter_us`, `latency_md_us`, `latency_md_jitter_us`, `p_drop`, `queue_conservatism`, `maker_fee_bps` and `taker_fee_bps`. A venue with its own `[backtest.venues.<name>]` latency keeps it; a fee sets one schedule for every instrument. `--sweep latency_fixed_us=2000,10000 --sweep queue_conservatism=0,1 --sweep maker_fee_bps=-0.5,0` checks a choice against the model's assumptions in the same passes.
-
-`fastmm-backtest --sweep` prints a line per point: net PnL, fills, orders, risk rejects, outbound hash and, if it tripped, the kill switch's reason. Its runs log errors only, each line naming its point (`#n`, in the points' order) at its time in the data. With an output directory (`--out`, by default `[backtest] output_dir`) it writes `sweep.jsonl`, one line per point: its values under `point`, then its `summary.json`, where `risk_rejects` counts the risk checks' refusals by reason. `--folds K` runs the grid as a walk-forward ranked by `--metric` and prints its report ([Walk-forward](../python.md#walk-forward)); each line of `sweep.jsonl` then also has its `fold`.
-
-## Markouts
-
-A market maker's fill is worth the spread it captured minus what the mid took back afterwards. For a fill of signed quantity `s` (positive bought, negative sold) at price `p` and time `t`, with the venue mid `m`:
-
-```text
-spread capture       = s * (m(t) - p)
-markout(h)           = s * (m(t + h) - p)
-adverse selection(h) = spread capture - markout(h)
-```
-
-`spread_captured_bps` is positive by construction for any passive quoter: it quotes away from the mid, so it is filled away from the mid. Only the markout says whether the fills were worth taking: a capture of +1 bps with a markout of −3 bps at 10 s means the strategy paid 4 bps to be filled.
-
-The horizons come from `[backtest] markout_horizons_s` (default `"1,10,60"` seconds). The mid used is the venue mid at `t + h`, read with the simulated clock stopped there; the run loop stops at every fill time plus horizon, so nothing is interpolated. A fill the run could not mark is dropped from that horizon and counted, never marked at a substitute price:
-
-* `past end`: `t + h` is after the last event of the run. A 60 s markout on a 60 s run measures nothing and says so.
-* `no mid`: the venue book had only one side at `t + h`, or at the fill. Under `l2_queue` the mirrored book holds only the levels the feed published, so it empties on one side when the price moves past the recorded depth. Under `matching` the synthetic generator's market orders are larger than its limit orders (`market_qty_median_lots` 1500 against `limit_qty_median_lots` 300 in `configs/backtest-example.toml`), so the sweep that fills a passive quote often empties that side of the book: a fifth to a half of the fills of a `matching` run have no mid at the moment of the fill and drop out of every horizon. Such a fill contributes its whole `signed qty * (final mid − price)` to the mid drift of the decomposition, because none of it can be called spread capture.
-
-Because the excluded fills differ per horizon, `capture` is recomputed over the same fills as the markout of that horizon, so the two columns of one row are comparable.
-
-Markouts are reported per instrument, per side, per liquidity flag and in total, in quote currency and in bps of traded notional, in the CLI summary, in `summary.json` (`markouts`), from Python (`result.markouts()`, `fastmm.markout_frame(result)`) and per fill in `fills.csv` (`mid_1s`, `mid_10s`, `mid_1m`). The total of a strategy that hedges adds the hedge's crossing orders to its quotes: the summary prints a `maker` and a `taker` row under the total when a run has both, and a row per instrument, named `venue:symbol`, when more than one traded.
-
-`tools/pnl_report.py` computes the same markouts from a recorded session journal, marking against the `BookTicker` stream. A journal recorded without top-of-book updates (`[sim] book_ticker = false`) has no mid to mark against and the report says so.
-
-## Fill quality
-
-| Metric | Meaning |
-|---|---|
-| realised spread | `signed qty * (mid at fill − price)` over the traded notional, in bps: the same quantity the markout starts from |
-| maker fills at / inside / behind / through | Where a resting order's price sat against the venue's book when it filled: at the best quote on its side, better (the order improved it), worse, or at or beyond the opposite quote. Through is a fill the opposite side of the book came to, which the [model](#model-assumptions) gives a resting order the market moved through; such fills are the most adversely selected |
-| orders filled / sent | New orders that got at least one fill, their replacements' fills included; `fills per order` counts every fill, so an order filled in pieces takes it above 1 |
-| time to fill | Venue arrival of a new order to its first fill or its replacements', p50 / p90 / p99 |
-| queue ahead at fill | Displayed quantity still ahead of the order when it filled. `fill_model = "l2_queue"` only; the matching engine fills from the front of the queue, so it has no such number |
-
-## Fees and rebates
-
-Fees are centi-basis-points of the fill notional. A positive rate is a fee the account pays; a negative rate is a rebate it receives. The simulated venue books the signed amount as the fill's fee, so a rebate raises net PnL.
-
-Each instrument pays its own venue's `[venues.<name>.fees]`, and `[[instruments]] maker_bps` / `taker_bps` override one instrument ([Configuration](../reference/configuration.md#venuesfees)). The shipped `configs/backtest-example.toml` charges Binance spot VIP 0, 0.100 % maker and 0.100 % taker, which is 10 bps each side.
-
-Check a maker rebate against the venue's published schedule. Binance spot pays no maker rebate at VIP 0; a configured `maker_bps = -0.5` adds 0.5 bps to every passive fill, more than any strategy in this repository captures gross.
-
-## Several venues
-
-A run can hold instruments on several venues: quote one on venue A and hedge another on venue B. Each venue gets its own latency model (the first keeps `[backtest] seed`, the others derive theirs from it and the venue id), its own order and market-data connection, and its own replace and STP settings ([`[backtest.venues.<name>]`](../reference/configuration.md#backtestvenues)): quotes on a venue with replace are amended in place, on one without it cancelled and sent again. The matching engine, the queue model and the books are shared, since an instrument lives on one venue.
-
-Recorded feeds of the venues are merged by event time: `--data "binance:BTCUSDT,2024-03-27,venue=0; csv:other.csv,venue=1"`, or a list in Python (`data=[...]`). Each source's `venue=` must be the venue of its instruments in `[venues]` order. The venues' clocks are taken as they are: a feed stamped with local receive time and one stamped with venue time interleave wrongly by the difference.
-
-`equity.csv` gains `pnl_<id>`, `position_<id>`, `mid_<id>` and `quoted_<id>` per instrument when there is more than one (`result.equity_by_instrument` in Python); `pnl` is in the instrument's settlement currency. The `position` and `mid` columns stay the sum over instruments and instrument 0's mid. The synthetic market drives instrument 0 only.
-
-## Balances
-
-With `[backtest.balances]` ([Configuration](../reference/configuration.md#backtestbalances)) each simulated venue keeps the strategy's account (`src/sim/sim_account.cpp`):
-
-| Instrument | Held by an order | A fill |
-|---|---|---|
-| spot buy | notional at the order price, in the quote asset (a market buy at what it would pay for the venue's opposite levels it takes) | adds the base, takes the notional at the fill price and the fee from the quote |
-| spot sell | quantity, in the base asset | takes the base, adds the notional less the fee to the quote |
-| derivative | notional x `[[instruments]] initial_margin` of the larger side of the instrument's orders, in the settlement asset; nothing for an order that only reduces the position | moves the position's margin at its entry price (the harmonic mean of the fill prices for an inverse contract) into locked; closing realises PnL into the wallet; the fee comes out of it |
-
-An order that holds more than the free balance is refused with `InsufficientBalance` (venue code `-2010`); a replace whose new leg does not fit cancels the order and refuses the new one. A reduce-only derivative order on a flat position, or on the side that would add to it, is refused with `VenueReject` (venue code `-2022`); with `fill_model = "matching"` it fills only down to a flat position and the rest expires. A derivative's free margin and equity count the open position's unrealised PnL at the venue's recorded mark price, or at the book's mid in data without one. The venue reports a snapshot at the start and, after each acknowledgement, fill, cancel, expiry or reject that moved an asset, that asset's row behind the order event, on the same connection. The engine's estimate, `[risk] check_balance` (`BalanceShort` before an order leaves), `ctx.balance`, the sizing of `basic_mm` and `lead_mm` and `xmm`'s side pulling work on those reports as on a live venue's ([Risk model](risk-model.md#balance-check)). With `check_balance = false` the order goes out and the venue refuses it, which is what a session without a balance table got live.
-
-`balances_from_journal = true` starts each venue's account from the first balance snapshot of the journal the backtest runs over (with `start_at`, from its account as the venue last reported it when trading starts), so a live session replayed as a `strip_own` backtest starts from the balances it had. From there the account follows what happened to it outside the session's trades: money a script or an operator moved in or out, which the journal holds as the venue reported it (`AccountFlow`), moves the simulated account at its time, and the account sends a full snapshot whenever the session's connector refreshed it, which ends any drift of the engine's estimate as it did live.
+The run's report counts the events reordered and those later than the window. A trade later than the window still fills only orders that had arrived by its time.
 
 ## Reading the summary
 
@@ -114,96 +76,7 @@ The decomposition is exact:
 net = gross spread capture + mid drift after the fills − fees paid + rebates received + unexplained
 ```
 
-`mid drift` is `signed qty * (final mid − mid at fill)` summed over the fills: the adverse selection over the whole run plus the mark-to-market of whatever inventory is still open at the end. `unexplained` is the difference from the ledger's own net PnL: fixed-point rounding on a healthy run; anything larger means the split, not the ledger, is wrong.
-
-## The queue from every order
-
-An L2 feed shows how much rests at a price, never in what order, so `l2_queue` has to guess what a shrinking level means for an order inside it: `queue_conservatism` 0 shares every cancel between the orders ahead and behind in proportion, 1 assumes all of it came from behind. A day of Nasdaq TotalView-ITCH settles the question, because it shows every order and what became of it. `fastmm-bench-queue-truth FILE` follows each order that joins the touch (or the level behind it), runs the `l2_queue` rule on the L2 view of the same messages over the order's life, and compares with what ITCH executed against it. On 2019-07-30, the 100 most active stocks, continuous session:
-
-| Orders joining the touch | Orders filled in truth | Filled by the model too | Filled by the model only | Filled quantity, model / truth | Markout at 10 s, model fills | Same, true fills |
-|---|---:|---:|---:|---:|---:|---:|
-| `l2_queue`, conservatism 0 | 629,373 | 587,343 | 38,693 | 0.99 | −0.474 bps | −0.477 bps |
-| `l2_queue`, conservatism 0.5 | 629,373 | 498,137 | 20,239 | 0.81 | −0.492 bps | −0.477 bps |
-| `l2_queue`, conservatism 1 | 629,373 | 289,803 | 0 | 0.44 | −0.486 bps | −0.477 bps |
-| `l3_queue` | 629,373 | 629,373 | 0 | 1.00 | −0.477 bps | −0.477 bps |
-
-Of 13.5 million orders that joined the touch, 4.7 % were filled. With the proportional rule the model fills the right quantity overall, and the fills it makes are as toxic as the true ones, but of the orders it or the truth filled, one in eight is filled by one and not the other. At conservatism 1, the default, it fills fewer than half the orders that were filled and under half the quantity; one level behind the touch it fills a third. Orders that improve the touch have nothing ahead and every setting fills them alike.
-
-Order-by-order data needs no such rule. `fill_model = "l3_queue"` keeps every recorded order the source gives the venue (the [`itch`](../reference/data-sources.md#itch) source does), each with its place in the arrival sequence. Ours gets the next place when it reaches the venue: what rests at its price is ahead of it, a cancel or execution of an order ahead moves it up, one behind it changes nothing, and an execution of an order behind it, or at a worse price, is an aggressor that met ours first and fills it. On the same day this rule, run on each real order as if it were ours, reproduces every one of the 629,373 fills and makes none of its own. That is a measurement and not a tautology: Nasdaq's book turned out to be strictly first in, first out among displayed orders once one detail is kept. An order displayed at one price can be ranked at a better one (an order that would lock the market is displayed a tick away and executes at the locking price), and its execution carries that price; `l3_queue` takes an execution at a price better than ours as one that never reached us. Without that detail 215,000 executions of later orders looked like queue jumps.
-
-The rule assumes, as every replay of recorded data does, that our order does not change what others do: an execution that reaches it is taken from the recorded aggressor, and the recorded orders behind it still execute as they did.
-
-## Calibrating against live sessions
-
-`fastmm-data calibrate` fits the `l2_queue` fill model and the simulated latency to journals recorded by `fastmm-live`, and prints the `[backtest]` keys to use:
-
-```bash
-./build/release/bin/fastmm-data calibrate sessA.fmj sessB.fmj sessV.fmj --backtest
-```
-
-For each session it replays the orders that rested, from ack to end in venue time, through the queue model on the journal's own market data (the [fill check](../how-to/operations/journals-replay-pnl.md#check-the-fill-model-against-live-fills)), once per `queue_conservatism` of `--conservatism` (default `0,0.25,0.5,0.75,1`), and counts orders by whether they filled live and in the model:
-
-```text
-  conservatism     both   live  model   none    hit   miss  false  error model/live
-  0.00              151      2      0   1573  0.987  0.013  0.000  0.013      0.987
-  ...
-  1.00              151      2      0   1573  0.987  0.013  0.000  0.013      0.987
-  no ticker         144      9      1   1572  0.941  0.059  0.001  0.065      0.940
-  no tape           150      3      0   1573  0.980  0.020  0.000  0.020      0.981
-  neither           127     26      1   1572  0.830  0.170  0.001  0.175      0.795
-```
-
-`hit` is the share of live fills the model also fills, `miss` the rest, `false` the share of orders not filled live that the model fills. `error` is (live only + model only) over the orders filled either way; the fit minimises it, then `model/live` (filled quantity) nearest 1, then prefers the larger conservatism. `no ticker`, `no tape` and `neither` repeat the fitted value without the book ticker, without the trades printed since the depth update, or both: what each input is worth on this data. The session is followed by the time from ack to first fill, live and in the model, and the model's queue ahead at the live fills; zero there is agreement.
-
-The conservatism is cross-validated: fitted on each session alone and scored on the others (`best c` is the best value on those sessions themselves); the snippet's value is fitted on all of them. When every value scores the same on every session, the data does not identify it and 1 is kept: the queues of orders at or inside the touch are set by the book ticker, where the conservatism does not act.
-
-Latency comes from each order's send time, the venue's time on its ack and the ack's arrival. The simulated venue draws each leg as a fixed part plus a lognormal excess (mean `jitter`); the fit solves fixed and jitter for the measured 5th and 50th percentiles of the round trip, with the excess's shape held at 0.5, which the snippet writes as the `latency_*_sigma` keys so that a configuration with another shape still runs the latencies as fitted. Binance stamps orders in whole milliseconds, so each one-way latency is only known to lie in a millisecond; the sends fall anywhere in theirs, so the intervals of many orders still identify the leg, and fixed and jitter are fitted to them by maximum likelihood (at most the round trip's fixed part). The ack leg gets the rest. The tail of the round trip (a p99 of 40 ms in a live Binance Spot session) is beyond this model.
-
-The one-way legs come from isolated messages, those sent at least 1 ms after the one before on the same connection. Cancels get a path of their own (`latency_cancel_us`, `latency_cancel_jitter_us`) from at least 20 isolated cancels, timed by their cancel acks. A message sent within 1 ms of the one before waits for the venue to take that one in: the fit predicts each such message's venue time as the later of its own path's median and the previous message's predicted time plus `order_service_us`, and picks the service time (0 to 2000 us, in 10 us steps) with the smallest mean error; the report gives that error with and without it. On Binance Spot a burst of cancels on one connection is taken in about a quarter of a millisecond apart, so the tenth cancel of a burst reaches the book some 2 ms after the first.
-
-When a cancel path or a service time is fitted, each session's fill check runs twice more at the fitted conservatism with its cancels replayed (`FillCheckOptions::cancel_paths`): every order message leaves at its recorded send time, and an order the session cancelled leaves the model when its cancel would have been taken in by the simulated venue rather than when the venue's ack says it was. `cancels, before` sends them through the order path alone, as a backtest did without these keys; `cancels, fitted` through everything fitted. The strategy's decisions are those it made live, so the two rows measure the cancel race alone: how many fills the backtest gains or loses because its cancels arrive earlier or later than the live ones did.
-
-```text
-[backtest]
-fill_model = "l2_queue"
-queue_conservatism = 0.75
-md_arrival = "recorded"
-latency_fixed_us = 360
-latency_jitter_us = 300
-latency_sigma = 0.5
-latency_ack_us = 375
-latency_ack_jitter_us = 160
-latency_ack_sigma = 0.5
-latency_cancel_us = 200
-latency_cancel_jitter_us = 250
-latency_cancel_sigma = 0.5
-order_service_us = 220
-```
-
-With several venues (a pool's accounts are venues of their own) the latency keys go under `[backtest.venues.<name>]`, one table per venue.
-
-`md_arrival = "recorded"` is for backtests over journals like these: market data reaches the strategy when the session received it.
-
-`--backtest` then re-runs each session with its own recorded strategy configuration (or `--config`, one for all or one per journal) over its journal with our orders stripped (`journal:<file>,strip_own=1`), once with the configuration's `[backtest]` and once with the fitted keys (`l2_queue` and recorded arrival in both), and prints both beside the live session: orders, the venue's rejects, fills, time to fill, the PnL decomposition and markouts, all three marked against the journal's book ticker mids. A live commission paid in an asset other than base or quote (BNB) has neither its asset nor its price in the journal, so the live fees and net leave it out, as the engine does, and a line under the table gives the number of such fills and their commission in that asset. The fill check isolates the fill model; this comparison adds everything else a backtest re-decides, such as how often the strategy requotes and what the account's balances allowed. `--from-live-state` starts both runs from the state the session recorded and replays its parameter updates ([below](#starting-from-the-live-sessions-state)). `--csv` writes the fill-check grid.
-
-## Starting from the live session's state
-
-A strategy that adapts as it trades (fitted parameters, inventory targets, hedge state) carries that state across sessions through `state()` and `restore()` and `[strategy] state_file`. A backtest that starts it fresh over a live session's journal is not the same strategy: it quotes elsewhere and in other sizes until it has learnt again, and the gap to live says little about the fill model. With a journal the engine records what a session starts from (`StrategyState`, [Journal format](../reference/journal-format.md#strategy-state)):
-
-* the bytes it handed to `restore()` at the start, flagged with whether the strategy took them;
-* with `[engine] checkpoint_s`, a checkpoint that often: the strategy's `state()`, the engine's positions and its open orders, written by the engine thread from buffers made at the start, so a part of a session cut by `journal_max_bytes` has a state of its own.
-
-The positions a session restores from its store and the venues report at the start are in every journal already, as the reconciliation records before its first order.
-
-`[backtest] initial_state = "journal"` starts the strategy from the journal's restored state, else from its first checkpoint, and the engine's positions from that checkpoint, or from the reconciled positions before the first order. The positions reach the engine as reconciliation records at the first step, as they did live; the venues' balances come from `balances_from_journal`. The run's log names what it started from. A journal without any of these records starts the strategy fresh and flat, as before. A session whose parameters were changed while it ran (`ParamUpdate`) quoted with them from then on; `params_from_journal = true` hands the backtest's strategy the same updates at the same times. `fastmm-replay` hands the restored bytes to `restore()` too, so a session whose strategy restored state replays exactly.
-
-## Starting inside a live session
-
-A backtest of an hour in the middle of a live session has to start where the session was then: its positions, its balances and what its strategy had learnt from the market. A run that starts flat and cold quotes elsewhere from the first minute, and its gap to the session says nothing about the simulator. `[backtest] start_at` starts trading at the last checkpoint of the journal at or before that time ([Journal format](../reference/journal-format.md#strategy-state)). The run reads the data from the start of the journal it is given, so the books warm up, and so does a strategy that keeps no state, while the engine refuses orders as before a live session's first reconciliation. At the checkpoint the strategy restores the checkpoint's bytes as at a warm standby's take-over, every venue reconciles with the checkpoint's positions, and with `balances_from_journal` each account starts from the balances its venue last reported by then. The checkpoint's open orders are not placed again: the strategy quotes anew, at the back of each queue, where an order carried over would stand too. The simulator's random draws start from the seed at the checkpoint, so with jittered latencies the run and the session part at the first draw. A run from a checkpoint is deterministic, and its journal replays bit for bit (`fastmm-replay` restores the take-over). For a journal without checkpoints, `[backtest.positions]` gives the positions ([Configuration](../reference/configuration.md#backtestpositions)).
-
-The latency model draws every message's delay from one distribution, while a venue slows down when the market does: in a burst its gateway takes cancels in late and its replies come back late. A cancel that wins its race in the model lost it live, and the losses of such a window do not show. The journal holds each of the session's own messages with the times it was sent, stamped by the venue and received, so `[backtest] latency_from_journal` lets each simulated message take the time a live message of the session took at the same moment, where that is longer than the model's draw: the order sent within 2 ms on the same account and instrument (the same decision, while the run is still in step with the session), else the nearest one, and for a reply the nearest reply.
-
-## Reference example
+`mid drift` is `signed qty * (final mid − mid at fill)` summed over the fills: the adverse selection over the whole run plus the mark of the inventory still open at the end. `unexplained` is the difference from the ledger's own net PnL. On a healthy run it is fixed-point rounding; anything larger means the split is wrong, not the ledger.
 
 `basic_mm` from `configs/backtest-example.toml` on the synthetic market, 60 s, seed 1, at Binance spot VIP 0 fees:
 
@@ -262,11 +135,263 @@ markout per fill (mid at fill + horizon vs the fill price; bps of notional)
   10s          0.0040     0.0024     0.0037     0.0022    -0.0002      295       80       92
 ```
 
-Neither strategy has a measurable gross edge. `basic_mm` captures 0.008 bps and `first_mm` 0.002 bps of traded notional gross, against a 10 bps maker fee: both pay three to four orders of magnitude more in fees than they earn from the spread, and both are net negative at any fee a real venue charges. Their markouts are within rounding of their spread capture, as the symmetric random-walk mid guarantees: the simulator produces no adverse selection beyond queue and latency artefacts, so near-zero adverse selection here says nothing about live.
+Neither strategy has a measurable gross edge. They capture 0.008 and 0.002 bps of traded notional against a 10 bps maker fee, so both pay three to four orders of magnitude more in fees than they earn. Their markouts are within rounding of their capture, as the random-walk mid guarantees; near-zero adverse selection here says nothing about live.
 
-Over 600 s the same `basic_mm` run trips the `max_loss = 100` kill switch on fees alone after about 80 s of trading. `avellaneda_stoikov` at its default `gamma` and `kappa` never fills on this market, so it has no markout to report.
+| Variant of the `basic_mm` run | Result |
+|---|---|
+| 600 s instead of 60 s | trips the `max_loss = 100` kill switch on fees alone after about 80 s of trading |
+| `maker_bps = -0.5` (a 0.5 bps rebate) | nets +0.6383, of which 0.6292 (98.6 %) is the rebate and 0.0091 the spread |
+| `avellaneda_stoikov` at its default `gamma` and `kappa` | never fills on this market, so has no markout |
 
-With `maker_bps = -0.5`, a 0.5 bps maker rebate, the same 60 s run nets +0.6383, of which 0.6292 (98.6 %) is the rebate and 0.0091 the spread.
+## Markouts
+
+A market maker's fill is worth the spread it captured minus what the mid took back afterwards. For a fill of signed quantity `s` (positive bought) at price `p` and time `t`, with venue mid `m`:
+
+```text
+spread capture       = s * (m(t) - p)
+markout(h)           = s * (m(t + h) - p)
+adverse selection(h) = spread capture - markout(h)
+```
+
+Spread capture is positive by construction for a passive quoter: it quotes away from the mid, so it fills away from the mid. Only the markout says whether the fills were worth taking. A capture of +1 bps with a markout of −3 bps at 10 s means the strategy paid 4 bps to be filled.
+
+The horizons are `[backtest] markout_horizons_s` (default `"1,10,60"` seconds). The run stops at every fill time plus horizon and reads the venue mid there, so nothing is interpolated. A fill the run cannot mark is dropped from that horizon and counted, never marked at a substitute price:
+
+| Column | The fill is dropped because |
+|---|---|
+| `past end` | `t + h` is after the run's last event; a 60 s markout on a 60 s run measures nothing |
+| `no mid` | the venue book had one side only, at `t + h` or at the fill |
+
+Under `l2_queue` the book holds only the levels the feed published, so it empties on one side when the price moves past the recorded depth. Under `matching` the synthetic market orders are larger than its limit orders, so a sweep that fills a quote often empties that side: a fifth to a half of the fills have no mid. Such a fill's whole `s * (final mid − p)` goes to mid drift, since none of it can be called capture.
+
+The capture column is recomputed per horizon over the same fills as its markout, so the two columns of one row compare. Markouts are reported per instrument, side and liquidity, in total, in quote currency and in bps of traded notional:
+
+| Where | What |
+|---|---|
+| CLI summary | a `maker` and a `taker` row under the total when a run has both; a row per `venue:symbol` when more than one traded |
+| `summary.json` | `markouts` |
+| Python | `result.markouts()`, `fastmm.markout_frame(result)` |
+| `fills.csv` | `mid_1s`, `mid_10s`, `mid_1m` per fill |
+| A live session | `tools/pnl_report.py` on its journal, marked against the book ticker ([Journals, replay and PnL](../how-to/operations/journals-replay-pnl.md)) |
+
+## Fill quality
+
+| Metric | Meaning |
+|---|---|
+| realised spread | `signed qty * (mid at fill − price)` over the traded notional, in bps: the quantity the markout starts from |
+| maker fills at / inside / behind / through | where a resting order's price sat against the book when it filled: at the best quote, better, worse, or at or beyond the opposite quote. Through fills come from the [crossing-book rule](#how-an-order-fills-on-recorded-levels) and are the most adversely selected |
+| orders filled / sent | new orders that got at least one fill, their replacements' fills included; `fills per order` counts every fill, so it can exceed 1 |
+| time to fill | venue arrival of a new order to its first fill, p50 / p90 / p99 |
+| queue ahead at fill | displayed quantity still ahead of the order when it filled; `l2_queue` only, since the matching engine fills from the front |
+
+## Fees and rebates
+
+Fees are centi-basis-points of the fill notional. A positive rate is a fee the account pays, a negative rate a rebate it receives and which raises net PnL. Each instrument pays its venue's `[venues.<name>.fees]`, and `[[instruments]] maker_bps` / `taker_bps` override one instrument ([Configuration](../reference/configuration.md#venuesfees)).
+
+`configs/backtest-example.toml` charges Binance spot VIP 0: 0.100 % maker and taker, 10 bps each side. Check a rebate against the venue's published schedule. Binance spot pays no maker rebate at VIP 0, and a configured `maker_bps = -0.5` adds 0.5 bps to every passive fill, more than any strategy in this repository captures gross.
+
+## Several venues
+
+A run can quote an instrument on venue A and hedge another on venue B. Each venue has its own latency model, order and market-data connection, and replace and STP settings ([`[backtest.venues.<name>]`](../reference/configuration.md#backtestvenues)). Quotes on a venue with replace are amended in place; on one without, cancelled and sent again.
+
+Recorded feeds are merged by event time: `--data "binance:BTCUSDT,2024-03-27,venue=0; csv:other.csv,venue=1"`, or a list in Python. Each source's `venue=` is the venue of its instruments in `[venues]` order. The clocks are taken as they are: a feed stamped at receive time and one stamped at venue time interleave wrongly by the difference.
+
+With more than one instrument, `equity.csv` gains `pnl_<id>`, `position_<id>`, `mid_<id>` and `quoted_<id>` per instrument (`result.equity_by_instrument` in Python). `pnl` is in the instrument's settlement currency; `position` and `mid` stay the sum over instruments and instrument 0's mid. The synthetic market drives instrument 0 only.
+
+## Balances
+
+With `[backtest.balances]` ([Configuration](../reference/configuration.md#backtestbalances)) each simulated venue keeps the strategy's account:
+
+| Instrument | Held by an order | A fill |
+|---|---|---|
+| spot buy | notional at the order price, in the quote asset; a market buy holds what it would pay for the levels it takes | adds the base, takes the notional and the fee from the quote |
+| spot sell | quantity, in the base asset | takes the base, adds the notional less the fee to the quote |
+| derivative | notional × `[[instruments]] initial_margin` of the larger side of the instrument's orders; nothing for an order that only reduces the position | locks the position's margin at its entry price; closing realises PnL into the wallet; the fee comes out of it |
+
+| Order | Venue answer |
+|---|---|
+| holds more than the free balance | `InsufficientBalance` (venue code `-2010`) |
+| a replace whose new leg does not fit | the order is cancelled and the new one refused |
+| reduce-only derivative on a flat position, or on the side that adds to it | `VenueReject` (venue code `-2022`); under `matching` it fills down to flat and the rest expires |
+
+A derivative's free margin counts the position's unrealised PnL at the recorded mark price, or at the mid in data without one. The venue reports balances after each event that moved an asset, as a live venue does, so `[risk] check_balance`, `ctx.balance` and the strategies' sizing work as live ([Risk model](risk-model.md#balance-check)). With `check_balance = false` the order goes out and the venue refuses it.
+
+`balances_from_journal = true` starts each account from the first balance snapshot of the journal the backtest runs over. Money moved in or out during the session (`AccountFlow` in the journal) moves the simulated account at its time, and the venue's full refreshes reset the engine's estimate as they did live.
+
+## Many runs in one pass
+
+<video class="fastmm-video" autoplay loop muted playsinline preload="metadata" poster="../../assets/anim/backtest-sweep.jpg" src="../../assets/anim/backtest-sweep.mp4"></video>
+
+Under the queue fill models the recorded market does not depend on our orders. A sweep's points, a walk-forward's folds and the arms of an `[ab]` test therefore share one pass over the data. Each point still gets the result its own backtest would: the same fills, orders, equity bars, markouts and outbound hash.
+
+```mermaid
+flowchart LR
+    data[(Recorded data)] --> reader[One reader thread:<br/>venue-time order]
+    reader --> p1[Pass on thread 1<br/>venue and engine books]
+    reader --> p2[Pass on thread 2<br/>venue and engine books]
+    p1 --> r1[Runs 1 to 128]
+    p2 --> r2[Runs 129 to 256]
+```
+
+| Shared by the runs of a pass | Kept per run |
+|---|---|
+| the data, read once and put in venue order | the engine and strategy |
+| the venue's books and, under `l3_queue`, every recorded order | the simulated venue links, accounts and orders |
+| the market data the engines read, when their latency settings match | latency draws and seed |
+| the engine books | results |
+
+A recorded event reaches only the runs whose orders it can touch. A strategy is called only when something it declared changes: its instruments and mid band (`watch`, `quiet_book`, [Strategy API](../reference/strategy-api.md#context)). One that declares nothing is called on every message and shares only the data and the books; the results are the same either way ([Sweep performance](sweep-performance.md#one-thread)). A hot Python strategy declares its band with `ctx.quiet_book` ([Python strategy API](../reference/python-api.md#ctx)).
+
+### Running a sweep
+
+```bash
+./build/release/bin/fastmm-backtest --config configs/backtest-binance.toml \
+    --data "tardis:binance-futures,BTCUSDT,2026-09-01,end=04:00" \
+    --sweep half_spread_bps=1,2,4 --sweep quote_qty=0.002,0.004 --verify 4
+```
+
+| Entry point | Shares passes when |
+|---|---|
+| `fastmm-backtest --sweep`, `--folds K` | the fill model is `l2_queue` or `l3_queue`; `--solo` runs each point alone |
+| `fastmm.sweep`, `fastmm.walk_forward` (each fold in its own passes) | the same, and the strategy is C++ or has `@fastmm.hot` hooks |
+| `bt::sweep_by_name`, `bt::walk_forward_by_name`, `bt::run_multiverse` | the same |
+
+Under `matching` each point is a backtest of its own; the sweep's first line says which way its points run. `--verify N` (`verify=N` in Python) runs N points again alone and fails on the first difference. The test suite compares every shipped strategy this way under both queue models.
+
+A sweep runs one pass per thread (`--threads N`, `threads=N`; default every core), plus one thread that reads the data. A pass holds at most 128 runs. A sweep with more points than its passes hold goes in waves, each reading the data again, and only the wave under way is in memory. Points keep no order rows; their metrics, fills and equity bars stay. [Sweep performance](sweep-performance.md) has the time, memory and scaling numbers.
+
+A point sets strategy parameters and these backtest settings; a venue with its own `[backtest.venues.<name>]` latency keeps it, and a fee applies to every instrument:
+
+| Latency | Fill model | Fees |
+|---|---|---|
+| `latency_fixed_us`, `latency_jitter_us` | `queue_conservatism` | `maker_fee_bps` |
+| `latency_md_us`, `latency_md_jitter_us` | `p_drop` | `taker_fee_bps` |
+
+`--sweep latency_fixed_us=2000,10000 --sweep queue_conservatism=0,1 --sweep maker_fee_bps=-0.5,0` checks a choice against the model's assumptions in the same passes.
+
+`fastmm-backtest --sweep` prints a line per point: net PnL, fills, orders, risk rejects, outbound hash and the kill switch's reason if it tripped. Its runs log errors only, each line naming its point (`#n`). With `--out` it writes `sweep.jsonl`, one line per point: its values under `point`, then its `summary.json`. `--folds K` runs the grid as a walk-forward ranked by `--metric` ([Walk-forward](../python.md#walk-forward)) and adds `fold` to each line.
+
+## The queue from every order
+
+An L2 feed shows how much rests at a price, never in what order. So `l2_queue` has to guess what a shrinking level means for an order inside it:
+
+| `queue_conservatism` | A cancel at our price is taken from |
+|---|---|
+| 0 | the orders ahead and behind, in proportion |
+| 1 (default) | the orders behind us |
+
+A day of Nasdaq TotalView-ITCH settles the question, because it shows every order and what became of it. On 2019-07-30, 100 most active stocks, continuous session, each order that joined the touch was run through the model and compared with what ITCH executed against it ([method](../../bench/README.md#queue-models-against-itch)):
+
+| Orders joining the touch | Orders filled in truth | Filled by the model too | Filled by the model only | Filled quantity, model / truth | Markout at 10 s, model fills | Same, true fills |
+|---|---:|---:|---:|---:|---:|---:|
+| `l2_queue`, conservatism 0 | 629,373 | 587,343 | 38,693 | 0.99 | −0.474 bps | −0.477 bps |
+| `l2_queue`, conservatism 0.5 | 629,373 | 498,137 | 20,239 | 0.81 | −0.492 bps | −0.477 bps |
+| `l2_queue`, conservatism 1 | 629,373 | 289,803 | 0 | 0.44 | −0.486 bps | −0.477 bps |
+| `l3_queue` | 629,373 | 629,373 | 0 | 1.00 | −0.477 bps | −0.477 bps |
+
+Of 13.5 million orders that joined the touch, 4.7 % were filled. The proportional rule fills the right quantity overall, and its fills are as toxic as the true ones. But of the orders either filled, one in eight is filled by one and not the other. At conservatism 1 it fills fewer than half the filled orders; one level behind the touch, a third. Orders that improve the touch have nothing ahead and fill alike under every setting.
+
+`fill_model = "l3_queue"` needs no such rule. It keeps every recorded order with its place in the arrival sequence, and ours takes the next place when it reaches the venue:
+
+| Event | Effect on our order |
+|---|---|
+| cancel or execution of an order ahead | moves it up |
+| cancel of an order behind | none |
+| execution of an order behind, or at a worse price | an aggressor that met ours first: fills it |
+| execution at a better price than ours | never reached us |
+
+Run on each real order as if it were ours, this rule reproduces all 629,373 fills and adds none. Nasdaq's book is strictly first in, first out among displayed orders, once one detail is kept: an order that would lock the market is displayed a tick away but executes at the locking price. Like every replay, the rule assumes our order does not change what others do.
+
+## Calibrating against live sessions
+
+`fastmm-data calibrate` fits the `l2_queue` fill model and the simulated latency to journals recorded by `fastmm-live`, and prints the `[backtest]` keys to use:
+
+```bash
+./build/release/bin/fastmm-data calibrate sessA.fmj sessB.fmj sessV.fmj --backtest
+```
+
+For each session it replays the orders that rested through the queue model, once per `queue_conservatism` (`--conservatism`, default `0,0.25,0.5,0.75,1`), and counts orders by whether they filled live and in the model ([fill check](../how-to/operations/journals-replay-pnl.md#check-the-fill-model-against-live-fills)):
+
+```text
+  conservatism     both   live  model   none    hit   miss  false  error model/live
+  0.00              151      2      0   1573  0.987  0.013  0.000  0.013      0.987
+  ...
+  1.00              151      2      0   1573  0.987  0.013  0.000  0.013      0.987
+  no ticker         144      9      1   1572  0.941  0.059  0.001  0.065      0.940
+  no tape           150      3      0   1573  0.980  0.020  0.000  0.020      0.981
+  neither           127     26      1   1572  0.830  0.170  0.001  0.175      0.795
+```
+
+| Column or row | Meaning |
+|---|---|
+| `hit`, `miss` | share of live fills the model also fills, and the rest |
+| `false` | share of orders not filled live that the model fills |
+| `error` | (live only + model only) over the orders filled either way; the fit minimises it, then `model/live` nearest 1, then prefers the larger conservatism |
+| `no ticker`, `no tape`, `neither` | the fitted value without the book ticker, without the trades since the depth update, or both: what each input is worth |
+
+The conservatism is cross-validated: fitted on each session and scored on the others. When every value scores the same, the data does not identify it and 1 is kept; queues at or inside the touch are set by the book ticker, where the conservatism does not act.
+
+The fitted keys look like this:
+
+```text
+[backtest]
+fill_model = "l2_queue"
+queue_conservatism = 0.75
+md_arrival = "recorded"
+latency_fixed_us = 360
+latency_jitter_us = 300
+latency_sigma = 0.5
+latency_ack_us = 375
+latency_ack_jitter_us = 160
+latency_ack_sigma = 0.5
+latency_cancel_us = 200
+latency_cancel_jitter_us = 250
+latency_cancel_sigma = 0.5
+order_service_us = 220
+```
+
+With several venues, including a pool's accounts, the latency keys go under `[backtest.venues.<name>]`, one table per venue. `md_arrival = "recorded"` delivers market data to the strategy when the session received it.
+
+| Latency key | Fitted from |
+|---|---|
+| `latency_*_us`, `latency_*_jitter_us` | each order's send time, the venue's time on its ack and the ack's arrival; each leg is a fixed part plus a lognormal excess of shape `latency_*_sigma` |
+| `latency_cancel_*` | at least 20 isolated cancels, timed by their cancel acks |
+| `order_service_us` | messages sent within 1 ms of the one before, which wait for the venue to take that one in |
+
+On Binance Spot a burst of cancels on one connection is taken in about 0.25 ms apart, so the tenth cancel reaches the book some 2 ms after the first. The round trip's tail, a p99 of 40 ms in a live Binance Spot session, is beyond this model.
+
+When a cancel path or service time is fitted, the fill check runs twice more with cancels replayed. `cancels, before` sends them through the order path alone; `cancels, fitted` through everything fitted. The strategy's decisions are those it made live, so the two rows measure the cancel race alone.
+
+`--backtest` then re-runs each session over its journal with our orders stripped, once with its configuration's `[backtest]` and once with the fitted keys. It prints both beside the live session: orders, rejects, fills, time to fill, the PnL decomposition and markouts. This adds everything a backtest re-decides on top of the fill model, such as how often the strategy requotes. `--from-live-state` starts both runs from the session's recorded state ([below](#starting-from-the-live-sessions-state)); `--csv` writes the fill-check grid.
+
+A live commission paid in a third asset such as BNB has no price in the journal. The live fees and net leave it out, as the engine does, and a line under the table gives those fills and their commission.
+
+## Starting from the live session's state
+
+A strategy that adapts as it trades carries its state across sessions through `state()`, `restore()` and `[strategy] state_file`. Started fresh over a live journal, it quotes elsewhere until it has learnt again, and the gap to live says little about the fill model. So the journal records what a session starts from ([Journal format](../reference/journal-format.md#strategy-state)):
+
+| Record | Holds |
+|---|---|
+| restored state | the bytes handed to `restore()` at the start, and whether the strategy took them |
+| checkpoint, every `[engine] checkpoint_s` | the strategy's `state()`, the engine's positions and open orders |
+| reconciliation | the positions restored from the store and reported by the venues before the first order |
+
+`[backtest] initial_state = "journal"` starts the strategy from the restored state, else the first checkpoint, and the positions from that checkpoint or the reconciliation. The run's log names what it started from; a journal without these records starts fresh and flat. `params_from_journal = true` replays the session's parameter changes at their times. `fastmm-replay` also restores the state, so such a session replays exactly.
+
+## Starting inside a live session
+
+`[backtest] start_at` starts trading at the last checkpoint at or before that time. A backtest of an hour in the middle of a session then starts where the session was: its positions, balances and what its strategy had learnt. The run still reads the journal from its start, so the books warm up; the engine refuses orders until the checkpoint.
+
+At the checkpoint:
+
+1. The strategy restores the checkpoint's bytes, as a warm standby does at take-over.
+2. Every venue reconciles with the checkpoint's positions.
+3. With `balances_from_journal`, each account starts from its last reported balances.
+4. The strategy quotes anew at the back of each queue; the checkpoint's open orders are not placed again.
+
+A run from a checkpoint is deterministic and its journal replays bit for bit. With jittered latencies it parts from the session at the first random draw. For a journal without checkpoints, `[backtest.positions]` gives the positions ([Configuration](../reference/configuration.md#backtestpositions)).
+
+A venue slows down when the market does, while the latency model draws from one distribution. A cancel that wins its race in the model may have lost it live. `[backtest] latency_from_journal` makes each simulated message take the live delay at the same moment, where that is longer than the model's draw. It uses the order sent within 2 ms on the same account and instrument, else the nearest one; a reply takes the nearest reply.
 
 ## See also
 
