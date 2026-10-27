@@ -30,13 +30,13 @@ Each row is one pass of 64 variants on one thread, against a backtest of its own
 | BTCUSDT | `basic_mm`, our orders not in the feed | 90 ms | 37x |
 | BTCUSDT | `avellaneda_stoikov`, our orders in the feed | 195 ms | 17x |
 | BTCUSDT on Binance and Bybit | `xmm`, quoting on Binance and hedging on Bybit, our orders in the feed | 386 ms | 11x |
-| BTCUSDT | the strategy `fastmm init` writes, `@fastmm.hot` hooks, our orders in the feed | 248 ms | 13x |
+| BTCUSDT | the strategy `fastmm init` writes, `@fastmm.hot` hooks, our orders in the feed | 158 ms | 20x |
 | ITCH | `basic_mm`, 1-tick requote | 502 ms | 7x |
 | ITCH | `avellaneda_stoikov` | 931 ms | 4x |
 
 Grids: BTCUSDT `basic_mm` `half_spread_bps` 0.007 to 2, `quote_qty` 0.002, 0.004, `requote_threshold_ticks` 1, 3, latency 2 to 20 ms; `avellaneda_stoikov` `gamma` 0.01 to 10, `kappa` 0.5 to 15, `quote_qty` 0.002, 0.004, latency 5, 20 ms; `xmm` `edge_bps` 0 to 2, `slippage_bps` 0, 0.5, `quote_qty` 0.002, 0.004, `requote_threshold_ticks` 1, 3, `basis_halflife_s` 30, 120, latency 2 to 20 ms; the `fastmm init` strategy `half_spread_bps` 0.007 to 2, `quote_qty` 0.002, 0.004, `requote_ticks` 1, 3, latency 2 to 20 ms. ITCH `basic_mm` `half_spread_bps` 0.5 to 4, `requote_threshold_ticks` 1, 3, `quote_qty` 100, 200, latency 20 µs to 1 ms; `avellaneda_stoikov` `kappa` 10 to 1000, latency 50 µs, 1 ms.
 
-The `fastmm init` strategy quotes as `basic_mm` does, with 7 % fewer fills, and `basic_mm` took 99 ms a variant in the same run. `basic_mm` declares the band the mid can move in before it requotes, so its engine is handed a book only when the mid leaves it; a Python strategy declares nothing, and its hook is called for each of the 939,569 messages in every variant.
+The `fastmm init` strategy quotes as `basic_mm` does, with 7 % fewer fills, and like it declares the band the mid can move in before it requotes, so its engine is handed a book only when the mid leaves it. In the same run `basic_mm` took 97 ms a variant; the `fastmm init` strategy without its band took 248 ms (13x), its hook called for each of the 939,569 messages in every variant.
 
 ## Where a variant's time goes
 

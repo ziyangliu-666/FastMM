@@ -9,7 +9,7 @@ import numpy as np
 
 from .. import _core
 
-VERSION = 1
+VERSION = 2
 BOOK_DEPTH = 10
 QUOTE_LEVELS = 8
 
@@ -24,6 +24,8 @@ ACTION_PULL = 2
 
 FLAG_UNCROSS = 1
 FLAG_KEEP_PASSIVE = 2
+FLAG_QUIET = 4
+FLAG_LOUD = 8
 
 CTX_DTYPE = np.dtype(
     [
@@ -61,6 +63,8 @@ CTX_DTYPE = np.dtype(
         ("ask_qty_raw", "i8", (QUOTE_LEVELS,)),
         ("bid_is_raw", "u1", (QUOTE_LEVELS,)),
         ("ask_is_raw", "u1", (QUOTE_LEVELS,)),
+        ("quiet_lo_raw", "i8"),
+        ("quiet_hi_raw", "i8"),
     ],
     align=True,
 )

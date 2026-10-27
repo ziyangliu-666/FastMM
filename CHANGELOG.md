@@ -28,6 +28,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - sim: the market-data wire starts at 256 KiB and grows when a burst fills it, and the next inbound message is looked for only in the wires that hold one.
 
 ### Added
+- python: a hot hook declares the band its `on_book` ignores with `ctx.quiet_book(lo, hi)`, `ctx.quiet_book_raw` and `ctx.quiet_book()`, as `quiet_book` in C++; the hot ABI is version 2. The `fastmm init` strategy declares its requote band.
 - backtest: a sweep's point sets backtest settings as well as strategy parameters: `latency_fixed_us`, `latency_jitter_us`, `latency_md_us`, `latency_md_jitter_us`, `p_drop`, `queue_conservatism`, `maker_fee_bps`, `taker_fee_bps` (`BacktestConfig::set_setting`), in `fastmm-backtest --sweep` and `fastmm.sweep`.
 - backtest: sweeps and walk-forwards take a list of points as well as a grid (`bt::SweepPoints`; a list of dicts in Python).
 - backtest: `fastmm-backtest --sweep --folds K [--metric M]` runs a walk-forward; `--out` writes `sweep.jsonl`, each point's values and `summary.json` on one line.

@@ -234,6 +234,7 @@ The hot `ctx` has no execution view (`own_qty`, `queue_ahead`, order times); a h
 | `pull()` | pull the instrument's quotes |
 | `uncross()` | move a level-0 ask at or below the level-0 bid to one tick above it (`DesiredQuotes::uncross`) |
 | `keep_passive()` | shift each side so level 0 is one tick inside the book's touch (`keep_passive`), after `uncross` |
+| `quiet_book(lo, hi)`, `quiet_book_raw(lo, hi)`, `quiet_book()` | call `on_book` only once the mid is at or beyond `lo` or `hi`, or the book is invalid, until `quiet_book()`; floats are rounded inward to 1e-8. A hook that would return at once inside the band says so, and runs faster in a sweep ([Many runs in one pass](../explanation/backtesting.md#many-runs-in-one-pass)) with the same result |
 | `fail(code)` | stop the strategy with an int code |
 
 When the hook returns, the engine makes at most one call for the instrument: `set_quotes` after `quote`, `bid`, `ask` or `clear`, or `pull_quotes` after `pull`, whichever came last. A float price or quantity is rounded to the nearest 1e-8, then prices to the tick (bids down, asks up) and quantities down to the lot; a raw level is used as given. A level with a non-positive price or a zero quantity is dropped.

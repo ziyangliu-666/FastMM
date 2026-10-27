@@ -13,7 +13,7 @@ Versions are `0.MINOR.PATCH`. A minor release may change any surface in the tabl
 | Status file | the version rises with every layout change, with no compatibility in either direction: `fastmm-top` refuses a file of another version (`--once` exits 3), so `fastmm-top`, `fastmm-live` and `fastmm-gateway` come from the same build ([Status file](status-file.md)) | 24 |
 | Store | each schema change is a migration; an older store is copied, then migrated when opened, a newer one is refused ([Storage](storage.md)) | 12 |
 | Gateway protocol | `fastmm-live --gateway` and `fastmm-gateway` must have the same version; an attach of another version is refused | 7 |
-| Hot-hook ABI | `FASTMM_HOT_ABI_VERSION` (`include/fastmm/strategies/hot_abi.h`) rises when the structs a hot hook sees change. `fastmm._hot.abi` checks the layouts at import and raises `ImportError` on a mismatch | 1 |
+| Hot-hook ABI | `FASTMM_HOT_ABI_VERSION` (`include/fastmm/strategies/hot_abi.h`) rises when the structs a hot hook sees change. `fastmm._hot.abi` checks the layouts at import and raises `ImportError` on a mismatch | 2 |
 | C++ API | strategy hooks, registration, the context methods and the header tiers change; a hook with the wrong signature fails the build naming the expected one ([Public API](public-api.md)) | — |
 | Python API | names in `fastmm.__all__` are added and changed; a change that breaks a call form is a CHANGELOG entry | — |
 | Command lines | flags are added; a removed flag exits 2 ([Command lines](cli.md)) | — |

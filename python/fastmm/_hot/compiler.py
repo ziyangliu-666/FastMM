@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import math
 import os
 import re
 import time
@@ -32,6 +33,7 @@ from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 import llvmlite
 import llvmlite.binding as llvm
 import numba
+import numpy as np
 from numba import carray, cfunc, njit, types
 from numba.core import config as numba_config
 from numba.core.errors import NumbaError, TypingError, UnsupportedBytecodeError
@@ -55,6 +57,9 @@ _QUOTE = abi.ACTION_QUOTE
 _PULL = abi.ACTION_PULL
 _UNCROSS = abi.FLAG_UNCROSS
 _KEEP_PASSIVE = abi.FLAG_KEEP_PASSIVE
+_QUIET = abi.FLAG_QUIET
+_LOUD = abi.FLAG_LOUD
+_BAND = _QUIET | _LOUD
 _LEVELS = abi.QUOTE_LEVELS
 
 
@@ -224,6 +229,40 @@ def _keep_passive(ctx):
 
     def impl(ctx):  # type: ignore[no-untyped-def]
         ctx.flags = ctx.flags | _KEEP_PASSIVE
+    return impl
+
+
+@overload_method(types.Record, "quiet_book")
+def _quiet_book(ctx, lo=None, hi=None):
+    if not _is_ctx(ctx):
+        return None
+    def absent(t: Any) -> bool:
+        return t is None or isinstance(t, (types.NoneType, types.Omitted))
+
+    if absent(lo) and absent(hi):
+        def loud(ctx, lo=None, hi=None):  # type: ignore[no-untyped-def]
+            ctx.flags = (ctx.flags & ~_BAND) | _LOUD
+        return loud
+    _numbers("quiet_book", lo, hi)
+
+    def impl(ctx, lo=None, hi=None):  # type: ignore[no-untyped-def]
+        # Inward to 1e-8: the band never covers a mid the hook was asked about.
+        ctx.quiet_lo_raw = np.int64(math.ceil(lo * 1e8))
+        ctx.quiet_hi_raw = np.int64(math.floor(hi * 1e8))
+        ctx.flags = (ctx.flags & ~_BAND) | _QUIET
+    return impl
+
+
+@overload_method(types.Record, "quiet_book_raw")
+def _quiet_book_raw(ctx, lo, hi):
+    if not _is_ctx(ctx):
+        return None
+    _ints("quiet_book_raw", lo, hi)
+
+    def impl(ctx, lo, hi):  # type: ignore[no-untyped-def]
+        ctx.quiet_lo_raw = lo
+        ctx.quiet_hi_raw = hi
+        ctx.flags = (ctx.flags & ~_BAND) | _QUIET
     return impl
 
 

@@ -480,6 +480,11 @@ class HotStrategy {
       fail(ctx, inst, rc, c.fail_code, hook, timer);
       return;
     }
+    if ((c.flags & FASTMM_HOT_FLAG_QUIET) != 0) {
+      ctx.quiet_book(id, Price::from_raw(c.quiet_lo_raw), Price::from_raw(c.quiet_hi_raw));
+    } else if ((c.flags & FASTMM_HOT_FLAG_LOUD) != 0) {
+      ctx.quiet_book(id);
+    }
     if (c.action == FASTMM_HOT_ACTION_NONE) return;
     if (c.action == FASTMM_HOT_ACTION_PULL) {
       ctx.pull_quotes(id);

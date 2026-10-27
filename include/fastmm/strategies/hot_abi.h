@@ -19,7 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define FASTMM_HOT_ABI_VERSION 1
+#define FASTMM_HOT_ABI_VERSION 2
 
 #define FASTMM_HOT_BOOK_DEPTH 10  /* book levels per side a hook can read */
 #define FASTMM_HOT_QUOTE_LEVELS 8 /* quote levels per side a hook can write (kMaxQuoteLevels) */
@@ -41,6 +41,9 @@
 /* ctx->flags, applied after the levels are converted, in this order */
 #define FASTMM_HOT_FLAG_UNCROSS 1      /* DesiredQuotes::uncross(tick) */
 #define FASTMM_HOT_FLAG_KEEP_PASSIVE 2 /* keep_passive(q, best_bid, best_ask, tick) */
+/* ctx->flags, applied whatever the action: the last of these the hook asked for */
+#define FASTMM_HOT_FLAG_QUIET 4 /* quiet_book(id, quiet_lo_raw, quiet_hi_raw) */
+#define FASTMM_HOT_FLAG_LOUD 8  /* quiet_book(id): every book update again */
 
 #ifdef __cplusplus
 extern "C" {
@@ -83,6 +86,8 @@ typedef struct fastmm_hot_ctx {
   int64_t ask_qty_raw[FASTMM_HOT_QUOTE_LEVELS];
   uint8_t bid_is_raw[FASTMM_HOT_QUOTE_LEVELS]; /* 1: the level is in bid_px_raw / bid_qty_raw */
   uint8_t ask_is_raw[FASTMM_HOT_QUOTE_LEVELS];
+  int64_t quiet_lo_raw; /* FASTMM_HOT_FLAG_QUIET: on_book only once the mid is at or beyond */
+  int64_t quiet_hi_raw; /* one of these, or the book is invalid */
 } fastmm_hot_ctx;
 
 typedef struct fastmm_hot_book {
@@ -122,13 +127,15 @@ typedef int32_t (*fastmm_hot_fn)(uint8_t* self, fastmm_hot_ctx* ctx, fastmm_hot_
 #define FASTMM_HOT_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
 #endif
 
-/* Layout of ABI version 1 (x86-64 System V). */
-FASTMM_HOT_STATIC_ASSERT(sizeof(fastmm_hot_ctx) == 664, "fastmm_hot_ctx size");
+/* Layout of ABI version 2 (x86-64 System V). */
+FASTMM_HOT_STATIC_ASSERT(sizeof(fastmm_hot_ctx) == 680, "fastmm_hot_ctx size");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, tick) == 16, "fastmm_hot_ctx.tick");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, fill_price) == 80, "fastmm_hot_ctx.fill_price");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, action) == 112, "fastmm_hot_ctx.action");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, bid_px) == 136, "fastmm_hot_ctx.bid_px");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, bid_is_raw) == 648, "fastmm_hot_ctx.bid_is_raw");
+FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, quiet_lo_raw) == 664,
+                         "fastmm_hot_ctx.quiet_lo_raw");
 FASTMM_HOT_STATIC_ASSERT(sizeof(fastmm_hot_book) == 744, "fastmm_hot_book size");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_book, n_bids) == 12, "fastmm_hot_book.n_bids");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_book, mid) == 24, "fastmm_hot_book.mid");

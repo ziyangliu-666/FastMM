@@ -26,7 +26,8 @@ MAX_PARAMS = 128  # the journal's parameter table (kMaxParams); one update carri
 RESERVED_NAMES = frozenset({"publish", "inst"})
 # Methods on Numba records (compiler.py). A record field with one of these names is unreachable.
 CTX_METHODS = frozenset({"quote", "quote_raw", "bid", "ask", "bid_raw", "ask_raw", "clear", "pull",
-                         "uncross", "keep_passive", "fail"})
+                         "uncross", "keep_passive", "quiet_book", "quiet_book_raw",
+                         "fail"})
 
 NUMBA_MISSING = ('fastmm: hot hooks need numba; install it with: pip install "fastmm-engine[hot]" '
                  f'(from source: {FROM_SOURCE})')

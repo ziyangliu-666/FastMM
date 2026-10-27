@@ -75,7 +75,7 @@ class BasicMMHot(fastmm.Strategy):
 
 ## Write intents
 
-Write intents through `ctx` (`quote`, `bid`, `ask`, `clear`, `pull`, `uncross`, `keep_passive`); the engine sends them when the hook returns. Put code that several hooks share in a `numba.njit` function:
+Write intents through `ctx` (`quote`, `bid`, `ask`, `clear`, `pull`, `uncross`, `keep_passive`, `quiet_book`); the engine sends them when the hook returns. Put code that several hooks share in a `numba.njit` function:
 
 <!-- snippet: examples/python/strategies/basic_mm_hot.py#requote -->
 ```python

@@ -123,7 +123,20 @@ def requote(self, ctx, book):
         ctx.ask(centre + half, self.quote_qty)
     ctx.uncross()      # never quote through the other side
     ctx.keep_passive()  # leave an order that is still correct where it is
-    self.last_mid = mid if ctx.quoting_enabled else 0.0
+    if ctx.quoting_enabled:
+        self.last_mid = mid
+        # on_book ignores a mid within requote_ticks of this one: the engine need not call it.
+        band = ctx.tick_raw * self.requote_ticks
+        ctx.quiet_book_raw(book.mid_raw - band, book.mid_raw + band)
+    else:
+        forget_mid(self, ctx)
+
+
+@numba.njit
+def forget_mid(self, ctx):
+    """No quotes to keep: every book update reaches on_book again."""
+    self.last_mid = 0.0
+    ctx.quiet_book()
 
 
 class @NAME_CLASS@(fastmm.Strategy):
@@ -140,7 +153,7 @@ class @NAME_CLASS@(fastmm.Strategy):
     def on_book(self, ctx, book):
         if not book.valid:
             ctx.pull()
-            self.last_mid = 0.0
+            forget_mid(self, ctx)
             return
         if self.last_mid > 0.0 and abs(book.mid - self.last_mid) < ctx.tick * self.requote_ticks:
             return
@@ -154,9 +167,14 @@ class @NAME_CLASS@(fastmm.Strategy):
 
     @fastmm.hot
     def on_quoting(self, ctx, book):
-        self.last_mid = 0.0
+        forget_mid(self, ctx)
         if ctx.quoting_enabled and book.valid:
             requote(self, ctx, book)
+
+    @fastmm.hot
+    def on_params(self, ctx, book):
+        # requote_ticks may have changed: the band follows at the next quotes.
+        forget_mid(self, ctx)
 '''
 
 LIVE_HEADERS = {

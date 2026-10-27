@@ -626,3 +626,54 @@ def test_the_readme_example_runs_and_fills():
                          capture_output=True, text=True).stdout
     assert out.startswith("backtest py:TouchMM")
     assert "fills (maker / taker)          72 (72 / 0)" in out
+
+
+class Requoter(Strategy):
+    """Requotes when the mid moves `ticks` ticks; with `declare`, says so with ctx.quiet_book."""
+
+    half_spread_bps = Param(0.0)
+    quote_qty = Param(0.002)
+    ticks = Param(2, min=1)
+    declare = Param(0, min=0, max=2)  # 0 nothing, 1 the raw band, 2 the float band
+    last_mid = State(0.0)
+
+    @fastmm.hot
+    def on_book(self, ctx, book):
+        if not book.valid:
+            ctx.pull()
+            self.last_mid = 0.0
+            ctx.quiet_book()
+            return
+        if self.last_mid > 0.0 and abs(book.mid - self.last_mid) < ctx.tick * self.ticks:
+            return
+        half = book.mid * self.half_spread_bps * 1e-4
+        ctx.quote(book.mid - half, book.mid + half, self.quote_qty)
+        ctx.keep_passive()
+        self.last_mid = book.mid
+        if self.declare == 1:
+            band = ctx.tick_raw * self.ticks
+            ctx.quiet_book_raw(book.mid_raw - band, book.mid_raw + band)
+        elif self.declare == 2:
+            ctx.quiet_book(book.mid - ctx.tick * self.ticks, book.mid + ctx.tick * self.ticks)
+
+    @fastmm.hot
+    def on_quoting(self, ctx, book):
+        self.last_mid = 0.0
+        ctx.quiet_book()
+
+
+def test_a_declared_quiet_band_changes_no_result(example_config):
+    cfg = example_config.copy()
+    cfg.clear_params()
+    cfg.fill_model = "l2_queue"
+    cfg.duration_s = 30
+    points = fastmm.sweep(cfg, {"declare": [0, 1, 2], "ticks": [1, 3]}, data="synthetic",
+                          strategy=Requoter, threads=2, verify=6)
+    by_ticks = {}
+    for p, r in points:
+        by_ticks.setdefault(p["ticks"], set()).add(r.outbound_sha256)
+        assert r.stats()["fills"] > 0
+    assert all(len(hashes) == 1 for hashes in by_ticks.values())
+    alone = [fastmm.run_backtest(cfg, data="synthetic", strategy=Requoter,
+                                 params={"declare": d, "ticks": 3}) for d in (0, 1)]
+    assert alone[0].outbound_sha256 == alone[1].outbound_sha256
