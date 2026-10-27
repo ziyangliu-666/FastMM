@@ -4,6 +4,7 @@
 
 #include "fastmm/backtest/registrations.hpp"
 #include "fastmm/backtest/synthetic_source.hpp"
+#include "fastmm/core/log.hpp"
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/sim/venue_order.hpp"
 #include "fastmm/strategies/registry.hpp"
@@ -722,6 +723,7 @@ class Pass {
       }
     }
     for (Run& r : runs_) {
+      log_switch_run(*r.clock, r.index);
       r.parts.session->begin(r.parts.hooks,
                              r.parts.runner.get(),
                              r.own_feed ? &next_src_ : &groups_[r.group]->next_shared);
@@ -776,6 +778,7 @@ class Pass {
     next_src_ = Timestamp::max();
     for (const std::unique_ptr<FeedGroup>& fg : groups_) fg->next_shared = Timestamp::max();
     for (Run& r : runs_) {
+      log_switch_run(*r.clock, r.index);
       if (r.live) reach(r);
       if (!r.own_feed) {
         const std::uint64_t due = r.live ? groups_[r.group]->md_taken : r.md_due;
@@ -798,6 +801,7 @@ class Pass {
   // A run alone has its clock moved by every recorded event and every message of its market data,
   // taken or not: one here reaches the latest of them before it takes anything.
   void reach(Run& r) const noexcept {
+    log_switch_run(*r.clock, r.index);
     Timestamp t = last_src_;
     if (!r.own_feed && groups_[r.group]->last_md > t) t = groups_[r.group]->last_md;
     if (r.clock->now() < t) r.clock->set(t);
@@ -1014,6 +1018,9 @@ class Pass {
     for (const HeapEntry& e : held_) heap_.push(e);
   }
 
+  // The thread's log lines carry the time and name of the run it steps, and as they were after.
+  LogClockScope log_clock_;
+  LogRunScope log_run_;
   const BacktestConfig& first_;
   sim::FillModel model_;
   sim::SimWorld world_;

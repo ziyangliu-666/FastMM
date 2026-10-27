@@ -39,5 +39,8 @@ def test_sweep_frame(example_config):
     points = fastmm.sweep(cfg, {"half_spread_bps": [0.01, 0.02]}, data="synthetic", threads=2)
     df = fastmm.sweep_frame(points)
     assert list(df["half_spread_bps"]) == [0.01, 0.02]
-    assert {"net_pnl", "fills", "sharpe_bar", "outbound_sha256"} <= set(df.columns)
+    assert {"net_pnl", "fills", "sharpe_bar", "kill_reason", "markout_bps_1s",
+            "outbound_sha256"} <= set(df.columns)
+    assert df["markout_bps_1s"].tolist() == [p[1].markouts()[0]["total"]["markout_bps"]
+                                             for p in points]
     assert df["net_pnl"].tolist() == [p[1].stats()["net_pnl"] for p in points]

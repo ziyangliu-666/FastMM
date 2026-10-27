@@ -203,6 +203,32 @@ TEST_CASE("core.log: under a LogClockScope a line carries the simulated time") {
   std::fclose(f);
 }
 
+TEST_CASE("core.log: under a LogRunScope a line names its run") {
+  static constexpr LogDescriptor desc{"x", "dir/file.cpp", 7, LogLevel::Warn};
+  LogRecord r{};
+  r.desc = &desc;
+  std::string out;
+  Logger::format_record(r, out);
+  CHECK(out.find("] file.cpp:7 ") != std::string::npos);
+  {
+    const LogRunScope run(12);
+    CHECK(detail::t_log_run == 13);
+    {
+      SimClock clock;
+      const LogClockScope keep_clock;
+      const LogRunScope keep;
+      log_switch_run(clock, 3);
+      CHECK(detail::t_log_run == 4);
+    }
+    CHECK(detail::t_log_run == 13);
+  }
+  CHECK(detail::t_log_run == 0);
+  r.run = 13;
+  out.clear();
+  Logger::format_record(r, out);
+  CHECK(out.find("] #12 file.cpp:7 ") != std::string::npos);
+}
+
 TEST_CASE("core.log: format_record handles malformed argument count gracefully") {
   static constexpr LogDescriptor desc{"a={} b={}", __FILE__, __LINE__, LogLevel::Info};
   LogRecord r{};

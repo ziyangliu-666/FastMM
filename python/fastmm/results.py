@@ -37,6 +37,7 @@ SWEEP_STATS: Tuple[str, ...] = (
     "realized_spread_bps",
     "inventory_abs_mean",
     "quote_uptime",
+    "kill_reason",  # None unless the kill switch stopped the run
 )
 
 MARKOUT_PREFIX = "markout_mid_"
@@ -206,8 +207,9 @@ def sweep_frame(
     points: Iterable[Tuple[Dict[str, Any], BacktestResult]],
     stats: Sequence[str] = SWEEP_STATS,
 ) -> pd.DataFrame:
-    """One row per sweep point: the grid parameters, the chosen ``stats()`` columns and the
-    outbound hash. Row order follows the sweep (grid order)."""
+    """One row per sweep point: its values, the ``stats()`` columns named by ``stats`` (default
+    SWEEP_STATS), the markout of every horizon in bps of notional (``markout_bps_<label>``, as
+    ``markout_bps_1s``) and the outbound hash. Row order follows the sweep."""
     pd = _pandas()
     rows = []
     for params, result in points:
@@ -215,6 +217,8 @@ def sweep_frame(
         row = dict(params)
         for name in stats:
             row[name] = s[name]
+        for horizon in result.markouts():
+            row[f"markout_bps_{horizon['label']}"] = horizon["total"]["markout_bps"]
         row["outbound_sha256"] = result.outbound_sha256
         rows.append(row)
     return pd.DataFrame(rows)

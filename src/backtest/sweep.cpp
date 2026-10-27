@@ -1,11 +1,13 @@
 #include "fastmm/backtest/sweep.hpp"
 
 #include "fastmm/backtest/registrations.hpp"
+#include "fastmm/core/log.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <exception>
 #include <memory>
 #include <mutex>
@@ -140,6 +142,7 @@ std::vector<SweepPoint> sweep(const BacktestConfig& base,
   run_pool(points.size(), threads, source_factory, [&](std::size_t i, MdSource* source) {
     const BacktestConfig cfg = point_config(start, points[i]);
     if (source) source->reset();
+    const LogRunScope log_run(i);
     results[i].result = run(cfg, source);
     if (done) {
       const std::lock_guard lock(done_mutex);
@@ -177,10 +180,22 @@ std::string WalkForwardReport::table() const {
     std::snprintf(buf, sizeof buf, "%.6g", v);
     return std::string(buf);
   };
-  const std::int64_t t0 = folds.empty() ? 0 : folds.front().start_ts;
-  auto secs = [&](std::int64_t ts) {
-    char buf[32];
-    std::snprintf(buf, sizeof buf, "%.3f", static_cast<double>(ts - t0) * 1e-9);
+  // A fold's first instant in the data's time, UTC to the millisecond.
+  auto utc = [](std::int64_t ts) {
+    const std::time_t s = ts / 1'000'000'000;
+    std::tm t{};
+    gmtime_r(&s, &t);
+    char buf[48];
+    std::snprintf(buf,
+                  sizeof buf,
+                  "%04d-%02d-%02d %02d:%02d:%02d.%03d",
+                  t.tm_year + 1900,
+                  t.tm_mon + 1,
+                  t.tm_mday,
+                  t.tm_hour,
+                  t.tm_min,
+                  t.tm_sec,
+                  static_cast<int>(ts % 1'000'000'000 / 1'000'000));
     return std::string(buf);
   };
   std::string out = "walk-forward: " + std::to_string(folds.size()) + " folds, " +
@@ -189,9 +204,9 @@ std::string WalkForwardReport::table() const {
   char line[256];
   std::snprintf(line,
                 sizeof line,
-                "%4s  %19s  %6s  %12s  %13s  %6s  %12s\n",
+                "%4s  %-23s  %6s  %12s  %13s  %6s  %12s\n",
                 "fold",
-                "time_s",
+                "from (UTC)",
                 "chosen",
                 "in_sample",
                 "out_of_sample",
@@ -202,13 +217,12 @@ std::string WalkForwardReport::table() const {
   for (std::size_t i = 0; i < folds.size(); ++i) {
     const WalkForwardFold& f = folds[i];
     if (shown.size() < f.points.size()) shown.resize(f.points.size());
-    const std::string span = secs(f.start_ts) + "-" + secs(f.end_ts);
     const std::string chosen = i == 0 ? "-" : "#" + std::to_string(f.chosen);
     std::snprintf(line,
                   sizeof line,
-                  "%4zu  %19s  %6s  %12s  %13s  %6s  %12s\n",
+                  "%4zu  %-23s  %6s  %12s  %13s  %6s  %12s\n",
                   i,
-                  span.c_str(),
+                  utc(f.start_ts).c_str(),
                   chosen.c_str(),
                   num(f.in_sample).c_str(),
                   num(f.out_of_sample).c_str(),
@@ -389,6 +403,7 @@ WalkForwardReport walk_forward(const BacktestConfig& base,
       if (source == nullptr) throw std::runtime_error("walk_forward: cannot open the data");
       source->reset();
       TimeSliceSource slice(*source, edges[fi], edges[fi + 1]);
+      const LogRunScope log_run(p);
       rep.folds[fi].points[p].result = run(cfg, &slice);
     });
   }

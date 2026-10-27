@@ -6,6 +6,9 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ### Changed
 - backtest: `fastmm-backtest --sweep` says first whether its points share passes, prints each point's risk rejects and kill reason, and prints no warnings of its runs.
+- backtest: a sweep's log lines carry the simulated time of the run that wrote them and name its point (`#n`, `LogRunScope`).
+- backtest: the walk-forward table gives each fold's first instant in UTC, not seconds from the data's start.
+- python: `sweep_frame` adds `kill_reason` and each horizon's `markout_bps_<label>`.
 - backtest: the passes of a sweep that run at the same time read the data once: one more thread reads it, puts it in venue order and hands it to all of them, instead of each pass reading and ordering a copy of its own.
 - backtest: a sweep deals its points to its threads' passes in waves of at most 128 runs a pass, so the passes of a wave end together and no pass runs alone at the end, and it hands the memory a wave freed back to the system before the next wave starts.
 - backtest: `--threads` and `threads=` of a sweep are no longer capped at 32.

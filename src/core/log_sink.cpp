@@ -140,12 +140,9 @@ std::string_view basename_of(const char* path) noexcept {
 
 void Logger::format_record(const LogRecord& r, std::string& out) {
   format_iso8601(r.ts_ns, out);
-  fmt::format_to(std::back_inserter(out),
-                 " {:<5} [{}] {}:{} ",
-                 to_string(r.desc->level),
-                 r.tid,
-                 basename_of(r.desc->file),
-                 r.desc->line);
+  fmt::format_to(std::back_inserter(out), " {:<5} [{}] ", to_string(r.desc->level), r.tid);
+  if (r.run != 0) fmt::format_to(std::back_inserter(out), "#{} ", r.run - 1);
+  fmt::format_to(std::back_inserter(out), "{}:{} ", basename_of(r.desc->file), r.desc->line);
 
   fmt::dynamic_format_arg_store<fmt::format_context> store;
   // Decimal strings for Fixed args must outlive vformat; keep them here.

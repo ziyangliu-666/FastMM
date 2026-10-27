@@ -196,8 +196,9 @@ int run_sweep(const char* prog, const bt::BacktestConfig& cfg, const SweepArgs& 
               a.folds > 1 ? (" on " + std::to_string(a.folds) + " folds").c_str() : "",
               refusal.empty() ? "in multiverses" : ("as separate backtests: " + refusal).c_str());
   std::fflush(stdout);
-  // Warnings of thousands of runs at once say nothing of the run they come from: each point's
-  // risk rejects and kill switch are on its line and in sweep.jsonl.
+  // The runs log errors only, each line naming its point: a warning per rejected order of every
+  // point would bury them, and each point's rejects and kill switch are on its line and in
+  // sweep.jsonl.
   if (Logger::instance().level() < LogLevel::Error) Logger::instance().set_level(LogLevel::Error);
   Logger::instance().start(stderr, LogLevel::Warn);
   // A line per point needs its metrics: the rows go as each point ends, but for the points

@@ -66,10 +66,11 @@ struct LogRecord {
   const LogDescriptor* desc;
   std::int64_t ts_ns;
   std::uint32_t tid;
+  std::uint32_t run;  // LogRunScope: 1 + the run's index in its sweep, 0 outside one
   std::uint8_t nargs;
   std::uint8_t used;
   std::uint8_t pad_[2];
-  std::uint8_t args[kLogRecordBytes - 24];
+  std::uint8_t args[kLogRecordBytes - 28];
 };
 static_assert(sizeof(LogRecord) == kLogRecordBytes && std::is_trivially_copyable_v<LogRecord>);
 
@@ -165,6 +166,7 @@ inline thread_local std::uint32_t t_log_tid = 0;
 inline thread_local std::uint32_t t_log_slot = 0;
 inline thread_local bool t_log_thread_exiting = false;      // set once thread-local teardown began
 inline thread_local const SimClock* t_log_clock = nullptr;  // LogClockScope
+inline thread_local std::uint32_t t_log_run = 0;            // LogRunScope
 
 // Compile-time floor check, written as a function so -Wtype-limits stays quiet when the
 // floor is 0.
@@ -309,6 +311,7 @@ FASTMM_FORCE_INLINE void log_emit(const LogDescriptor& d, const Args&... args) n
   r->desc = &d;
   r->ts_ns = t_log_clock != nullptr ? t_log_clock->now().ns : wall_now().ns;
   r->tid = t_log_tid;
+  r->run = t_log_run;
   ArgPacker pk{r->args, r->args + sizeof(r->args)};
   (static_cast<void>(pack_arg(pk, args)), ...);
   r->nargs = pk.n;
@@ -322,6 +325,8 @@ FASTMM_FORCE_INLINE void log_emit(const LogDescriptor& d, const Args&... args) n
 // clock: a backtest's and a replay's lines name the moment of the data they were written at.
 class LogClockScope {
  public:
+  // Keeps the thread's clock, and restores it at the end (log_switch_run() changes it).
+  LogClockScope() noexcept : prev_(detail::t_log_clock) {}
   explicit LogClockScope(const SimClock& clock) noexcept : prev_(detail::t_log_clock) {
     detail::t_log_clock = &clock;
   }
@@ -332,6 +337,30 @@ class LogClockScope {
  private:
   const SimClock* prev_;
 };
+
+// While one is alive, the lines the thread logs name run `index` of a sweep ("#index", the
+// points' order): a sweep's runs share the threads and the log.
+class LogRunScope {
+ public:
+  // Keeps the thread's run, and restores it at the end (log_switch_run() changes it).
+  LogRunScope() noexcept : prev_(detail::t_log_run) {}
+  explicit LogRunScope(std::size_t index) noexcept : prev_(detail::t_log_run) {
+    detail::t_log_run = static_cast<std::uint32_t>(index + 1);
+  }
+  ~LogRunScope() { detail::t_log_run = prev_; }
+  LogRunScope(const LogRunScope&) = delete;
+  LogRunScope& operator=(const LogRunScope&) = delete;
+
+ private:
+  std::uint32_t prev_;
+};
+
+// Within a LogClockScope and a LogRunScope, the thread's lines from now on carry the time of
+// `clock` and name run `index` (a pass of a sweep switches between its runs).
+inline void log_switch_run(const SimClock& clock, std::size_t index) noexcept {
+  detail::t_log_clock = &clock;
+  detail::t_log_run = static_cast<std::uint32_t>(index + 1);
+}
 
 }  // namespace fastmm
 
