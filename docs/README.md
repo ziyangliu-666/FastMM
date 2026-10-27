@@ -7,6 +7,8 @@
 - **[Many accounts, one gateway](how-to/operations/run-behind-a-gateway.md).** Several sub-accounts trade behind one venue, and strategy processes attach to one `fastmm-gateway` that keeps the exchange connections while they restart.
 - **[A/B tests](how-to/strategies/ab-test.md).** Parameter sets run side by side, split by instrument, by time block or both, and are compared on markouts and net with paired intervals.
 
+<video class="fastmm-video" autoplay loop muted playsinline preload="metadata" poster="assets/anim/backtest-sweep.jpg" src="assets/anim/backtest-sweep.mp4"></video>
+
 FastMM trades on Binance (spot and USDⓈ-M futures), OKX, Bybit, Gate, Hyperliquid, Lighter, Deribit, Gemini, Coinbase (Advanced Trade and Exchange) and, for US stocks, Alpaca ([Venue connectors](reference/venues.md)).
 
 ## Quickstart
@@ -18,9 +20,17 @@ fastmm init my-mm && cd my-mm
 python backtest.py
 ```
 
-The wheel needs Linux x86-64 and Python 3.10 or later. On Debian and Ubuntu, `sudo apt install python3-venv` first. To write the strategy in C++, see the [Quick start in C++](getting-started/cpp-quickstart.md); to build the C++ programs, [Install](getting-started/install.md#build-from-source).
+```text
+backtest py:MyMm  seed=1  md_events=7149  steps=12428  wall=0.02s
+  net pnl                        -5.5272
+  realized / unrealized / fees   0.5198 / 0.0005 / 6.0475
+  fills (maker / taker)          1036 (1036 / 0)
+  ...
+```
 
-The same strategy trades live against the simulated exchange on this machine:
+The wheel needs Linux x86-64 and Python 3.10 or later; on Debian and Ubuntu, `sudo apt install python3-venv` first. For C++, see the [Quick start in C++](getting-started/cpp-quickstart.md) or [Build from source](getting-started/install.md#build-from-source).
+
+The same strategy trades live against a simulated exchange on this machine:
 
 ```bash
 pip install "fastmm-engine[live]"
@@ -59,12 +69,6 @@ python -m fastmm run strategy:MyMm --config sim.toml --duration 60s
 
 - [Quick start](getting-started/quickstart.md): a Python strategy, a backtest and a live session against the local exchange.
 - [Quick start in C++](getting-started/cpp-quickstart.md): a C++ strategy backtested from a CMake project.
-- [Your first market maker](tutorials/first-strategy/README.md): a C++ strategy from its header to Binance Demo, in nine steps.
 - [Quote on one venue, hedge on another](how-to/strategies/xmm.md): run `xmm` on Binance Demo.
-- [Run on a testnet or Binance Demo](how-to/operations/run-on-testnet.md): keys, a dry run and a first keyed session.
-- [Account pools](reference/venues/connector-behaviour.md#account-pools): several accounts of one exchange behind one venue.
 - [Run in production](how-to/operations/running-in-production.md): what to set before a keyed session runs unattended.
-- [Low-latency TCP](how-to/operations/low-latency-tcp.md): busy polling, and OpenOnload or XLIO for order entry.
 - [How FastMM works](explanation/how-it-works.md): the engine thread, the path of one event and what it guarantees.
-- [How fast it is](explanation/how-fast.md): one production session's latency from market data to order, and its load.
-- [Benchmarks](explanation/benchmarks.md): the engine alone, on one machine.

@@ -1,8 +1,8 @@
 # Quick start
 
-The package on PyPI is `fastmm-engine`, imported as `fastmm`.
+A Python strategy, backtested on a simulated market and then run live against a local exchange. Nothing here needs an account or API keys.
 
-The wheels need Linux x86-64 and CPython 3.10 or later; on macOS or Windows, run the steps in a container ([Install](install.md#without-building-it)). Nothing here needs an account or API keys. To write the strategy in C++ instead, see the [Quick start in C++](cpp-quickstart.md).
+The package on PyPI is `fastmm-engine`, imported as `fastmm`. It needs Linux x86-64 and CPython 3.10 or later; on macOS or Windows, use a container ([Install](install.md#without-building-it)). For C++, see the [Quick start in C++](cpp-quickstart.md).
 
 ## 1. A project and a backtest
 
@@ -12,6 +12,22 @@ pip install "fastmm-engine[hot]"
 fastmm init my-mm && cd my-mm
 python backtest.py
 ```
+
+```text
+backtest py:MyMm  seed=1  md_events=7149  steps=12428  wall=0.02s
+  net pnl                        -5.5272
+  realized / unrealized / fees   0.5198 / 0.0005 / 6.0475
+  ...
+  fills (maker / taker)          1036 (1036 / 0)
+  orders / cancels / replaces    2621 / 1622 / 0
+  ...
+net PnL -5.5272 = capture 0.5356 + mid drift -0.0152 - fees 6.0475
+markout   1s: +0.8629 bps over 1029 fills
+...
+CSV and JSON: runs/backtest
+```
+
+The quotes earn 0.9 bps of spread but pay 10 bps in fees, so the run loses money. [Backtesting](../explanation/backtesting.md) explains how to read the decomposition.
 
 `fastmm init` writes:
 
@@ -24,14 +40,14 @@ python backtest.py
 | `live.toml` | the same strategy on Binance Spot Demo Mode |
 | `README.md` | what to change first |
 
-The backtest writes its fills, orders and equity curve to `runs/backtest/`. Two more commands:
+The backtest writes its fills, orders and equity curve to `runs/backtest/`. Two more commands sweep a parameter and draw the report:
 
 ```bash
 python backtest.py --sweep half_spread_bps=0.005,0.01,0.02,0.05   # every value in one pass
 fastmm report runs/backtest                                       # runs/backtest/report.html
 ```
 
-The report is one HTML page: equity, inventory, where the PnL came from, markouts and fill quality ([Run report](../reference/run-report.md)). The quotes earn less than the fees at the default fee level; [Backtesting](../explanation/backtesting.md) explains how to read the decomposition.
+The report is one HTML page: equity, inventory, where the PnL came from, markouts and fill quality ([Run report](../reference/run-report.md)).
 
 ## 2. Live against the simulated exchange
 

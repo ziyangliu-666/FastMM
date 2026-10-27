@@ -5,9 +5,11 @@
 [![PyPI](https://img.shields.io/pypi/v/fastmm-engine)](https://pypi.org/project/fastmm-engine/)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-FastMM is a low-latency market-making engine. Read the [documentation](https://ziy.bio/FastMM/).
+FastMM is a low-latency market-making engine in C++ with Python strategies. Read the [documentation](https://ziy.bio/FastMM/).
 
-https://github.com/user-attachments/assets/dcd130c5-28fe-482f-a757-d0fc6550c5b9
+![A sweep tests many strategies in one pass over the recorded market](docs/assets/anim/backtest-sweep.gif)
+
+What a market maker does, and what FastMM does for one: [FastMM in two minutes](https://github.com/user-attachments/assets/dcd130c5-28fe-482f-a757-d0fc6550c5b9).
 
 ## Features
 
@@ -27,7 +29,15 @@ fastmm init my-mm && cd my-mm
 python backtest.py
 ```
 
-This runs a strategy on a simulated market.
+```text
+backtest py:MyMm  seed=1  md_events=7149  steps=12428  wall=0.02s
+  net pnl                        -5.5272
+  realized / unrealized / fees   0.5198 / 0.0005 / 6.0475
+  fills (maker / taker)          1036 (1036 / 0)
+  ...
+```
+
+This backtests a strategy on a simulated market; the [Quick start](https://ziy.bio/FastMM/getting-started/quickstart/) goes on to a live session.
 
 ## A strategy
 

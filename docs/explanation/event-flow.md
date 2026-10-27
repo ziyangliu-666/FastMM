@@ -1,75 +1,90 @@
 # Event flow
 
-One market-data update in `fastmm-live`, from the venue's socket to an order on the wire and its fill back into the strategy. Backtests and replay run the same engine with a simulated clock, feed and transport ([Determinism](determinism.md)); threads and rings: [Architecture](architecture.md).
+One market-data update in `fastmm-live` travels from the venue's socket to an order on the wire, and its fill comes back into the strategy. Backtests and replays run the same engine with a simulated clock, feed and transport ([Determinism](determinism.md)); threads and rings are in [Architecture](architecture.md).
 
-```mermaid
-flowchart LR
-  RX["socket, TLS, WebSocket,<br/>parser, book sync"] -- "md ring" --> ENG["engine: journal, book,<br/>on_book"]
-  ENG --> QM["quote manager,<br/>risk check, OMS"]
-  QM -- "outbound ring" --> TX["encoder, signer,<br/>socket"]
-  TX --> V["venue"]
-  V -- "ack, fill" --> US["user-stream parser"]
-  US -- "order ring" --> OE["engine: journal, OMS,<br/>position, on_fill"]
-```
+## 1. Receive and decode
 
-The network threads run the left and right ends; the engine thread runs the middle. On `nasdaq_itch` the receive side is UDP lines A and B, MoldUDP64, ITCH and an L3 book, and orders go out through the OUCH encoder.
+The network thread reads the socket, decrypts TLS, unframes WebSocket messages and parses the venue's JSON into fixed-size messages. It stamps the receive time (T0) before parsing and the decode time (T1) after.
 
-## 1. Receive and normalise (network thread)
+| Connection | Messages |
+|---|---|
+| market data | `BookDeltaMsg` (snapshot or delta), `TradeMsg`, `BookTickerMsg` |
+| user stream | `OrderAckMsg`, `OrderFillMsg` and the other order events |
 
-Each venue has a network thread running a `net::Reactor` (epoll or io_uring). It reads the socket, decrypts TLS, unframes WebSocket messages and parses the venue's JSON with simdjson into FastMM's fixed-size messages: `BookDeltaMsg` (a snapshot or a delta), `TradeMsg`, `BookTickerMsg` on the market-data connection; `OrderAckMsg`, `OrderFillMsg` and the other order events on the user stream. The receive time is stamped (T0) before parsing and the decode time after (T1).
+The book-sync state machine aligns the REST snapshot with the delta stream by the venue's sequence numbers. A gap puts the book into `Resyncing` and fetches a new snapshot; a connection silent for `stale_ms` is reported `Stale`.
 
-The book-sync state machine aligns the REST snapshot with the delta stream using the venue's sequence numbers. A gap puts the book into `Resyncing`, sends a `ConnectionStateMsg` and fetches a new snapshot; a connection without traffic for `stale_ms` is reported `Stale`.
+### Multicast venues
 
-A multicast venue (`nasdaq_itch`) has no TLS or JSON. The network thread takes a batch of UDP datagrams from the kernel (`recvmmsg`) or from an AF_XDP RX ring and stamps T0 once per batch, together with the wall clock; `recv_ts` is the kernel's receive time of the datagram, so the kernel-to-T0 time is measured too. The MoldUDP64 receiver takes the first copy of each packet from line A or B, holds packets that arrive ahead of a gap and re-requests missing ones; a message delivered later keeps its datagram's T0. Each ITCH message updates the instrument's L3 book (order by order), and after each datagram the changed top levels go out as one `BookDeltaMsg` per instrument; T1 is taken after the L3 update. A gap that cannot be recovered, or an inconsistent L3 book, puts the venue into `Resyncing` until a GLIMPSE snapshot has rebuilt the books ([Venue connectors](../reference/venues/nasdaq-itch.md#startup-and-recovery)).
+`nasdaq_itch` has no TLS or JSON; the receive side is UDP lines A and B, MoldUDP64, ITCH and an L3 book, and orders go out through OUCH.
 
-## 2. Hand over (rings)
+1. The network thread takes a batch of datagrams from the kernel or an AF_XDP ring and stamps T0 once per batch. The kernel's receive time is recorded too.
+2. MoldUDP64 takes the first copy of each packet from line A or B, holds packets ahead of a gap and re-requests the missing ones.
+3. Each ITCH message updates the instrument's L3 book; after each datagram the changed top levels go out as one `BookDeltaMsg` per instrument (T1).
+4. A gap that cannot be recovered puts the venue into `Resyncing` until a GLIMPSE snapshot rebuilds the books ([Venue connectors](../reference/venues/nasdaq-itch.md#startup-and-recovery)).
 
-Messages cross to the engine through single-producer, single-consumer rings, two per venue (market data and order events) plus the control ring. Behind `fastmm-gateway` the venue rings are `ShmRing`s in shared memory. A full market-data ring drops the delta and forces a resync; order events are never dropped, and an order ring overflow shuts the session down. The engine polls the rings round-robin, at most 64 messages per ring per visit and `[engine] max_events_per_step` (default 64) per step, then runs due timers.
+## 2. Hand over
 
-## 3. Consume (engine thread)
+Messages cross to the engine through single-producer, single-consumer rings: market data and order events per venue, plus the control ring. The engine visits them round-robin, at most `[engine] max_events_per_step` (default 64) per ring, then runs due timers.
 
-For each event the engine reads its clock once (the engine clock, `ctx.now()`), records the event in the journal with that time, and dispatches on the message type.
+| Ring full | Result |
+|---|---|
+| market data | the delta is dropped and the book resyncs |
+| order events | the kill switch ends the session; order events are never dropped |
+
+## 3. Consume
+
+For each event the engine reads its clock once, which is `ctx.now()` for the hooks. It records the event in the journal with that time, then dispatches on its type.
 
 ## 4. Market data
 
 For a book message the engine:
 
 1. applies it to the instrument's L2 book (T2);
-2. if the book is valid, hands the mid to risk (price collar and staleness), marks the position at the mid and checks `max_loss`; if the book stays crossed longer than `crossed_grace_ms`, pulls the instrument's quotes;
-3. calls `on_book(ctx, id, book)`.
+2. if the book is valid, marks the position at the mid, updates the price collar and checks `max_loss`;
+3. pulls the instrument's quotes if the book stays crossed longer than `crossed_grace_ms`;
+4. calls `on_book(ctx, id, book)`.
 
 A trade updates the fat-finger band and calls `on_trade`; a book ticker calls `on_book_ticker`. Messages for instruments outside the table reach no hook.
 
-## 5. Decide (strategy)
+## 5. Decide
 
-The hook reads what it needs through `ctx` (book, position, working orders, parameters) and usually calls `ctx.set_quotes(id, quotes)` with up to 8 levels per side. The call returns at once (T3); nothing has been sent yet.
+The hook reads what it needs through `ctx` and usually calls `ctx.set_quotes(id, quotes)` with up to 8 levels per side. The call returns at once (T3); nothing has been sent yet.
 
-## 6. From desired quotes to orders (quote manager)
+## 6. From quotes to orders
 
-The quote manager compares each desired level with the order in the same slot:
+The quote manager compares each wanted level with the order resting in the same slot:
 
-- keep it when the price is within `min_requote_ticks` and the remaining quantity covers `min_qty_bps` of the desired one, or when the slot changed less than `min_requote_interval_ms` ago;
-- replace it when the venue and `supports_replace` allow;
-- otherwise cancel it, and send the new order once the cancel's ack arrives (the balance check then sees the old order's hold released; if the old order filled instead and the balance no longer covers the new one, it is withheld).
+| Decision | When |
+|---|---|
+| keep | the price is within `min_requote_ticks` and the remaining quantity covers `min_qty_bps` of the wanted one, or the slot changed less than `min_requote_interval_ms` ago |
+| replace | the venue supports it and `supports_replace` is on |
+| cancel, then new | otherwise; the new order goes out once the cancel is acknowledged, and is withheld if the old order filled instead and the balance no longer covers it |
 
-Orders waiting for a venue response are never touched until the response arrives, and a side that the venue rejected recently is paused (`reject_backoff_ms`). Direct orders from `ctx.send` skip this step.
+An order waiting for a venue response is left alone until it arrives. A side the venue rejected recently pauses for `reject_backoff_ms`. Orders sent directly with `ctx.send` skip this step.
 
-## 7. Check and record (risk, OMS)
+## 7. Check and record
 
-Each new order and replace passes the pre-trade checks ([Risk model](risk-model.md)). A passing order enters the OMS as `PendingNew` with a client order id (session epoch and sequence), and its `OutNewOrderMsg`, `OutCancelMsg` or `OutReplaceMsg` goes into the event's outbound batch.
+Each new order and replace passes the pre-trade checks ([Risk model](risk-model.md)). A passing order enters the OMS as `PendingNew` with a client order id made of the session epoch and a sequence number, and joins the event's outbound batch.
 
-## 8. Send (transport, network thread)
+## 8. Send
 
-When the event is fully handled, the engine hands the batch to the transport (T4 to T5): live, a push into the venue's outbound ring and a wake-up of the network thread; in a backtest, the simulated venue's order queue. The journal records a copy of each message sent. The network thread encodes the order in the venue's format, signs it and writes it to the WebSocket API or REST connection (OUCH over SoupBinTCP for `nasdaq_itch` with `order_entry = "sim_ouch"`), and records the wire tick-to-trade latency from T0.
+When the event is handled, the engine hands the batch over (T4 to T5). Live, that is a push to the venue's outbound ring and a wake-up of the network thread; in a backtest, the simulated venue's queue. The journal keeps a copy of each message.
+
+The network thread encodes the order in the venue's format, signs it and writes it to the WebSocket API or REST connection. It records the wire tick-to-trade latency from T0.
 
 ## 9. The response
 
-The venue's acknowledgement or fill arrives on the user stream and takes steps 1 to 3 through the order ring. The OMS applies the state transition (for example `PendingNew` to `Live`, or a partial fill) and the quote manager updates the slot. For a fill, the engine first books the position and fees, checks `max_loss`, and then calls `on_fill(ctx, fill)`; `on_order_update(ctx, u)` follows for the same execution.
+The acknowledgement or fill comes back on the user stream and takes steps 1 to 3 through the order ring. The OMS applies the transition, for example `PendingNew` to `Live`, and the quote manager updates the slot. For a fill, the engine books the position and fees, checks `max_loss`, calls `on_fill(ctx, fill)` and then `on_order_update(ctx, u)`.
 
 ## 10. Everything else
 
-- Timers fire from a timer wheel in engine time, between events; each firing is journaled as a synthetic `Timer` message and calls `on_timer`.
-- Connection changes: for any state other than `Live` the engine pulls the venue's quotes and, for market data, clears its books, then calls `on_connection`. After an order-channel reconnect the connector replays the executions since the last one booked, then sends a reconciliation (Begin, open orders, positions where the venue has them, End) that aligns the OMS with the venue; quotes are paused during it and restored at the end. Every connector with order entry also replays executions once a minute, which books a fill the stream dropped without a disconnect.
-- Funding payments of perpetuals arrive on the order ring as `Funding` events and are booked as realized PnL of the instrument, once per venue id; `max_loss` is checked at once. There is no strategy hook.
-- Quoting changes: after each event or timer, if `ctx.quoting_enabled()` changed, the engine calls `on_quoting`.
-- Shutdown: the control thread requests the kill switch (quotes pulled, orders cancelled through the engine) and independently cancels all orders on each venue over REST, then stops the threads ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md)).
+| Event | What the engine does |
+|---|---|
+| timer | fires from a timer wheel in engine time, between events; journaled as a `Timer` message, then `on_timer` |
+| connection change | for any state but `Live`, pulls the venue's quotes, clears its books for market data, then calls `on_connection` |
+| order channel reconnect | the connector replays executions since the last one booked, then reconciles open orders and positions; quotes pause until it ends |
+| funding payment | booked as realized PnL of the perpetual and checked against `max_loss`; no hook |
+| quoting switched on or off | `on_quoting`, after the event or timer that changed it |
+| shutdown | kill switch through the engine, then cancel-all on each venue over REST ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md)) |
+
+Every connector with order entry also replays executions once a minute, which books a fill the stream dropped without a disconnect.

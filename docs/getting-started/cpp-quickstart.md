@@ -1,6 +1,6 @@
 # Quick start in C++
 
-A strategy written in C++, backtested from a CMake project. It needs a C++20 compiler and CMake, not the Python package; to start in Python instead, see the [Quick start](quickstart.md). The code is in `examples/quickstart/`; CI builds and runs it (ctest `examples.quickstart`).
+A strategy written in C++, backtested from a CMake project. It needs a C++20 compiler and CMake, not the Python package; for Python, see the [Quick start](quickstart.md). The code is in `examples/quickstart/`.
 
 ## 1. The strategy
 
@@ -76,7 +76,7 @@ cmake --build --preset release --target my_mm_backtest
 python3 tools/report.py runs/quickstart              # writes runs/quickstart/report.html
 ```
 
-Open `runs/quickstart/report.html`: one self-contained page with the equity curve, the inventory, where the PnL came from, the markouts and the fill quality ([Run report](../reference/run-report.md)). `python3 tools/report.py` needs nothing but Python 3; with the Python package installed the same command is `fastmm report runs/quickstart`.
+Open `runs/quickstart/report.html`: the equity curve, the inventory, where the PnL came from, the markouts and the fill quality on one page ([Run report](../reference/run-report.md)). `tools/report.py` needs only Python 3; with the Python package the same command is `fastmm report runs/quickstart`.
 
 In your own project, copy `examples/quickstart/`. Its `CMakeLists.txt` fetches FastMM:
 

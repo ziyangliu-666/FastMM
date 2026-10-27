@@ -1,5 +1,16 @@
 # Install
 
+FastMM comes as a Python package with the engine inside, or as C++ programs built from this repository.
+
+| You want | Install |
+|---|---|
+| strategies in Python, backtests, the `fastmm` command | `pip install "fastmm-engine[hot]"` ([below](#without-building-it)) |
+| the same, trading on venues | add `pip install "fastmm-engine[live]"` ([Python](#python)) |
+| the C++ programs from a release | a tarball or a container image ([Deploy a release](../how-to/operations/deploy.md)) |
+| strategies in C++, or work on FastMM | [Build from source](#build-from-source) |
+
+What may change between releases: [Versions and compatibility](../reference/compatibility.md).
+
 ## Without building it
 
 ```bash
@@ -9,26 +20,29 @@ fastmm init my-mm && cd my-mm        # a config, a strategy and a backtest
 python backtest.py
 ```
 
-On Debian and Ubuntu, `python3 -m venv` needs `sudo apt install python3-venv` first.
+On Debian and Ubuntu, `python3 -m venv` needs `sudo apt install python3-venv` first. The [Quick start](quickstart.md) walks through the files `fastmm init` writes.
 
-The wheels are built for Linux x86-64 only. On macOS (Apple silicon runs it under emulation) or Windows, run the same steps in a Linux container:
+The wheels are built for Linux x86-64 only. On macOS or Windows, run the same steps in a Linux container; Apple silicon runs it under emulation, and WSL2 takes the Linux steps as they are:
 
 ```bash
 docker run --rm -it --platform linux/amd64 -v "$PWD":/work -w /work python:3.12-slim \
   sh -c 'pip install "fastmm-engine[hot]" && fastmm init my-mm && cd my-mm && python backtest.py'
 ```
 
-The project lands in `./my-mm` on the host. WSL2 on Windows takes the Linux steps as they are.
+The project lands in `./my-mm` on the host. `fastmm init` takes a venue and a profile for its `live.toml`:
 
-`fastmm init` writes `config.toml`, `strategy.py`, `backtest.py`, `sim.toml`, `live.toml` and a README; the backtest runs on the simulated market, `sim.toml` live against the simulated exchange that `fastmm sim` starts on 127.0.0.1:9080 (no keys, no network; `pip install "fastmm-engine[live]"`), `live.toml` on Binance Spot Demo Mode, or with `--venue binance-testnet` on the Spot testnet at testnet.binance.vision (its own keys) and with `--venue binance` on the real market, which `--dry-run` records without keys. `fastmm init --profile production` adds `production.toml`: a Binance Spot account on a dedicated host, with `spin_mode = "busy"`, the engine and network threads on cores of their own, `lock_memory`, `cpu_dma_latency_us = 0`, an Ed25519 key and SBE market data. `pip install "fastmm-engine[live]"` adds the live runtime ([Python](#python)).
-
-The C++ programs come as a tarball or a container image, one per release: [Deploy a release](../how-to/operations/deploy.md). What may change between releases: [Versions and compatibility](../reference/compatibility.md).
+| Option | `live.toml` trades on |
+|---|---|
+| none | Binance Spot Demo Mode |
+| `--venue binance-testnet` | the Spot testnet at testnet.binance.vision, with its own keys |
+| `--venue binance` | the real Binance Spot market; `--dry-run` records it without keys |
+| `--profile production` | adds `production.toml`: a dedicated host with busy spinning, the engine and network threads on their own cores, locked memory, an Ed25519 key and SBE market data |
 
 ## Build from source
 
 The steps below build the repository; all commands run from its root.
 
-## Requirements
+### Requirements
 
 | Tool | Version | Notes |
 |---|---|---|
@@ -39,9 +53,15 @@ The steps below build the repository; all commands run from its root.
 | make | any | liburing's `configure` script calls it; not needed with `FASTMM_BUILD_NET=OFF` |
 | Python | 3.10 or newer | the tools in `tools/` and the Python package |
 
-On Ubuntu 24.04: `sudo apt install g++ make cmake ninja-build libssl-dev python3 python3-venv` (its `g++` is gcc 13). Every other dependency (fmt, toml++, CLI11, simdjson, liburing, SQLite, doctest, Google Benchmark, pybind11) is downloaded and pinned by CPM; [Dependencies](../contributing/dependencies.md) lists the versions.
+On Ubuntu 24.04, whose `g++` is gcc 13:
 
-## Build
+```bash
+sudo apt install g++ make cmake ninja-build libssl-dev python3 python3-venv
+```
+
+CPM downloads and pins every other dependency, from fmt to pybind11 ([Dependencies](../contributing/dependencies.md)).
+
+### Build
 
 ```bash
 ./scripts/bootstrap.sh
@@ -51,17 +71,25 @@ ctest --preset release -j"$(nproc)"
 
 `bootstrap.sh` checks the toolchain, creates the CPM download cache ([Dependencies](../contributing/dependencies.md)) and configures the `release` preset; `--dev` also configures `debug` and installs the pre-commit hooks. The programs are in `build/release/bin/`.
 
-## Check the build
+### Check the build
 
 ```bash
 ./build/release/bin/fastmm-backtest --list-strategies
-./build/release/bin/fastmm-backtest --config configs/backtest-example.toml \
-    --data synthetic
+./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic --out -
 ```
 
-The first command lists the built-in strategies with their parameters. The second backtests `basic_mm` for 60 s of simulated time and prints a summary.
+The first command lists the built-in strategies with their parameters. The second backtests `basic_mm` for 60 s of simulated time and prints a summary:
 
-## Presets
+<!-- output: fastmm-backtest --config configs/backtest-example.toml --data synthetic --out - -->
+```text
+backtest basic_mm  seed=1  md_events=15955  steps=16745  wall=0.01s
+  net pnl                        -12.1548
+  realized / unrealized / fees   0.0086 / 0.0001 / 12.1635
+  fills (maker / taker)          147 (147 / 0)
+...
+```
+
+### Presets
 
 | Preset | Build | Use |
 |---|---|---|
@@ -75,13 +103,13 @@ The first command lists the built-in strategies with their parameters. The secon
 | `clang-release` | clang, LTO | the second compiler in CI |
 | `python` | the Python module only, no networking | wheel builds |
 
-`ctest --preset <name>` runs the tests of a preset; the test presets leave out the opt-in labels `live` (tests against real testnets) and `autobahn`. They set no job count: without `-j`, ctest runs one test at a time unless `CTEST_PARALLEL_LEVEL` is set.
+`ctest --preset <name>` runs a preset's tests, without the opt-in labels `live` (real testnets) and `autobahn`. The presets set no job count: pass `-j` or set `CTEST_PARALLEL_LEVEL`.
 
-`ctest --test-dir build/release -L autobahn` runs [Autobahn|Testsuite](https://github.com/crossbario/autobahn-testsuite) cases 1-7, 9 and 10 against the WebSocket client and server (`scripts/autobahn.sh`), in the `crossbario/autobahn-testsuite` Docker image, or with the `wstest` named by `FASTMM_WSTEST`. Without either the two tests are skipped. Any FAILED case fails the test; the JSON and HTML reports are written to `build/release/autobahn/{client,server}/`. Cases 12 and 13 test permessage-deflate, which FastMM does not negotiate.
+`ctest --test-dir build/release -L autobahn` runs the [Autobahn|Testsuite](https://github.com/crossbario/autobahn-testsuite) WebSocket cases 1-7, 9 and 10 against the client and the server. It needs Docker or a `wstest` named by `FASTMM_WSTEST`, and skips without either. Reports go to `build/release/autobahn/`.
 
-## Optional codecs
+### Optional codecs
 
-Two wire codecs are complete and tested but have no connector behind them yet, so the default build leaves them out of `fastmm::codecs`, along with their tests and benchmarks. Their headers stay in the tree; add the option to build one.
+Two wire codecs have no connector behind them, so the default build leaves them out with their tests and benchmarks. An option builds one:
 
 | Option | Builds | Documented in |
 |---|---|---|
@@ -98,12 +126,14 @@ cmake --preset release -DFASTMM_CODEC_FIX=ON -DFASTMM_CODEC_MDP3=ON
 docker compose -f deploy/docker/compose.yml up --build
 ```
 
-This builds one image and starts two containers, `sim-exchange` and `engine`, which run `fastmm-sim-exchange` and `fastmm-live` trading `basic_mm` against it for 120 s (`configs/sim-docker.toml`). Journals go to `runs/`. The image is the demo: it runs as root and carries test TLS certificates. The production image is `deploy/docker/Dockerfile.production`, non-root and without them ([Deploy a release](../how-to/operations/deploy.md#run-the-container)).
+This starts `fastmm-sim-exchange` and `fastmm-live` in two containers, trading `basic_mm` against the simulator for 120 s (`configs/sim-docker.toml`); journals go to `runs/`. The image is a demo that runs as root with test TLS certificates; the production image is `deploy/docker/Dockerfile.production` ([Deploy a release](../how-to/operations/deploy.md#run-the-container)).
 
 ## WSL2
 
-- The log of a live session shows `host wall clock stepped by <n> ns relative to CLOCK_MONOTONIC_RAW ...` and `TSC recalibration stepped the engine clock by <n> ns ...` warnings: WSL2 steps the Linux wall clock to follow Windows, and the engine clock follows it ([Troubleshooting](../how-to/operations/troubleshooting.md), [Architecture](../explanation/architecture.md)).
-- Keep `[engine] spin_mode = "adaptive"` and `cpu = -1`, as the shipped configurations do. `spin_mode`, `cpu` and `net_cpus` are described in [Configuration](../reference/configuration.md#engine), and CPU pinning on dedicated machines in the [Go-live checklist](../how-to/operations/go-live-checklist.md).
+| What you see or set | Why |
+|---|---|
+| `host wall clock stepped by <n> ns ...` and `TSC recalibration stepped the engine clock by <n> ns ...` in the log | WSL2 steps the Linux wall clock to follow Windows, and the engine clock follows it ([Clock calibration](../explanation/architecture.md#clock-calibration)) |
+| keep `[engine] spin_mode = "adaptive"` and `cpu = -1`, as the shipped configurations do | a desktop has no cores to dedicate ([Configuration](../reference/configuration.md#engine)) |
 
 ## Python
 
@@ -119,7 +149,7 @@ pip install "fastmm-engine[hot]"    # backtests, Python strategies, the fastmm c
 pip install "fastmm-engine[live]"   # adds fastmm-engine-live of the same version
 ```
 
-Both wheels are `manylinux_2_28` x86-64 and have to be the same version ([Versions and compatibility](../reference/compatibility.md)). The `fastmm` console script is the same entry point as `python -m fastmm`: `fastmm init <dir>` writes a starter project, `fastmm run module:Class --config file.toml` runs a strategy live ([Run a Python strategy live](../how-to/strategies/python-live.md)).
+Both wheels are `manylinux_2_28` x86-64 and must be the same version ([Versions and compatibility](../reference/compatibility.md)). `fastmm` and `python -m fastmm` are the same command; `fastmm run module:Class --config file.toml` runs a strategy live ([Run a Python strategy live](../how-to/strategies/python-live.md)).
 
 ### Install from source
 
@@ -131,9 +161,16 @@ python3 -m venv .venv
 .venv/bin/pip install ./python/live
 ```
 
-`pip install ".[hot,live]"` takes `fastmm-engine-live` from PyPI, and a checkout whose version is not a release has no match there. `./python/live` builds that package from the same checkout and links OpenSSL statically; with the `libssl-dev` of Ubuntu 24.04 that works as it is, and `FASTMM_OPENSSL_STATIC=OFF` links the shared libraries instead.
+Install `./python/live` from the checkout rather than the `live` extra: the extra fetches `fastmm-engine-live` from PyPI, which has no match for a version that is not a release. It links OpenSSL statically; `FASTMM_OPENSSL_STATIC=OFF` links the shared libraries.
 
-TLS connections, from the `fastmm-live` program or the Python package, trust the CA certificates in `SSL_CERT_FILE` and `SSL_CERT_DIR` if either is set, otherwise in the first existing file of `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt` and `/etc/ssl/cert.pem`, otherwise in `certifi` (Python package only), otherwise in OpenSSL's built-in paths. A venue's `ca_file` adds to them.
+TLS connections, from `fastmm-live` or the Python package, trust the first CA source found:
+
+1. `SSL_CERT_FILE` or `SSL_CERT_DIR`, if either is set;
+2. the first of `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt` and `/etc/ssl/cert.pem`;
+3. `certifi`, in the Python package;
+4. OpenSSL's built-in paths.
+
+A venue's `ca_file` adds to them.
 
 ## Use FastMM from your own project
 
