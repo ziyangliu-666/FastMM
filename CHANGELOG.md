@@ -4,76 +4,106 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
-### Changed
-- core: the quote manager reconciles the levels the strategy asks for and those still holding an order, not all eight levels of each side on every requote.
-- core: the OMS keeps one map of order ids: an order's id names its terminal record from the moment the order ends, instead of moving to a second map.
-- core: `Engine::warm_up()` touches the slots of the timer wheel and of `OwnQuantity` too, so a live order takes no page fault in them.
-- core: `RecentMap` keeps its keys in insertion order and an index of 8-byte slots: the OMS's memory of 64Ki executions takes 1.6 MiB, not 2.5, and a fill touches one line of the index, plus the line of the execution it evicts, fetched at the fill before.
-- core: `OwnQuantity` keeps each order's resting quantity with the order: an order event updates that order alone and never allocates, where it rewrote the instrument's list of segments, which grew on a busy instrument.
-- sim: the simulator's transport writes an order message into the scheduler slot it takes instead of building and copying it, and draws a latency without a call when there is no jitter.
-- core: the timer wheel's poll and the engine's catch-up with a shared market return inline when there is nothing to do.
-- backtest: `fastmm-backtest --sweep` says first whether its points share passes, prints each point's risk rejects and kill reason, and prints no warnings of its runs.
-- backtest: a sweep's log lines carry the simulated time of the run that wrote them and name its point (`#n`, `LogRunScope`).
-- backtest: the walk-forward table gives each fold's first instant in UTC, not seconds from the data's start.
-- python: `sweep_frame` adds `kill_reason` and each horizon's `markout_bps_<label>`.
-- live: a restart takes a stock's position from its venue's report, as it does a derivative's.
-- live: a dry run keeps the keys of a venue whose market data needs them (`market_data_keys`).
-- backtest: the passes of a sweep that run at the same time read the data once: one more thread reads it, puts it in venue order and hands it to all of them, instead of each pass reading and ordering a copy of its own.
-- backtest: a sweep deals its points to its threads' passes in waves of at most 128 runs a pass, so the passes of a wave end together and no pass runs alone at the end, and it hands the memory a wave freed back to the system before the next wave starts.
-- backtest: `--threads` and `threads=` of a sweep are no longer capped at 32.
-- sim: with `own_orders_in_feed` the simulated venue sends the recorded market data as recorded, and our resting quantity that changed on an instrument as an `OwnLevels` message right ahead of its next message; the engine shows it in its book and book tickers. No recorded level is rewritten and no book ticker is made up for our orders, so the results of a strategy that reads the book move.
-- sim: market-data latency jitter draws from a stream of its own, so the feed's delays depend on the seed and the data alone; runs with jittered market data give other results than before.
-- backtest: runs whose feed shows their orders, the shipped default, and runs with jittered market data on one seed share their pass's market data like the rest.
-- backtest: a sweep's points keep no order rows; their metrics count the orders as they go (`OrderStats`) and their outbound hash covers them. `fastmm-backtest --sweep` keeps of each point the metrics it prints.
-- core: the journal format is 5: a backtest whose feed shows its orders journals the market data as recorded and its quantity as `OwnLevels` records; `strip_own` leaves such a journal as it is.
-- core: an engine holds books for its own instruments, not 256, and the queue estimate allocates its state at the strategy's first `queue_ahead`.
-- core: the timer wheel's poll skips the walk of its slots when nothing is due.
-- core: the L3 book's overflow store holds its levels in blocks of 64, so a new level deep in the book moves one block, not every level behind it.
-- core: `L3BookConfig::max_overflow_levels` defaults to 8192 levels per side.
-- codecs: `ItchL2Bridge` keeps each book's top up to date as it applies messages instead of reading it from the L3 book for every delta.
-- core: the timer wheel keeps its next expiry instead of scanning every timer for it each time the simulator asks.
-- backtest: under `l2_queue` and `l3_queue` the points of a sweep or a walk-forward's fold and the arms of an `[ab]` branch test share their passes over the data, each with the result it gives alone, whatever the strategy.
-- backtest: a run sharing a pass is handed only the market data its engine needs and catches up with the rest before it acts, and a recorded event reaches only the runs whose orders it can reach.
-- sim: the market-data wire starts at 256 KiB and grows when a burst fills it, and the next inbound message is looked for only in the wires that hold one.
+## [0.10.0] - 2026-10-28
+
+Sweeps, walk-forwards and `[ab]` branches under the queue fill models run all their points in one
+pass over the data, each with the result it gives alone, from C++ and from `@fastmm.hot` Python.
+Backtests also run order by order on a day of Nasdaq TotalView-ITCH, and `alpaca` trades US stocks.
+
+Highlights:
+- Sweeps run every point in passes shared over the data, on every core (Changed, backtest)
+- A sweep's point sets latency, fees and queue conservatism as well as parameters (Added, backtest)
+- `fastmm-backtest --sweep --folds K` runs a walk-forward and writes `sweep.jsonl` (Added, backtest)
+- `fill_model = "l3_queue"` takes queue positions from order-by-order data (Added, sim)
+- `alpaca` trades US stocks on an Alpaca paper or live account (Added, venues)
+- The engine turns a book update into an order in 143 ns (p50), from 159 (Changed, core)
+
+### Breaking changes
+- core: journal format 5; a journal written by 0.10 does not open in 0.9.
+- python: the hot hook ABI is version 2; hooks cached for version 1 are compiled again.
+- sim: a backtest no longer writes our resting quantity into the recorded book.
+- sim: no book ticker is made up for our orders; results of strategies that read the book change.
+- sim: `latency_md_jitter_us` draws from its own stream; results of runs that set it change.
+- backtest: a journal takes the configuration's instrument ids by symbol; `remap=0` keeps its own.
+- backtest: a sweep's points keep no order rows; run a point as its own backtest for its orders.
+- live: `LiveOptions::confine_other_threads` is gone; a pinned session confines its other threads.
 
 ### Added
-- python: a hot hook declares the band its `on_book` ignores with `ctx.quiet_book(lo, hi)`, `ctx.quiet_book_raw` and `ctx.quiet_book()`, as `quiet_book` in C++; the hot ABI is version 2. The `fastmm init` strategy declares its requote band.
-- backtest: a sweep's point sets backtest settings as well as strategy parameters: `latency_fixed_us`, `latency_jitter_us`, `latency_md_us`, `latency_md_jitter_us`, `p_drop`, `queue_conservatism`, `maker_fee_bps`, `taker_fee_bps` (`BacktestConfig::set_setting`), in `fastmm-backtest --sweep` and `fastmm.sweep`.
-- backtest: sweeps and walk-forwards take a list of points as well as a grid (`bt::SweepPoints`; a list of dicts in Python).
-- backtest: `fastmm-backtest --sweep --folds K [--metric M]` runs a walk-forward; `--out` writes `sweep.jsonl`, each point's values and `summary.json` on one line.
+- core: `StrategyContext::watch` and `quiet_book` declare the market data a strategy ignores.
+- core: `basic_mm` and `lead_mm` declare the market data they ignore.
+- sim: `fill_model = "l3_queue"` takes each order's queue position from order-by-order data.
+- backtest: `fastmm-backtest --sweep key=v1,v2` runs a grid; `--solo` runs its points apart.
+- backtest: sweeps and walk-forwards take a list of points as well as a grid.
+- backtest: a sweep's point sets `latency_*`, `p_drop`, `queue_conservatism` and the fees.
+- backtest: `fastmm-backtest --sweep --folds K` runs a walk-forward; `--out` writes `sweep.jsonl`.
+- backtest: `--verify K` and `fastmm.sweep(verify=K)` run K points again alone and compare them.
+- backtest: `bt::run_multiverse` runs many configurations of one strategy in one pass.
+- backtest: `bt::ResultHook` receives each result of a sweep as it is done.
+- backtest: `bt::score_walk_forward` and `fastmm.walk_forward(metric=)` take a score function.
+- backtest: the `itch` source runs a backtest over a day of Nasdaq TotalView-ITCH, every order.
 - backtest: `summary.json` has `risk_rejects`, the risk checks' refusals by reason.
-- backtest: `bt::score_walk_forward` takes a score function; `fastmm.walk_forward(metric=)` takes a function of a `BacktestResult`.
-- python: `fastmm.sweep(summary_only=True)` and `fastmm.walk_forward(summary_only=True)` keep each point's metrics and drop its fills and equity bars.
-- venues: `alpaca`, US stocks on an Alpaca paper or live account with IEX quotes and trades.
+- backtest: the summary and report split each markout into maker and taker, and by instrument.
+- backtest: a run warns of each configured instrument the data had no events for.
+- backtest: `fastmm-data convert` reads any `--data` spec, several merged with `;` included.
+- python: `fastmm.sweep` and `fastmm.walk_forward` run `@fastmm.hot` classes in shared passes.
+- python: `ctx.quiet_book(lo, hi)` declares the band a hot `on_book` ignores.
+- python: the `fastmm init` strategy declares its requote band.
+- python: `summary_only=True` in `fastmm.sweep` and `fastmm.walk_forward` keeps the metrics alone.
+- python: `sweep_frame` adds `kill_reason` and each horizon's `markout_bps_<label>`.
+- python: `BacktestConfig.keep_orders` and `BacktestResult.instruments`.
+- venues: `alpaca` trades US stocks on an Alpaca paper or live account with IEX quotes and trades.
 - venues: `alpaca` replaces with PATCH and reconciles from FILL activities and positions.
-- configs: `alpaca-paper.toml`, `basic_mm` on SPY with an Alpaca paper account.
+- venues: `nasdaq_itch` `max_overflow_levels` sets the L3 overflow store's capacity.
+- configs: `alpaca-paper.toml`, `backtest-xmm.toml` and `backtest-itch.toml`.
 - scripts: `alpaca-paper-check.sh` runs the opt-in `live.alpaca` check on a paper account.
-- backtest: `bt::ResultHook`: `bt::run_multiverse`, `bt::sweep` and `bt::sweep_by_name` hand each result to it as it is done, to keep only what the caller needs.
-- python: `BacktestConfig.keep_orders`.
-- bench: `fastmm-bench-multiverse --own-feed` and `--md-jitter-us`.
-- configs: `backtest-xmm.toml`, `xmm` quoting BTCUSDT on Binance and hedging on Bybit over Tardis data.
-- core: `StrategyContext::watch` and `quiet_book` declare the market data a strategy's hooks ignore; `basic_mm` and `lead_mm` declare theirs.
-- backtest: `fastmm-backtest --sweep ... --verify K` and `fastmm.sweep(..., verify=K)` run K points again as backtests of their own and fail on the first difference (`bt::result_difference`).
-- python: `fastmm.sweep` and `fastmm.walk_forward` run the points of a class with `@fastmm.hot` hooks in shared passes on C++ threads.
-- bench: `fastmm-bench-multiverse` times a multiverse of any strategy against separate backtests and checks its runs field by field.
-- backtest: the `itch` data source runs a backtest over a day of Nasdaq TotalView-ITCH, every order of the followed stocks; the engine trades on each book's L2 view and the simulated venue gets the orders themselves.
-- sim: `fill_model = "l3_queue"` takes each order's queue position from order-by-order data: it waits behind the recorded orders that came before it and fills from the executions that reach it.
-- bench: `fastmm-bench-queue-truth` scores `l2_queue` and `l3_queue` against a day of ITCH, where every order's outcome is known.
-- backtest: `bt::run_multiverse` runs many configurations of one strategy in one pass over recorded data (`backtest/multiverse.hpp`).
-- backtest: `fastmm-backtest --sweep key=v1,v2` runs a parameter grid; `--solo` runs its points as separate backtests, `--threads` sets the workers.
-- venues: `nasdaq_itch` `max_overflow_levels` sets the L3 overflow store's capacity, 8192 levels per side by default.
-- bench: `fastmm-bench-l3-itch` takes `--max-overflow` and `--from`, reports book errors by kind and the peak overflow levels, and reads files over 4 GiB.
+- bench: `fastmm-bench-multiverse` times a multiverse against separate backtests.
+- bench: `fastmm-bench-queue-truth` scores `l2_queue` and `l3_queue` against a day of ITCH.
+- bench: `fastmm-bench-l3-itch` takes `--max-overflow` and `--from` and reads files over 4 GiB.
+
+### Changed
+- core: tick to order takes 143 ns at p50, from 159.
+- core: the quote manager reconciles the levels asked for and those still holding an order.
+- core: the OMS keeps one map of order ids.
+- core: `RecentMap` indexes its keys with 8-byte slots; 64Ki executions take 1.6 MiB, not 2.5.
+- core: `OwnQuantity` keeps each order's quantity with the order; an order event never allocates.
+- core: `Engine::warm_up()` touches the timer wheel and `OwnQuantity` too.
+- core: the timer wheel keeps its next expiry and its poll returns inline when nothing is due.
+- core: an engine holds books for its own instruments, not 256.
+- core: a new level deep in an L3 book moves one block of 64 levels.
+- core: `L3BookConfig::max_overflow_levels` defaults to 8192 levels per side.
+- core: backtest and replay log lines carry the simulated time and name instruments `venue:symbol`.
+- codecs: `ItchL2Bridge` keeps each book's top up to date as it applies messages.
+- backtest: sweeps, walk-forwards and `[ab]` branches under `l2_queue` and `l3_queue` share passes.
+- backtest: shared passes take runs with our orders in the feed and with jittered market data.
+- backtest: the passes of a sweep that run at the same time read the data once.
+- backtest: a sweep deals its points in waves of at most 128 runs a pass.
+- backtest: `--threads` and `threads=` of a sweep are no longer capped at 32.
+- backtest: `fastmm-backtest --sweep` says whether points share passes and prints their rejects.
+- backtest: a sweep's log lines carry their run's simulated time and name its point.
+- backtest: the walk-forward table gives each fold's first instant in UTC.
+- backtest: fill places count resting orders only; inventory max is the peak at any fill.
+- backtest: a day of data within one bar of 86,400 s has an annualised Sharpe.
+- strategies: a hedge residual under every hedge instrument's minimum waits for more.
+- strategies: the hedge executor's log lines name instruments `venue:symbol`.
+- live: a session moves its other threads off the CPUs of the engine and network threads.
+- live: `fastmm-gateway` moves its other threads off `net_cpus`.
+- live: a restart takes a stock's position from its venue's report.
+- live: a dry run keeps the keys of a venue whose market data needs them (`market_data_keys`).
+- data: `fetch` deletes a ZIP or gzip once it is unpacked.
 
 ### Fixed
-- backtest: a walk-forward fold of order-by-order data runs under `l3_queue` and starts on the orders resting at its first instant.
-- backtest: a run sharing a pass takes a message behind those already in its engine's feed (an `[ab]` arm's parameters at the start), as it does alone.
-- core: an L3 book crossed by more than its price window keeps its window on the touch it holds instead of centring between the touches and holding neither.
-- venues: while `nasdaq_itch` waits for a snapshot it buffers only its stocks' messages, not the whole market's, so `recovery_buffer_packets` no longer fills in seconds at the open.
-- venues: a `nasdaq_itch` book whose capacity refuses an order leaves service alone; the venue no longer resynchronises every book and retakes the snapshot every second without going live.
-- venues: `nasdaq_itch` dates ITCH and OUCH timestamps from midnight US/Eastern, not UTC, and moves to the next day at each Eastern midnight; `exch_ts` was four or five hours early.
-- sim: `fastmm-sim-itch` timestamps count from midnight US/Eastern, as Nasdaq's do.
-- codecs: ITCH P and Q trades carry `TradeMsg::kNoAggressor`, as CME trades without an aggressor do, and `l2_queue` no longer fills a resting order from a print that names no side; Nasdaq sends B for every P trade.
-- venues: a busy Nasdaq stock's open no longer fills the L3 overflow store and resynchronises the feed; the store held a fixed 1024 levels per side.
+- core: an L3 book crossed by more than its window keeps its window on the touch it holds.
+- codecs: ITCH P and Q trades carry `TradeMsg::kNoAggressor`.
+- sim: `l2_queue` no longer fills a resting order from a trade that names no side.
+- sim: `fastmm-sim-itch` timestamps count from midnight US/Eastern.
+- venues: `nasdaq_itch` dates ITCH and OUCH timestamps from midnight US/Eastern, not UTC.
+- venues: `nasdaq_itch` buffers only its stocks' messages while it waits for a snapshot.
+- venues: a `nasdaq_itch` book that refuses an order no longer resynchronises every book.
+- venues: a busy Nasdaq stock's open no longer fills the L3 overflow store.
+
+### Documentation
+- docs: Sweep performance gives time, memory and scaling on 1 to 64 cores, against 0.9.0.
+- docs: How fast it is reads a 45-hour session; the benchmark results live on one page.
 
 ## [0.9.0] - 2026-10-24
 
