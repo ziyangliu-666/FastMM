@@ -421,6 +421,35 @@ if(TARGET fastmm-backtest)
   fastmm_cli_test(apps.fastmm-backtest.unknown_config_keys EXPECT_RC 3
     CMD $<TARGET_FILE:fastmm-backtest> --config ${_bt_typos_file} --data synthetic --duration 1 --out -
     EXPECT_REGEX "${_bt_typos_regex}")
+  # Sweeps over recorded data (tests/fixtures/btcusd), every point run again as a backtest of its
+  # own: basic_mm on Bitstamp, xmm on Bitstamp and Coinbase, under both queue fill models.
+  set(_btcusd ${PROJECT_SOURCE_DIR}/tests/fixtures/btcusd)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    ${_btcusd}/basic_mm.toml ${_btcusd}/xmm.toml)
+  set(_sweep_ok "8 points in multiverses .*8 points run again alone: the same results, fill for fill")
+  foreach(_model l3_queue l2_queue)
+    foreach(_strategy basic_mm xmm)
+      file(READ ${_btcusd}/${_strategy}.toml _toml)
+      string(REPLACE "tests/fixtures/btcusd" "${_btcusd}" _toml "${_toml}")
+      string(REPLACE "\"l3_queue\"" "\"${_model}\"" _toml "${_toml}")
+      set(_cfg_${_strategy} ${CMAKE_CURRENT_BINARY_DIR}/tmp/cli/btcusd-${_strategy}-${_model}.toml)
+      file(CONFIGURE OUTPUT ${_cfg_${_strategy}} CONTENT "${_toml}" @ONLY)
+    endforeach()
+    fastmm_cli_test(apps.fastmm-backtest.sweep_recorded.basic_mm.${_model} EXPECT_RC 0
+      CMD $<TARGET_FILE:fastmm-backtest> --config ${_cfg_basic_mm} --sweep half_spread_bps=0,0.3
+          --sweep levels=1,2 --sweep quote_qty=1,4 --threads 3 --verify 8
+      EXPECT_REGEX "${_sweep_ok}")
+    fastmm_cli_test(apps.fastmm-backtest.sweep_recorded.xmm.${_model} EXPECT_RC 0
+      CMD $<TARGET_FILE:fastmm-backtest> --config ${_cfg_xmm} --sweep edge_bps=0,0.2
+          --sweep quote_qty=1,3 --sweep basis_halflife_s=10,60 --threads 3 --verify 8
+      EXPECT_REGEX "${_sweep_ok}")
+  endforeach()
+  # Quoting on Coinbase, whose trades fill passive orders under l2_queue only.
+  fastmm_cli_test(apps.fastmm-backtest.sweep_recorded.xmm.l2_queue.quote_coinbase EXPECT_RC 0
+    CMD $<TARGET_FILE:fastmm-backtest> --config ${_cfg_xmm} --param quote_instrument=1
+        --param hedge_instrument=0 --sweep edge_bps=0,0.2 --sweep quote_qty=1,3
+        --sweep basis_halflife_s=10,60 --threads 3 --verify 8
+    EXPECT_REGEX "${_sweep_ok}")
   if(TARGET fastmm-replay)
     fastmm_cli_test(apps.fastmm-replay.unknown_config_keys EXPECT_RC 3
       CMD $<TARGET_FILE:fastmm-replay> --journal ${PROJECT_SOURCE_DIR}/tests/fixtures/journals/sample_1000.fmj --config ${_bt_typos_file}

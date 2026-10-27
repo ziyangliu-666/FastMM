@@ -1,0 +1,11 @@
+{
+ "_source": "recorded",
+ "_recorded_from": "wss://ws.bitstamp.net (live_orders_btcusd, live_trades_btcusd) with https://www.bitstamp.net/api/v2/order_book/btcusd/?group=2, and wss://ws-feed.exchange.coinbase.com (level2_batch, matches on BTC-USD); public feeds, no keys (make_fixtures.py record)",
+ "_recorded_at": "2026-10-27T04:08Z-04:23Z",
+ "files": {
+  "bitstamp-btcusd.itch": "derived (make_fixtures.py convert, defaults): 2026-10-27T04:14:31.45Z + 120 s of Bitstamp BTC/USD order by order, as ITCH 5.0 in shares of 0.001 BTC, orders within 10 bps of the mid",
+  "coinbase-btcusd.csv": "derived (make_fixtures.py convert, defaults): the same 120 s of Coinbase BTC-USD, the five best levels a side and every trade, as CSV source rows in the same units",
+  "basic_mm.toml": "configuration of the basic_mm sweeps on Bitstamp",
+  "xmm.toml": "configuration of the xmm sweeps on Bitstamp and Coinbase"
+ }
+}

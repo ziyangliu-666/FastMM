@@ -1,0 +1,99 @@
+# xmm on two minutes of BTC/USD on two venues: Bitstamp, every order (bitstamp-btcusd.itch), and
+# Coinbase, five levels a side and the trades (coinbase-btcusd.csv). One unit is 0.001 BTC, prices
+# are USD per 0.001 BTC. It quotes on Bitstamp and hedges on Coinbase; under l2_queue the tests
+# also swap the two (--param quote_instrument=1 --param hedge_instrument=0):
+#
+#   fastmm-backtest --config tests/fixtures/btcusd/xmm.toml \
+#       --data "itch:tests/fixtures/btcusd/bitstamp-btcusd.itch,date=2026-10-27; csv:tests/fixtures/btcusd/coinbase-btcusd.csv,venue=1" \
+#       --sweep edge_bps=0,0.2 --sweep quote_qty=1,3 --verify 4
+
+[engine]
+name = "fixture-xmm"
+journal = false
+rng_seed = 1
+max_events_per_step = 64
+crossed_grace_ms = 100
+min_requote_ticks = 1
+min_requote_interval_ms = 0
+min_qty_bps = 8000
+post_only = true
+supports_replace = false
+ack_timeout_ms = 0
+
+[venues.bitstamp]
+kind = "sim"
+supports_replace = false
+
+[venues.bitstamp.fees]
+maker_bps = 0.0
+taker_bps = 0.3
+
+[venues.coinbase]
+kind = "sim"
+supports_replace = false
+
+[venues.coinbase.fees]
+maker_bps = 0.0
+taker_bps = 0.3
+
+[[instruments]]
+venue = "bitstamp"
+symbol = "BTCUSD"
+base = "BTC"
+quote = "USD"
+asset_class = "spot"
+tick = "0.0001"
+lot = "1"
+min_qty = "1"
+
+[[instruments]]
+venue = "coinbase"
+symbol = "BTC-USD"
+base = "BTC"
+quote = "USD"
+asset_class = "spot"
+tick = "0.00001"
+lot = "0.00001"
+min_qty = "0.001"
+
+[strategy]
+name = "xmm"
+
+[strategy.params]
+quote_instrument = 0
+hedge_instrument = 1
+quote_qty = 2
+edge_bps = 0.0
+slippage_bps = 0.0
+hedge_tolerance_bps = 2.0
+basis_halflife_s = 30
+max_unhedged = 6
+requote_threshold_ticks = 1
+stale_ms = 0
+hedge_retry_ms = 200
+
+[risk]
+max_order_qty = "100"
+max_order_notional = "100000"
+max_position = "200"
+max_open_orders = 32
+stp = true
+max_loss = "100000"
+
+[logging]
+level = "warn"
+
+[backtest]
+source = "itch:tests/fixtures/btcusd/bitstamp-btcusd.itch,date=2026-10-27; csv:tests/fixtures/btcusd/coinbase-btcusd.csv,venue=1"
+fill_model = "l3_queue"
+latency_fixed_us = 2000
+latency_jitter_us = 1000
+latency_md_us = 2000
+own_orders_in_feed = false
+equity_bar_s = 10
+initial_capital = 100000
+markout_horizons_s = "1,10"
+
+[backtest.venues.coinbase]
+latency_fixed_us = 10000
+latency_md_us = 10000

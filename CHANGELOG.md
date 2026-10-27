@@ -27,6 +27,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - backtest: `bt::ResultHook`: `bt::run_multiverse`, `bt::sweep` and `bt::sweep_by_name` hand each result to it as it is done, to keep only what the caller needs.
 - python: `BacktestConfig.keep_orders`.
 - bench: `fastmm-bench-multiverse --own-feed` and `--md-jitter-us`.
+- configs: `backtest-xmm.toml`, `xmm` quoting BTCUSDT on Binance and hedging on Bybit over Tardis data.
 - core: `StrategyContext::watch` and `quiet_book` declare the market data a strategy's hooks ignore; `basic_mm` and `lead_mm` declare theirs.
 - backtest: `fastmm-backtest --sweep ... --verify K` and `fastmm.sweep(..., verify=K)` run K points again as backtests of their own and fail on the first difference (`bt::result_difference`).
 - python: `fastmm.sweep` and `fastmm.walk_forward` run the points of a class with `@fastmm.hot` hooks in shared passes on C++ threads.

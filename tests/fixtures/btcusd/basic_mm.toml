@@ -1,0 +1,71 @@
+# basic_mm on two minutes of Bitstamp BTC/USD, every order (bitstamp-btcusd.itch; one unit is
+# 0.001 BTC, prices are USD per 0.001 BTC). The sweep tests in tests/CMakeLists.txt and
+# python/tests/test_sweep_recorded.py run it under l3_queue and l2_queue:
+#
+#   fastmm-backtest --config tests/fixtures/btcusd/basic_mm.toml \
+#       --data "itch:tests/fixtures/btcusd/bitstamp-btcusd.itch,date=2026-10-27" \
+#       --sweep half_spread_bps=0,0.5 --sweep levels=1,2 --verify 4
+
+[engine]
+name = "fixture-basic-mm"
+journal = false
+rng_seed = 1
+max_events_per_step = 64
+crossed_grace_ms = 100
+min_requote_ticks = 1
+min_requote_interval_ms = 0
+min_qty_bps = 8000
+post_only = true
+supports_replace = false
+
+[venues.bitstamp]
+kind = "sim"
+supports_replace = false
+
+[venues.bitstamp.fees]
+maker_bps = 0.0
+taker_bps = 2.0
+
+[[instruments]]
+venue = "bitstamp"
+symbol = "BTCUSD"
+base = "BTC"
+quote = "USD"
+asset_class = "spot"
+tick = "0.0001"
+lot = "1"
+min_qty = "1"
+
+[strategy]
+name = "basic_mm"
+
+[strategy.params]
+half_spread_bps = 0.0
+skew_bps_per_unit = 0.5
+quote_qty = 2
+max_inventory = 20
+requote_threshold_ticks = 1
+pull_on_stale_ms = 0
+levels = 1
+
+[risk]
+max_order_qty = "100"
+max_order_notional = "100000"
+max_position = "200"
+max_open_orders = 32
+stp = true
+max_loss = "100000"
+
+[logging]
+level = "warn"
+
+[backtest]
+source = "itch:tests/fixtures/btcusd/bitstamp-btcusd.itch,date=2026-10-27"
+fill_model = "l3_queue"
+latency_fixed_us = 2000
+latency_jitter_us = 1000
+latency_md_us = 2000
+own_orders_in_feed = false
+equity_bar_s = 10
+initial_capital = 100000
+markout_horizons_s = "1,10"

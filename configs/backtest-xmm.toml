@@ -1,0 +1,104 @@
+# FastMM: xmm backtest, quoting BTCUSDT on Binance USDⓈ-M and hedging on Bybit's BTCUSDT linear
+# perpetual, over Tardis public data:
+#
+#   ./build/release/bin/fastmm-backtest --config configs/backtest-xmm.toml \
+#       --data "tardis:binance-futures,BTCUSDT,2026-09-01,end=04:00,inst=0,venue=0; tardis:bybit,BTCUSDT,2026-09-01,end=04:00,inst=1,venue=1"
+
+[engine]
+name = "backtest-xmm"
+spin_mode = "busy"
+journal = false
+rng_seed = 1
+max_events_per_step = 256
+crossed_grace_ms = 100
+min_requote_ticks = 1
+min_requote_interval_ms = 50
+min_qty_bps = 8000
+post_only = true
+supports_replace = false
+
+# Quote venue, a market maker's fee tier.
+[venues.binance-usdm]
+kind = "sim"
+supports_replace = false
+
+[venues.binance-usdm.fees]
+maker_bps = 0.0
+taker_bps = 2.0
+
+# Hedge venue.
+[venues.bybit-linear]
+kind = "sim"
+supports_replace = false
+
+[venues.bybit-linear.fees]
+maker_bps = 0.0
+taker_bps = 2.0
+
+[[instruments]]
+venue = "binance-usdm"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "perp"
+tick = "0.1"
+lot = "0.001"
+min_qty = "0.001"
+min_notional = "100"
+
+[[instruments]]
+venue = "bybit-linear"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "perp"
+tick = "0.1"
+lot = "0.001"
+min_qty = "0.001"
+min_notional = "5"
+
+[strategy]
+name = "xmm"
+
+[strategy.params]
+quote_instrument = 0
+hedge_instrument = 1
+quote_qty = 0.002
+edge_bps = 1.0
+slippage_bps = 0.5
+hedge_tolerance_bps = 5.0
+basis_halflife_s = 60
+max_unhedged = 0.006
+requote_threshold_ticks = 2
+stale_ms = 2000
+hedge_retry_ms = 200
+
+[risk]
+max_order_qty = "0.01"
+max_order_notional = "5000"
+max_position = "0.05"
+max_open_orders = 8
+price_collar_bps = 200
+fat_finger_bps = 1000
+stale_md_ms = 0
+max_loss = "500"
+stp = true
+
+[logging]
+level = "warn"
+
+[backtest]
+source = "tardis:binance-futures,BTCUSDT,2026-09-01,end=04:00,inst=0,venue=0; tardis:bybit,BTCUSDT,2026-09-01,end=04:00,inst=1,venue=1"
+fill_model = "l2_queue"
+queue_conservatism = 1.0
+latency_fixed_us = 5000
+latency_jitter_us = 2000
+latency_md_us = 5000
+equity_bar_s = 60
+initial_capital = 10000
+markout_horizons_s = "1,10,60"
+output_dir = "runs/xmm"
+
+[backtest.venues.bybit-linear]
+latency_fixed_us = 15000
+latency_md_us = 15000

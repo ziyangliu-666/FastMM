@@ -15,9 +15,10 @@ Builds use gcc 13.3 and the preset `release-nolto`. A section that names no mach
 | Data | Fill model | Market data a run | A backtest alone |
 |---|---|---:|---:|
 | Tardis `incremental_book_L2` and `trades`, Binance USDⓈ-M BTCUSDT, 2026-09-01 00:00 to 04:00 UTC | `l2_queue` | 939,569 events | 3.3 s |
+| Tardis `incremental_book_L2` and `trades`, Binance USDⓈ-M BTCUSDT and Bybit BTCUSDT, 2026-09-01 00:00 to 04:00 UTC | `l2_queue` | 1,643,662 events | 4.4 s |
 | Nasdaq TotalView-ITCH, 2019-07-30 09:30 to 16:00, AAPL MSFT AMZN FB INTC CSCO NVDA TSLA, every order | `l3_queue` | 5,353,515 events | 3.6 s |
 
-The ITCH file is the day's file reduced to the messages of the eight stocks (186 MB, 6.1 million of its 282 million messages). The `tardis` source downloads the day on first use (the first day of a month needs no key). Configurations: [`configs/backtest-binance.toml`](../../configs/backtest-binance.toml) (5 ms latency with 2 ms jitter, our orders in the feed) and [`configs/backtest-itch.toml`](../../configs/backtest-itch.toml) (50 µs, our orders not in the feed).
+The ITCH file is the day's file reduced to the messages of the eight stocks (186 MB, 6.1 million of its 282 million messages). The `tardis` source downloads the day on first use (the first day of a month needs no key). Configurations: [`configs/backtest-binance.toml`](../../configs/backtest-binance.toml) (5 ms latency with 2 ms jitter, our orders in the feed), [`configs/backtest-xmm.toml`](../../configs/backtest-xmm.toml) (the same to Binance, 15 ms to Bybit) and [`configs/backtest-itch.toml`](../../configs/backtest-itch.toml) (50 µs, our orders not in the feed).
 
 ## One thread
 
@@ -28,10 +29,11 @@ Each row is one pass of 64 variants on one thread, against a backtest of its own
 | BTCUSDT | `basic_mm`, our orders in the feed | 137 ms | 24x |
 | BTCUSDT | `basic_mm`, our orders not in the feed | 90 ms | 37x |
 | BTCUSDT | `avellaneda_stoikov`, our orders in the feed | 195 ms | 17x |
+| BTCUSDT on Binance and Bybit | `xmm`, quoting on Binance and hedging on Bybit, our orders in the feed | 386 ms | 11x |
 | ITCH | `basic_mm`, 1-tick requote | 502 ms | 7x |
 | ITCH | `avellaneda_stoikov` | 931 ms | 4x |
 
-Grids: BTCUSDT `basic_mm` `half_spread_bps` 0.007 to 2, `quote_qty` 0.002, 0.004, `requote_threshold_ticks` 1, 3, latency 2 to 20 ms; `avellaneda_stoikov` `gamma` 0.01 to 10, `kappa` 0.5 to 15, `quote_qty` 0.002, 0.004, latency 5, 20 ms. ITCH `basic_mm` `half_spread_bps` 0.5 to 4, `requote_threshold_ticks` 1, 3, `quote_qty` 100, 200, latency 20 µs to 1 ms; `avellaneda_stoikov` `kappa` 10 to 1000, latency 50 µs, 1 ms.
+Grids: BTCUSDT `basic_mm` `half_spread_bps` 0.007 to 2, `quote_qty` 0.002, 0.004, `requote_threshold_ticks` 1, 3, latency 2 to 20 ms; `avellaneda_stoikov` `gamma` 0.01 to 10, `kappa` 0.5 to 15, `quote_qty` 0.002, 0.004, latency 5, 20 ms; `xmm` `edge_bps` 0 to 2, `slippage_bps` 0, 0.5, `quote_qty` 0.002, 0.004, `requote_threshold_ticks` 1, 3, `basis_halflife_s` 30, 120, latency 2 to 20 ms. ITCH `basic_mm` `half_spread_bps` 0.5 to 4, `requote_threshold_ticks` 1, 3, `quote_qty` 100, 200, latency 20 µs to 1 ms; `avellaneda_stoikov` `kappa` 10 to 1000, latency 50 µs, 1 ms.
 
 ## Where a variant's time goes
 
@@ -75,10 +77,17 @@ The same sweep with 0.9.0, where `fastmm.sweep` ran each point as a backtest of 
 
 A pass holds up to 128 runs, so a sweep on 8 threads has at most 1,024 runs in memory, each with its engine, its venue and its result. A run's engine and venue take about 6 MB. Its result keeps its fills and equity bars but no order rows, which grow with every order sent (up to about 20 MB a day for the 1-tick ITCH variants); `fastmm-backtest --sweep` keeps of each point only the line it prints.
 
-| Command | Points | Wall | Peak memory |
-|---|---:|---:|---:|
-| `fastmm-backtest --sweep`, BTCUSDT, `basic_mm`, our orders in the feed, 8 threads | 2,048 | 64 s | 7.2 GB |
-| the same with `--sweep pull_on_stale_ms=1000,2000` | 4,096 | 175 s | 7.5 GB |
+`fastmm-backtest --sweep` of BTCUSDT `basic_mm`, our orders in the feed, on 8 threads; a point is the sweep's wall time times 8 threads over its points.
+
+| Points | Wall | A point | Peak memory |
+|---:|---:|---:|---:|
+| 16 | 2.4 s | 1,180 ms | 0.25 GB |
+| 128 | 2.7 s | 170 ms | 1.0 GB |
+| 1,024 | 17.1 s | 134 ms | 6.8 GB |
+| 4,096 | 57.9 s | 113 ms | 6.9 GB |
+| 16,384 | 228 s | 111 ms | 7.7 GB |
+
+Up to 1,024 points the sweep is one wave: 8 passes that each keep their own books, about 2 s however few points they hold. Past it each wave pays that again, and a point costs what its own run costs.
 
 ## GPUs
 
@@ -114,14 +123,18 @@ cmake --preset release-nolto && cmake --build --preset release-nolto --target fa
     --sweep half_spread_bps=0.007,0.1,0.25,0.5,1,1.5,2,3 --sweep quote_qty=0.002,0.004 \
     --sweep requote_threshold_ticks=1,3 --sweep skew_bps_per_unit=1,2,4,8 --sweep levels=1,2,3,4 \
     --latency-us 2000,5000,10000,20000 --variants 1024 --threads 64 --check 4
+./build/release-nolto/bin/bench/fastmm-bench-multiverse --config configs/backtest-xmm.toml \
+    --data "tardis:binance-futures,BTCUSDT,2026-09-01,end=04:00,inst=0,venue=0; tardis:bybit,BTCUSDT,2026-09-01,end=04:00,inst=1,venue=1" \
+    --sweep edge_bps=0,0.5,1,2 --sweep slippage_bps=0,0.5 --sweep quote_qty=0.002,0.004 \
+    --sweep requote_threshold_ticks=1,3 --sweep basis_halflife_s=30,120 \
+    --latency-us 2000,5000,10000,20000 --variants 64 --check 2
 ./build/release-nolto/bin/fastmm-backtest --config configs/backtest-binance.toml \
     --data "tardis:binance-futures,BTCUSDT,2026-09-01,end=04:00" \
-    --sweep half_spread_bps=0.007,0.1,0.25,0.5,1,1.5,2,3 --sweep quote_qty=0.002,0.004 \
-    --sweep requote_threshold_ticks=1,3 --sweep skew_bps_per_unit=1,2,4,8 --sweep levels=1,2,3,4 \
-    --sweep max_inventory=0.02,0.04,0.08,0.16 --threads 8 --verify 4
+    --sweep half_spread_bps=0.007,0.5,1,2 --sweep levels=1,2 --sweep requote_threshold_ticks=1,3 \
+    --sweep skew_bps_per_unit=$(seq -s, 0.01 0.01 10.24) --threads 8 --verify 2
 ```
 
-`--own-feed 0` turns our orders out of the feed; `--strategy avellaneda_stoikov` runs that strategy from its defaults under the `--sweep` values (the rows above add `--sweep max_inventory=0.02` and `1000`). [Threads](#threads) runs the third command with `--threads` 1 to 64, and the engine rows of [GPUs](#gpus) the second with `--sweep skew_bps_per_unit=0.5,1,2,4 --sweep max_inventory=500,1000,2000,5000 --variants 1024` on 8 and 64 threads. The 0.9.0 comparison runs `max_inventory` 0.02, 0.04 in place of the latency grid, through `fastmm-backtest --sweep` now and, for 0.9.0, `pip install "fastmm-engine==0.9.0"` and `fastmm.sweep(fastmm.BacktestConfig.from_toml("configs/backtest-binance.toml"), grid, data="tardis:binance-futures,BTCUSDT,2026-09-01,end=04:00", threads=64)` with that release's configuration.
+`--own-feed 0` turns our orders out of the feed; `--strategy avellaneda_stoikov` runs that strategy from its defaults under the `--sweep` values (the rows above add `--sweep max_inventory=0.02` and `1000`). [Thousands of points](#thousands-of-points) runs the last command with the first 1, 8, 64, 256 and 1,024 values of `skew_bps_per_unit`. [Threads](#threads) runs the third command with `--threads` 1 to 64, and the engine rows of [GPUs](#gpus) the second with `--sweep skew_bps_per_unit=0.5,1,2,4 --sweep max_inventory=500,1000,2000,5000 --variants 1024` on 8 and 64 threads. The 0.9.0 comparison runs `max_inventory` 0.02, 0.04 in place of the latency grid, through `fastmm-backtest --sweep` now and, for 0.9.0, `pip install "fastmm-engine==0.9.0"` and `fastmm.sweep(fastmm.BacktestConfig.from_toml("configs/backtest-binance.toml"), grid, data="tardis:binance-futures,BTCUSDT,2026-09-01,end=04:00", threads=64)` with that release's configuration.
 
 The lanes of [GPUs](#gpus) run `basic_mm` under `l3_queue` with one level a side, fixed latencies, our orders not in the feed and no risk limit but self-trade prevention, on a grid of `half_spread_bps` 0.25 to 8, `skew_bps_per_unit` 0 to 2, `quote_qty` 100 to 500, `max_inventory` 300 to 2,000 and none, `requote_threshold_ticks` 1 to 3 and latency 20 to 500 µs over the ITCH day. The GPU driver compares every output with the CPU's: fills, cash, fees, position and a hash of the fills. It needs the CUDA toolkit:
 
