@@ -23,8 +23,8 @@ The end-to-end table reads the run<N>/sim.json and run<N>/live.json files script
 writes (--out), and gives the median over the runs of each percentile.
 
 The template's `{{HOT}}`, `{{E2E}}`, `{{MACHINE}}` and `{{DATE}}` placeholders are substituted; in
-the docs page, the regions between `<!-- BEGIN bench-hot -->` / `<!-- END bench-hot -->` and
-`<!-- BEGIN bench-e2e -->` / `<!-- END bench-e2e -->`.
+the docs page, the regions between `<!-- BEGIN bench-<name> -->` and `<!-- END bench-<name> -->`
+for setup (the machine and the date), hot and e2e.
 """
 import argparse
 import datetime as dt
@@ -62,30 +62,56 @@ BEGIN_END = re.compile(r"(<!-- BEGIN (bench-\w+) -->\n).*?(<!-- END \2 -->)", re
 
 
 def machine() -> str:
-    """CPU model, core count and OS family; no kernel version."""
-    model = ""
+    """CPU model, physical cores and threads, OS and kernel."""
+    model, cores, phys, core = "", set(), None, None
     try:
         with open("/proc/cpuinfo") as f:
-            for line in f:
-                if line.startswith("model name"):
-                    model = line.split(":", 1)[1].strip() + ", "
-                    break
+            for line in list(f) + [""]:
+                key, _, val = line.partition(":")
+                key, val = key.strip(), val.strip()
+                if key == "model name" and not model:
+                    model = re.sub(r"\((R|TM)\)", "", val).replace(" CPU", "").strip()
+                elif key == "physical id":
+                    phys = val
+                elif key == "core id":
+                    core = val
+                elif not key and core is not None:
+                    cores.add((phys, core))
+                    phys = core = None
     except OSError:
         pass
-    wsl = " under WSL2" if "microsoft" in platform.release().lower() else ""
-    return f"{model}{os.cpu_count()} cores, {platform.system()}{wsl}"
+    threads = os.cpu_count()
+    os_name = platform.system()
+    try:
+        with open("/etc/os-release") as f:
+            for line in f:
+                if line.startswith("PRETTY_NAME="):
+                    os_name = line.split("=", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    release = platform.release()
+    wsl = " under WSL2" if "microsoft" in release.lower() else ""
+    return (f"{model}, {len(cores) or threads} cores and {threads} threads, {os_name}, "
+            f"Linux {release.split('-')[0]}{wsl}")
 
 
-def compiler() -> str:
-    """Compiler name and major version."""
-    for c in ("g++", "clang++"):
+def compiler(preset: str) -> str:
+    """The preset's C++ compiler and its version, from its CMake cache."""
+    cxx = []
+    try:
+        with open(f"build/{preset}/CMakeCache.txt") as f:
+            cxx = [line.split("=", 1)[1].strip() for line in f if line.startswith("CMAKE_CXX_COMPILER:")]
+    except OSError:
+        pass
+    for c in cxx + ["g++", "clang++"]:
         try:
             out = subprocess.check_output([c, "--version"], text=True)
         except Exception:
             continue
-        m = re.search(r"(\d+)\.\d+", out)
-        return f"{c} {m.group(1)}" if m else c
-    return "unknown"
+        m = re.search(r"(\d+\.\d+)\.\d+", out)
+        name = "clang" if "clang" in out else "gcc"
+        return f"{name} {m.group(1)}" if m else name
+    return "unknown compiler"
 
 
 def fmt_ns(v: float) -> str:
@@ -102,14 +128,14 @@ def load(paths):
     """name -> {median, min, max, cpu, reps, counters}; times in ns per iteration.
 
     `median`, `min` and `max` are over the repetitions of one benchmark; each repetition
-    contributes its own mean time per iteration. Errored repetitions are skipped.
+    contributes its own mean time per iteration. Errored and skipped repetitions are left out.
     """
     raw = {}
     for p in paths:
         with open(p) as f:
             data = json.load(f)
         for b in data.get("benchmarks", []):
-            if b.get("run_type") != "iteration" or b.get("error_occurred"):
+            if b.get("run_type") != "iteration" or b.get("error_occurred") or b.get("skipped"):
                 continue
             name = b.get("run_name", b["name"])
             scale = _SCALE[b.get("time_unit", "ns")]
@@ -229,7 +255,7 @@ def main():
     a = ap.parse_args()
     rows = load(a.json)
     reps = max((r["reps"] for r in rows.values()), default=0)
-    setup = (f"{machine()}, {compiler()}, preset `{a.preset}`, pinned to CPU {a.cpu}, "
+    setup = (f"{machine()}, {compiler(a.preset)}, preset `{a.preset}`, pinned to CPU {a.cpu}, "
              f"{reps} repetitions")
     hot = render_hot(rows)
     e2e = render_e2e(Path(a.e2e)) if a.e2e else ""
@@ -247,7 +273,7 @@ def main():
                     + render_full(rows) + "\n")
     if a.docs:
         page = Path(a.docs)
-        regions = {"bench-hot": hot, "bench-e2e": e2e}
+        regions = {"bench-setup": f"{setup}, {today}.", "bench-hot": hot, "bench-e2e": e2e}
 
         def sub(m):
             body = regions.get(m.group(2))

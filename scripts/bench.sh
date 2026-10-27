@@ -2,8 +2,9 @@
 # Run all micro-benchmarks and regenerate bench/README.md, bench/full-results.md and the tables in
 # docs/explanation/benchmarks.md.
 #   ./scripts/bench.sh [--preset release-native] [--cpu 2] [--min-time 0.5s] [--tag mytag]
-#                      [--repetitions 5] [--rounds 3] [--only bench_x]
+#                      [--repetitions 5] [--rounds 3] [--only bench_x] [--e2e <dir>]
 # --only (repeatable) reruns just those executables and keeps the other results in bench/results/latest.
+# --e2e also fills the end-to-end table from a scripts/bench-e2e.sh --out directory.
 #
 # --rounds runs the whole suite that many times, one after the other, and keeps every round
 # (<name>.rN.json). tools/bench_table.py pools the repetitions of all of them, so the published
@@ -21,12 +22,12 @@
 # repetition means.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-PRESET=release-native; CPU=2; MIN_TIME=0.5s; TAG=""; REPS=5; ROUNDS=1; ONLY=()
+PRESET=release-native; CPU=2; MIN_TIME=0.5s; TAG=""; REPS=5; ROUNDS=1; ONLY=(); E2E=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --preset) PRESET="$2"; shift 2;; --cpu) CPU="$2"; shift 2;; --min-time) MIN_TIME="$2"; shift 2;; --tag) TAG="$2"; shift 2;;
     --repetitions) REPS="$2"; shift 2;; --rounds) ROUNDS="$2"; shift 2;;
-    --only) ONLY+=("$2"); shift 2;;
+    --only) ONLY+=("$2"); shift 2;; --e2e) E2E=(--e2e "$2"); shift 2;;
     *) echo "unknown arg $1"; exit 2;;
   esac
 done
@@ -71,6 +72,6 @@ for ((round = 1; round <= ROUNDS; round++)); do
   done
 done
 python3 tools/bench_table.py "$OUT"/*.json --template bench/README.tmpl.md --preset "$PRESET" --cpu "$CPU" \
-  --full bench/full-results.md --docs docs/explanation/benchmarks.md > bench/README.md
+  --full bench/full-results.md --docs docs/explanation/benchmarks.md "${E2E[@]}" > bench/README.md
 [[ -n "$TAG" ]] && { mkdir -p bench/results; cp -r "$OUT" "bench/results/$TAG-$STAMP"; }
 echo "wrote bench/README.md"
