@@ -489,6 +489,15 @@ class Engine {
     return instruments_.get(id);
   }
   [[nodiscard]] const InstrumentTable& instruments() const noexcept { return instruments_; }
+  // EngineConfig::venue_names[v], or "venue <id>" when it names none.
+  [[nodiscard]] std::string_view venue_name(VenueId v) const noexcept {
+    static constexpr std::string_view kById[] = {
+        "venue 0", "venue 1", "venue 2", "venue 3", "venue 4", "venue 5", "venue 6", "venue 7"};
+    static_assert(std::size(kById) == kMaxVenues);
+    if (v.value < cfg_.venue_names.size() && !cfg_.venue_names[v.value].empty())
+      return cfg_.venue_names[v.value];
+    return v.value < kMaxVenues ? kById[v.value] : std::string_view("venue ?");
+  }
   [[nodiscard]] Xoshiro256ss& rng() noexcept { return rng_; }
   [[nodiscard]] Oms& oms() noexcept { return oms_; }
   [[nodiscard]] const Oms& oms() const noexcept { return oms_; }
@@ -1814,9 +1823,10 @@ class Engine {
     // fraction of a millisecond later; an estimate no execution names shows in
     // fastmm_estimates_pending and, once the order is forgotten, as an error.
     FASTMM_LOG_WARN(
-        "order {} on {}: the venue reports {} filled ahead of its executions, booked at the "
+        "order {} on {}:{}: the venue reports {} filled ahead of its executions, booked at the "
         "order's price {} until one names it",
         encode_cl_ord_id(u.order.cl_ord_id),
+        venue_name(inst.venue),
         inst.symbol,
         u.missed_qty,
         u.order.price);
@@ -2198,12 +2208,14 @@ class Engine {
     if (!m.asset.empty() && !inst.settlement_ccy().empty() &&
         !same_currency(m.asset.view(), inst.settlement_ccy())) {
       ++funding_->stats.unbooked;
-      FASTMM_LOG_ERROR("funding {} of {} {} on {} is not in its settlement currency {}: not booked",
-                       m.funding_id.view(),
-                       m.amount,
-                       m.asset.view(),
-                       inst.symbol.view(),
-                       inst.settlement_ccy());
+      FASTMM_LOG_ERROR(
+          "funding {} of {} {} on {}:{} is not in its settlement currency {}: not booked",
+          m.funding_id.view(),
+          m.amount,
+          m.asset.view(),
+          venue_name(inst.venue),
+          inst.symbol.view(),
+          inst.settlement_ccy());
       return;
     }
     ++funding_->stats.payments;
@@ -2808,7 +2820,10 @@ class Engine {
     qty = inst.round_qty(qty);
     if (!inst.valid_qty(qty)) {
       // Less than one lot (or than the venue's minimum) is left: no order can move it.
-      FASTMM_LOG_WARN("flatten leaves {} on {}: below the tradable minimum", p.qty, inst.symbol);
+      FASTMM_LOG_WARN("flatten leaves {} on {}:{}: below the tradable minimum",
+                      p.qty,
+                      venue_name(inst.venue),
+                      inst.symbol);
       return false;
     }
     NewOrderRequest r{};
@@ -3533,12 +3548,19 @@ class Engine {
     if (!reject_log_.admit(rr, now_, suppressed)) return;
     const std::string_view what = replace ? std::string_view("replace") : std::string_view("new");
     if (suppressed == 0) {
-      FASTMM_LOG_WARN(
-          "risk reject {} on {} order: {} {} {} @ {}", rr, what, inst.symbol, side, qty, px);
-    } else {
-      FASTMM_LOG_WARN("risk reject {} on {} order: {} {} {} @ {} ({} more suppressed)",
+      FASTMM_LOG_WARN("risk reject {} on {} order: {}:{} {} {} @ {}",
                       rr,
                       what,
+                      venue_name(inst.venue),
+                      inst.symbol,
+                      side,
+                      qty,
+                      px);
+    } else {
+      FASTMM_LOG_WARN("risk reject {} on {} order: {}:{} {} {} @ {} ({} more suppressed)",
+                      rr,
+                      what,
+                      venue_name(inst.venue),
                       inst.symbol,
                       side,
                       qty,

@@ -1612,6 +1612,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   deps.engine.fx = fx_plan;
   deps.engine.fees = fees;
   deps.engine.balance = balance_config(cfg, &instruments, &venue_names);
+  deps.engine.venue_names = venue_names;
   deps.engine.perp = perp_config(cfg);
   deps.engine.underlying = underlying_plan;
   // A dry run quotes on paper (live/paper_venue.hpp): the engine runs as it would live. A strategy

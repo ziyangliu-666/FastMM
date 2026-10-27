@@ -218,6 +218,7 @@ ReplayResult replay_impl(const std::string& path,
 
   RunnerDeps deps;
   deps.engine = cfg.engine;
+  deps.engine.venue_names = cfg.venue_names;
   deps.engine.fees = cfg.transport.fees;
   deps.engine.queue_conservatism_bps = cfg.transport.queue_conservatism_bps;
   // The recording converted with the table it ran on (a live session's comes from the venues).
@@ -276,8 +277,11 @@ ReplayResult replay_impl(const std::string& path,
         },
         &take_overs);
   }
-  res.events = driver.run_all();
-  driver.finish();
+  {
+    const LogClockScope log_clock(backend.clock);
+    res.events = driver.run_all();
+    driver.finish();
+  }
 
   res.outbound_sha256 = backend.transport.hash_hex();
   res.outbound_messages = backend.transport.count();

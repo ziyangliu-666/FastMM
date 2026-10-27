@@ -45,6 +45,7 @@ struct Ctx {
   [[nodiscard]] Timestamp now() const { return t; }
   [[nodiscard]] bool reconciling() const { return false; }
   [[nodiscard]] bool venue_killed(VenueId v) const { return killed[v.value]; }
+  [[nodiscard]] std::string_view venue_name(VenueId) const { return "sim"; }
   [[nodiscard]] VenueHealthView venue_health(VenueId) const { return VenueHealthView{}; }
   Result<ClientOrderId, RejectReason> send(const NewOrderRequest& r) noexcept {
     if (refuse) return fail(RejectReason::MaxPosition);

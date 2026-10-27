@@ -142,6 +142,7 @@ error: static assertion failed: fastmm: on_trade has the wrong signature or is n
 static_assert(std::same_as<decltype(lvalue<Ctx>().now()), Timestamp>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().instrument(InstrumentId{})), const Instrument&>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().instruments()), const InstrumentTable&>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().venue_name(VenueId{})), std::string_view>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().contains(InstrumentId{})), bool>);
 // market data
 static_assert(std::same_as<decltype(lvalue<Ctx>().book(InstrumentId{})), const Book&>);
@@ -193,6 +194,7 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().rng()), Xoshiro256ss&>);
 |---|---|
 | `now()` | the engine clock of the current event; virtual time in backtests and replay |
 | `instrument(id)`, `instruments()`, `contains(id)` | the instrument table; iterate `instruments()` for all instruments |
+| `venue_name(venue)` | the venue's name in the configuration (`[venues.<name>]`), which log lines put before a symbol as `venue:symbol` |
 | `book(id)` | the L2 book of an instrument ([Book](#book)) |
 | `position(id)` | `qty` (signed, base units), average price, realised PnL (funding included) and fees of one instrument, in its settlement currency |
 | `portfolio()` | `realized`, `unrealized`, `fees` and `net` (realised + unrealised - fees) over all instruments, in the `[accounting]` reporting currency when one is set; a loop, not for every event |
@@ -658,4 +660,4 @@ Build setups: [Register a strategy](../how-to/strategies/register-a-strategy.md)
 
 ## Logging
 
-`FASTMM_LOG_TRACE`, `FASTMM_LOG_DEBUG`, `FASTMM_LOG_INFO`, `FASTMM_LOG_WARN` and `FASTMM_LOG_ERROR` take a fmt format string (`FASTMM_LOG_INFO("filled {} @ {}", qty, px)`); `Price`, `Qty`, `Side` and the enums format directly. Records go through a per-thread ring to a background thread; when the ring is full the record is dropped and counted. Logs are not journaled: strategy logic must not depend on them.
+`FASTMM_LOG_TRACE`, `FASTMM_LOG_DEBUG`, `FASTMM_LOG_INFO`, `FASTMM_LOG_WARN` and `FASTMM_LOG_ERROR` take a fmt format string (`FASTMM_LOG_INFO("filled {} @ {}", qty, px)`); `Price`, `Qty`, `Side` and the enums format directly. Records go through a per-thread ring to a background thread; when the ring is full the record is dropped and counted. A line carries the wall-clock time live and the simulated time in a backtest or a replay, the moment in the data it was written at. Logs are not journaled: strategy logic must not depend on them.

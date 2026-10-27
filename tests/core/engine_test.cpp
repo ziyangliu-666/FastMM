@@ -555,8 +555,10 @@ TEST_CASE(
   lg.flush();
   const std::string log = read_from(out, mark);
   INFO(log);
-  CHECK(occurrences(log, "risk reject MaxOrderQty on new order: BTCUSDT Buy 2 @ 99.5") == 2);
-  CHECK(occurrences(log, "risk reject PriceCollar on new order: BTCUSDT Buy 0.01 @ 50") == 1);
+  CHECK(occurrences(log, "risk reject MaxOrderQty on new order: venue 0:BTCUSDT Buy 2 @ 99.5") ==
+        2);
+  CHECK(occurrences(log, "risk reject PriceCollar on new order: venue 0:BTCUSDT Buy 0.01 @ 50") ==
+        1);
   CHECK(occurrences(log, "(2 more suppressed)") == 1);
   CHECK(occurrences(log, "WARN") == 3);
   // Every reject is counted, logged or not.

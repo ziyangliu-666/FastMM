@@ -562,6 +562,7 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
   }
   deps_.engine = cfg_.engine;
   deps_.engine.publish_live = false;  // nobody watches a backtest
+  deps_.engine.venue_names = cfg_.venue_names;
   deps_.engine.await_reconcile |= trade_venues_;
   deps_.engine.fees = cfg_.transport.fees;  // what the simulated venue charges
   // The strategy's queue estimate uses the fill model's conservatism.
@@ -896,6 +897,7 @@ bool BacktestSession::stopped() const noexcept {
 BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,
                                     IEngineRunner* runner,
                                     std::string_view strategy_name) {
+  const LogClockScope log_clock(backend_->clock);
   begin(hooks, runner, nullptr);
   return end(strategy_name);
 }

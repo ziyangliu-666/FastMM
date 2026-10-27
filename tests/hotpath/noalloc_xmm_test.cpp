@@ -43,6 +43,7 @@ struct Ctx {
   [[nodiscard]] VenueHealthView venue_health(VenueId) const { return VenueHealthView{}; }
   [[nodiscard]] bool reconciling() const { return false; }
   [[nodiscard]] bool venue_killed(VenueId) const { return false; }
+  [[nodiscard]] std::string_view venue_name(VenueId) const { return "sim"; }
   bool set_quotes(InstrumentId, const DesiredQuotes&) noexcept {
     ++quotes;
     return true;

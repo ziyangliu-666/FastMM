@@ -180,6 +180,29 @@ TEST_CASE("core.log: exited threads release their ring for reuse") {
   std::fclose(f);
 }
 
+TEST_CASE("core.log: under a LogClockScope a line carries the simulated time") {
+  std::FILE* f = std::tmpfile();
+  REQUIRE(f != nullptr);
+  auto& lg = Logger::instance();
+  lg.start(f, LogLevel::Off);
+  const SimClock clock(Timestamp{1'700'000'000'123'000'000});
+  {
+    const LogClockScope scope(clock);
+    FASTMM_LOG_WARN("simulated");
+  }
+  FASTMM_LOG_WARN("wall");
+  lg.flush();
+  const std::string out = read_all(f);
+  INFO(out);
+  const std::string sim = "2023-11-14T22:13:20.123000000Z";
+  REQUIRE(out.find("simulated") != std::string::npos);
+  REQUIRE(out.find("wall") != std::string::npos);
+  CHECK(out.rfind(sim, out.find("simulated")) != std::string::npos);
+  CHECK(out.find(sim, out.find("simulated")) == std::string::npos);  // not on the "wall" line
+  lg.stop();
+  std::fclose(f);
+}
+
 TEST_CASE("core.log: format_record handles malformed argument count gracefully") {
   static constexpr LogDescriptor desc{"a={} b={}", __FILE__, __LINE__, LogLevel::Info};
   LogRecord r{};

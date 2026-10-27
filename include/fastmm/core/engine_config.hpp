@@ -13,6 +13,8 @@
 #include "fastmm/core/underlying.hpp"
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace fastmm {
 
@@ -75,6 +77,9 @@ struct EngineConfig {
   // off until every such venue has reconciled (journal header await_reconcile, so a replay does
   // the same).
   std::uint32_t await_reconcile = 0;
+  // The venues' names ([venues.<name>]), indexed by venue id: log lines name an instrument
+  // `venue:symbol` (Engine::venue_name; "venue <id>" for an id without one).
+  std::vector<std::string> venue_names;
   int cpu = -1;
   SpinMode spin_mode = SpinMode::Busy;
   RiskLimits risk;

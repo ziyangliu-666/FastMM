@@ -163,7 +163,8 @@ namespace detail {
 inline thread_local LogRing* t_log_ring = nullptr;
 inline thread_local std::uint32_t t_log_tid = 0;
 inline thread_local std::uint32_t t_log_slot = 0;
-inline thread_local bool t_log_thread_exiting = false;  // set once thread-local teardown began
+inline thread_local bool t_log_thread_exiting = false;      // set once thread-local teardown began
+inline thread_local const SimClock* t_log_clock = nullptr;  // LogClockScope
 
 // Compile-time floor check, written as a function so -Wtype-limits stays quiet when the
 // floor is 0.
@@ -306,7 +307,7 @@ FASTMM_FORCE_INLINE void log_emit(const LogDescriptor& d, const Args&... args) n
     return;
   }
   r->desc = &d;
-  r->ts_ns = wall_now().ns;
+  r->ts_ns = t_log_clock != nullptr ? t_log_clock->now().ns : wall_now().ns;
   r->tid = t_log_tid;
   ArgPacker pk{r->args, r->args + sizeof(r->args)};
   (static_cast<void>(pack_arg(pk, args)), ...);
@@ -316,6 +317,22 @@ FASTMM_FORCE_INLINE void log_emit(const LogDescriptor& d, const Args&... args) n
 }
 
 }  // namespace detail
+
+// While one is alive, the lines the thread logs carry the time of `clock` instead of the wall
+// clock: a backtest's and a replay's lines name the moment of the data they were written at.
+class LogClockScope {
+ public:
+  explicit LogClockScope(const SimClock& clock) noexcept : prev_(detail::t_log_clock) {
+    detail::t_log_clock = &clock;
+  }
+  ~LogClockScope() { detail::t_log_clock = prev_; }
+  LogClockScope(const LogClockScope&) = delete;
+  LogClockScope& operator=(const LogClockScope&) = delete;
+
+ private:
+  const SimClock* prev_;
+};
+
 }  // namespace fastmm
 
 // fmt_str must be a string literal. The generic lambda lets us spell the packed argument

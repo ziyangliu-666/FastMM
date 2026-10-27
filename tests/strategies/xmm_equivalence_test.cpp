@@ -108,6 +108,7 @@ struct TraceCtx {
   [[nodiscard]] const FeeRates& fees(InstrumentId id) const { return fee_rates[id.value]; }
   [[nodiscard]] bool reconciling() const { return reconciling_now; }
   [[nodiscard]] bool venue_killed(VenueId) const { return false; }
+  [[nodiscard]] std::string_view venue_name(VenueId) const { return "sim"; }
   [[nodiscard]] VenueHealthView venue_health(VenueId) const { return VenueHealthView{}; }
   bool set_quotes(InstrumentId id, const DesiredQuotes& q) {
     mix(1);

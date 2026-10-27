@@ -195,6 +195,8 @@ class StrategyContext {
   [[nodiscard]] bool killed() const noexcept { return e_->risk().killed(); }
   // One venue's kill switch: new orders to it are refused and set_quotes ignores its instruments.
   [[nodiscard]] bool venue_killed(VenueId v) const noexcept { return e_->risk().venue_killed(v); }
+  // The venue's [venues.<name>], for log lines ("venue <id>" when the session names none).
+  [[nodiscard]] std::string_view venue_name(VenueId v) const noexcept { return e_->venue_name(v); }
   void request_stop() noexcept { e_->stop(); }
   // Asks for one on_batch_end call once the engine has handled every event that is waiting now
   // (the feed is empty or the step's max_events_per_step is used up). Work a burst of events would

@@ -94,8 +94,8 @@ rule_files:
 Rejects are counted per reason. A risk reject is logged at WARN the first time its reason occurs, then at most once per reason every 10 seconds (`EngineConfig::reject_log_interval`), with the number of that reason's rejects not logged since its previous line:
 
 ```text
-WARN  ... risk reject MaxPosition on new order: BTCUSDT Buy 0.01 @ 64250.1
-WARN  ... risk reject MaxPosition on new order: BTCUSDT Buy 0.01 @ 64251.3 (11 more suppressed)
+WARN  ... risk reject MaxPosition on new order: binance:BTCUSDT Buy 0.01 @ 64250.1
+WARN  ... risk reject MaxPosition on new order: binance:BTCUSDT Buy 0.01 @ 64251.3 (11 more suppressed)
 ```
 
 Venue rejects are logged per order (`order <id> rejected: <reason> (<code>)`). At shutdown `fastmm-live` logs both breakdowns after the engine counters; a kind without rejects has no breakdown line, and a long one continues on further lines with the same prefix:

@@ -136,6 +136,7 @@ T& lvalue();
 static_assert(std::same_as<decltype(lvalue<Ctx>().now()), Timestamp>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().instrument(InstrumentId{})), const Instrument&>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().instruments()), const InstrumentTable&>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().venue_name(VenueId{})), std::string_view>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().contains(InstrumentId{})), bool>);
 // market data
 static_assert(std::same_as<decltype(lvalue<Ctx>().book(InstrumentId{})), const Book&>);
