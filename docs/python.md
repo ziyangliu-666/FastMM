@@ -12,6 +12,8 @@ A strategy class uses one of two styles. Hot hooks (`@fastmm.hot`) are compiled 
 | slow methods beside hot hooks (`on_start`, `on_stop`, `@fastmm.every`) | yes | no; the recorded parameter updates are applied | yes |
 | plain hooks | yes | no | no |
 
+The two styles share hook names, not arguments: a plain hook is handed the instrument (`on_book(self, ctx, inst, book)`, [Python strategy API](reference/python-api.md#hooks)), a hot hook reads it from `book` (`on_book(self, ctx, book)`, [Hot hooks](how-to/strategies/python-hot-hooks.md)). Only hot hooks share a sweep's passes over the data ([Sweeps](#sweeps)).
+
 ## First strategy
 
 `fastmm init my-mm` writes a starter project: a config for the simulated market, a strategy with hot hooks, a backtest that runs it, a config that trades it live against the simulated exchange `fastmm sim` runs, and one that runs it on Binance Spot Demo Mode, the Spot testnet or the real market (`--venue`; [Install](getting-started/install.md#without-building-it)).
@@ -122,7 +124,9 @@ points = fastmm.sweep(cfg, {"half_spread_bps": [0.01, 0.02], "skew_bps_per_unit"
 df = fastmm.sweep_frame(points)           # one row per grid point
 ```
 
-Results come back in grid order with the first parameter varying slowest, each the result `run_backtest` gives for that point without its order rows (`result.orders` is empty; the metrics count the orders and the outbound hash covers them, and `run_backtest` of the point has them). Under `fill_model = "l2_queue"` or `"l3_queue"` the points of a registered C++ strategy, or of a `fastmm.Strategy` class whose hooks are `@fastmm.hot`, share their passes over the data on C++ threads with the GIL released ([Many runs in one pass](explanation/backtesting.md#many-runs-in-one-pass)). A class with plain hooks, and any strategy under `matching`, runs one backtest per point: a C++ strategy on a C++ thread pool, a Python class as a fresh instance in worker processes forked from the calling one, so a class defined in a script or a notebook works:
+A row of `sweep_frame` holds the point's values, the `stats()` columns `fastmm.results.SWEEP_STATS` names (net PnL, fees, Sharpe ratio, drawdown, fills, the kill switch's reason and more) or those of `stats=[...]`, the markout of each horizon in bps (`markout_bps_1s`, ...) and the outbound hash.
+
+The grid may also be a list of points, `[{"half_spread_bps": 0.01, "latency_fixed_us": 2000}, ...]`, and a name may be a backtest setting as well as a parameter ([Many runs in one pass](explanation/backtesting.md#many-runs-in-one-pass) lists them). Results come back in the order of the points, a grid's first name varying slowest, each the result `run_backtest` gives for that point without its order rows (`result.orders` is empty; the metrics count the orders and the outbound hash covers them, and `run_backtest` of the point has them). Under `fill_model = "l2_queue"` or `"l3_queue"` the points of a registered C++ strategy, or of a `fastmm.Strategy` class whose hooks are `@fastmm.hot`, share their passes over the data on C++ threads with the GIL released ([Many runs in one pass](explanation/backtesting.md#many-runs-in-one-pass)). A class with plain hooks, and any strategy under `matching`, runs one backtest per point: a C++ strategy on a C++ thread pool, a Python class as a fresh instance in worker processes forked from the calling one, so a class defined in a script or a notebook works:
 
 ```python
 points = fastmm.sweep(cfg, {"half_spread_bps": [1.0, 2.0, 4.0]}, data="synthetic",
@@ -132,6 +136,8 @@ points = fastmm.sweep(cfg, {"half_spread_bps": [1.0, 2.0, 4.0]}, data="synthetic
 `threads` is the number of threads or processes; 0 uses every CPU and 1 runs the points one after another in the calling process. Without `fork` (Windows) the points of a plain Python strategy run in the calling process.
 
 `verify=K` runs K points, spread over the grid, again as backtests of their own and raises `RuntimeError` naming the first thing that differs (a fill, an order, an equity bar, a count or the outbound hash).
+
+`summary_only=True` keeps of each point its metrics, counts and markouts, which is what `sweep_frame` reads, and drops its fills and equity bars; a sweep of hundreds of points over hours of data otherwise holds gigabytes of them.
 
 ### Walk-forward
 
@@ -146,24 +152,24 @@ rep = fastmm.walk_forward(cfg, grid, folds=4, data="synthetic", metric="net_pnl"
 print(rep["table"])
 ```
 
-The event-time range of `data` is cut into `folds` equal consecutive slices and the whole grid runs on each slice, every run a fresh backtest from a flat engine. A slice starts on the book the full stream had at its first instant, and on the orders resting then when the data has every order (earlier events are read to build them, not traded) and ends at the next slice. For fold i ≥ 1, the best point of fold i−1 by `metric` (`net_pnl`, `realized_pnl`, `sharpe_bar` or `spread_captured_bps`; ties go to the earlier grid point) is the choice, scored on fold i. The choice uses fold i−1 alone rather than every earlier fold: the grid already ran there, the rule works for metrics that do not add up across folds (a Sharpe ratio), and it is what re-running the sweep on the latest data before trading does.
+The event-time range of `data` is cut into `folds` equal consecutive slices and the whole grid runs on each slice, every run a fresh backtest from a flat engine. A slice starts on the book the full stream had at its first instant, and on the orders resting then when the data has every order (earlier events are read to build them, not traded) and ends at the next slice. For fold i ≥ 1, the best point of fold i−1 by `metric` (`net_pnl`, `realized_pnl`, `sharpe_bar`, `spread_captured_bps`, or a function of a `BacktestResult` returning a number, higher is better; ties go to the earlier grid point) is the choice, scored on fold i. The choice uses fold i−1 alone rather than every earlier fold: the grid already ran there, the rule works for metrics that do not add up across folds (a Sharpe ratio), and it is what re-running the sweep on the latest data before trading does.
 
 ```text
 walk-forward: 4 folds, 8 points, metric net_pnl, chosen on the previous fold
-fold               time_s  chosen     in_sample  out_of_sample    best     hindsight
-   0         0.000-60.000       -             -              -      #1     0.0130904
-   1       60.000-120.000      #1     0.0130904       0.150667      #2      0.197885
-   2      120.000-180.000      #2      0.197885       0.173777      #2      0.173777
-   3      180.000-240.000      #2      0.173777      0.0302026      #1     0.0317501
+fold  from (UTC)               chosen     in_sample  out_of_sample    best     hindsight
+   0  2023-11-14 22:13:20.000       -             -              -      #1     0.0139937
+   1  2023-11-14 22:14:20.000      #1     0.0139937       0.136523      #2      0.179756
+   2  2023-11-14 22:15:20.000      #2      0.179756       0.156102      #2      0.156102
+   3  2023-11-14 22:16:20.000      #2      0.156102      0.0280221      #2     0.0280221
   #1  half_spread_bps=0.005 skew_bps_per_unit=0.01
   #2  half_spread_bps=0.01 skew_bps_per_unit=0.0
-mean in-sample best   0.128251
-mean out-of-sample    0.118216
-mean hindsight best   0.134471
+mean in-sample best   0.116617
+mean out-of-sample    0.106882
+mean hindsight best   0.121293
 choice changes        1 of 2
 ```
 
-`chosen` and `best` are grid points (`#n` in grid order, listed under the table): the point carried over from the previous fold and the one that scores best on this fold in hindsight. `in_sample` is the chosen point's score on the fold it was chosen on, `out_of_sample` its score on this fold, `hindsight` the best score on this fold. The summary averages folds 1 to K−1 and counts how often the choice changed between consecutive folds. The choice generalizes when the out-of-sample mean stays close to the hindsight mean and the choice rarely changes; an out-of-sample mean well below both, or a choice that changes on every fold, means the ranking fits noise.
+`from` is a fold's first instant in the data's time. `chosen` and `best` are grid points (`#n` in grid order, listed under the table): the point carried over from the previous fold and the one that scores best on this fold in hindsight. `in_sample` is the chosen point's score on the fold it was chosen on, `out_of_sample` its score on this fold, `hindsight` the best score on this fold. The summary averages folds 1 to K−1 and counts how often the choice changed between consecutive folds. The choice generalizes when the out-of-sample mean stays close to the hindsight mean and the choice rarely changes; an out-of-sample mean well below both, or a choice that changes on every fold, means the ranking fits noise.
 
 `folds=1` runs exactly `fastmm.sweep`. `strategy=` takes a `fastmm.Strategy` class here too, which runs every fold and point in worker processes. The result does not depend on `threads`. The synthetic market needs `fill_model = "l2_queue"` for more than one fold: the coupled matching market has no stream to cut. The dict also holds every fold's `points` and `scores`; the C++ entry point is `bt::walk_forward` in `backtest/sweep.hpp`.
 

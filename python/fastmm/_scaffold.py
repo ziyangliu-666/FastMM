@@ -529,7 +529,7 @@ def main():
     if args.sweep:
         name, _, values = args.sweep.partition("=")
         grid = {name: [float(v) for v in values.split(",")]}
-        # One worker process per point, in grid order.
+        # The points share their passes over the market (hot hooks, l2_queue), in grid order.
         points = fastmm.sweep(cfg, grid, data=args.data, strategy=@NAME_CLASS@)
         print(f"{name:>16}  {'net PnL':>10}  {'fills':>6}  {'capture bps':>11}")
         for params, result in points:
@@ -572,7 +572,8 @@ python backtest.py --sweep half_spread_bps=0.5,1,1.5,2
 ```
 
 The backtest prints the summary, the PnL decomposition and the markouts, and writes the fills,
-orders and equity curve to `runs/backtest/`. The sweep runs one backtest per value, in parallel.
+orders and equity curve to `runs/backtest/`. The sweep runs every value in one pass over the
+market, each with the result its own backtest gives.
 
 The simulated book is about 2.7 bps wide, and the default quotes, 1 bps either side of the mid,
 capture most of a basis point a fill. `config.toml` charges Binance's VIP 0 fee of 10 bps, which

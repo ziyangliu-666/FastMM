@@ -27,7 +27,7 @@ python backtest.py
 The backtest writes its fills, orders and equity curve to `runs/backtest/`. Two more commands:
 
 ```bash
-python backtest.py --sweep half_spread_bps=0.005,0.01,0.02,0.05   # one backtest per value
+python backtest.py --sweep half_spread_bps=0.005,0.01,0.02,0.05   # every value in one pass
 fastmm report runs/backtest                                       # runs/backtest/report.html
 ```
 
