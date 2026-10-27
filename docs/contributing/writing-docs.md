@@ -44,7 +44,11 @@ A new page gets an entry in the `nav` of [`mkdocs.yml`](../../mkdocs.yml); the s
 16. A warning appears only if a reader following the page would hit the problem. Something learned while writing the page, that the page's reader cannot run into, stays out.
 17. State a capability or leave it out; do not state it and take it back in the same sentence. Its limits belong on its reference page.
 18. Edit by deleting first, then by moving the sentence to the page that owns it, and only then by rewriting it. Do not repair a sentence by adding a clause.
-19. Prefer short paragraphs to lists, and short pages to complete ones; a page answers what its reader came for and stops.
+19. Short pages over complete ones: a page answers what its reader came for and stops. Over about 3,000 words, check whether it mixes page kinds before splitting it.
+20. A paragraph holds one idea in at most four sentences or about 80 words; a sentence stays under 25 words with at most one parenthesis. The first sentence of each section and paragraph states its point.
+21. Pick the form by the content: three or more like things with the same attributes go in a table; anything a reader copies goes in a code block with its real output; components and arrows go in a diagram (Mermaid); something that changes over time goes in an animation; reasoning ("because", "so", "but") stays in prose. A sentence naming more than two or three code identifiers is reference material and belongs in a table.
+22. Write for the reader, not about the work: no "we measured", "was built", "three runs on <date>", internal class names or header paths in narrative. A number page gives the result, one sentence on what was measured and on what hardware, and links to its method; how a measurement or a feature was made goes to its method page, the CHANGELOG or an ADR.
+23. Check a page rendered (`./scripts/docs-serve.sh`): scroll it screen by screen and read only the first sentence of each paragraph. A screen of unbroken text, or first sentences that do not tell the story, means the page needs a table, a diagram, steps or a cut.
 
 ## Snippets
 
