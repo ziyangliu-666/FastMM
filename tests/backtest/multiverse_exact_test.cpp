@@ -19,6 +19,7 @@
 
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -532,4 +533,51 @@ pull_on_stale_ms = 0
   for (std::size_t k = 0; k < cfgs.size(); ++k)
     cfgs[k].engine.risk.max_loss = Notional::from_raw(static_cast<std::int64_t>(k) * 20'000'000);
   check_exact(cfgs, "basic_mm", itch_session(stress_seed(24), base), 3);
+}
+
+namespace {
+
+// A random market that fails part of the way through.
+class FailingMarket final : public MdSource {
+ public:
+  FailingMarket(const RandomMarketConfig& rc, std::size_t at) : inner_(rc), at_(at) {}
+  const EventHeader* next() override {
+    if (++n_ == at_) throw std::runtime_error("bad data");
+    return inner_.next();
+  }
+  void reset() override {}
+  [[nodiscard]] Timestamp start_ts() const override { return inner_.start_ts(); }
+
+ private:
+  RandomMarket inner_;
+  std::size_t at_;
+  std::size_t n_ = 0;
+};
+
+}  // namespace
+
+TEST_CASE("backtest.multiverse: a failure in the data or in a pass stops every thread") {
+  const BacktestConfig base = config_of(std::string(kEngine) + instruments({"a"}) + R"(
+[strategy]
+name = "basic_mm"
+[strategy.params]
+half_spread_bps = 2
+quote_qty = 1
+)" + kRisk + backtest("l2_queue"));
+  const std::vector<BacktestConfig> cfgs(4, base);
+  RandomMarketConfig rc;
+  rc.seed = stress_seed(13);
+  rc.events = 40'000;
+  // The data fails while the passes wait for more of it.
+  const SourceFactory failing = [&]() -> std::unique_ptr<MdSource> {
+    return std::make_unique<FailingMarket>(rc, 30'000);
+  };
+  CHECK_THROWS_WITH_AS(static_cast<void>(run_multiverse(cfgs, "basic_mm", failing, 3)),
+                       "bad data",
+                       std::runtime_error);
+  // A run cannot be built while the data is read for the others.
+  std::vector<BacktestConfig> bad = cfgs;
+  bad[2].params["quote_qty"] = "-1";
+  CHECK_THROWS_AS(static_cast<void>(run_multiverse(bad, "basic_mm", random_market(rc), 3)),
+                  std::invalid_argument);
 }

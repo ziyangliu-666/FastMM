@@ -5,6 +5,9 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Changed
+- backtest: the passes of a sweep that run at the same time read the data once: one more thread reads it, puts it in venue order and hands it to all of them, instead of each pass reading and ordering a copy of its own.
+- backtest: a sweep deals its points to its threads' passes in waves of at most 128 runs a pass, so the passes of a wave end together and no pass runs alone at the end, and it hands the memory a wave freed back to the system before the next wave starts.
+- backtest: `--threads` and `threads=` of a sweep are no longer capped at 32.
 - sim: with `own_orders_in_feed` the simulated venue sends the recorded market data as recorded, and our resting quantity that changed on an instrument as an `OwnLevels` message right ahead of its next message; the engine shows it in its book and book tickers. No recorded level is rewritten and no book ticker is made up for our orders, so the results of a strategy that reads the book move.
 - sim: market-data latency jitter draws from a stream of its own, so the feed's delays depend on the seed and the data alone; runs with jittered market data give other results than before.
 - backtest: runs whose feed shows their orders, the shipped default, and runs with jittered market data on one seed share their pass's market data like the rest.

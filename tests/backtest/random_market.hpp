@@ -235,7 +235,7 @@ class RandomMarket final : public sim::MdSource {
   std::vector<std::size_t> order_;
   std::size_t at_ = 0;
   std::uint64_t trade_id_ = 0;
-  EventBuf buf_{};
+  sim::EventBuf buf_{};
 };
 
 }  // namespace fastmm::bt::testutil

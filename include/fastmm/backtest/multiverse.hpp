@@ -31,8 +31,10 @@
 // outbound hash (tests/backtest/multiverse_exact_test.cpp, bt::result_difference).
 //
 // The runs of a configuration list go in passes of at most 128 runs (a run holds its engine and
-// venue, about 10 MB), `threads` passes at a time (<= 0: hardware concurrency); each pass reads
-// its own cursor from `source_factory` and keeps its own world.
+// venue, about 6 MB), `threads` passes at a time (<= 0: hardware concurrency), as many waves of
+// them as that takes. A wave reads the data once: one more thread reads a cursor from
+// `source_factory`, puts its events in venue order and hands them to every pass of the wave, each
+// of which keeps its own world and market data.
 #include "fastmm/backtest/backtest_runner.hpp"
 #include "fastmm/backtest/sweep.hpp"
 

@@ -42,7 +42,6 @@ void run_pool(std::size_t n, int threads, const SourceFactory& factory, const Ta
   unsigned w = threads > 0 ? static_cast<unsigned>(threads) : std::thread::hardware_concurrency();
   if (w == 0) w = 1;
   if (w > n) w = static_cast<unsigned>(n);
-  if (w > 32) w = 32;  // Logger supports a bounded number of threads
   std::atomic<std::size_t> next{0};
   std::exception_ptr error;
   std::atomic<bool> failed{false};

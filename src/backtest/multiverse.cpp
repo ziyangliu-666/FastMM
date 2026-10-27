@@ -1,10 +1,14 @@
 #include "fastmm/backtest/multiverse.hpp"
 
+#include "tape.hpp"
+
 #include "fastmm/backtest/registrations.hpp"
 #include "fastmm/backtest/synthetic_source.hpp"
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/sim/venue_order.hpp"
 #include "fastmm/strategies/registry.hpp"
+
+#include <malloc.h>
 
 #include <algorithm>
 #include <array>
@@ -728,15 +732,12 @@ class Pass {
     }
   }
 
-  void run(MdSource& source, std::vector<BacktestResult>& out, const ResultHook& done) {
-    const Duration window = first_.reorder_window;
-    std::unique_ptr<sim::VenueOrderSource> ordered;
-    MdSource* events = &source;
-    if (window.ns > 0) {
-      ordered = std::make_unique<sim::VenueOrderSource>(source, window);
-      events = ordered.get();
-    }
-    const EventHeader* ev = events->next();
+  // `events` in venue order; `ordered`, when set, put them in it (its counts are read at the end).
+  void run(MdSource& events,
+           const sim::VenueOrderSource* ordered,
+           std::vector<BacktestResult>& out,
+           const ResultHook& done) {
+    const EventHeader* ev = events.next();
     for (;;) {
       const SimKey src = ev != nullptr ? SimKey{event_time(*ev), SimKey::kSource} : SimKey::never();
       FeedGroup* g = nullptr;
@@ -763,7 +764,7 @@ class Pass {
       }
       if (ev == nullptr) break;
       recorded_event(*ev, src);
-      ev = events->next();
+      ev = events.next();
     }
     next_src_ = Timestamp::max();
     for (const std::unique_ptr<FeedGroup>& fg : groups_) fg->next_shared = Timestamp::max();
@@ -777,7 +778,7 @@ class Pass {
       if (r.parts.on_end) r.parts.on_end();
       if (!r.own_feed)
         res.transport.md_forwarded += r.live ? groups_[r.group]->forwarded : r.forwarded;
-      if (ordered) {
+      if (ordered != nullptr) {
         res.md_reordered = ordered->reordered();
         res.md_late = ordered->late();
       }
@@ -1024,6 +1025,30 @@ class Pass {
   Timestamp next_src_ = Timestamp::max();  // the next recorded event, which the runs follow
 };
 
+// The runs of a wave free gigabytes when it ends. glibc keeps most of it, and having freed large
+// blocks it serves the next wave's from its heap rather than from fresh mappings, so without this
+// each wave's runs land beside the last wave's free memory instead of in it: a sweep of 4,096
+// points on 8 threads peaked at 11 GB rather than 7.
+void release_freed_memory() noexcept {
+#if defined(__GLIBC__)
+  ::malloc_trim(0);
+#endif
+}
+
+// A pass over `source` read on the calling thread, put in venue order by the pass itself.
+void run_alone(Pass& pass,
+               MdSource& source,
+               Duration window,
+               std::vector<BacktestResult>& out,
+               const ResultHook& done) {
+  if (window.ns > 0) {
+    sim::VenueOrderSource ordered(source, window);
+    pass.run(ordered, &ordered, out, done);
+  } else {
+    pass.run(source, nullptr, out, done);
+  }
+}
+
 void check_shareable(const std::vector<BacktestConfig>& cfgs) {
   if (const std::string why = multiverse_refusal(cfgs); !why.empty())
     throw std::invalid_argument("multiverse: " + why);
@@ -1085,54 +1110,78 @@ std::vector<BacktestResult> run_multiverse(const std::vector<BacktestConfig>& cf
   if (cfgs.empty()) return out;
   check_shareable(cfgs);
   if (!source_factory) throw std::invalid_argument("multiverse: needs recorded data");
-  unsigned w = threads > 0 ? static_cast<unsigned>(threads) : std::thread::hardware_concurrency();
+  std::size_t w = threads > 0 ? static_cast<std::size_t>(threads)
+                              : std::size_t{std::thread::hardware_concurrency()};
   if (w == 0) w = 1;
-  if (w > 32) w = 32;  // Logger supports a bounded number of threads
-  // Passes of at most kMaxRunsPerPass runs, at least one per worker; pass g takes runs g, g + G,
-  // g + 2G, ... of the G passes, so neighbouring grid points, which cost alike, spread over them.
-  std::size_t g = std::max<std::size_t>(w, (cfgs.size() + kMaxRunsPerPass - 1) / kMaxRunsPerPass);
-  if (g > cfgs.size()) g = cfgs.size();
-  if (w > g) w = static_cast<unsigned>(g);
+  // Passes of at most kMaxRunsPerPass runs, w at a time: as many waves of w passes as that takes.
+  // Pass k takes runs k, k + G, k + 2G, ... of the G passes, so neighbouring grid points, which
+  // cost alike, spread over them and the passes of a wave end together.
+  const std::size_t per_wave = w * kMaxRunsPerPass;
+  const std::size_t g = std::min(cfgs.size(), (cfgs.size() + per_wave - 1) / per_wave * w);
+  w = std::min(w, g);
   std::vector<std::vector<std::size_t>> passes(g);
   for (std::size_t i = 0; i < cfgs.size(); ++i) passes[i % g].push_back(i);
+  const Duration window = cfgs.front().reorder_window;
+  const auto open = [&] {
+    std::unique_ptr<MdSource> source = source_factory();
+    if (source == nullptr) throw std::invalid_argument("multiverse: needs recorded data");
+    return source;
+  };
+  if (w == 1) {
+    for (const std::vector<std::size_t>& runs : passes) {
+      {
+        const std::unique_ptr<MdSource> source = open();
+        Pass pass(cfgs, runs, make, *source);
+        run_alone(pass, *source, window, out, done);
+      }
+      release_freed_memory();
+    }
+    return out;
+  }
   // The passes end on their own threads: one result at a time to `done`.
   std::mutex done_mutex;
-  const ResultHook serial = [&](std::size_t i, BacktestResult& r) {
+  const ResultHook serial = !done ? ResultHook{} : [&](std::size_t i, BacktestResult& r) {
     const std::lock_guard lock(done_mutex);
     done(i, r);
   };
-  const auto run_one = [&](std::size_t k) {
-    std::unique_ptr<MdSource> source = source_factory();
-    if (source == nullptr) throw std::invalid_argument("multiverse: needs recorded data");
-    Pass pass(cfgs, passes[k], make, *source);
-    pass.run(*source, out, done ? serial : ResultHook{});
-  };
-  if (w == 1) {
-    for (std::size_t k = 0; k < g; ++k) run_one(k);
-    return out;
-  }
-  std::atomic<std::size_t> next{0};
-  std::exception_ptr error;
-  std::atomic<bool> failed{false};
-  {
-    std::vector<std::jthread> pool;
-    pool.reserve(w);
-    for (unsigned t = 0; t < w; ++t) {
-      pool.emplace_back([&] {
-        for (;;) {
-          const std::size_t k = next.fetch_add(1, std::memory_order_relaxed);
-          if (k >= g || failed.load(std::memory_order_relaxed)) return;
+  // Each wave reads the data once, on a thread of its own, for its passes.
+  for (std::size_t first = 0; first < g; first += w) {
+    const std::size_t m = std::min(w, g - first);
+    {
+      const std::unique_ptr<MdSource> source = open();
+      Tape tape(*source, window, m);
+      std::exception_ptr error;
+      std::atomic<bool> failed{false};
+      const auto fail = [&] {
+        if (!failed.exchange(true)) error = std::current_exception();
+        tape.stop();
+      };
+      {
+        std::vector<std::jthread> pool;
+        pool.reserve(m + 1);
+        pool.emplace_back([&] {
           try {
-            run_one(k);
+            tape.fill();
           } catch (...) {
-            if (!failed.exchange(true)) error = std::current_exception();
-            return;
+            fail();
           }
+        });
+        for (std::size_t k = first; k < first + m; ++k) {
+          pool.emplace_back([&, k] {
+            try {
+              Tape::Cursor cursor(tape);
+              Pass pass(cfgs, passes[k], make, cursor);
+              pass.run(cursor, tape.ordered(), out, serial);
+            } catch (...) {
+              fail();
+            }
+          });
         }
-      });
+      }
+      if (error) std::rethrow_exception(error);
     }
+    release_freed_memory();
   }
-  if (error) std::rethrow_exception(error);
   return out;
 }
 
@@ -1157,7 +1206,7 @@ std::vector<BacktestResult> run_multiverse(const std::vector<BacktestConfig>& cf
   std::vector<std::size_t> all(cfgs.size());
   for (std::size_t i = 0; i < all.size(); ++i) all[i] = i;
   Pass pass(cfgs, all, make, source);
-  pass.run(source, out, {});
+  run_alone(pass, source, cfgs.front().reorder_window, out, {});
   return out;
 }
 
