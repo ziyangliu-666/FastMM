@@ -1,9 +1,9 @@
 {
   "context": {
-    "date": "2026-09-29T15:46:04+00:00",
+    "date": "2026-10-27T18:40:25+00:00",
     "executable": "build/release-native/bin/bench/bench_spsc",
     "num_cpus": 4,
-    "mhz_per_cpu": 3800,
+    "mhz_per_cpu": 2400,
     "cpu_scaling_enabled": false,
     "aslr_enabled": true,
     "caches": [
@@ -33,9 +33,9 @@
       }
     ],
     "load_avg": [
-      1.06689,
-      1.33545,
-      2.90771
+      1.05469,
+      1.03711,
+      1.58496
     ],
     "library_version": "v1.9.5",
     "library_build_type": "release",
@@ -51,11 +51,11 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 9325743,
-      "real_time": 28.75597451054982,
-      "cpu_time": 28.7550089038482,
+      "iterations": 19598051,
+      "real_time": 37.139667867998284,
+      "cpu_time": 37.1362087485128,
       "time_unit": "ns",
-      "items_per_second": 34776549.829764545
+      "items_per_second": 26927896.88823707
     },
     {
       "name": "BM_SpscRing_Throughput",
@@ -66,11 +66,11 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 9325743,
-      "real_time": 28.905496645132356,
-      "cpu_time": 28.903928512720107,
+      "iterations": 19598051,
+      "real_time": 33.21803948770804,
+      "cpu_time": 33.21524681204269,
       "time_unit": "ns",
-      "items_per_second": 34597373.1411603
+      "items_per_second": 30106655.707204763
     },
     {
       "name": "BM_SpscRing_Throughput",
@@ -81,11 +81,11 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 9325743,
-      "real_time": 28.427347611870136,
-      "cpu_time": 28.42509824686355,
+      "iterations": 19598051,
+      "real_time": 36.715002068303306,
+      "cpu_time": 36.71311371727729,
       "time_unit": "ns",
-      "items_per_second": 35180177.43739341
+      "items_per_second": 27238223.586832337
     },
     {
       "name": "BM_SpscRing_Throughput",
@@ -96,11 +96,11 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 9325743,
-      "real_time": 28.499755676298946,
-      "cpu_time": 28.498639625818537,
+      "iterations": 19598051,
+      "real_time": 36.79364800098152,
+      "cpu_time": 36.79122454574691,
       "time_unit": "ns",
-      "items_per_second": 35089394.20020748
+      "items_per_second": 27180394.573618524
     },
     {
       "name": "BM_SpscRing_Throughput",
@@ -111,11 +111,11 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 9325743,
-      "real_time": 29.28167439313094,
-      "cpu_time": 29.279658360733308,
+      "iterations": 19598051,
+      "real_time": 35.959893562868274,
+      "cpu_time": 35.95773839959903,
       "time_unit": "ns",
-      "items_per_second": 34153403.96666278
+      "items_per_second": 27810425.363435853
     },
     {
       "name": "BM_SpscRing_Throughput_mean",
@@ -128,10 +128,10 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 28.77404976739644,
-      "cpu_time": 28.77246672999674,
+      "real_time": 35.96525019757188,
+      "cpu_time": 35.96270644463574,
       "time_unit": "ns",
-      "items_per_second": 34759379.7150377
+      "items_per_second": 27852719.223865714
     },
     {
       "name": "BM_SpscRing_Throughput_median",
@@ -144,10 +144,10 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 28.755974510549823,
-      "cpu_time": 28.7550089038482,
+      "real_time": 36.715002068303306,
+      "cpu_time": 36.71311371727728,
       "time_unit": "ns",
-      "items_per_second": 34776549.829764545
+      "items_per_second": 27238223.586832337
     },
     {
       "name": "BM_SpscRing_Throughput_stddev",
@@ -160,10 +160,10 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 0.3430478794158628,
-      "cpu_time": 0.3429564375973065,
+      "real_time": 1.5948999209115904,
+      "cpu_time": 1.594931040053607,
       "time_unit": "ns",
-      "items_per_second": 412228.0418655583
+      "items_per_second": 1300667.1477838065
     },
     {
       "name": "BM_SpscRing_Throughput_cv",
@@ -176,10 +176,10 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.011922127131529693,
-      "cpu_time": 0.011919604975674791,
+      "real_time": 0.044345581141522726,
+      "cpu_time": 0.04434958315801366,
       "time_unit": "ns",
-      "items_per_second": 0.011859476355592704
+      "items_per_second": 0.0466980310730065
     },
     {
       "name": "BM_SpscRing_PingPong/real_time",
@@ -190,11 +190,11 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 531652,
-      "real_time": 500.5258759487383,
-      "cpu_time": 500.5055487424106,
+      "iterations": 1344217,
+      "real_time": 490.2154228073719,
+      "cpu_time": 490.19076012280726,
       "time_unit": "ns",
-      "hop_ns": 2.5026293797436914e-07
+      "hop_ns": 2.4510771140368596e-07
     },
     {
       "name": "BM_SpscRing_PingPong/real_time",
@@ -205,11 +205,11 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 531652,
-      "real_time": 500.32754132398867,
-      "cpu_time": 500.3037325167594,
+      "iterations": 1344217,
+      "real_time": 491.7315552472739,
+      "cpu_time": 491.704705415867,
       "time_unit": "ns",
-      "hop_ns": 2.5016377066199434e-07
+      "hop_ns": 2.4586577762363695e-07
     },
     {
       "name": "BM_SpscRing_PingPong/real_time",
@@ -220,11 +220,11 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 531652,
-      "real_time": 502.32790622456537,
-      "cpu_time": 502.31316349792706,
+      "iterations": 1344217,
+      "real_time": 491.4532437838845,
+      "cpu_time": 491.37424463460945,
       "time_unit": "ns",
-      "hop_ns": 2.511639531122827e-07
+      "hop_ns": 2.4572662189194225e-07
     },
     {
       "name": "BM_SpscRing_PingPong/real_time",
@@ -235,11 +235,11 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 531652,
-      "real_time": 502.31929909050484,
-      "cpu_time": 502.2984790803008,
+      "iterations": 1344217,
+      "real_time": 489.35648634094184,
+      "cpu_time": 489.31046029026584,
       "time_unit": "ns",
-      "hop_ns": 2.511596495452524e-07
+      "hop_ns": 2.446782431704709e-07
     },
     {
       "name": "BM_SpscRing_PingPong/real_time",
@@ -250,11 +250,11 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 531652,
-      "real_time": 501.9847494225277,
-      "cpu_time": 501.96489056751386,
+      "iterations": 1344217,
+      "real_time": 489.723524550208,
+      "cpu_time": 489.64624461675487,
       "time_unit": "ns",
-      "hop_ns": 2.5099237471126387e-07
+      "hop_ns": 2.44861762275104e-07
     },
     {
       "name": "BM_SpscRing_PingPong/real_time_mean",
@@ -267,10 +267,10 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 501.49707440206504,
-      "cpu_time": 501.47716288098235,
+      "real_time": 490.4960465459361,
+      "cpu_time": 490.44528301606096,
       "time_unit": "ns",
-      "hop_ns": 2.507485372010325e-07
+      "hop_ns": 2.45248023272968e-07
     },
     {
       "name": "BM_SpscRing_PingPong/real_time_median",
@@ -283,10 +283,10 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 501.98474942252767,
-      "cpu_time": 501.96489056751386,
+      "real_time": 490.21542280737185,
+      "cpu_time": 490.1907601228073,
       "time_unit": "ns",
-      "hop_ns": 2.5099237471126387e-07
+      "hop_ns": 2.4510771140368596e-07
     },
     {
       "name": "BM_SpscRing_PingPong/real_time_stddev",
@@ -299,10 +299,10 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 0.9893427031978922,
-      "cpu_time": 0.9915024559905264,
+      "real_time": 1.0508146459338725,
+      "cpu_time": 1.0535868919223041,
       "time_unit": "ns",
-      "hop_ns": 4.946713516068063e-10
+      "hop_ns": 5.254073230194479e-10
     },
     {
       "name": "BM_SpscRing_PingPong/real_time_cv",
@@ -315,10 +315,10 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.0019727786136688546,
-      "cpu_time": 0.001977163726248974,
+      "real_time": 0.0021423508983073143,
+      "cpu_time": 0.002148225150506344,
       "time_unit": "ns",
-      "hop_ns": 0.0019727786137002015
+      "hop_ns": 0.002142350898521431
     },
     {
       "name": "BM_MsgRing_PingPong_Thread/real_time",
@@ -329,11 +329,11 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 566646,
-      "real_time": 477.6966359949691,
-      "cpu_time": 477.67444047959356,
+      "iterations": 1219338,
+      "real_time": 552.3251764475965,
+      "cpu_time": 552.2960409664914,
       "time_unit": "ns",
-      "hop_ns": 2.388483179974845e-07
+      "hop_ns": 2.7616258822379825e-07
     },
     {
       "name": "BM_MsgRing_PingPong_Thread/real_time",
@@ -344,11 +344,11 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 566646,
-      "real_time": 476.3077459294292,
-      "cpu_time": 476.28812521397913,
+      "iterations": 1219338,
+      "real_time": 552.1041950630749,
+      "cpu_time": 552.0556556098483,
       "time_unit": "ns",
-      "hop_ns": 2.381538729647146e-07
+      "hop_ns": 2.760520975315375e-07
     },
     {
       "name": "BM_MsgRing_PingPong_Thread/real_time",
@@ -359,11 +359,11 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 566646,
-      "real_time": 476.313188481088,
-      "cpu_time": 476.2937671844507,
+      "iterations": 1219338,
+      "real_time": 552.1482214120119,
+      "cpu_time": 552.1343868558188,
       "time_unit": "ns",
-      "hop_ns": 2.3815659424054406e-07
+      "hop_ns": 2.76074110706006e-07
     },
     {
       "name": "BM_MsgRing_PingPong_Thread/real_time",
@@ -374,11 +374,11 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 566646,
-      "real_time": 476.5739544617348,
-      "cpu_time": 476.55820212266576,
+      "iterations": 1219338,
+      "real_time": 552.7559807044044,
+      "cpu_time": 552.7260234651908,
       "time_unit": "ns",
-      "hop_ns": 2.382869772308674e-07
+      "hop_ns": 2.7637799035220213e-07
     },
     {
       "name": "BM_MsgRing_PingPong_Thread/real_time",
@@ -389,11 +389,11 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 566646,
-      "real_time": 476.4689718093671,
-      "cpu_time": 476.452871810619,
+      "iterations": 1219338,
+      "real_time": 552.9488771770483,
+      "cpu_time": 552.9073193815004,
       "time_unit": "ns",
-      "hop_ns": 2.3823448590468354e-07
+      "hop_ns": 2.7647443858852415e-07
     },
     {
       "name": "BM_MsgRing_PingPong_Thread/real_time_mean",
@@ -406,10 +406,10 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 476.67209933531757,
-      "cpu_time": 476.6534813622617,
+      "real_time": 552.4564901608272,
+      "cpu_time": 552.4238852557701,
       "time_unit": "ns",
-      "hop_ns": 2.383360496676588e-07
+      "hop_ns": 2.762282450804136e-07
     },
     {
       "name": "BM_MsgRing_PingPong_Thread/real_time_median",
@@ -422,10 +422,10 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 476.46897180936713,
-      "cpu_time": 476.45287181061906,
+      "real_time": 552.3251764475965,
+      "cpu_time": 552.2960409664915,
       "time_unit": "ns",
-      "hop_ns": 2.3823448590468354e-07
+      "hop_ns": 2.7616258822379825e-07
     },
     {
       "name": "BM_MsgRing_PingPong_Thread/real_time_stddev",
@@ -438,10 +438,10 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 0.5835535495645371,
-      "cpu_time": 0.5819276693788838,
+      "real_time": 0.37700275467161687,
+      "cpu_time": 0.37441374476813727,
       "time_unit": "ns",
-      "hop_ns": 2.917767747676601e-10
+      "hop_ns": 1.8850137738385738e-10
     },
     {
       "name": "BM_MsgRing_PingPong_Thread/real_time_cv",
@@ -454,10 +454,10 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.0012242242631323658,
-      "cpu_time": 0.001220861049238016,
+      "real_time": 0.0006824116674995826,
+      "cpu_time": 0.0006777653080564849,
       "time_unit": "ns",
-      "hop_ns": 0.0012242242630710724
+      "hop_ns": 0.0006824116676735292
     },
     {
       "name": "BM_ShmRing_PingPong_Process/real_time",
@@ -468,11 +468,11 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 504822,
-      "real_time": 570.3233852722974,
-      "cpu_time": 570.2410612057329,
+      "iterations": 1244454,
+      "real_time": 466.45016448998246,
+      "cpu_time": 466.4074308893698,
       "time_unit": "ns",
-      "hop_ns": 2.851616926361487e-07
+      "hop_ns": 2.332250822449912e-07
     },
     {
       "name": "BM_ShmRing_PingPong_Process/real_time",
@@ -483,11 +483,11 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 504822,
-      "real_time": 447.14830177789986,
-      "cpu_time": 447.04387090895455,
+      "iterations": 1244454,
+      "real_time": 566.759187563284,
+      "cpu_time": 566.6846367965397,
       "time_unit": "ns",
-      "hop_ns": 2.2357415088894994e-07
+      "hop_ns": 2.83379593781642e-07
     },
     {
       "name": "BM_ShmRing_PingPong_Process/real_time",
@@ -498,11 +498,11 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 504822,
-      "real_time": 478.71554330046587,
-      "cpu_time": 478.63485347310643,
+      "iterations": 1244454,
+      "real_time": 532.7473221191149,
+      "cpu_time": 532.6648586448354,
       "time_unit": "ns",
-      "hop_ns": 2.3935777165023295e-07
+      "hop_ns": 2.6637366105955744e-07
     },
     {
       "name": "BM_ShmRing_PingPong_Process/real_time",
@@ -513,11 +513,11 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 504822,
-      "real_time": 502.4905035835003,
-      "cpu_time": 502.4062699327688,
+      "iterations": 1244454,
+      "real_time": 542.4919145266969,
+      "cpu_time": 542.4340980060335,
       "time_unit": "ns",
-      "hop_ns": 2.512452517917502e-07
+      "hop_ns": 2.7124595726334847e-07
     },
     {
       "name": "BM_ShmRing_PingPong_Process/real_time",
@@ -528,11 +528,11 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 504822,
-      "real_time": 529.1675580697325,
-      "cpu_time": 529.0801629089069,
+      "iterations": 1244454,
+      "real_time": 551.8029802633138,
+      "cpu_time": 551.6962402788688,
       "time_unit": "ns",
-      "hop_ns": 2.645837790348663e-07
+      "hop_ns": 2.759014901316569e-07
     },
     {
       "name": "BM_ShmRing_PingPong_Process/real_time_mean",
@@ -545,10 +545,10 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 505.56905840077934,
-      "cpu_time": 505.48124368589396,
+      "real_time": 532.0503137924784,
+      "cpu_time": 531.9774529231295,
       "time_unit": "ns",
-      "hop_ns": 2.527845292003896e-07
+      "hop_ns": 2.660251568962392e-07
     },
     {
       "name": "BM_ShmRing_PingPong_Process/real_time_median",
@@ -561,10 +561,10 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 502.4905035835004,
-      "cpu_time": 502.40626993276885,
+      "real_time": 542.4919145266969,
+      "cpu_time": 542.4340980060335,
       "time_unit": "ns",
-      "hop_ns": 2.512452517917502e-07
+      "hop_ns": 2.7124595726334847e-07
     },
     {
       "name": "BM_ShmRing_PingPong_Process/real_time_stddev",
@@ -577,10 +577,10 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 47.152904503869266,
-      "cpu_time": 47.15891649997793,
+      "real_time": 38.75489061446172,
+      "cpu_time": 38.73842062386874,
       "time_unit": "ns",
-      "hop_ns": 2.3576452251935346e-08
+      "hop_ns": 1.9377445307230945e-08
     },
     {
       "name": "BM_ShmRing_PingPong_Process/real_time_cv",
@@ -593,10 +593,10 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.09326699037520961,
-      "cpu_time": 0.09329508678917961,
+      "real_time": 0.07284064985924946,
+      "cpu_time": 0.07281966634301403,
       "time_unit": "ns",
-      "hop_ns": 0.09326699037521244
+      "hop_ns": 0.07284064985924976
     },
     {
       "name": "BM_MsgRing_PushPop_128B",
@@ -607,9 +607,9 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 38224798,
-      "real_time": 7.328835930016465,
-      "cpu_time": 7.328804170528255,
+      "iterations": 91263822,
+      "real_time": 7.641898517020548,
+      "cpu_time": 7.641460665541714,
       "time_unit": "ns"
     },
     {
@@ -621,9 +621,9 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 38224798,
-      "real_time": 7.329264107555658,
-      "cpu_time": 7.329260785106047,
+      "iterations": 91263822,
+      "real_time": 7.654528001244179,
+      "cpu_time": 7.65443305672647,
       "time_unit": "ns"
     },
     {
@@ -635,9 +635,9 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 38224798,
-      "real_time": 7.34371153511447,
-      "cpu_time": 7.34364247000076,
+      "iterations": 91263822,
+      "real_time": 7.65993635462395,
+      "cpu_time": 7.65976532299952,
       "time_unit": "ns"
     },
     {
@@ -649,9 +649,9 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 38224798,
-      "real_time": 7.3404847293107975,
-      "cpu_time": 7.34048253178473,
+      "iterations": 91263822,
+      "real_time": 7.668725938299639,
+      "cpu_time": 7.668448424174036,
       "time_unit": "ns"
     },
     {
@@ -663,9 +663,9 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 38224798,
-      "real_time": 7.335742545977478,
-      "cpu_time": 7.335738020119795,
+      "iterations": 91263822,
+      "real_time": 7.645632888352796,
+      "cpu_time": 7.6453894293403435,
       "time_unit": "ns"
     },
     {
@@ -679,8 +679,8 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 7.335607769594974,
-      "cpu_time": 7.335585595507918,
+      "real_time": 7.654144339908224,
+      "cpu_time": 7.653899379756417,
       "time_unit": "ns"
     },
     {
@@ -694,8 +694,8 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 7.335742545977477,
-      "cpu_time": 7.335738020119794,
+      "real_time": 7.654528001244179,
+      "cpu_time": 7.65443305672647,
       "time_unit": "ns"
     },
     {
@@ -709,8 +709,8 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 0.006625212745473126,
-      "cpu_time": 0.00661262799696469,
+      "real_time": 0.010825001476350678,
+      "cpu_time": 0.010880138579288386,
       "time_unit": "ns"
     },
     {
@@ -724,8 +724,8 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.000903157986845162,
-      "cpu_time": 0.0009014451417503814,
+      "real_time": 0.0014142667025378406,
+      "cpu_time": 0.0014215157581069014,
       "time_unit": "ns"
     }
   ]

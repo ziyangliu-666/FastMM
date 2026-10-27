@@ -1,9 +1,9 @@
 {
   "context": {
-    "date": "2026-09-29T15:46:46+00:00",
+    "date": "2026-10-27T18:42:11+00:00",
     "executable": "build/release-native/bin/bench/bench_udp",
     "num_cpus": 4,
-    "mhz_per_cpu": 3802,
+    "mhz_per_cpu": 3692,
     "cpu_scaling_enabled": false,
     "aslr_enabled": true,
     "caches": [
@@ -33,9 +33,9 @@
       }
     ],
     "load_avg": [
-      1.07129,
-      1.30176,
-      2.8208
+      1.03906,
+      1.04688,
+      1.52783
     ],
     "library_version": "v1.9.5",
     "library_build_type": "release",
@@ -51,12 +51,12 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 252803,
-      "real_time": 1106.9044038240704,
-      "cpu_time": 1106.9039014568657,
+      "iterations": 612058,
+      "real_time": 1144.4319394565102,
+      "cpu_time": 1144.3626502717066,
       "time_unit": "ns",
       "p50": 1087.0,
-      "p99": 1151.0
+      "p99": 1279.0
     },
     {
       "name": "BM_UdpUnicast/real_time",
@@ -67,12 +67,12 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 252803,
-      "real_time": 1104.5062993714332,
-      "cpu_time": 1104.4970866643196,
+      "iterations": 612058,
+      "real_time": 1143.5847354325354,
+      "cpu_time": 1143.530049439759,
       "time_unit": "ns",
       "p50": 1087.0,
-      "p99": 1151.0
+      "p99": 1279.0
     },
     {
       "name": "BM_UdpUnicast/real_time",
@@ -83,12 +83,12 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 252803,
-      "real_time": 1102.3187145721508,
-      "cpu_time": 1102.3086593117964,
+      "iterations": 612058,
+      "real_time": 1139.0571171363881,
+      "cpu_time": 1139.0117913661777,
       "time_unit": "ns",
       "p50": 1087.0,
-      "p99": 1151.0
+      "p99": 1279.0
     },
     {
       "name": "BM_UdpUnicast/real_time",
@@ -99,12 +99,12 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 252803,
-      "real_time": 1103.2620419853915,
-      "cpu_time": 1103.0550309925122,
+      "iterations": 612058,
+      "real_time": 1140.82088952242,
+      "cpu_time": 1140.7859451228478,
       "time_unit": "ns",
       "p50": 1087.0,
-      "p99": 1151.0
+      "p99": 1279.0
     },
     {
       "name": "BM_UdpUnicast/real_time",
@@ -115,12 +115,12 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 252803,
-      "real_time": 1101.0155140565346,
-      "cpu_time": 1101.0035561286852,
+      "iterations": 612058,
+      "real_time": 1143.496413738386,
+      "cpu_time": 1143.449209061886,
       "time_unit": "ns",
       "p50": 1087.0,
-      "p99": 1087.0
+      "p99": 1279.0
     },
     {
       "name": "BM_UdpUnicast/real_time_mean",
@@ -133,11 +133,11 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1103.601394761916,
-      "cpu_time": 1103.5536469108358,
+      "real_time": 1142.278219057248,
+      "cpu_time": 1142.2279290524755,
       "time_unit": "ns",
       "p50": 1087.0,
-      "p99": 1138.2
+      "p99": 1279.0
     },
     {
       "name": "BM_UdpUnicast/real_time_median",
@@ -150,11 +150,11 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1103.2620419853915,
-      "cpu_time": 1103.055030992512,
+      "real_time": 1143.4964137383863,
+      "cpu_time": 1143.4492090618858,
       "time_unit": "ns",
       "p50": 1087.0,
-      "p99": 1151.0
+      "p99": 1279.0
     },
     {
       "name": "BM_UdpUnicast/real_time_stddev",
@@ -167,11 +167,11 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 2.245881175444865,
-      "cpu_time": 2.259195600534242,
+      "real_time": 2.2543736290157463,
+      "cpu_time": 2.245380609020957,
       "time_unit": "ns",
       "p50": 0.0,
-      "p99": 28.621670111999546
+      "p99": 0.0
     },
     {
       "name": "BM_UdpUnicast/real_time_cv",
@@ -184,11 +184,11 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.002035047423920098,
-      "cpu_time": 0.0020472005206619366,
+      "real_time": 0.001973576657074263,
+      "cpu_time": 0.0019657903225003366,
       "time_unit": "ns",
       "p50": 0.0,
-      "p99": 0.025146433062730227
+      "p99": 0.0
     },
     {
       "name": "BM_KernelSourceMulticast/real_time",
@@ -199,12 +199,14 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "skipped": true,
-      "skip_message": "no user and network namespace: setgroups: Permission denied",
-      "iterations": 0,
-      "real_time": 0.0,
-      "cpu_time": 0.0,
-      "time_unit": "ns"
+      "iterations": 398872,
+      "real_time": 1736.5151101090794,
+      "cpu_time": 1707.8355662969566,
+      "time_unit": "ns",
+      "p50": 1663.0,
+      "p99": 2303.0,
+      "sw_t0_p50": 991.0,
+      "sw_t0_p99": 1151.0
     },
     {
       "name": "BM_KernelSourceMulticast/real_time",
@@ -215,12 +217,14 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "skipped": true,
-      "skip_message": "no user and network namespace: setgroups: Permission denied",
-      "iterations": 0,
-      "real_time": 0.0,
-      "cpu_time": 0.0,
-      "time_unit": "ns"
+      "iterations": 398872,
+      "real_time": 1743.9975230160048,
+      "cpu_time": 1714.8748094626853,
+      "time_unit": "ns",
+      "p50": 1663.0,
+      "p99": 2303.0,
+      "sw_t0_p50": 991.0,
+      "sw_t0_p99": 1151.0
     },
     {
       "name": "BM_KernelSourceMulticast/real_time",
@@ -231,12 +235,14 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "skipped": true,
-      "skip_message": "no user and network namespace: setgroups: Permission denied",
-      "iterations": 0,
-      "real_time": 0.0,
-      "cpu_time": 0.0,
-      "time_unit": "ns"
+      "iterations": 398872,
+      "real_time": 1735.2144572690263,
+      "cpu_time": 1706.7331675324422,
+      "time_unit": "ns",
+      "p50": 1663.0,
+      "p99": 2303.0,
+      "sw_t0_p50": 991.0,
+      "sw_t0_p99": 1151.0
     },
     {
       "name": "BM_KernelSourceMulticast/real_time",
@@ -247,12 +253,14 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "skipped": true,
-      "skip_message": "no user and network namespace: setgroups: Permission denied",
-      "iterations": 0,
-      "real_time": 0.0,
-      "cpu_time": 0.0,
-      "time_unit": "ns"
+      "iterations": 398872,
+      "real_time": 1734.6776033407791,
+      "cpu_time": 1705.4160031288238,
+      "time_unit": "ns",
+      "p50": 1663.0,
+      "p99": 2303.0,
+      "sw_t0_p50": 991.0,
+      "sw_t0_p99": 1151.0
     },
     {
       "name": "BM_KernelSourceMulticast/real_time",
@@ -263,12 +271,90 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "skipped": true,
-      "skip_message": "no user and network namespace: setgroups: Permission denied",
-      "iterations": 0,
-      "real_time": 0.0,
-      "cpu_time": 0.0,
-      "time_unit": "ns"
+      "iterations": 398872,
+      "real_time": 1731.0387668215744,
+      "cpu_time": 1702.1975520969143,
+      "time_unit": "ns",
+      "p50": 1663.0,
+      "p99": 2303.0,
+      "sw_t0_p50": 959.0,
+      "sw_t0_p99": 1151.0
+    },
+    {
+      "name": "BM_KernelSourceMulticast/real_time_mean",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_KernelSourceMulticast/real_time",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "mean",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 1736.2886921112927,
+      "cpu_time": 1707.4114197035644,
+      "time_unit": "ns",
+      "p50": 1663.0,
+      "p99": 2303.0,
+      "sw_t0_p50": 984.6,
+      "sw_t0_p99": 1151.0
+    },
+    {
+      "name": "BM_KernelSourceMulticast/real_time_median",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_KernelSourceMulticast/real_time",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "median",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 1735.214457269026,
+      "cpu_time": 1706.7331675324422,
+      "time_unit": "ns",
+      "p50": 1663.0,
+      "p99": 2303.0,
+      "sw_t0_p50": 991.0,
+      "sw_t0_p99": 1151.0
+    },
+    {
+      "name": "BM_KernelSourceMulticast/real_time_stddev",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_KernelSourceMulticast/real_time",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "stddev",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 4.764153704897625,
+      "cpu_time": 4.677291303860831,
+      "time_unit": "ns",
+      "p50": 0.0,
+      "p99": 0.0,
+      "sw_t0_p50": 14.31083505599723,
+      "sw_t0_p99": 0.0
+    },
+    {
+      "name": "BM_KernelSourceMulticast/real_time_cv",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_KernelSourceMulticast/real_time",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "cv",
+      "aggregate_unit": "percentage",
+      "iterations": 5,
+      "real_time": 0.0027438718725424096,
+      "cpu_time": 0.0027394049552936037,
+      "time_unit": "ns",
+      "p50": 0.0,
+      "p99": 0.0,
+      "sw_t0_p50": 0.014534668957949656,
+      "sw_t0_p99": 0.0
     },
     {
       "name": "BM_KernelSourceBurst/32/real_time",
@@ -279,12 +365,11 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "skipped": true,
-      "skip_message": "no user and network namespace: setgroups: Permission denied",
-      "iterations": 0,
-      "real_time": 0.0,
-      "cpu_time": 0.0,
-      "time_unit": "ns"
+      "iterations": 15788,
+      "real_time": 44396.13858631041,
+      "cpu_time": 44391.55364834049,
+      "time_unit": "ns",
+      "items_per_second": 720783.4063719054
     },
     {
       "name": "BM_KernelSourceBurst/32/real_time",
@@ -295,12 +380,11 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "skipped": true,
-      "skip_message": "no user and network namespace: setgroups: Permission denied",
-      "iterations": 0,
-      "real_time": 0.0,
-      "cpu_time": 0.0,
-      "time_unit": "ns"
+      "iterations": 15788,
+      "real_time": 44199.127438555704,
+      "cpu_time": 44196.30010134273,
+      "time_unit": "ns",
+      "items_per_second": 723996.1930127565
     },
     {
       "name": "BM_KernelSourceBurst/32/real_time",
@@ -311,12 +395,11 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "skipped": true,
-      "skip_message": "no user and network namespace: setgroups: Permission denied",
-      "iterations": 0,
-      "real_time": 0.0,
-      "cpu_time": 0.0,
-      "time_unit": "ns"
+      "iterations": 15788,
+      "real_time": 44463.85951353,
+      "cpu_time": 44460.71212313158,
+      "time_unit": "ns",
+      "items_per_second": 719685.6132172389
     },
     {
       "name": "BM_KernelSourceBurst/32/real_time",
@@ -327,12 +410,11 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "skipped": true,
-      "skip_message": "no user and network namespace: setgroups: Permission denied",
-      "iterations": 0,
-      "real_time": 0.0,
-      "cpu_time": 0.0,
-      "time_unit": "ns"
+      "iterations": 15788,
+      "real_time": 44254.32429692903,
+      "cpu_time": 44250.34792247279,
+      "time_unit": "ns",
+      "items_per_second": 723093.178087923
     },
     {
       "name": "BM_KernelSourceBurst/32/real_time",
@@ -343,12 +425,75 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "skipped": true,
-      "skip_message": "no user and network namespace: setgroups: Permission denied",
-      "iterations": 0,
-      "real_time": 0.0,
-      "cpu_time": 0.0,
-      "time_unit": "ns"
+      "iterations": 15788,
+      "real_time": 44323.94191791528,
+      "cpu_time": 44322.914618697716,
+      "time_unit": "ns",
+      "items_per_second": 721957.4481724048
+    },
+    {
+      "name": "BM_KernelSourceBurst/32/real_time_mean",
+      "family_index": 2,
+      "per_family_instance_index": 0,
+      "run_name": "BM_KernelSourceBurst/32/real_time",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "mean",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 44327.47835064809,
+      "cpu_time": 44324.36568279706,
+      "time_unit": "ns",
+      "items_per_second": 721903.1677724458
+    },
+    {
+      "name": "BM_KernelSourceBurst/32/real_time_median",
+      "family_index": 2,
+      "per_family_instance_index": 0,
+      "run_name": "BM_KernelSourceBurst/32/real_time",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "median",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 44323.94191791528,
+      "cpu_time": 44322.914618697716,
+      "time_unit": "ns",
+      "items_per_second": 721957.4481724048
+    },
+    {
+      "name": "BM_KernelSourceBurst/32/real_time_stddev",
+      "family_index": 2,
+      "per_family_instance_index": 0,
+      "run_name": "BM_KernelSourceBurst/32/real_time",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "stddev",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 106.24503296141454,
+      "cpu_time": 106.04963706586098,
+      "time_unit": "ns",
+      "items_per_second": 1729.9739425549003
+    },
+    {
+      "name": "BM_KernelSourceBurst/32/real_time_cv",
+      "family_index": 2,
+      "per_family_instance_index": 0,
+      "run_name": "BM_KernelSourceBurst/32/real_time",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "cv",
+      "aggregate_unit": "percentage",
+      "iterations": 5,
+      "real_time": 0.0023968210445217257,
+      "cpu_time": 0.0023925810427789245,
+      "time_unit": "ns",
+      "items_per_second": 0.0023964071911375968
     }
   ]
 }

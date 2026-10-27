@@ -184,7 +184,7 @@ The listenKey user stream (`POST/PUT /api/v3/userDataStream` + `/ws/<listenKey>`
 
 ### Keys and session logon
 
-* HMAC keys (`key_type = "hmac"`, the default) sign every request: apiKey + hex HMAC-SHA256. The key pads are hashed once (`net::HmacSha256Key`), so a signature costs about 232 ns (`BM_Sign_HmacSha256`, [bench/full-results.md](../../bench/full-results.md)).
+* HMAC keys (`key_type = "hmac"`, the default) sign every request: apiKey + hex HMAC-SHA256. The key pads are hashed once (`net::HmacSha256Key`), so a signature costs about 244 ns (`BM_Sign_HmacSha256`, [bench/full-results.md](../../bench/full-results.md)).
 * Ed25519 keys (`key_type = "ed25519"`, `private_key_file` or `private_key_env`) log on once per WS API connection with `session.logon` (the only signed request) on the order and user connections. Later requests carry neither `apiKey` nor `signature`, only `timestamp` and `recvWindow`. The order channel is Live only after the logon reply. A failed logon is fatal for bad key, signature or permission errors; timestamp, rate-limit and server errors retry the logon after 2 s. A revoked session (`{"id":null,"status":401,...}`, key deleted or IP not whitelisted) is logged and acted on through the error map (-2015 is fatal). REST requests (fallback, reconciliation, kill switch) are signed with Ed25519 per request, about 30 µs each, so use `order_api = "ws"` with Ed25519 keys.
 * Binance supports `session.logon` with Ed25519 keys only, on production, the Spot testnet (`wss://ws-api.testnet.binance.vision/ws-api/v3`) and Demo Mode (`wss://demo-ws-api.binance.com/ws-api/v3`); RSA keys are not supported by FastMM.
 
@@ -211,10 +211,10 @@ The schema is `tools/sbe/binance_spot_stream_1_0.xml` (schema id 1, version 0, f
 
 | Stream | SBE | JSON |
 |---|---:|---:|
-| best bid and ask | 17.2 ns | 116.6 ns |
-| trade | 19.1 ns | 114.1 ns |
-| depth, 20 levels | 47.4 ns | 669.9 ns |
-| depth, 100 levels | 150.5 ns | 2.96 µs |
+| best bid and ask | 18.0 ns | 121.7 ns |
+| trade | 20.0 ns | 119.4 ns |
+| depth, 20 levels | 49.6 ns | 702.4 ns |
+| depth, 100 levels | 157.6 ns | 3.10 µs |
 
 WS API responses stay JSON: `responseFormat=sbe` would move order acks and execution reports to SBE schema 3 (retired every few months, currently version 5), for a saving of about 300 ns per order event.
 

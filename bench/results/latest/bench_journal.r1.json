@@ -1,9 +1,9 @@
 {
   "context": {
-    "date": "2026-09-29T15:35:19+00:00",
+    "date": "2026-10-27T18:13:02+00:00",
     "executable": "build/release-native/bin/bench/bench_journal",
     "num_cpus": 4,
-    "mhz_per_cpu": 3824,
+    "mhz_per_cpu": 3508,
     "cpu_scaling_enabled": false,
     "aslr_enabled": true,
     "caches": [
@@ -33,9 +33,9 @@
       }
     ],
     "load_avg": [
-      1.021,
-      3.85107,
-      4.85059
+      1,
+      1.49902,
+      4.43506
     ],
     "library_version": "v1.9.5",
     "library_build_type": "release",
@@ -51,11 +51,11 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 49138731,
-      "real_time": 5.6936512870070155,
-      "cpu_time": 5.693463471818188,
+      "iterations": 116314845,
+      "real_time": 5.906540975057515,
+      "cpu_time": 5.90584492460958,
       "time_unit": "ns",
-      "bytes_per_second": 22481921704.35119
+      "bytes_per_second": 21673444127.634583
     },
     {
       "name": "BM_Journal_Record/128",
@@ -66,11 +66,11 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 49138731,
-      "real_time": 5.691685851635863,
-      "cpu_time": 5.691541199954878,
+      "iterations": 116314845,
+      "real_time": 5.9074651993081435,
+      "cpu_time": 5.907445459777725,
       "time_unit": "ns",
-      "bytes_per_second": 22489514791.00507
+      "bytes_per_second": 21667572027.794254
     },
     {
       "name": "BM_Journal_Record/128",
@@ -81,11 +81,11 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 49138731,
-      "real_time": 5.69184751637477,
-      "cpu_time": 5.691775597542394,
+      "iterations": 116314845,
+      "real_time": 5.915137805499873,
+      "cpu_time": 5.914824835987188,
       "time_unit": "ns",
-      "bytes_per_second": 22488588632.213135
+      "bytes_per_second": 21640539415.675987
     },
     {
       "name": "BM_Journal_Record/128",
@@ -96,11 +96,11 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 49138731,
-      "real_time": 5.690836969315861,
-      "cpu_time": 5.6908337742787864,
+      "iterations": 116314845,
+      "real_time": 5.899995972135057,
+      "cpu_time": 5.899397097593171,
       "time_unit": "ns",
-      "bytes_per_second": 22492310455.197186
+      "bytes_per_second": 21697132415.82284
     },
     {
       "name": "BM_Journal_Record/128",
@@ -111,11 +111,11 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 49138731,
-      "real_time": 5.690680941678705,
-      "cpu_time": 5.690556070729625,
+      "iterations": 116314845,
+      "real_time": 5.908192354986606,
+      "cpu_time": 5.908110215854222,
       "time_unit": "ns",
-      "bytes_per_second": 22493408097.389725
+      "bytes_per_second": 21665134082.386642
     },
     {
       "name": "BM_Journal_Record/128_mean",
@@ -128,10 +128,10 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 5.691740513202443,
-      "cpu_time": 5.691634022864774,
+      "real_time": 5.907466461397439,
+      "cpu_time": 5.907124506764378,
       "time_unit": "ns",
-      "bytes_per_second": 22489148736.031265
+      "bytes_per_second": 21668764413.86286
     },
     {
       "name": "BM_Journal_Record/128_median",
@@ -144,10 +144,10 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 5.691685851635863,
-      "cpu_time": 5.691541199954878,
+      "real_time": 5.907465199308143,
+      "cpu_time": 5.907445459777725,
       "time_unit": "ns",
-      "bytes_per_second": 22489514791.00507
+      "bytes_per_second": 21667572027.794254
     },
     {
       "name": "BM_Journal_Record/128_stddev",
@@ -160,10 +160,10 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 0.0011836994419529914,
-      "cpu_time": 0.0011377523438124673,
+      "real_time": 0.005386120547746645,
+      "cpu_time": 0.005516336789689865,
       "time_unit": "ns",
-      "bytes_per_second": 4494895.046570053
+      "bytes_per_second": 20235456.939113583
     },
     {
       "name": "BM_Journal_Record/128_cv",
@@ -176,10 +176,10 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.00020796792109677292,
-      "cpu_time": 0.0001998990692728697,
+      "real_time": 0.0009117479689376913,
+      "cpu_time": 0.0009338446791451554,
       "time_unit": "ns",
-      "bytes_per_second": 0.00019986950592614037
+      "bytes_per_second": 0.0009338537515395986
     },
     {
       "name": "BM_Journal_Record/1024",
@@ -190,11 +190,11 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 7159295,
-      "real_time": 39.119817942947485,
-      "cpu_time": 39.119285907341435,
+      "iterations": 18002026,
+      "real_time": 38.89848075988054,
+      "cpu_time": 38.89400126407994,
       "time_unit": "ns",
-      "bytes_per_second": 26176346941.134426
+      "bytes_per_second": 26327967468.48728
     },
     {
       "name": "BM_Journal_Record/1024",
@@ -205,11 +205,11 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 7159295,
-      "real_time": 39.09300007889778,
-      "cpu_time": 39.09100993882778,
+      "iterations": 18002026,
+      "real_time": 38.86951846421701,
+      "cpu_time": 38.868975858606106,
       "time_unit": "ns",
-      "bytes_per_second": 26195281257.824326
+      "bytes_per_second": 26344918469.81023
     },
     {
       "name": "BM_Journal_Record/1024",
@@ -220,11 +220,11 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 7159295,
-      "real_time": 39.09979278687452,
-      "cpu_time": 39.099409089861474,
+      "iterations": 18002026,
+      "real_time": 38.943596626267805,
+      "cpu_time": 38.9413745430653,
       "time_unit": "ns",
-      "bytes_per_second": 26189654110.79638
+      "bytes_per_second": 26295938754.487404
     },
     {
       "name": "BM_Journal_Record/1024",
@@ -235,11 +235,11 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 7159295,
-      "real_time": 39.09119599066949,
-      "cpu_time": 39.090548021837286,
+      "iterations": 18002026,
+      "real_time": 39.08602365087922,
+      "cpu_time": 39.08184106611111,
       "time_unit": "ns",
-      "bytes_per_second": 26195590796.730694
+      "bytes_per_second": 26201426853.658062
     },
     {
       "name": "BM_Journal_Record/1024",
@@ -250,11 +250,11 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 7159295,
-      "real_time": 39.10065558131615,
-      "cpu_time": 39.09973705511507,
+      "iterations": 18002026,
+      "real_time": 38.864898539723185,
+      "cpu_time": 38.86435204570864,
       "time_unit": "ns",
-      "bytes_per_second": 26189434434.21544
+      "bytes_per_second": 26348052806.738327
     },
     {
       "name": "BM_Journal_Record/1024_mean",
@@ -267,10 +267,10 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 39.100892476141084,
-      "cpu_time": 39.099998002596614,
+      "real_time": 38.93250360819356,
+      "cpu_time": 38.93010895551423,
       "time_unit": "ns",
-      "bytes_per_second": 26189261508.140255
+      "bytes_per_second": 26303660870.63626
     },
     {
       "name": "BM_Journal_Record/1024_median",
@@ -283,10 +283,10 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 39.09979278687452,
-      "cpu_time": 39.09940908986148,
+      "real_time": 38.89848075988054,
+      "cpu_time": 38.89400126407995,
       "time_unit": "ns",
-      "bytes_per_second": 26189654110.79638
+      "bytes_per_second": 26327967468.48728
     },
     {
       "name": "BM_Journal_Record/1024_stddev",
@@ -299,10 +299,10 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 0.011355070377476923,
-      "cpu_time": 0.011646089553136268,
+      "real_time": 0.09135998359022976,
+      "cpu_time": 0.09015894153193951,
       "time_unit": "ns",
-      "bytes_per_second": 7798515.2516719485
+      "bytes_per_second": 60776371.81906534
     },
     {
       "name": "BM_Journal_Record/1024_cv",
@@ -315,10 +315,10 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.00029040437847820626,
-      "cpu_time": 0.00029785396798135024,
+      "real_time": 0.002346624930922823,
+      "cpu_time": 0.002315918037500612,
       "time_unit": "ns",
-      "bytes_per_second": 0.0002977753018827194
+      "bytes_per_second": 0.002310567039240999
     },
     {
       "name": "BM_Crc32c_1MiB",
@@ -329,11 +329,11 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 2687,
-      "real_time": 104187.67845179075,
-      "cpu_time": 104187.65277260885,
+      "iterations": 6360,
+      "real_time": 109146.57452830048,
+      "cpu_time": 109144.95676100634,
       "time_unit": "ns",
-      "bytes_per_second": 10064301979.127346
+      "bytes_per_second": 9607186911.036638
     },
     {
       "name": "BM_Crc32c_1MiB",
@@ -344,11 +344,11 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 2687,
-      "real_time": 104192.72422778311,
-      "cpu_time": 104192.73204317095,
+      "iterations": 6360,
+      "real_time": 109460.94245277977,
+      "cpu_time": 109450.68034591178,
       "time_unit": "ns",
-      "bytes_per_second": 10063811356.492079
+      "bytes_per_second": 9580351594.764359
     },
     {
       "name": "BM_Crc32c_1MiB",
@@ -359,11 +359,11 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 2687,
-      "real_time": 104214.12690736772,
-      "cpu_time": 104210.28470413102,
+      "iterations": 6360,
+      "real_time": 108955.50408807272,
+      "cpu_time": 108949.2361635221,
       "time_unit": "ns",
-      "bytes_per_second": 10062116258.26633
+      "bytes_per_second": 9624445631.04775
     },
     {
       "name": "BM_Crc32c_1MiB",
@@ -374,11 +374,11 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 2687,
-      "real_time": 104192.51767771154,
-      "cpu_time": 104191.47450688505,
+      "iterations": 6360,
+      "real_time": 108969.48459123232,
+      "cpu_time": 108966.62798742125,
       "time_unit": "ns",
-      "bytes_per_second": 10063932821.400942
+      "bytes_per_second": 9622909503.275114
     },
     {
       "name": "BM_Crc32c_1MiB",
@@ -389,11 +389,11 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 2687,
-      "real_time": 104182.37253441998,
-      "cpu_time": 104180.9144026795,
+      "iterations": 6360,
+      "real_time": 109011.73915093258,
+      "cpu_time": 109003.60078616336,
       "time_unit": "ns",
-      "bytes_per_second": 10064952933.193213
+      "bytes_per_second": 9619645520.30747
     },
     {
       "name": "BM_Crc32c_1MiB_mean",
@@ -406,10 +406,10 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 104193.88395981464,
-      "cpu_time": 104192.61168589508,
+      "real_time": 109108.84896226358,
+      "cpu_time": 109103.020408805,
       "time_unit": "ns",
-      "bytes_per_second": 10063823069.695982
+      "bytes_per_second": 9610907832.086267
     },
     {
       "name": "BM_Crc32c_1MiB_median",
@@ -422,10 +422,10 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 104192.51767771153,
-      "cpu_time": 104191.47450688505,
+      "real_time": 109011.7391509326,
+      "cpu_time": 109003.60078616336,
       "time_unit": "ns",
-      "bytes_per_second": 10063932821.400942
+      "bytes_per_second": 9619645520.30747
     },
     {
       "name": "BM_Crc32c_1MiB_stddev",
@@ -438,10 +438,10 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 12.083147989930348,
-      "cpu_time": 10.897941252161598,
+      "real_time": 210.80822932873812,
+      "cpu_time": 209.02322693200935,
       "time_unit": "ns",
-      "bytes_per_second": 1052536.6527774697
+      "bytes_per_second": 18379255.970246457
     },
     {
       "name": "BM_Crc32c_1MiB_cv",
@@ -454,10 +454,10 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.0001159679199077612,
-      "cpu_time": 0.00010459418451871755,
+      "real_time": 0.0019320910387538622,
+      "cpu_time": 0.0019158335502427622,
       "time_unit": "ns",
-      "bytes_per_second": 0.0001045861642725865
+      "bytes_per_second": 0.001912332975339419
     }
   ]
 }

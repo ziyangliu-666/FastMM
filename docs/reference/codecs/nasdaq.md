@@ -179,15 +179,15 @@ Sequence token: a ClOrdID of `'T'` followed by 13 zero-padded decimal digits nam
 
 | Benchmark | What is timed | p50 |
 |---|---|---|
-| `BM_Itch_DecodeAddOrder` | ITCH 'A' (36 bytes) -> `OrderAddL3Msg` committed to an `EventSink` | 10.2 ns |
-| `BM_Itch_DecodeOrderExecuted` | ITCH 'E' (31 bytes) -> `OrderExecL3Msg` committed to an `EventSink` | 10.2 ns |
-| `BM_ItchL2Bridge_Message` | `ItchL2Bridge::on_itch_message()` per message of a replayed A/E/C/D/U stream around one touch, `end_datagram()` every 8 messages (a delta for about 1 in 8 messages). | 81.9 ns |
-| `BM_MoldUdp64_FramePacket` | `parse_packet()` + iterate a 10-message packet | 30.7 ns per packet |
-| `BM_MoldUdp64_ReceiveAB` | `Receiver::on_packet()` for one datagram of line A or B (4 messages; B trails A by one packet, so every B copy is a duplicate) | 14.3 ns |
-| `BM_MoldUdp64_ReceiveABLossA` | as above; A loses 1 packet in 8 and B trails by two, so A's next packet waits in the reorder buffer | 43.0 ns |
-| `BM_SoupBin_FrameSequenced` | `SoupBinFramer::next()` + `ClientSession::on_frame()` for a Sequenced Data packet | 2.9 ns |
-| `BM_Ouch42_EncodeEnterOrder` | `OrderCommand` -> OUCH 4.2 Enter Order (49 bytes) | 9.2 ns |
-| `BM_Ouch50_EncodeEnterOrder` | `OrderCommand` -> OUCH 5.0 Enter Order (47 bytes, UserRefNum lookup) | 11.8 ns |
+| `BM_Itch_DecodeAddOrder` | ITCH 'A' (36 bytes) -> `OrderAddL3Msg` committed to an `EventSink` | 12.7 ns |
+| `BM_Itch_DecodeOrderExecuted` | ITCH 'E' (31 bytes) -> `OrderExecL3Msg` committed to an `EventSink` | 13.1 ns |
+| `BM_ItchL2Bridge_Message` | `ItchL2Bridge::on_itch_message()` per message of a replayed A/E/C/D/U stream around one touch, `end_datagram()` every 8 messages (a delta for about 1 in 8 messages). | 73.7 ns |
+| `BM_MoldUdp64_FramePacket` | `parse_packet()` + iterate a 10-message packet | 31.6 ns per packet |
+| `BM_MoldUdp64_ReceiveAB` | `Receiver::on_packet()` for one datagram of line A or B (4 messages; B trails A by one packet, so every B copy is a duplicate) | 14.8 ns |
+| `BM_MoldUdp64_ReceiveABLossA` | as above; A loses 1 packet in 8 and B trails by two, so A's next packet waits in the reorder buffer | 40.0 ns |
+| `BM_SoupBin_FrameSequenced` | `SoupBinFramer::next()` + `ClientSession::on_frame()` for a Sequenced Data packet | 3.3 ns |
+| `BM_Ouch42_EncodeEnterOrder` | `OrderCommand` -> OUCH 4.2 Enter Order (49 bytes) | 9.6 ns |
+| `BM_Ouch50_EncodeEnterOrder` | `OrderCommand` -> OUCH 5.0 Enter Order (47 bytes, UserRefNum lookup) | 12.7 ns |
 
 Run them with `build/<dir>/bin/bench/bench_codecs_nasdaq --cpu=N --benchmark_min_time=1s`.
 
