@@ -93,8 +93,10 @@ struct Fixture {
 
   explicit Fixture(bool with_journal = true,
                    void (*tweak)(EngineConfig&) = nullptr,
-                   bool eth = false) {
+                   bool eth = false,
+                   bool replace = false) {
     if (eth) table = make_table(true);
+    transport.replace = replace;
     REQUIRE_FALSE(strategy.configure({{"half_spread_bps", "10"},
                                       {"quote_qty", "0.01"},
                                       {"max_inventory", "0.05"},
@@ -109,6 +111,7 @@ struct Fixture {
     cfg.risk.price_collar_bps = 500;
     cfg.quotes.min_requote_interval = Duration{};
     cfg.quotes.min_requote_ticks = 1;
+    cfg.quotes.supports_replace = replace;
     if (tweak != nullptr) tweak(cfg);
     engine = std::make_unique<TestEngine>(
         cfg, table, clock, transport, feed, strategy, with_journal ? &journal_ring : nullptr);
@@ -1222,4 +1225,101 @@ TEST_CASE(
   const Run old = run(true, true);
   CHECK(old.replaces[0] + old.replaces[1] == 0);
   CHECK(old.cancels[0] == 2);
+}
+
+// A venue that refuses an order priced outside a band around a reference that lags the market, as
+// Binance's PERCENT_PRICE does around its average price: during a fast move the quotes leave the
+// band and every requote is refused for its price until the reference catches up. The side backs
+// off instead of resending on every book update, and quotes again once the price is back inside.
+TEST_CASE("core.engine: a side the venue refuses for its price band backs off, then quotes again") {
+  for (const bool replace : {false, true}) {
+    CAPTURE(replace);
+    Fixture f(false, nullptr, false, replace);
+    double ref = 100.0;             // the venue's reference price
+    constexpr double kBand = 0.01;  // 1 %
+    std::size_t seen = 0;           // outbound messages the venue has answered
+    std::size_t attempts = 0;       // News and Replaces the venue saw
+    std::size_t refused = 0;
+    const auto outside = [&](Price p) {
+      const double x = static_cast<double>(p.raw) / static_cast<double>(px("1").raw);
+      return x > ref * (1 + kBand) || x < ref * (1 - kBand);
+    };
+    const auto venue = [&] {
+      for (; seen < f.transport.out.size(); ++seen) {
+        const auto* h = reinterpret_cast<const EventHeader*>(f.transport.out[seen].data());
+        ClientOrderId id{};
+        Price price{};
+        if (h->type == EventType::OutNewOrder) {
+          id = f.transport.at<OutNewOrderMsg>(seen).cl_ord_id;
+          price = f.transport.at<OutNewOrderMsg>(seen).price;
+        } else if (h->type == EventType::OutReplace) {
+          id = f.transport.at<OutReplaceMsg>(seen).cl_ord_id;
+          price = f.transport.at<OutReplaceMsg>(seen).price;
+        } else if (h->type == EventType::OutCancel) {
+          OrderCancelAckMsg a{};
+          init_header(a, EventType::OrderCancelAck, InstrumentId{0}, VenueId{0});
+          a.cl_ord_id = f.transport.at<OutCancelMsg>(seen).cl_ord_id;
+          f.push(a);
+          continue;
+        } else {
+          continue;
+        }
+        ++attempts;
+        if (outside(price)) {
+          ++refused;
+          OrderRejectMsg r{};
+          init_header(r, EventType::OrderReject, InstrumentId{0}, VenueId{0});
+          r.cl_ord_id = id;
+          r.reason = RejectReason::PriceCollar;
+          r.venue_code = -1013;
+          f.push(r);
+        } else {
+          OrderAckMsg a{};
+          init_header(a, EventType::OrderAck, InstrumentId{0}, VenueId{0});
+          a.cl_ord_id = id;
+          a.venue_order_id = "V";
+          f.push(a);
+        }
+      }
+    };
+    std::uint64_t seq = 1;
+    const auto tick = [&](double mid) {
+      char bid[32];
+      char ask[32];
+      std::snprintf(bid, sizeof bid, "%.2f", mid - 0.01);
+      std::snprintf(ask, sizeof ask, "%.2f", mid + 0.01);
+      f.push_book(bid, ask, seq, true);
+      ++seq;
+      // The venue answers within the millisecond.
+      for (int i = 0; i < 4; ++i) {
+        f.drain();
+        venue();
+      }
+      f.clock.advance(milliseconds(1));
+    };
+    tick(100.0);
+    REQUIRE(refused == 0);
+    REQUIRE(f.engine->oms().open_count() == 2);
+
+    // 1.4 s of a move from 100 to 114, a tick a millisecond; the reference stays behind.
+    double mid = 100.0;
+    for (int ms = 0; ms < 1400; ++ms) tick(mid += 0.01);
+    // Both sides leave the band about 100 ms in. Resent on every requote, that was some 1300
+    // refusals a side; backing off 1 s, then 2 s, it is two.
+    CHECK(refused >= 2);
+    CHECK(refused <= 4);
+    CHECK(attempts > 100);  // the requotes before the band was left went out
+    if (replace) CHECK(f.transport.count(EventType::OutReplace) > 0);
+
+    // The move is over and the reference catches up: the first attempt after the backoff is taken.
+    ref = mid;
+    for (int ms = 0; ms < 3000; ++ms) tick(mid);
+    CHECK(refused <= 4);
+    std::size_t working = 0;
+    f.engine->oms().for_each_open_order([&](Handle<Order>, const Order& o) {
+      working += o.is_working() && !outside(o.price) ? 1U : 0U;
+    });
+    CHECK(working == 2);
+    CHECK(f.engine->quote_manager().stats().reject_backoffs == refused);
+  }
 }

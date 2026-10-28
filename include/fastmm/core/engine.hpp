@@ -1041,6 +1041,7 @@ class Engine {
     // Quotes held back for want of an order token go first, oldest first, before this event's own
     // requote can take the token.
     if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
+    if (FASTMM_UNLIKELY(quotes_.backoff_due(now_))) retry_backed_off();
     dispatch(h);
     after_hooks(quoting_before);
     unlatch_clock();
@@ -2954,6 +2955,7 @@ class Engine {
       const bool quoting_before = quoting_enabled();
       check_param_age();
       if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
+      if (FASTMM_UNLIKELY(quotes_.backoff_due(now_))) retry_backed_off();
       call_batch_end();
       after_hooks(quoting_before);
       unlatch_clock();
@@ -3008,6 +3010,7 @@ class Engine {
     check_param_age();
     // As process() does for the journaled timer a replay reads back.
     if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
+    if (FASTMM_UNLIKELY(quotes_.backoff_due(now_))) retry_backed_off();
     if (ack_timer) {
       sweep_acks();
     } else if (flatten_timer) {
@@ -3065,6 +3068,16 @@ class Engine {
       if (!quoting_enabled(id)) continue;
       quotes_.retry(instruments_.get(id), oms_, now_, place);
     }
+    flush_out();
+  }
+
+  // Re-applies the quotes of instruments whose side backing off after a venue reject held back a
+  // New, once that backoff has ended.
+  FASTMM_NOINLINE void retry_backed_off() noexcept {
+    Placer place{this};
+    quotes_.take_backoff_due(now_, [&](InstrumentId id) {
+      if (quoting_enabled(id)) quotes_.retry_backed_off(instruments_.get(id), oms_, now_, place);
+    });
     flush_out();
   }
 
@@ -4199,7 +4212,8 @@ class Engine {
   }
   FASTMM_NOINLINE void update_market_interest() noexcept {
     const bool every = journal_.enabled() || cfg_.max_param_age.ns > 0 || feed_lag_limit_.ns > 0 ||
-                       queue_on_ || fx_on_ || perp_.marking() || quotes_.starved();
+                       queue_on_ || fx_on_ || perp_.marking() || quotes_.starved() ||
+                       quotes_.backed_off();
     if (every != interest_.every) {
       interest_.every = every;
       ++interest_.epoch;

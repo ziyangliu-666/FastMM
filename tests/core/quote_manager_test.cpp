@@ -371,6 +371,73 @@ TEST_CASE("core.quote_manager: a venue reject backs off new orders on that side"
   CHECK(qm.stats().reject_backoffs == 3);
 }
 
+TEST_CASE("core.quote_manager: a refused replace backs off its side, which quotes again after") {
+  const Instrument inst = make_inst();
+  QuoteParams p;
+  p.min_requote_interval = Duration{};
+  p.supports_replace = true;
+  p.reject_backoff = milliseconds(1000);
+  QuoteManager qm(p);
+  Harness h;
+  const Timestamp t0 = Timestamp{} + milliseconds(10'000);
+  qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, t0, h);
+  h.ack_all();
+
+  // The bid moves out of the venue's band: the replace is refused and the order keeps working.
+  qm.reconcile(inst, quotes("99.50", "101.00"), h.oms, t0, h);
+  REQUIRE(h.count(QuoteActionKind::Replace) == 1);
+  const std::vector<ClientOrderId> pending = ids_in_state(h.oms, OrderState::PendingReplace, true);
+  REQUIRE(pending.size() == 1);
+  OrderRejectMsg rej{};
+  init_header(rej, EventType::OrderReject);
+  rej.cl_ord_id = pending[0];
+  rej.reason = RejectReason::PriceCollar;
+  const OmsUpdate u = h.oms.on_reject(rej);
+  CHECK_FALSE(u.terminal);
+  CHECK(u.refused == RejectReason::PriceCollar);
+  qm.on_order_update(u, inst, h.oms, t0, h);
+  CHECK(qm.backing_off(inst.id, Side::Buy, t0));
+  CHECK_FALSE(qm.backing_off(inst.id, Side::Sell, t0));
+
+  // A requote within the backoff sends no replace: it cancels the bid and holds the New back.
+  h.actions.clear();
+  qm.reconcile(inst, quotes("99.60", "101.00"), h.oms, t0 + milliseconds(10), h);
+  CHECK(h.count(QuoteActionKind::Replace) == 0);
+  REQUIRE(h.count(QuoteActionKind::Cancel) == 1);
+  for (const ClientOrderId id : ids_in_state(h.oms, OrderState::PendingCancel))
+    qm.on_order_update(
+        h.oms.on_cancel_ack(cancel_ack_msg(id)), inst, h.oms, t0 + milliseconds(20), h);
+  CHECK(h.count(QuoteActionKind::New) == 0);
+  CHECK(qm.stats().kept_backoff == 1);
+  CHECK(qm.backed_off());
+
+  // No requote comes: when the backoff ends the instrument is handed back for its last quotes.
+  std::vector<InstrumentId> due;
+  qm.take_backoff_due(t0 + milliseconds(900), [&](InstrumentId id) { due.push_back(id); });
+  CHECK(due.empty());
+  CHECK_FALSE(qm.backoff_due(t0 + milliseconds(900)));
+  CHECK(qm.backoff_due(t0 + milliseconds(1000)));
+  qm.take_backoff_due(t0 + milliseconds(1000), [&](InstrumentId id) { due.push_back(id); });
+  REQUIRE(due.size() == 1);
+  CHECK_FALSE(qm.backed_off());
+  CHECK(qm.retry_backed_off(inst, h.oms, t0 + milliseconds(1000), h) == 1);
+  REQUIRE(h.count(QuoteActionKind::New) == 1);
+  CHECK(h.actions.back().price == px("99.60"));
+
+  // Its ack ends the backoff; a refused replace of an order the venue no longer has starts none.
+  for (const ClientOrderId id : ids_in_state(h.oms, OrderState::PendingNew))
+    qm.on_order_update(h.oms.on_ack(ack_msg(id)), inst, h.oms, t0 + milliseconds(1000), h);
+  CHECK_FALSE(qm.backing_off(inst.id, Side::Buy, t0 + milliseconds(1000)));
+  qm.reconcile(inst, quotes("99.70", "101.00"), h.oms, t0 + milliseconds(1100), h);
+  const std::vector<ClientOrderId> again = ids_in_state(h.oms, OrderState::PendingReplace, true);
+  REQUIRE(again.size() == 1);
+  rej.cl_ord_id = again[0];
+  rej.reason = RejectReason::VenueUnknownOrder;
+  qm.on_order_update(h.oms.on_reject(rej), inst, h.oms, t0 + milliseconds(1100), h);
+  CHECK_FALSE(qm.backing_off(inst.id, Side::Buy, t0 + milliseconds(1100)));
+  CHECK(qm.stats().reject_backoffs == 1);
+}
+
 TEST_CASE("core.quote_manager: a requote that meets pending orders is applied when they resolve") {
   const Instrument inst = make_inst();
   QuoteParams p;

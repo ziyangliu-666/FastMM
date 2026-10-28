@@ -4,6 +4,10 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+### Fixed
+- core: a refused quote replace backs off its side as a refused new order does, so a price outside the venue's band is not resent on every requote.
+- core: a side in reject backoff quotes again when the backoff ends, without waiting for the strategy's next requote.
+
 ## [0.10.0] - 2026-10-28
 
 Sweeps, walk-forwards and `[ab]` branches under the queue fill models run all their points in one

@@ -125,6 +125,10 @@ Each connector maps its venue's error codes onto these; the code tables are on e
 | 67 | `VenueRateLimit` | yes | the connector cools down; lower the request rate |
 | 68 | `VenueUnknownOrder` | no | the order is gone at the venue; most codes also trigger a reconciliation |
 
+A quote the venue refuses, as a new order or as a replace, pauses its side for `[engine] reject_backoff_ms`, doubling with each further refusal up to `reject_backoff_max_ms`; a post-only cross or `VenueUnknownOrder` does not. An accepted order on the side resets the doubling.
+
+During the pause a requote cancels the side's resting order instead of replacing it, and the side's last quotes go out again when the pause ends. A price outside the venue's band during a move (`PriceCollar`) is therefore retried once a pause, not on every requote. Orders sent with `ctx.send` are the strategy's to retry.
+
 ## Kill reasons
 
 `KillReason` (`include/fastmm/core/enums.hpp`) is the first reason each kill-switch bit was set for. `fastmm-top` shows it per venue; the status file carries it in `kill_reason`.

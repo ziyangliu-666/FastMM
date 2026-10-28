@@ -65,7 +65,7 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `min_qty_bps` | integer |  | keep a resting quote whose remaining quantity covers this share of the desired quantity, bps (default 8000 = 80 %) |
 | `post_only` | boolean |  | send quotes as post-only orders (default true) |
 | `supports_replace` | boolean |  | let the quote manager amend orders in place where the venue supports it (default true) |
-| `reject_backoff_ms` | integer |  | after a venue reject other than a post-only cross, no new orders on that side for this long, doubling with each further reject, ms; 0 = off (default 1000) |
+| `reject_backoff_ms` | integer |  | after the venue refuses a quote's new order or replace, other than a post-only cross or an order it no longer has, no new orders or replaces on that side for this long, doubling with each further refusal, then the side quotes again, ms; 0 = off (default 1000) |
 | `reject_backoff_max_ms` | integer |  | cap of the doubling reject backoff, ms (default 60000) |
 | `quote_token_reserve` | integer |  | order tokens of [risk] orders_per_sec a quote that does not reduce the position leaves for the strategy's own orders and for quotes that do; quotes short of a token wait and are placed in turn as tokens return, not refused (default 0) |
 | `on_kill` | string |  | fastmm-live after a kill switch the engine trips itself ([risk] max_loss, a full ring, every venue killed): exit (normal shutdown, exit code 6) \| stay (keep running with quoting off) (default exit) |

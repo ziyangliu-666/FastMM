@@ -131,7 +131,8 @@ struct MdInterest {
   };
   std::uint64_t epoch = 1;
   // Every message: a journal records them all, and the max_param_age, feed-lag and FX checks, the
-  // venue's marks, the strategy's queue estimate and a quote held back for a token act on any.
+  // venue's marks, the strategy's queue estimate and a quote held back for a token or by a reject
+  // backoff act on any.
   bool every = true;
   std::array<Instrument, kMaxInstruments> inst{};
 };

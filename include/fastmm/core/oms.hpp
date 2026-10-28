@@ -88,7 +88,10 @@ struct OmsUpdate {
   bool known = false;     // the id mapped to an order (open or recently terminal)
   bool changed = false;   // state or quantities changed
   bool terminal = false;  // the order reached a terminal state in this update
-  Qty fill_qty{};         // for fills
+  // The venue (or the connector for it) refused the order's new or replace leg in this update: the
+  // order is Rejected, back to working at its old price, or cancelled by a cancel-then-new replace.
+  RejectReason refused = RejectReason::None;
+  Qty fill_qty{};  // for fills
   Price fill_px{};
   // Quantity the venue reports as filled that we never saw a fill message for (a private-stream
   // outage covered by a cancel ack, an expiry or a reconciliation snapshot). The engine books it
@@ -338,6 +341,7 @@ class Oms {
     u.prev = o.state;
     if (o.state == OrderState::PendingNew) {
       o.reject_reason = m.reason;
+      u.refused = m.reason;
       ++stats_.rejected;
       terminate(u, h, o, OrderState::Rejected);
       return u;
@@ -345,6 +349,7 @@ class Oms {
     if (o.state == OrderState::PendingReplace && m.cl_ord_id == o.pending_cl_ord_id) {
       // Replace failed. If the venue already cancelled the original (cancel-then-new
       // style replace) the order is gone; otherwise it keeps working unchanged.
+      u.refused = m.reason;
       if (o.has(Order::kReplaceOldCanceled)) {
         clear_pending(o);
         terminate(u, h, o, OrderState::Canceled);

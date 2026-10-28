@@ -14,9 +14,12 @@
 //     slots are reused, and a replace changes the order's id);
 //   * while an instrument is pulled, an order that becomes working late (its ack arrived after
 //     the pull) is cancelled at once;
-//   * a New rejected by the venue (other than a post-only cross) blocks new orders on that side
-//     for reject_backoff, doubling on each further reject up to reject_backoff_max and reset by
-//     an ack on that side, so an unfundable side is not resent on every requote;
+//   * a New or Replace refused by the venue (other than a post-only cross, or an order the venue
+//     no longer has) blocks new orders and replaces on that side for reject_backoff, doubling on
+//     each further refusal up to reject_backoff_max and reset by an ack on that side, so a side
+//     the venue keeps refusing (no balance, a price outside its band during a move) is not resent
+//     on every requote; a requote that meets a working order meanwhile cancels it, as on a venue
+//     without replace, and the New waits for the backoff to end;
 //   * an instrument whose venue supports replace (set_replace(), with supports_replace) gets a
 //     single Replace; otherwise Cancel now and New only once the cancel's terminal update arrives
 //     via on_order_update() (cancel-then-new keeps momentary exposure down and never double-quotes
@@ -47,6 +50,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 namespace fastmm {
 
@@ -142,6 +146,8 @@ struct QuoteStats {
 };
 
 class QuoteManager {
+  static constexpr std::int64_t kNever = std::numeric_limits<std::int64_t>::max();
+
  public:
   explicit QuoteManager(const QuoteParams& p = {}) noexcept : params_(p) { resolve_replace(); }
 
@@ -274,6 +280,43 @@ class QuoteManager {
     return reconcile(inst, desired, oms, now, place);
   }
 
+  // Instruments with a New held back by a side's reject backoff: once the backoff ends, the engine
+  // re-applies their last desired quotes (retry_backed_off), so a side comes back by itself rather
+  // than at the strategy's next requote, which a quiet market may not bring.
+  [[nodiscard]] bool backed_off() const noexcept { return !backed_off_.empty(); }
+  [[nodiscard]] bool backoff_due(Timestamp now) const noexcept { return now >= backoff_due_; }
+  // Takes each instrument whose held-back side may quote at `now` off the queue and calls
+  // f(InstrumentId); the others stay queued.
+  template <class F>
+  void take_backoff_due(Timestamp now, F&& f) noexcept {
+    if (now < backoff_due_) return;
+    backoff_due_ = Timestamp{kNever};
+    for (std::size_t n = backed_off_.size(); n > 0; --n) {
+      const std::uint16_t id = backed_off_.front();
+      backed_off_.pop();
+      InstState& st = state_[id];
+      if (now < st.retry_at) {
+        static_cast<void>(backed_off_.try_push(id));
+        backoff_due_ = std::min(backoff_due_, st.retry_at);
+        continue;
+      }
+      st.retry_at = Timestamp{kNever};
+      f(InstrumentId{id});
+    }
+  }
+  // Re-applies the last desired quotes of an instrument take_backoff_due() handed out; one pulled
+  // meanwhile stays pulled. A side still backing off queues it again.
+  template <class Placer>
+  std::uint32_t retry_backed_off(const Instrument& inst,
+                                 const Oms& oms,
+                                 Timestamp now,
+                                 Placer&& place) noexcept {
+    InstState& st = state_[inst.id.value];
+    if (st.pulled) return 0;
+    const DesiredQuotes desired = st.desired;
+    return reconcile(inst, desired, oms, now, place);
+  }
+
   // Feed every OmsUpdate here. A terminal update frees the slot it belonged to and, if a target
   // was recorded for it (cancel-then-new, or a requote that met the order pending), places the New
   // now. The ack of an order that was pending at a requote applies the recorded target. While the
@@ -290,8 +333,10 @@ class QuoteManager {
     if (lvl >= kMaxQuoteLevels || u.order.instrument != inst.id) return;
     InstState& st = state_[inst.id.value];
     Slot& slot = st.slots[static_cast<std::size_t>(side)][lvl];
+    if (u.refused != RejectReason::None) on_venue_reject(st, side, u.refused, now);
     if (!u.terminal) {
-      if (u.prev == OrderState::PendingNew && u.order.is_working())
+      if ((u.prev == OrderState::PendingNew || u.prev == OrderState::PendingReplace) &&
+          u.refused == RejectReason::None && u.order.is_working())
         st.backoff[static_cast<std::size_t>(side)] = Duration{};  // the venue takes this side
       if (!u.handle.valid() || slot.handle.idx != u.handle.idx ||
           !owns(oms, inst, side, lvl, slot) || !u.order.is_working())
@@ -308,8 +353,6 @@ class QuoteManager {
       }
       return;
     }
-    if (u.order.state == OrderState::Rejected && u.prev == OrderState::PendingNew)
-      on_venue_reject(st, side, u.order.reject_reason, now);
     // The terminal order was this slot's unless the slot already holds a newer live order. Ids
     // are not compared: a replace changes the order's id, and a stale id used to drop the update
     // and leave the slot waiting for a terminal state forever.
@@ -321,7 +364,7 @@ class QuoteManager {
     slot.apply_want = false;
     if (!slot.want.qty.is_positive()) return;
     if (backing_off(st, side, now)) {
-      ++stats_.kept_backoff;
+      kept_backoff(st, inst.id, side);
       return;
     }
     submit_new(inst, side, lvl, slot, slot.want, slot.want_account, now, place, /*deferred=*/true);
@@ -369,18 +412,33 @@ class QuoteManager {
     bool venue_no_replace = false;    // the venue cannot amend in place (set_replace)
     bool replace = false;             // supports_replace && !venue_no_replace
     Duration backoff[2] = {};         // current backoff per side (0 = none)
-    Timestamp blocked_until[2] = {};  // no News on the side before this
+    Timestamp blocked_until[2] = {};  // no News or Replaces on the side before this
     bool starved = false;             // queued in starved_
+    Timestamp retry_at{kNever};       // queued in backed_off_: a held-back side's backoff ends
   };
 
   [[nodiscard]] static bool backing_off(const InstState& st, Side side, Timestamp now) noexcept {
     const auto i = static_cast<std::size_t>(side);
     return st.backoff[i].ns > 0 && now < st.blocked_until[i];
   }
+  // A New on `side` waits for the side's backoff: queue the instrument to be re-applied when it
+  // ends.
+  void kept_backoff(InstState& st, InstrumentId id, Side side) noexcept {
+    ++stats_.kept_backoff;
+    const Timestamp until = st.blocked_until[static_cast<std::size_t>(side)];
+    if (st.retry_at.ns == kNever) {
+      if (!backed_off_.try_push(static_cast<std::uint16_t>(id.value))) return;
+    }
+    st.retry_at = std::min(st.retry_at, until);
+    backoff_due_ = std::min(backoff_due_, until);
+  }
   void on_venue_reject(InstState& st, Side side, RejectReason reason, Timestamp now) noexcept {
-    // A post-only cross is a stale price, fixed by the next requote; other venue rejects (no
-    // balance, filters, permissions) repeat until something changes.
-    if (params_.reject_backoff.ns <= 0 || reason == RejectReason::PostOnlyWouldCross) return;
+    // A post-only cross is a stale price, fixed by the next requote, and a replace of an order the
+    // venue no longer has lost a race with its fill or cancel; other venue rejects (no balance,
+    // filters, a price outside the venue's band, permissions) repeat until something changes.
+    if (params_.reject_backoff.ns <= 0 || reason == RejectReason::PostOnlyWouldCross ||
+        reason == RejectReason::VenueUnknownOrder)
+      return;
     const auto i = static_cast<std::size_t>(side);
     Duration next = st.backoff[i].ns <= 0 ? params_.reject_backoff : st.backoff[i] + st.backoff[i];
     if (params_.reject_backoff_max.ns > 0 && next.ns > params_.reject_backoff_max.ns)
@@ -434,7 +492,8 @@ class QuoteManager {
         ++stats_.kept_interval;
         return 0;
       }
-      if (st.replace) {
+      // A side backing off sends no replace either: the order is cancelled and the New waits.
+      if (st.replace && !backing_off(st, side, now)) {
         QuoteAction a{QuoteActionKind::Replace,
                       inst.id,
                       side,
@@ -468,7 +527,7 @@ class QuoteManager {
     slot.apply_want = false;
     if (!has_want) return 0;
     if (backing_off(st, side, now)) {
-      ++stats_.kept_backoff;
+      kept_backoff(st, inst.id, side);
       return 0;
     }
     return submit_new(inst, side, lvl, slot, target, account, now, place);
@@ -568,6 +627,10 @@ class QuoteManager {
   QuoteStats stats_{};
   InstState state_[kMaxInstruments] = {};
   RingBuffer<std::uint16_t, kMaxInstruments> starved_;  // each instrument at most once
+  // Instruments with a New held back by a backoff (InstState::retry_at), each at most once, and the
+  // earliest retry_at among them.
+  RingBuffer<std::uint16_t, kMaxInstruments> backed_off_;
+  Timestamp backoff_due_{kNever};
 };
 
 }  // namespace fastmm

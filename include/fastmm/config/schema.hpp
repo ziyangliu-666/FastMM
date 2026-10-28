@@ -292,8 +292,9 @@ inline constexpr KeySpec kConfigSchema[] = {
      "reject_backoff_ms",
      KeyType::Int,
      false,
-     "after a venue reject other than a post-only cross, no new orders on that side for this "
-     "long, doubling with each further reject, ms; 0 = off (default 1000)"},
+     "after the venue refuses a quote's new order or replace, other than a post-only cross or an "
+     "order it no longer has, no new orders or replaces on that side for this long, doubling with "
+     "each further refusal, then the side quotes again, ms; 0 = off (default 1000)"},
     {"engine",
      "reject_backoff_max_ms",
      KeyType::Int,
