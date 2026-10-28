@@ -65,7 +65,7 @@ Code that registers its own descriptors, as a new venue does, follows three rule
 
 ## Memory
 
-The engine reserves all its memory before the first event and touches each slot once, so no page fault lands in the middle of trading:
+The engine reserves all its memory before the first event and touches each slot once, so no page fault lands in the middle of trading. In the engine benchmark a book update becomes an order in 143 ns (p50) ([Benchmarks](benchmarks.md)).
 
 <video class="fastmm-video" autoplay loop muted playsinline preload="metadata" poster="../../assets/anim/reserved-at-startup.jpg" src="../../assets/anim/reserved-at-startup.mp4"></video>
 

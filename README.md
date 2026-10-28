@@ -5,15 +5,13 @@
 [![PyPI](https://img.shields.io/pypi/v/fastmm-engine)](https://pypi.org/project/fastmm-engine/)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-FastMM is a low-latency market-making engine in C++ with Python strategies. Read the [documentation](https://ziy.bio/FastMM/).
+FastMM is a low-latency market-making engine. Read the [documentation](https://ziy.bio/FastMM/).
 
-![A sweep tests many strategies in one pass over the recorded market](docs/assets/anim/backtest-sweep.gif)
-
-What a market maker does, and what FastMM does for one: [FastMM in two minutes](https://github.com/user-attachments/assets/dcd130c5-28fe-482f-a757-d0fc6550c5b9).
+https://github.com/user-attachments/assets/dcd130c5-28fe-482f-a757-d0fc6550c5b9
 
 ## Features
 
-- **[Low latency](https://ziy.bio/FastMM/explanation/benchmarks/).** In the engine a book update becomes an order in 143 ns (p50). Core pinning, busy polling, AF_XDP or DPDK receive and OpenOnload or XLIO order entry tune the host around it.
+- **[Low latency](https://ziy.bio/FastMM/explanation/architecture/#memory).** In the engine a book update becomes an order in 143 ns (p50). Core pinning, busy polling, AF_XDP or DPDK receive and OpenOnload or XLIO order entry tune the host around it.
 - **[Sweeps in one pass](https://ziy.bio/FastMM/explanation/backtesting/#many-runs-in-one-pass).** Thousands of parameter points share one pass over the data, and each gets the result its own backtest gives: 16,384 points over four hours of Binance BTCUSDT futures took 228 s on 8 threads.
 - **[Quote on one venue, hedge on another](https://ziy.bio/FastMM/how-to/strategies/xmm/).** `xmm` makes the market on one exchange and hedges each fill with an IOC on another.
 - **[C++ or Python, backtest or live](https://ziy.bio/FastMM/how-to/strategies/python-hot-hooks/).** One strategy file runs in backtests, replays and live sessions; replays are deterministic and the simulated exchange models queue position. Python hooks marked `@fastmm.hot` compile to machine code with Numba.
