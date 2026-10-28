@@ -4,6 +4,9 @@
 
 The hedging is a [`HedgeExecutor`](hedge-executor.md); `xmm` adds the pricing and the guards.
 
+![xmm quotes on the quote venue, prices from the hedge venue's book and hedges each fill with an IOC on the hedge venue, or on the fallback venue while the hedge venue is unusable](../../assets/diagrams/xmm.svg#only-light){ .fastmm-diagram }
+![xmm quotes on the quote venue, prices from the hedge venue's book and hedges each fill with an IOC on the hedge venue, or on the fallback venue while the hedge venue is unusable](../../assets/diagrams/xmm-dark.svg#only-dark){ .fastmm-diagram }
+
 ## Run it
 
 Prerequisites: a release build (`cmake --preset release && cmake --build --preset release -j`) or the [release tarball](../operations/deploy.md). `xmm` runs in `fastmm-live`; `fastmm run` from the pip package runs Python classes only.

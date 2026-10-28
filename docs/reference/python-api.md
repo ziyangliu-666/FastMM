@@ -456,6 +456,9 @@ Defining the class raises `TypeError` when:
 
 Hot hooks run on the engine thread. `on_start`, the `@fastmm.every` methods and `on_stop` run on a slow thread: they read the snapshot, recent rows and fills the engine publishes, and send values back with `publish()`.
 
+![The engine thread runs the hot hooks and alone talks to the venue; the slow thread reads a snapshot, recent rows and fills and sends parameters back through the publish ring](../assets/diagrams/slow-methods.svg#only-light){ .fastmm-diagram }
+![The engine thread runs the hot hooks and alone talks to the venue; the slow thread reads a snapshot, recent rows and fills and sends parameters back through the publish ring](../assets/diagrams/slow-methods-dark.svg#only-dark){ .fastmm-diagram }
+
 ### Slow ctx
 
 | Member | Result |

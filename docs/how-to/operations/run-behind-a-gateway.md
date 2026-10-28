@@ -2,6 +2,9 @@
 
 `fastmm-gateway` holds the venue connections and the API keys; strategy processes attach to it. A strategy can stop, crash or be replaced while the venue sessions stay up and the other strategies keep trading. When a strategy process goes away, `kill -9` included, the gateway cancels its orders at once.
 
+![fastmm-gateway holds the venue connection and the keys; each strategy process attaches with three shared-memory rings per venue, and its orders pass the account guards](../../assets/diagrams/gateway.svg#only-light){ .fastmm-diagram }
+![fastmm-gateway holds the venue connection and the keys; each strategy process attaches with three shared-memory rings per venue, and its orders pass the account guards](../../assets/diagrams/gateway-dark.svg#only-dark){ .fastmm-diagram }
+
 Prerequisites: a release build ([Install](../../getting-started/install.md)), commands run from the repository root.
 
 ## Start a gateway and attach a strategy

@@ -21,6 +21,7 @@ python3 tools/sbe_gen.py generate --schema tools/sbe/binance_spot_stream_1_0.xml
 
 python3 tools/doc_snippets.py --check
 python3 tools/docs_links.py --check
+python3 tools/docs_diagrams.py --check
 python3 tools/docs_config_ref.py --check
 if [ $# -ge 1 ]; then python3 tools/docs_cli_help.py --check --bin "$1/bin"; fi
 echo "lint: ok"

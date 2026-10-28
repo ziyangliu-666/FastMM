@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 464" width="720" height="464" role="img" aria-labelledby="t d">
+<title id="t">Every quote fill is hedged on another venue</title>
+<desc id="d">One xmm session. Its engine thread prices a fair value from the hedge venue's book and quotes the quote instrument as a maker on the quote venue. Each fill there goes to the HedgeExecutor, which sends a taker IOC on the hedge instrument; while the hedge instrument is unusable, the IOC goes to the fallback instrument on a third venue.</desc>
+<style>
+svg{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+.mono{font-family:"JetBrains Mono",SFMono-Regular,Menlo,Consolas,monospace}
+.bg{fill:#ffffff}
+.title{font-size:20px;font-weight:700;fill:#1b1f24}
+.lbl{font-size:14px;font-weight:700;fill:#1b1f24}
+.reg{font-weight:400;fill:#5b636c}
+.box{fill:#ffffff;stroke:#1b1f24;stroke-width:1.5}
+.hd{fill:#1b1f24}
+.hdt{font-size:14px;font-weight:700;fill:#ffffff}
+.hdc{font-size:13px;font-weight:700;fill:#ffffff}
+.star{fill:#ffffff}
+.frame{fill:#f3f4f6;stroke:#b9bfc6;stroke-width:1.25}
+.item{fill:#eceef1}
+.itemt{font-size:14px;font-weight:600;fill:#1b1f24}
+.hot{fill:#fbe4e7;stroke:#cf1027;stroke-width:1.5}
+.hott{font-size:14px;font-weight:700;fill:#cf1027}
+.cap{fill:#ffffff;stroke:#9aa2ab;stroke-width:1.25}
+.cell{fill:#f4f5f7;stroke:#c8cdd3;stroke-width:1}
+.ah{fill:#9aa2ab}
+.ahd{fill:#1b1f24}
+.ahr{fill:#cf1027}
+.ln{fill:none;stroke:#1b1f24;stroke-width:1.5}
+.lnr{fill:none;stroke:#cf1027;stroke-width:1.75}
+.lnm{fill:none;stroke:#9aa2ab;stroke-width:1.25}
+.dash{stroke-dasharray:4 4}
+.note{font-size:13px;font-weight:600;fill:#5b636c}
+.red{fill:#cf1027}
+.sep{stroke:#e2e5e9;stroke-width:1}
+.leg{font-size:13px;fill:#5b636c}
+.vn{fill:#1b1f24}
+.key{fill:none;stroke:#5b636c;stroke-width:1.75}
+.arm{fill:#1b1f24}
+.arm2{fill:#ffffff;stroke:#1b1f24;stroke-width:1.25}
+.armt{font-size:13px;font-weight:700;fill:#ffffff}
+.armt2{font-size:13px;font-weight:700;fill:#1b1f24}
+</style>
+<defs>
+<path id="star" class="star" d="M0,-6 L1.38,-3.33 L4.24,-4.24 L3.33,-1.38 L6,0 L3.33,1.38 L4.24,4.24 L1.38,3.33 L0,6 L-1.38,3.33 L-4.24,4.24 L-3.33,1.38 L-6,0 L-3.33,-1.38 L-4.24,-4.24 L-1.38,-3.33Z"/>
+<g id="venue" class="vn"><path d="M-32,-14 L0,-30 L32,-14 Z"/><rect x="-30" y="-10" width="60" height="5"/><rect x="-24" y="-2" width="8" height="24"/><rect x="-10" y="-2" width="8" height="24"/><rect x="4" y="-2" width="8" height="24"/><rect x="18" y="-2" width="8" height="24"/><rect x="-32" y="24" width="64" height="6"/></g>
+<g id="venues" class="vn"><path d="M-10,-4 L0,-9 L10,-4 Z"/><rect x="-9" y="-3" width="18" height="1.6"/><rect x="-7.5" y="-0.6" width="2.6" height="7.4"/><rect x="-3.2" y="-0.6" width="2.6" height="7.4"/><rect x="1.1" y="-0.6" width="2.6" height="7.4"/><rect x="5.4" y="-0.6" width="2.6" height="7.4"/><rect x="-10" y="7" width="20" height="2"/></g>
+<g id="key" class="key"><circle cx="5" cy="4" r="4"/><path d="M9,4 H20 M16,4 V8 M19,4 V7"/></g>
+</defs>
+<rect class="bg" width="720" height="464"/>
+<text class="title" x="24" y="40">Every quote fill is hedged on another venue</text>
+<g transform="translate(0 -40)">
+<rect class="box" x="248" y="120" width="224" height="216" rx="4"/>
+<path class="hd" d="M248,150 V124 a4,4 0 0 1 4,-4 H468 a4,4 0 0 1 4,4 V150 Z"/>
+<use href="#star" x="264" y="135"/>
+<text class="hdt" x="276" y="140">engine thread</text>
+<text class="hdc" x="460" y="140" text-anchor="end">core 1</text>
+<rect class="item" x="264" y="152" width="192" height="40" rx="3"/>
+<text class="itemt" x="360" y="177" text-anchor="middle">fair value</text>
+<rect class="hot" x="264" y="204" width="192" height="40" rx="3"/>
+<text class="hott mono" x="360" y="229" text-anchor="middle">HedgeExecutor</text>
+<rect class="item" x="264" y="256" width="192" height="40" rx="3"/>
+<text class="itemt" x="360" y="281" text-anchor="middle">quotes</text>
+<text class="note" x="360" y="320" text-anchor="middle">xmm</text>
+<use href="#venue" x="88" y="248"/>
+<text class="lbl" x="88" y="304" text-anchor="middle">quote venue</text>
+<text class="note mono" x="88" y="322" text-anchor="middle">quote_instrument</text>
+<path class="ln" d="M120,224 H256"/><path class="ahd" d="M256,219 l8,5 l-8,5 Z"/>
+<text class="note" x="188" y="216" text-anchor="middle">fills</text>
+<path class="ln" d="M264,276 H128"/><path class="ahd" d="M128,271 l-8,5 l8,5 Z"/>
+<text class="note" x="188" y="268" text-anchor="middle">maker quotes</text>
+<use href="#venue" x="616" y="196"/>
+<text class="lbl" x="616" y="252" text-anchor="middle">hedge venue</text>
+<text class="note mono" x="616" y="270" text-anchor="middle">hedge_instrument</text>
+<path class="ln" d="M584,172 H464"/><path class="ahd" d="M464,167 l-8,5 l8,5 Z"/>
+<text class="note" x="524" y="164" text-anchor="middle">hedge book</text>
+<path class="lnr" d="M456,224 H576"/><path class="ahr" d="M576,219 l8,5 l-8,5 Z"/>
+<text class="note red" x="516" y="216" text-anchor="middle">hedge IOC</text>
+<path class="lnr dash" d="M456,236 H512 V352 H576"/><path class="ahr" d="M576,347 l8,5 l-8,5 Z"/>
+<text class="note red" x="544" y="344" text-anchor="middle">IOC</text>
+<use href="#venue" x="616" y="356"/>
+<text class="lbl" x="616" y="412" text-anchor="middle">fallback venue</text>
+<text class="note mono" x="616" y="430" text-anchor="middle">fallback_instrument</text>
+</g>
+<path class="sep" d="M24,416 H696"/>
+<rect class="hd" x="24" y="432" width="28" height="16" rx="3"/><use href="#star" x="33" y="440"/>
+<text class="leg" x="64" y="445">thread</text>
+<use href="#venues" x="140" y="440"/>
+<text class="leg" x="160" y="445">venue</text>
+<path class="lnr dash" d="M220,440 H248"/>
+<text class="leg" x="260" y="445">while the hedge venue is unusable</text>
+</svg>

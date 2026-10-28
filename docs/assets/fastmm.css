@@ -264,6 +264,10 @@
 }
 
 /* The two films, on the home page and on How it works: a poster until played, nothing loaded before. */
+.md-typeset img.fastmm-diagram {
+  width: 100%;
+}
+
 .md-typeset .fastmm-video {
   display: block;
   width: 100%;

@@ -11,6 +11,9 @@ An `[ab]` section runs two or more parameter sets of one strategy, the arms, in 
 | `crossover` | changes arm each block, the instruments split between the arms in every block | each instrument with itself, and the arms within each block | a parameter set per instrument |
 | `branch` | is in one arm per run: `fastmm-backtest` runs the configuration once per arm over the same data and seed | each instrument with itself over the same market | any that takes parameter updates; a backtest only |
 
+![The instrument, time and crossover assignments of two arms over four instruments and six blocks](../../assets/diagrams/ab-designs.svg#only-light){ .fastmm-diagram }
+![The instrument, time and crossover assignments of two arms over four instruments and six blocks](../../assets/diagrams/ab-designs-dark.svg#only-dark){ .fastmm-diagram }
+
 Start from `crossover`: it removes both the difference between instruments and the difference between moments. `time` suits a strategy that keeps one parameter set. `instrument` suits a parameter whose effect outlasts a block, such as the inventory a wider spread lets build up.
 
 Blocks are `block_s` long and start at multiples of it since 1970-01-01 UTC, so a backtest and a live session over the same hours share them. Each run of as many blocks as there are arms gives each arm one block, in an order drawn from `seed`. Make a block longer than the parameter takes to show its effect, and the test several runs long.

@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 632" width="720" height="632" role="img" aria-labelledby="t d">
+<title id="t">Every order passes the account guards</title>
+<desc id="d">fastmm-gateway holds the venue connection and the API keys: market data comes in from the venue and orders go out to it. Its network thread runs the connector, a copy of every book and the account guards. Each attached fastmm-live process, here mm-btc and hedger, gets three rings in shared memory per venue: market data and order events towards its engine thread, and its orders back to the gateway, where they pass the account guards before they reach the venue. A strategy attaches and detaches through the attach socket on the gateway main thread.</desc>
+<style>
+svg{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+.mono{font-family:"JetBrains Mono",SFMono-Regular,Menlo,Consolas,monospace}
+.bg{fill:#12171d}
+.title{font-size:20px;font-weight:700;fill:#e6e9ed}
+.lbl{font-size:14px;font-weight:700;fill:#e6e9ed}
+.reg{font-weight:400;fill:#9aa3ad}
+.box{fill:#12171d;stroke:#e6e9ed;stroke-width:1.5}
+.hd{fill:#e6e9ed}
+.hdt{font-size:14px;font-weight:700;fill:#12171d}
+.hdc{font-size:13px;font-weight:700;fill:#12171d}
+.star{fill:#12171d}
+.frame{fill:#1a2028;stroke:#3d4651;stroke-width:1.25}
+.item{fill:#232a33}
+.itemt{font-size:14px;font-weight:600;fill:#e6e9ed}
+.hot{fill:#3a1a20;stroke:#ff5c6c;stroke-width:1.5}
+.hott{font-size:14px;font-weight:700;fill:#ff5c6c}
+.cap{fill:#12171d;stroke:#6b7581;stroke-width:1.25}
+.cell{fill:#1f262e;stroke:#3d4651;stroke-width:1}
+.ah{fill:#6b7581}
+.ahd{fill:#e6e9ed}
+.ahr{fill:#ff5c6c}
+.ln{fill:none;stroke:#e6e9ed;stroke-width:1.5}
+.lnr{fill:none;stroke:#ff5c6c;stroke-width:1.75}
+.lnm{fill:none;stroke:#6b7581;stroke-width:1.25}
+.dash{stroke-dasharray:4 4}
+.note{font-size:13px;font-weight:600;fill:#9aa3ad}
+.red{fill:#ff5c6c}
+.sep{stroke:#2a313a;stroke-width:1}
+.leg{font-size:13px;fill:#9aa3ad}
+.vn{fill:#e6e9ed}
+.key{fill:none;stroke:#9aa3ad;stroke-width:1.75}
+.arm{fill:#e6e9ed}
+.arm2{fill:#12171d;stroke:#e6e9ed;stroke-width:1.25}
+.armt{font-size:13px;font-weight:700;fill:#12171d}
+.armt2{font-size:13px;font-weight:700;fill:#e6e9ed}
+</style>
+<defs>
+<path id="star" class="star" d="M0,-6 L1.38,-3.33 L4.24,-4.24 L3.33,-1.38 L6,0 L3.33,1.38 L4.24,4.24 L1.38,3.33 L0,6 L-1.38,3.33 L-4.24,4.24 L-3.33,1.38 L-6,0 L-3.33,-1.38 L-4.24,-4.24 L-1.38,-3.33Z"/>
+<g id="venue" class="vn"><path d="M-32,-14 L0,-30 L32,-14 Z"/><rect x="-30" y="-10" width="60" height="5"/><rect x="-24" y="-2" width="8" height="24"/><rect x="-10" y="-2" width="8" height="24"/><rect x="4" y="-2" width="8" height="24"/><rect x="18" y="-2" width="8" height="24"/><rect x="-32" y="24" width="64" height="6"/></g>
+<g id="venues" class="vn"><path d="M-10,-4 L0,-9 L10,-4 Z"/><rect x="-9" y="-3" width="18" height="1.6"/><rect x="-7.5" y="-0.6" width="2.6" height="7.4"/><rect x="-3.2" y="-0.6" width="2.6" height="7.4"/><rect x="1.1" y="-0.6" width="2.6" height="7.4"/><rect x="5.4" y="-0.6" width="2.6" height="7.4"/><rect x="-10" y="7" width="20" height="2"/></g>
+<g id="key" class="key"><circle cx="5" cy="4" r="4"/><path d="M9,4 H20 M16,4 V8 M19,4 V7"/></g>
+</defs>
+<rect class="bg" width="720" height="632"/>
+<text class="title" x="24" y="40">Every order passes the account guards</text>
+<rect class="frame" x="24" y="156" width="280" height="400" rx="6"/>
+<use href="#venue" x="212" y="92"/>
+<text class="lbl" x="256" y="98">venue</text>
+<path class="ln" d="M196,128 V192"/><path class="ahd" d="M191,192 l5,8 l5,-8 Z"/>
+<path class="lnr" d="M228,200 V136"/><path class="ahr" d="M223,136 l5,-8 l5,8 Z"/>
+<text class="note" x="186" y="148" text-anchor="end">market data</text>
+<text class="note red" x="238" y="148">orders</text>
+<text class="lbl mono" x="40" y="182">fastmm-gateway</text>
+<rect class="box" x="40" y="200" width="248" height="216" rx="4"/>
+<path class="hd" d="M40,230 V204 a4,4 0 0 1 4,-4 H284 a4,4 0 0 1 4,4 V230 Z"/>
+<use href="#star" x="56" y="215"/>
+<text class="hdt" x="68" y="220">network thread</text>
+<text class="hdc" x="276" y="220" text-anchor="end">core 2</text>
+<rect class="item" x="56" y="246" width="216" height="40" rx="3"/>
+<text class="itemt" x="164" y="271" text-anchor="middle">connector</text>
+<rect class="item" x="56" y="298" width="216" height="40" rx="3"/>
+<text class="itemt" x="164" y="323" text-anchor="middle">book copy</text>
+<rect class="hot" x="56" y="350" width="216" height="40" rx="3"/>
+<text class="hott" x="164" y="375" text-anchor="middle">account guards</text>
+<rect class="box" x="40" y="448" width="248" height="72" rx="4"/>
+<path class="hd" d="M40,478 V452 a4,4 0 0 1 4,-4 H284 a4,4 0 0 1 4,4 V478 Z"/>
+<use href="#star" x="56" y="463"/>
+<text class="hdt" x="68" y="468">main thread</text>
+<text class="note" x="164" y="504" text-anchor="middle">attach socket</text>
+<use href="#key" x="40" y="532"/>
+<text class="note" x="66" y="540">API keys</text>
+<text class="note" x="332" y="208">market data</text>
+<rect class="cap" x="332" y="214" width="98" height="24" rx="12"/>
+<rect class="cell" x="338" y="218" width="20" height="16" rx="3"/>
+<rect class="cell" x="360" y="218" width="20" height="16" rx="3"/>
+<rect class="cell" x="382" y="218" width="20" height="16" rx="3"/>
+<rect class="cell" x="404" y="218" width="20" height="16" rx="3"/>
+<path class="ah" d="M434,221 l8,5 l-8,5 Z"/>
+<text class="note" x="332" y="252">order events</text>
+<rect class="cap" x="332" y="258" width="98" height="24" rx="12"/>
+<rect class="cell" x="338" y="262" width="20" height="16" rx="3"/>
+<rect class="cell" x="360" y="262" width="20" height="16" rx="3"/>
+<rect class="cell" x="382" y="262" width="20" height="16" rx="3"/>
+<rect class="cell" x="404" y="262" width="20" height="16" rx="3"/>
+<path class="ah" d="M434,265 l8,5 l-8,5 Z"/>
+<text class="note red" x="332" y="296">orders</text>
+<rect class="cap" x="332" y="302" width="98" height="24" rx="12"/>
+<rect class="cell" x="338" y="306" width="20" height="16" rx="3"/>
+<rect class="cell" x="360" y="306" width="20" height="16" rx="3"/>
+<rect class="cell" x="382" y="306" width="20" height="16" rx="3"/>
+<rect class="cell" x="404" y="306" width="20" height="16" rx="3"/>
+<path class="ahr" d="M328,309 l-8,5 l8,5 Z"/>
+<rect class="cap" x="332" y="360" width="98" height="24" rx="12"/>
+<rect class="cell" x="338" y="364" width="20" height="16" rx="3"/>
+<rect class="cell" x="360" y="364" width="20" height="16" rx="3"/>
+<rect class="cell" x="382" y="364" width="20" height="16" rx="3"/>
+<rect class="cell" x="404" y="364" width="20" height="16" rx="3"/>
+<path class="ah" d="M434,367 l8,5 l-8,5 Z"/>
+<rect class="cap" x="332" y="388" width="98" height="24" rx="12"/>
+<rect class="cell" x="338" y="392" width="20" height="16" rx="3"/>
+<rect class="cell" x="360" y="392" width="20" height="16" rx="3"/>
+<rect class="cell" x="382" y="392" width="20" height="16" rx="3"/>
+<rect class="cell" x="404" y="392" width="20" height="16" rx="3"/>
+<path class="ah" d="M434,395 l8,5 l-8,5 Z"/>
+<rect class="cap" x="332" y="416" width="98" height="24" rx="12"/>
+<rect class="cell" x="338" y="420" width="20" height="16" rx="3"/>
+<rect class="cell" x="360" y="420" width="20" height="16" rx="3"/>
+<rect class="cell" x="382" y="420" width="20" height="16" rx="3"/>
+<rect class="cell" x="404" y="420" width="20" height="16" rx="3"/>
+<path class="ahr" d="M328,423 l-8,5 l8,5 Z"/>
+<rect class="frame" x="460" y="200" width="236" height="128" rx="6"/>
+<text class="lbl" x="476" y="224"><tspan class="mono">fastmm-live</tspan> <tspan class="reg">mm-btc</tspan></text>
+<rect class="box" x="476" y="236" width="204" height="76" rx="4"/>
+<path class="hd" d="M476,266 V240 a4,4 0 0 1 4,-4 H676 a4,4 0 0 1 4,4 V266 Z"/>
+<use href="#star" x="492" y="251"/>
+<text class="hdt" x="504" y="256">engine thread</text>
+<text class="hdc" x="668" y="256" text-anchor="end">core 4</text>
+<text class="note" x="578" y="294" text-anchor="middle">strategy</text>
+<rect class="frame" x="460" y="340" width="236" height="128" rx="6"/>
+<text class="lbl" x="476" y="364"><tspan class="mono">fastmm-live</tspan> <tspan class="reg">hedger</tspan></text>
+<rect class="box" x="476" y="376" width="204" height="76" rx="4"/>
+<path class="hd" d="M476,406 V380 a4,4 0 0 1 4,-4 H676 a4,4 0 0 1 4,4 V406 Z"/>
+<use href="#star" x="492" y="391"/>
+<text class="hdt" x="504" y="396">engine thread</text>
+<text class="hdc" x="668" y="396" text-anchor="end">core 5</text>
+<text class="note" x="578" y="434" text-anchor="middle">strategy</text>
+<path class="ln" d="M696,264 H708 V500 H296"/>
+<path class="ln" d="M696,404 H708"/>
+<path class="ahd" d="M296,495 l-8,5 l8,5 Z"/>
+<text class="note" x="500" y="492" text-anchor="middle">attach, detach</text>
+<path class="sep" d="M24,580 H696"/>
+<rect class="hd" x="24" y="596" width="28" height="16" rx="3"/><use href="#star" x="33" y="604"/>
+<text class="leg" x="64" y="609">thread</text>
+<rect class="cap" x="128" y="596" width="32" height="16" rx="8"/><rect class="cell" x="133" y="599" width="10" height="10" rx="2"/><rect class="cell" x="145" y="599" width="10" height="10" rx="2"/>
+<text class="leg" x="172" y="609">shared-memory ring</text>
+<rect class="frame" x="320" y="596" width="28" height="16" rx="3"/>
+<text class="leg" x="360" y="609">process</text>
+<use href="#venues" x="444" y="604"/>
+<text class="leg" x="464" y="609">venue</text>
+<use href="#key" x="524" y="600"/>
+<text class="leg" x="552" y="609">API keys</text>
+</svg>

@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 560" width="720" height="560" role="img" aria-labelledby="t d">
+<title id="t">Slow methods move the quotes only through publish</title>
+<desc id="d">The hot hooks on_book and on_params run on the engine thread, which alone exchanges market data and orders with the venue. The slow thread runs on_start, the @fastmm.every methods and on_stop in Python. The engine publishes a snapshot at most every 10 ms, the recent rows and a ring of fills towards the slow thread; the slow thread sends parameter values back through the publish ring, and on_params then requotes.</desc>
+<style>
+svg{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+.mono{font-family:"JetBrains Mono",SFMono-Regular,Menlo,Consolas,monospace}
+.bg{fill:#ffffff}
+.title{font-size:20px;font-weight:700;fill:#1b1f24}
+.lbl{font-size:14px;font-weight:700;fill:#1b1f24}
+.reg{font-weight:400;fill:#5b636c}
+.box{fill:#ffffff;stroke:#1b1f24;stroke-width:1.5}
+.hd{fill:#1b1f24}
+.hdt{font-size:14px;font-weight:700;fill:#ffffff}
+.hdc{font-size:13px;font-weight:700;fill:#ffffff}
+.star{fill:#ffffff}
+.frame{fill:#f3f4f6;stroke:#b9bfc6;stroke-width:1.25}
+.item{fill:#eceef1}
+.itemt{font-size:14px;font-weight:600;fill:#1b1f24}
+.hot{fill:#fbe4e7;stroke:#cf1027;stroke-width:1.5}
+.hott{font-size:14px;font-weight:700;fill:#cf1027}
+.cap{fill:#ffffff;stroke:#9aa2ab;stroke-width:1.25}
+.cell{fill:#f4f5f7;stroke:#c8cdd3;stroke-width:1}
+.ah{fill:#9aa2ab}
+.ahd{fill:#1b1f24}
+.ahr{fill:#cf1027}
+.ln{fill:none;stroke:#1b1f24;stroke-width:1.5}
+.lnr{fill:none;stroke:#cf1027;stroke-width:1.75}
+.lnm{fill:none;stroke:#9aa2ab;stroke-width:1.25}
+.dash{stroke-dasharray:4 4}
+.note{font-size:13px;font-weight:600;fill:#5b636c}
+.red{fill:#cf1027}
+.sep{stroke:#e2e5e9;stroke-width:1}
+.leg{font-size:13px;fill:#5b636c}
+.vn{fill:#1b1f24}
+.key{fill:none;stroke:#5b636c;stroke-width:1.75}
+.arm{fill:#1b1f24}
+.arm2{fill:#ffffff;stroke:#1b1f24;stroke-width:1.25}
+.armt{font-size:13px;font-weight:700;fill:#ffffff}
+.armt2{font-size:13px;font-weight:700;fill:#1b1f24}
+</style>
+<defs>
+<path id="star" class="star" d="M0,-6 L1.38,-3.33 L4.24,-4.24 L3.33,-1.38 L6,0 L3.33,1.38 L4.24,4.24 L1.38,3.33 L0,6 L-1.38,3.33 L-4.24,4.24 L-3.33,1.38 L-6,0 L-3.33,-1.38 L-4.24,-4.24 L-1.38,-3.33Z"/>
+<g id="venue" class="vn"><path d="M-32,-14 L0,-30 L32,-14 Z"/><rect x="-30" y="-10" width="60" height="5"/><rect x="-24" y="-2" width="8" height="24"/><rect x="-10" y="-2" width="8" height="24"/><rect x="4" y="-2" width="8" height="24"/><rect x="18" y="-2" width="8" height="24"/><rect x="-32" y="24" width="64" height="6"/></g>
+<g id="venues" class="vn"><path d="M-10,-4 L0,-9 L10,-4 Z"/><rect x="-9" y="-3" width="18" height="1.6"/><rect x="-7.5" y="-0.6" width="2.6" height="7.4"/><rect x="-3.2" y="-0.6" width="2.6" height="7.4"/><rect x="1.1" y="-0.6" width="2.6" height="7.4"/><rect x="5.4" y="-0.6" width="2.6" height="7.4"/><rect x="-10" y="7" width="20" height="2"/></g>
+<g id="key" class="key"><circle cx="5" cy="4" r="4"/><path d="M9,4 H20 M16,4 V8 M19,4 V7"/></g>
+</defs>
+<rect class="bg" width="720" height="560"/>
+<text class="title" x="24" y="40">Slow methods move the quotes only through publish</text>
+<rect class="box" x="24" y="88" width="224" height="256" rx="4"/>
+<path class="hd" d="M24,118 V92 a4,4 0 0 1 4,-4 H244 a4,4 0 0 1 4,4 V118 Z"/>
+<use href="#star" x="40" y="103"/>
+<text class="hdt" x="52" y="108">slow thread</text>
+<rect class="item" x="40" y="136" width="192" height="40" rx="3"/>
+<text class="itemt mono" x="136" y="161" text-anchor="middle">@fastmm.every</text>
+<rect class="item" x="40" y="188" width="192" height="40" rx="3"/>
+<text class="itemt mono" x="136" y="213" text-anchor="middle">on_start</text>
+<rect class="item" x="40" y="240" width="192" height="40" rx="3"/>
+<text class="itemt mono" x="136" y="265" text-anchor="middle">on_stop</text>
+<text class="note" x="136" y="316" text-anchor="middle">Python, any library</text>
+<rect class="box" x="472" y="88" width="224" height="256" rx="4"/>
+<path class="hd" d="M472,118 V92 a4,4 0 0 1 4,-4 H692 a4,4 0 0 1 4,4 V118 Z"/>
+<use href="#star" x="488" y="103"/>
+<text class="hdt" x="500" y="108">engine thread</text>
+<text class="hdc" x="684" y="108" text-anchor="end">core 1</text>
+<rect class="item" x="488" y="136" width="192" height="40" rx="3"/>
+<text class="itemt mono" x="584" y="161" text-anchor="middle">on_book</text>
+<rect class="hot" x="488" y="188" width="192" height="40" rx="3"/>
+<text class="hott mono" x="584" y="213" text-anchor="middle">on_params</text>
+<rect class="item" x="488" y="240" width="192" height="40" rx="3"/>
+<text class="itemt" x="584" y="265" text-anchor="middle">risk check</text>
+<text class="note" x="584" y="316" text-anchor="middle">compiled by Numba</text>
+<text class="note" x="360" y="128" text-anchor="middle">snapshot, 10 ms</text>
+<rect class="item" x="312" y="136" width="98" height="24" rx="3"/>
+<path class="ah" d="M308,141 l-8,5 l8,5 Z"/>
+<text class="note" x="360" y="184" text-anchor="middle">recent rows</text>
+<rect class="cap" x="312" y="192" width="98" height="24" rx="12"/>
+<rect class="cell" x="318" y="196" width="20" height="16" rx="3"/>
+<rect class="cell" x="340" y="196" width="20" height="16" rx="3"/>
+<rect class="cell" x="362" y="196" width="20" height="16" rx="3"/>
+<rect class="cell" x="384" y="196" width="20" height="16" rx="3"/>
+<path class="ah" d="M308,199 l-8,5 l8,5 Z"/>
+<text class="note" x="360" y="240" text-anchor="middle">fills</text>
+<rect class="cap" x="312" y="248" width="98" height="24" rx="12"/>
+<rect class="cell" x="318" y="252" width="20" height="16" rx="3"/>
+<rect class="cell" x="340" y="252" width="20" height="16" rx="3"/>
+<rect class="cell" x="362" y="252" width="20" height="16" rx="3"/>
+<rect class="cell" x="384" y="252" width="20" height="16" rx="3"/>
+<path class="ah" d="M308,255 l-8,5 l8,5 Z"/>
+<text class="note red" x="360" y="296" text-anchor="middle">publish</text>
+<rect class="cap" x="312" y="304" width="98" height="24" rx="12"/>
+<rect class="cell" x="318" y="308" width="20" height="16" rx="3"/>
+<rect class="cell" x="340" y="308" width="20" height="16" rx="3"/>
+<rect class="cell" x="362" y="308" width="20" height="16" rx="3"/>
+<rect class="cell" x="384" y="308" width="20" height="16" rx="3"/>
+<path class="ahr" d="M414,311 l8,5 l-8,5 Z"/>
+<path class="ln" d="M568,412 V352"/><path class="ahd" d="M563,352 l5,-8 l5,8 Z"/>
+<path class="lnr" d="M600,344 V404"/><path class="ahr" d="M595,404 l5,8 l5,-8 Z"/>
+<text class="note" x="556" y="384" text-anchor="end">market data</text>
+<text class="note red" x="612" y="384">orders</text>
+<use href="#venue" x="584" y="448"/>
+<text class="lbl" x="540" y="454" text-anchor="end">venue</text>
+<path class="sep" d="M24,504 H696"/>
+<rect class="hd" x="24" y="520" width="28" height="16" rx="3"/><use href="#star" x="33" y="528"/>
+<text class="leg" x="64" y="533">thread</text>
+<rect class="cap" x="128" y="520" width="32" height="16" rx="8"/><rect class="cell" x="133" y="523" width="10" height="10" rx="2"/><rect class="cell" x="145" y="523" width="10" height="10" rx="2"/>
+<text class="leg" x="172" y="533">ring</text>
+<rect class="item" x="216" y="520" width="28" height="16" rx="3"/>
+<text class="leg" x="256" y="533">latest value</text>
+<use href="#venues" x="364" y="528"/>
+<text class="leg" x="384" y="533">venue</text>
+</svg>

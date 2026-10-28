@@ -1,0 +1,207 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 352" width="720" height="352" role="img" aria-labelledby="t d">
+<title id="t">Which arm each instrument runs, block by block</title>
+<desc id="d">Three assignments of two arms, A and B, over four instruments and six blocks. instrument: each instrument keeps one arm, each pair of instruments has one of each. time: every instrument is in the same arm, which changes each block, each run of two blocks giving each arm one block. crossover: each instrument changes arm every block, and in every block half the instruments are in each arm.</desc>
+<style>
+svg{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+.mono{font-family:"JetBrains Mono",SFMono-Regular,Menlo,Consolas,monospace}
+.bg{fill:#12171d}
+.title{font-size:20px;font-weight:700;fill:#e6e9ed}
+.lbl{font-size:14px;font-weight:700;fill:#e6e9ed}
+.reg{font-weight:400;fill:#9aa3ad}
+.box{fill:#12171d;stroke:#e6e9ed;stroke-width:1.5}
+.hd{fill:#e6e9ed}
+.hdt{font-size:14px;font-weight:700;fill:#12171d}
+.hdc{font-size:13px;font-weight:700;fill:#12171d}
+.star{fill:#12171d}
+.frame{fill:#1a2028;stroke:#3d4651;stroke-width:1.25}
+.item{fill:#232a33}
+.itemt{font-size:14px;font-weight:600;fill:#e6e9ed}
+.hot{fill:#3a1a20;stroke:#ff5c6c;stroke-width:1.5}
+.hott{font-size:14px;font-weight:700;fill:#ff5c6c}
+.cap{fill:#12171d;stroke:#6b7581;stroke-width:1.25}
+.cell{fill:#1f262e;stroke:#3d4651;stroke-width:1}
+.ah{fill:#6b7581}
+.ahd{fill:#e6e9ed}
+.ahr{fill:#ff5c6c}
+.ln{fill:none;stroke:#e6e9ed;stroke-width:1.5}
+.lnr{fill:none;stroke:#ff5c6c;stroke-width:1.75}
+.lnm{fill:none;stroke:#6b7581;stroke-width:1.25}
+.dash{stroke-dasharray:4 4}
+.note{font-size:13px;font-weight:600;fill:#9aa3ad}
+.red{fill:#ff5c6c}
+.sep{stroke:#2a313a;stroke-width:1}
+.leg{font-size:13px;fill:#9aa3ad}
+.vn{fill:#e6e9ed}
+.key{fill:none;stroke:#9aa3ad;stroke-width:1.75}
+.arm{fill:#e6e9ed}
+.arm2{fill:#12171d;stroke:#e6e9ed;stroke-width:1.25}
+.armt{font-size:13px;font-weight:700;fill:#12171d}
+.armt2{font-size:13px;font-weight:700;fill:#e6e9ed}
+</style>
+<defs>
+<path id="star" class="star" d="M0,-6 L1.38,-3.33 L4.24,-4.24 L3.33,-1.38 L6,0 L3.33,1.38 L4.24,4.24 L1.38,3.33 L0,6 L-1.38,3.33 L-4.24,4.24 L-3.33,1.38 L-6,0 L-3.33,-1.38 L-4.24,-4.24 L-1.38,-3.33Z"/>
+<g id="venue" class="vn"><path d="M-32,-14 L0,-30 L32,-14 Z"/><rect x="-30" y="-10" width="60" height="5"/><rect x="-24" y="-2" width="8" height="24"/><rect x="-10" y="-2" width="8" height="24"/><rect x="4" y="-2" width="8" height="24"/><rect x="18" y="-2" width="8" height="24"/><rect x="-32" y="24" width="64" height="6"/></g>
+<g id="venues" class="vn"><path d="M-10,-4 L0,-9 L10,-4 Z"/><rect x="-9" y="-3" width="18" height="1.6"/><rect x="-7.5" y="-0.6" width="2.6" height="7.4"/><rect x="-3.2" y="-0.6" width="2.6" height="7.4"/><rect x="1.1" y="-0.6" width="2.6" height="7.4"/><rect x="5.4" y="-0.6" width="2.6" height="7.4"/><rect x="-10" y="7" width="20" height="2"/></g>
+<g id="key" class="key"><circle cx="5" cy="4" r="4"/><path d="M9,4 H20 M16,4 V8 M19,4 V7"/></g>
+</defs>
+<rect class="bg" width="720" height="352"/>
+<text class="title" x="24" y="40">Which arm each instrument runs, block by block</text>
+<text class="note mono" x="24" y="129">BTCUSDT</text>
+<text class="note mono" x="24" y="157">ETHUSDT</text>
+<text class="note mono" x="24" y="185">SOLUSDT</text>
+<text class="note mono" x="24" y="213">BNBUSDT</text>
+<text class="lbl mono" x="100" y="88">instrument</text>
+<rect class="arm" x="100" y="112" width="24" height="24" rx="2"/>
+<text class="armt" x="112" y="129" text-anchor="middle">A</text>
+<rect class="arm" x="128" y="112" width="24" height="24" rx="2"/>
+<text class="armt" x="140" y="129" text-anchor="middle">A</text>
+<rect class="arm" x="164" y="112" width="24" height="24" rx="2"/>
+<text class="armt" x="176" y="129" text-anchor="middle">A</text>
+<rect class="arm" x="192" y="112" width="24" height="24" rx="2"/>
+<text class="armt" x="204" y="129" text-anchor="middle">A</text>
+<rect class="arm" x="228" y="112" width="24" height="24" rx="2"/>
+<text class="armt" x="240" y="129" text-anchor="middle">A</text>
+<rect class="arm" x="256" y="112" width="24" height="24" rx="2"/>
+<text class="armt" x="268" y="129" text-anchor="middle">A</text>
+<rect class="arm2" x="100" y="140" width="24" height="24" rx="2"/>
+<text class="armt2" x="112" y="157" text-anchor="middle">B</text>
+<rect class="arm2" x="128" y="140" width="24" height="24" rx="2"/>
+<text class="armt2" x="140" y="157" text-anchor="middle">B</text>
+<rect class="arm2" x="164" y="140" width="24" height="24" rx="2"/>
+<text class="armt2" x="176" y="157" text-anchor="middle">B</text>
+<rect class="arm2" x="192" y="140" width="24" height="24" rx="2"/>
+<text class="armt2" x="204" y="157" text-anchor="middle">B</text>
+<rect class="arm2" x="228" y="140" width="24" height="24" rx="2"/>
+<text class="armt2" x="240" y="157" text-anchor="middle">B</text>
+<rect class="arm2" x="256" y="140" width="24" height="24" rx="2"/>
+<text class="armt2" x="268" y="157" text-anchor="middle">B</text>
+<rect class="arm2" x="100" y="168" width="24" height="24" rx="2"/>
+<text class="armt2" x="112" y="185" text-anchor="middle">B</text>
+<rect class="arm2" x="128" y="168" width="24" height="24" rx="2"/>
+<text class="armt2" x="140" y="185" text-anchor="middle">B</text>
+<rect class="arm2" x="164" y="168" width="24" height="24" rx="2"/>
+<text class="armt2" x="176" y="185" text-anchor="middle">B</text>
+<rect class="arm2" x="192" y="168" width="24" height="24" rx="2"/>
+<text class="armt2" x="204" y="185" text-anchor="middle">B</text>
+<rect class="arm2" x="228" y="168" width="24" height="24" rx="2"/>
+<text class="armt2" x="240" y="185" text-anchor="middle">B</text>
+<rect class="arm2" x="256" y="168" width="24" height="24" rx="2"/>
+<text class="armt2" x="268" y="185" text-anchor="middle">B</text>
+<rect class="arm" x="100" y="196" width="24" height="24" rx="2"/>
+<text class="armt" x="112" y="213" text-anchor="middle">A</text>
+<rect class="arm" x="128" y="196" width="24" height="24" rx="2"/>
+<text class="armt" x="140" y="213" text-anchor="middle">A</text>
+<rect class="arm" x="164" y="196" width="24" height="24" rx="2"/>
+<text class="armt" x="176" y="213" text-anchor="middle">A</text>
+<rect class="arm" x="192" y="196" width="24" height="24" rx="2"/>
+<text class="armt" x="204" y="213" text-anchor="middle">A</text>
+<rect class="arm" x="228" y="196" width="24" height="24" rx="2"/>
+<text class="armt" x="240" y="213" text-anchor="middle">A</text>
+<rect class="arm" x="256" y="196" width="24" height="24" rx="2"/>
+<text class="armt" x="268" y="213" text-anchor="middle">A</text>
+<text class="lbl mono" x="304" y="88">time</text>
+<rect class="arm" x="304" y="112" width="24" height="24" rx="2"/>
+<text class="armt" x="316" y="129" text-anchor="middle">A</text>
+<rect class="arm2" x="332" y="112" width="24" height="24" rx="2"/>
+<text class="armt2" x="344" y="129" text-anchor="middle">B</text>
+<rect class="arm2" x="368" y="112" width="24" height="24" rx="2"/>
+<text class="armt2" x="380" y="129" text-anchor="middle">B</text>
+<rect class="arm" x="396" y="112" width="24" height="24" rx="2"/>
+<text class="armt" x="408" y="129" text-anchor="middle">A</text>
+<rect class="arm" x="432" y="112" width="24" height="24" rx="2"/>
+<text class="armt" x="444" y="129" text-anchor="middle">A</text>
+<rect class="arm2" x="460" y="112" width="24" height="24" rx="2"/>
+<text class="armt2" x="472" y="129" text-anchor="middle">B</text>
+<rect class="arm" x="304" y="140" width="24" height="24" rx="2"/>
+<text class="armt" x="316" y="157" text-anchor="middle">A</text>
+<rect class="arm2" x="332" y="140" width="24" height="24" rx="2"/>
+<text class="armt2" x="344" y="157" text-anchor="middle">B</text>
+<rect class="arm2" x="368" y="140" width="24" height="24" rx="2"/>
+<text class="armt2" x="380" y="157" text-anchor="middle">B</text>
+<rect class="arm" x="396" y="140" width="24" height="24" rx="2"/>
+<text class="armt" x="408" y="157" text-anchor="middle">A</text>
+<rect class="arm" x="432" y="140" width="24" height="24" rx="2"/>
+<text class="armt" x="444" y="157" text-anchor="middle">A</text>
+<rect class="arm2" x="460" y="140" width="24" height="24" rx="2"/>
+<text class="armt2" x="472" y="157" text-anchor="middle">B</text>
+<rect class="arm" x="304" y="168" width="24" height="24" rx="2"/>
+<text class="armt" x="316" y="185" text-anchor="middle">A</text>
+<rect class="arm2" x="332" y="168" width="24" height="24" rx="2"/>
+<text class="armt2" x="344" y="185" text-anchor="middle">B</text>
+<rect class="arm2" x="368" y="168" width="24" height="24" rx="2"/>
+<text class="armt2" x="380" y="185" text-anchor="middle">B</text>
+<rect class="arm" x="396" y="168" width="24" height="24" rx="2"/>
+<text class="armt" x="408" y="185" text-anchor="middle">A</text>
+<rect class="arm" x="432" y="168" width="24" height="24" rx="2"/>
+<text class="armt" x="444" y="185" text-anchor="middle">A</text>
+<rect class="arm2" x="460" y="168" width="24" height="24" rx="2"/>
+<text class="armt2" x="472" y="185" text-anchor="middle">B</text>
+<rect class="arm" x="304" y="196" width="24" height="24" rx="2"/>
+<text class="armt" x="316" y="213" text-anchor="middle">A</text>
+<rect class="arm2" x="332" y="196" width="24" height="24" rx="2"/>
+<text class="armt2" x="344" y="213" text-anchor="middle">B</text>
+<rect class="arm2" x="368" y="196" width="24" height="24" rx="2"/>
+<text class="armt2" x="380" y="213" text-anchor="middle">B</text>
+<rect class="arm" x="396" y="196" width="24" height="24" rx="2"/>
+<text class="armt" x="408" y="213" text-anchor="middle">A</text>
+<rect class="arm" x="432" y="196" width="24" height="24" rx="2"/>
+<text class="armt" x="444" y="213" text-anchor="middle">A</text>
+<rect class="arm2" x="460" y="196" width="24" height="24" rx="2"/>
+<text class="armt2" x="472" y="213" text-anchor="middle">B</text>
+<text class="lbl mono red" x="508" y="88">crossover</text>
+<rect class="arm" x="508" y="112" width="24" height="24" rx="2"/>
+<text class="armt" x="520" y="129" text-anchor="middle">A</text>
+<rect class="arm2" x="536" y="112" width="24" height="24" rx="2"/>
+<text class="armt2" x="548" y="129" text-anchor="middle">B</text>
+<rect class="arm" x="572" y="112" width="24" height="24" rx="2"/>
+<text class="armt" x="584" y="129" text-anchor="middle">A</text>
+<rect class="arm2" x="600" y="112" width="24" height="24" rx="2"/>
+<text class="armt2" x="612" y="129" text-anchor="middle">B</text>
+<rect class="arm" x="636" y="112" width="24" height="24" rx="2"/>
+<text class="armt" x="648" y="129" text-anchor="middle">A</text>
+<rect class="arm2" x="664" y="112" width="24" height="24" rx="2"/>
+<text class="armt2" x="676" y="129" text-anchor="middle">B</text>
+<rect class="arm2" x="508" y="140" width="24" height="24" rx="2"/>
+<text class="armt2" x="520" y="157" text-anchor="middle">B</text>
+<rect class="arm" x="536" y="140" width="24" height="24" rx="2"/>
+<text class="armt" x="548" y="157" text-anchor="middle">A</text>
+<rect class="arm2" x="572" y="140" width="24" height="24" rx="2"/>
+<text class="armt2" x="584" y="157" text-anchor="middle">B</text>
+<rect class="arm" x="600" y="140" width="24" height="24" rx="2"/>
+<text class="armt" x="612" y="157" text-anchor="middle">A</text>
+<rect class="arm2" x="636" y="140" width="24" height="24" rx="2"/>
+<text class="armt2" x="648" y="157" text-anchor="middle">B</text>
+<rect class="arm" x="664" y="140" width="24" height="24" rx="2"/>
+<text class="armt" x="676" y="157" text-anchor="middle">A</text>
+<rect class="arm2" x="508" y="168" width="24" height="24" rx="2"/>
+<text class="armt2" x="520" y="185" text-anchor="middle">B</text>
+<rect class="arm" x="536" y="168" width="24" height="24" rx="2"/>
+<text class="armt" x="548" y="185" text-anchor="middle">A</text>
+<rect class="arm2" x="572" y="168" width="24" height="24" rx="2"/>
+<text class="armt2" x="584" y="185" text-anchor="middle">B</text>
+<rect class="arm" x="600" y="168" width="24" height="24" rx="2"/>
+<text class="armt" x="612" y="185" text-anchor="middle">A</text>
+<rect class="arm2" x="636" y="168" width="24" height="24" rx="2"/>
+<text class="armt2" x="648" y="185" text-anchor="middle">B</text>
+<rect class="arm" x="664" y="168" width="24" height="24" rx="2"/>
+<text class="armt" x="676" y="185" text-anchor="middle">A</text>
+<rect class="arm" x="508" y="196" width="24" height="24" rx="2"/>
+<text class="armt" x="520" y="213" text-anchor="middle">A</text>
+<rect class="arm2" x="536" y="196" width="24" height="24" rx="2"/>
+<text class="armt2" x="548" y="213" text-anchor="middle">B</text>
+<rect class="arm" x="572" y="196" width="24" height="24" rx="2"/>
+<text class="armt" x="584" y="213" text-anchor="middle">A</text>
+<rect class="arm2" x="600" y="196" width="24" height="24" rx="2"/>
+<text class="armt2" x="612" y="213" text-anchor="middle">B</text>
+<rect class="arm" x="636" y="196" width="24" height="24" rx="2"/>
+<text class="armt" x="648" y="213" text-anchor="middle">A</text>
+<rect class="arm2" x="664" y="196" width="24" height="24" rx="2"/>
+<text class="armt2" x="676" y="213" text-anchor="middle">B</text>
+<path class="ln" d="M100,248 H676"/><path class="ahd" d="M676,243 l8,5 l-8,5 Z"/>
+<text class="note" x="100" y="272">one column per block of <tspan class="mono">block_s</tspan>, pairs of columns are runs</text>
+<path class="sep" d="M24,296 H696"/>
+<rect class="arm" x="24" y="312" width="16" height="16" rx="2"/>
+<text class="leg" x="50" y="325">arm A</text>
+<rect class="arm2" x="120" y="312" width="16" height="16" rx="2"/>
+<text class="leg" x="146" y="325">arm B</text>
+</svg>
