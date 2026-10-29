@@ -70,6 +70,11 @@ struct PoolOutbox {
     b.orders_taken = taken;
     budget[v.value].store(b);
   }
+  [[nodiscard]] std::size_t count(EventType t) const {
+    std::size_t n = 0;
+    for (const auto& b : out) n += reinterpret_cast<const EventHeader*>(b.data())->type == t;
+    return n;
+  }
   // The account each OutNewOrder went from, in order.
   [[nodiscard]] std::vector<VenueId> new_order_accounts() const {
     std::vector<VenueId> v;
@@ -93,7 +98,9 @@ struct Fixture {
   std::unique_ptr<EngineType> engine;
 
   // `orders_per_sec`, `burst`: the [risk] token bucket every account's orders share (0: off).
-  explicit Fixture(std::uint32_t orders_per_sec = 0, std::uint32_t burst = 0) {
+  explicit Fixture(std::uint32_t orders_per_sec = 0,
+                   std::uint32_t burst = 0,
+                   const QuoteParams& quotes = {}) {
     Instrument i{};
     i.symbol = "BTCUSDT";
     i.venue = kPrimary;
@@ -107,6 +114,7 @@ struct Fixture {
     cfg.risk.max_open_orders = 100;
     cfg.risk.orders_per_sec = orders_per_sec;
     cfg.risk.burst = burst;
+    cfg.quotes = quotes;
     REQUIRE(cfg.pools.add(kMember1, kPrimary));
     REQUIRE(cfg.pools.add(kMember2, kPrimary));
     engine = std::make_unique<EngineType>(
@@ -128,10 +136,51 @@ struct Fixture {
     }
     return out;
   }
+  // The venue acknowledges the order: it is working.
+  void ack(ClientOrderId id, VenueId account) {
+    OrderAckMsg a{};
+    init_header(a, EventType::OrderAck, kBtc, account);
+    a.hdr.recv_ts = clock.now();
+    a.cl_ord_id = id;
+    a.venue_order_id = "V1";
+    REQUIRE(feed.push(a.hdr));
+    while (engine->step() != 0) {
+    }
+  }
+  // One level on each side, both on `account`, acknowledged.
+  void quote(VenueId account, const char* bid, const char* ask) {
+    auto& ctx = engine->context();
+    REQUIRE(ctx.set_quotes(kBtc, two_sided(account, bid, ask)));
+    for (const Side s : {Side::Buy, Side::Sell}) {
+      const Order* o = ctx.working_quote(kBtc, s);
+      REQUIRE(o != nullptr);
+      ack(o->cl_ord_id, account);
+    }
+  }
+  [[nodiscard]] static DesiredQuotes two_sided(VenueId account, const char* bid, const char* ask) {
+    DesiredQuotes q;
+    REQUIRE(q.bid(px(bid), qt("0.01")));
+    REQUIRE(q.ask(px(ask), qt("0.01")));
+    q.bid_account[0] = account;
+    q.ask_account[0] = account;
+    return q;
+  }
+  [[nodiscard]] Price resting(Side s) {
+    const Order* o = engine->context().working_quote(kBtc, s);
+    REQUIRE(o != nullptr);
+    return o->price;
+  }
   [[nodiscard]] static LimitOrder buy(const char* price = "99.50") {
     return NewOrderRequest::limit(kBtc, Side::Buy, px(price), qt("0.01"));
   }
 };
+
+// Quotes that move at once: the tests requote at one instant.
+QuoteParams requote_now() {
+  QuoteParams q;
+  q.min_requote_interval = Duration{};
+  return q;
+}
 
 }  // namespace
 
@@ -514,4 +563,85 @@ TEST_CASE("core.engine pool: a venue's refusal is recorded as the connector's or
   CHECK(r[1].source == RejectSource::Venue);
   CHECK(r[1].venue_code == -1015);
   CHECK(r[1].side == Side::Sell);
+}
+
+TEST_CASE("core.engine pool: a quote is not moved towards the touch on an account without room") {
+  // An unwind ask that has to stay on the account holding the coin: cancel-then-new would leave
+  // the level empty once the window refuses the new order, so the resting one stays.
+  Fixture f(0, 0, requote_now());
+  auto& ctx = f.engine->context();
+  for (const VenueId v : {kPrimary, kMember1, kMember2}) f.transport.publish(v, 0, 100, 0, 90);
+  f.quote(kMember2, "99.50", "100.50");
+  f.transport.publish(kMember2, 90, 100, 2, 90);  // at its connector's cap
+  REQUIRE(ctx.order_budget(kMember2).orders_10s.remaining() == 0);
+  // Towards the touch on both sides: no cancel, both orders stay.
+  REQUIRE(ctx.set_quotes(kBtc, Fixture::two_sided(kMember2, "99.60", "100.40")));
+  CHECK(f.transport.count(EventType::OutCancel) == 0);
+  CHECK(f.resting(Side::Buy) == px("99.50"));
+  CHECK(f.resting(Side::Sell) == px("100.50"));
+  CHECK(f.engine->quote_manager().stats().kept_room == 2);
+  CHECK(f.engine->stats().risk_rejects_by_reason[RejectReason::RateLimit] == 0);
+  // Away from the touch: the cancels go (no room for the new orders, but no order beats a stale
+  // one there).
+  REQUIRE(ctx.set_quotes(kBtc, Fixture::two_sided(kMember2, "99.40", "100.60")));
+  CHECK(f.transport.count(EventType::OutCancel) == 2);
+}
+
+TEST_CASE("core.engine pool: quote_room_reserve keeps the last orders of a window") {
+  QuoteParams q = requote_now();
+  q.room_reserve = 5;
+  Fixture f(0, 0, q);
+  auto& ctx = f.engine->context();
+  for (const VenueId v : {kPrimary, kMember1, kMember2}) f.transport.publish(v, 0, 100, 0, 90);
+  f.quote(kMember1, "99.50", "100.50");
+  // Six left: the ask moves down.
+  f.transport.publish(kMember1, 84, 100, 2, 90);
+  REQUIRE(ctx.set_quotes(kBtc, Fixture::two_sided(kMember1, "99.50", "100.40")));
+  CHECK(f.transport.count(EventType::OutCancel) == 1);
+  // Five left: the bid does not move up.
+  f.transport.publish(kMember1, 85, 100, 2, 90);
+  REQUIRE(ctx.set_quotes(kBtc, Fixture::two_sided(kMember1, "99.60", "100.40")));
+  CHECK(f.transport.count(EventType::OutCancel) == 1);
+  CHECK(f.resting(Side::Buy) == px("99.50"));
+  CHECK(f.engine->quote_manager().stats().kept_room == 1);
+}
+
+TEST_CASE("core.engine pool: quote_room_reserve -1 moves a quote whatever the room") {
+  QuoteParams q = requote_now();
+  q.room_reserve = -1;
+  Fixture f(0, 0, q);
+  auto& ctx = f.engine->context();
+  for (const VenueId v : {kPrimary, kMember1, kMember2}) f.transport.publish(v, 0, 100, 0, 90);
+  f.quote(kMember2, "99.50", "100.50");
+  f.transport.publish(kMember2, 90, 100, 2, 90);
+  REQUIRE(ctx.set_quotes(kBtc, Fixture::two_sided(kMember2, "99.60", "100.40")));
+  CHECK(f.transport.count(EventType::OutCancel) == 2);
+  CHECK(f.engine->quote_manager().stats().kept_room == 0);
+}
+
+TEST_CASE("core.engine pool: a replace towards the touch is held on an account without room") {
+  QuoteParams q = requote_now();
+  q.supports_replace = true;
+  Fixture f(0, 0, q);
+  auto& ctx = f.engine->context();
+  for (const VenueId v : {kPrimary, kMember1, kMember2}) f.transport.publish(v, 0, 100, 0, 90);
+  f.quote(kPrimary, "99.50", "100.50");
+  OrderBudget paused;
+  paused.venue_known = true;
+  paused.venue_paused = true;
+  f.transport.budget[kPrimary.value].store(paused);
+  REQUIRE(ctx.set_quotes(kBtc, Fixture::two_sided(kPrimary, "99.60", "100.40")));
+  CHECK(f.transport.count(EventType::OutReplace) == 0);
+  CHECK(f.engine->quote_manager().stats().kept_room == 2);
+  CHECK(f.engine->quote_manager().stats().kept_rate_limit == 0);
+  CHECK_FALSE(f.engine->quote_manager().starved(kBtc));
+}
+
+TEST_CASE("core.engine pool: without a published budget a quote always moves") {
+  Fixture f(0, 0, requote_now());
+  auto& ctx = f.engine->context();
+  f.quote(kMember1, "99.50", "100.50");
+  REQUIRE(ctx.set_quotes(kBtc, Fixture::two_sided(kMember1, "99.60", "100.40")));
+  CHECK(f.transport.count(EventType::OutCancel) == 2);
+  CHECK(f.engine->quote_manager().stats().kept_room == 0);
 }

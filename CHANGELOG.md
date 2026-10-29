@@ -4,6 +4,9 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+### Added
+- core: `[engine] quote_room_reserve`: a quote is not moved towards the touch while the account it rests on has no more than this many orders left in its venue order windows; the resting order stays instead of a cancel whose new order the window refuses (default 0, -1 off).
+
 ## [0.10.1] - 2026-10-29
 
 ### Fixed

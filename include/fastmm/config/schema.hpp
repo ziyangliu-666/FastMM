@@ -310,6 +310,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      "the strategy's own orders and for quotes that do; quotes short of a token wait and are "
      "placed in turn as tokens return, not refused (default 0)"},
     {"engine",
+     "quote_room_reserve",
+     KeyType::Int,
+     false,
+     "orders an account's venue order windows keep for quotes into empty levels and moves away "
+     "from the touch: with no more left, a resting quote is not moved towards the touch and stays "
+     "where it is; -1 = off (default 0: only when none is left)"},
+    {"engine",
      "on_kill",
      KeyType::String,
      false,

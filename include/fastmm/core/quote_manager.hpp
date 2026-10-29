@@ -31,6 +31,11 @@
 //     rather than refused by risk: the target predates the fill, the strategy's next quotes decide;
 //   * pull_quotes(keep_desired) pauses an instrument (the engine during reconciliation): resume()
 //     re-applies the last desired quotes unless the instrument was pulled for good meanwhile;
+//   * a move towards the touch (a bid up, an ask down) that the placer holds (QuoteAction::held:
+//     the account the order rests on has no more than QuoteParams::room_reserve orders left in its
+//     venue order windows) keeps the resting order where it is: the move would spend one of the
+//     last orders, and with cancel-then-new a New the window then refuses leaves the level empty.
+//     Moves away from the touch and pulls still go. The strategy's next quotes try the move again;
 //   * a New or Replace the placer holds back for want of an order token (QuoteAction::rate_limited)
 //     is neither a reject nor a backoff: the instrument joins a FIFO of starved instruments, and
 //     the engine re-applies their last desired quotes (retry()) in that order as tokens come back,
@@ -108,6 +113,11 @@ struct QuoteParams {
   // orders a strategy sends itself (hedges, unwinds) and for quotes that do. Read by the engine's
   // placer; 0 = quotes may take the last token.
   std::int64_t token_reserve = 0;
+  // Orders an account's venue order windows (ctx.order_budget) keep for News into empty levels and
+  // for moves away from the touch: with no more than this many left, a resting quote is not moved
+  // towards the touch (held, QuoteStats::kept_room). Read by the engine's placer; 0 = only when
+  // none is left; -1 = never held.
+  std::int64_t room_reserve = 0;
 };
 
 enum class QuoteActionKind : std::uint8_t { New, Cancel, Replace };
@@ -132,6 +142,10 @@ struct QuoteAction {
   VenueId account{};  // New: the pool account to send it from (invalid = automatic)
   // New / Replace output: the pre-trade check that refused it (None: sent, or not refused by one).
   RejectReason refused{};
+  // Cancel / Replace output: not sent, the move goes towards the touch and the order's account is
+  // short of order room (QuoteParams::room_reserve); the order stays as it is. A Cancel that moves
+  // a quote carries the target price in `price`; a pull carries none and is never held.
+  bool held = false;
 };
 
 struct QuoteStats {
@@ -146,6 +160,7 @@ struct QuoteStats {
   std::uint64_t kept_backoff = 0;     // News withheld because their side was backing off
   std::uint64_t kept_balance = 0;     // deferred News withheld: the balance no longer covers them
   std::uint64_t kept_rate_limit = 0;  // News / Replaces held back for want of an order token
+  std::uint64_t kept_room = 0;        // moves towards the touch held: the account is short of room
   std::uint64_t retries = 0;          // retry() calls that re-applied a starved instrument's quotes
 };
 
@@ -515,17 +530,18 @@ class QuoteManager {
                       false,
                       false};
         if (!place(a)) {
-          held_back(st, inst.id, a, now);
+          if (a.held) {
+            ++stats_.kept_room;
+          } else {
+            held_back(st, inst.id, a, now);
+          }
           return 0;
         }
         ++stats_.replaces;
         slot.last_requote = now;
         return 1;
       }
-      slot.want = target;
-      slot.want_account = account;
-      slot.apply_want = true;
-      return cancel(inst, side, lvl, slot, place);
+      return move(inst, side, lvl, slot, target, account, place);
     }
     // No resting order in this slot. A cancel still in flight keeps the order live (Pending*,
     // handled above), so any earlier order is final in the OMS and there is nothing left to
@@ -550,6 +566,45 @@ class QuoteManager {
     if (!slot.handle.valid() || !oms.is_live(slot.handle)) return false;
     const Order& o = oms.get(slot.handle);
     return o.instrument == inst.id && o.user_tag == make_tag(side, lvl);
+  }
+
+  // Cancel-then-new of a resting quote to `target`: the cancel carries the target, so the placer
+  // can hold a move towards the touch (QuoteAction::held) and leave the order where it is.
+  template <class Placer>
+  std::uint32_t move(const Instrument& inst,
+                     Side side,
+                     std::uint32_t lvl,
+                     Slot& slot,
+                     Level target,
+                     VenueId account,
+                     Placer& place) noexcept {
+    QuoteAction a{QuoteActionKind::Cancel,
+                  inst.id,
+                  side,
+                  lvl,
+                  slot.handle,
+                  ClientOrderId{},
+                  target.price,
+                  Qty{},
+                  false,
+                  false,
+                  false,
+                  false};
+    slot.want = target;
+    slot.want_account = account;
+    slot.apply_want = true;
+    if (!place(a)) {
+      if (a.held) {
+        slot.apply_want = false;
+        ++stats_.kept_room;
+      } else {
+        ++stats_.rejected;
+      }
+      return 0;
+    }
+    ++stats_.cancels;
+    slot.awaiting_terminal = true;
+    return 1;
   }
 
   template <class Placer>

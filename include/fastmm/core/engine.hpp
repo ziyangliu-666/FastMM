@@ -3081,6 +3081,23 @@ class Engine {
     flush_out();
   }
 
+  // QuoteParams::room_reserve: a resting quote `o` is not moved to `target` when the move goes
+  // towards the touch (a bid up, an ask down) and the account it rests on has no more than the
+  // reserve left in its venue order windows (ctx.order_budget; paused: none). The resting order is
+  // the less aggressive one, so keeping it costs a fill at worst; the order the move would take is
+  // left for a level with no order and for moves away from the touch. A venue that publishes no
+  // budget (a backtest, a replay) always has room.
+  [[nodiscard]] bool holds_move(const Order& o, Price target) const noexcept {
+    const std::int64_t reserve = quotes_.params().room_reserve;
+    if (reserve < 0) return false;
+    if (o.side == Side::Buy ? target <= o.price : target >= o.price) return false;
+    const OrderBudget b = order_budget(o.venue);
+    if (FASTMM_LIKELY(!b.venue_known)) return false;
+    if (b.venue_paused) return true;
+    return std::min({b.orders_10s.remaining(), b.orders_1m.remaining(), b.orders_1d.remaining()}) <=
+           reserve;
+  }
+
   // Whether the [risk] bucket has a token for a quote that leaves `open_after` working on `side`:
   // one that does not take the position towards zero leaves QuoteParams::token_reserve for the
   // orders that do and for the strategy's own. Cancels never need one.
@@ -3140,10 +3157,20 @@ class Engine {
         return a.handle.valid();
       }
       case QuoteActionKind::Cancel:
+        // A cancel that moves the quote (it carries the target): the New after it needs room.
+        if (a.price.is_positive() && oms_.is_live(a.handle) &&
+            holds_move(oms_.get(a.handle), a.price)) {
+          a.held = true;
+          return false;
+        }
         return submit_cancel(a.handle).has_value();
       case QuoteActionKind::Replace: {
         if (!oms_.is_live(a.handle)) return false;
         const Order& o = oms_.get(a.handle);
+        if (holds_move(o, a.price)) {
+          a.held = true;
+          return false;
+        }
         if (FASTMM_UNLIKELY(
                 !quote_token(o.instrument,
                              o.side,

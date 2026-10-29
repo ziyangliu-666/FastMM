@@ -685,6 +685,9 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "quote_token_reserve", e.quote_token_reserve);
     if (e.quote_token_reserve < 0)
       fail_at(*t->get("quote_token_reserve"), "quote_token_reserve must be >= 0");
+    get(*t, "quote_room_reserve", e.quote_room_reserve);
+    if (e.quote_room_reserve < -1)
+      fail_at(*t->get("quote_room_reserve"), "quote_room_reserve must be >= -1");
     get(*t, "post_only", e.post_only);
     get(*t, "supports_replace", e.supports_replace);
     get(*t, "on_kill", e.on_kill);
@@ -1163,6 +1166,7 @@ QuoteParams Config::quote_params() const {
   q.reject_backoff = milliseconds(engine.reject_backoff_ms);
   q.reject_backoff_max = milliseconds(engine.reject_backoff_max_ms);
   q.token_reserve = engine.quote_token_reserve;
+  q.room_reserve = engine.quote_room_reserve;
   return q;
 }
 
@@ -1215,6 +1219,7 @@ std::string Config::redacted() const {
   kv("reject_backoff_ms", engine.reject_backoff_ms);
   kv("reject_backoff_max_ms", engine.reject_backoff_max_ms);
   kv("quote_token_reserve", engine.quote_token_reserve);
+  if (engine.quote_room_reserve != 0) kv("quote_room_reserve", engine.quote_room_reserve);
   kv("post_only", engine.post_only);
   kv("supports_replace", engine.supports_replace);
   kq("on_kill", engine.on_kill);
@@ -1492,6 +1497,8 @@ std::string Config::effective_toml() const {
   e.insert("reject_backoff_ms", static_cast<std::int64_t>(engine.reject_backoff_ms));
   e.insert("reject_backoff_max_ms", static_cast<std::int64_t>(engine.reject_backoff_max_ms));
   e.insert("quote_token_reserve", static_cast<std::int64_t>(engine.quote_token_reserve));
+  if (engine.quote_room_reserve != 0)
+    e.insert("quote_room_reserve", static_cast<std::int64_t>(engine.quote_room_reserve));
   e.insert("on_kill", engine.on_kill);
   // Only when set, so a configuration without it keeps its effective text and hash.
   if (engine.cancel_unknown != "all") e.insert("cancel_unknown", engine.cancel_unknown);
