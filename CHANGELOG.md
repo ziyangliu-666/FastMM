@@ -8,6 +8,9 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: a refused quote replace backs off its side as a refused new order does, so a price outside the venue's band is not resent on every requote.
 - core: a quote the price collar or the fat-finger band refuses backs off its side too, so a strategy price outside the collar during a move is not asked for on every book update.
 - core: a side in reject backoff quotes again when the backoff ends, without waiting for the strategy's next requote.
+- backtest: a sweep over a live session's journal no longer crashes on a depth snapshot deeper than 256 levels a side.
+- backtest: in a sweep, the messages of an instrument a strategy declared nothing about reach it from the first one, as alone, not only once its engine's interest moves.
+- backtest: `fastmm-data fill-check --market` keeps a depth snapshot deeper than 256 levels a side instead of dropping it.
 
 ## [0.10.0] - 2026-10-28
 

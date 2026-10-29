@@ -10,18 +10,25 @@
 #include "random_market.hpp"
 
 #include "fastmm/backtest/backtest_runner.hpp"
+#include "fastmm/backtest/journal_source.hpp"
 #include "fastmm/backtest/multiverse.hpp"
 #include "fastmm/backtest/result.hpp"
 #include "fastmm/backtest/sweep.hpp"
 #include "fastmm/config/config.hpp"
 #include "fastmm/core/rng.hpp"
+#include "fastmm/strategies/basic_mm.hpp"
+#include "fastmm/strategies/quoting.hpp"
+#include "fastmm/strategies/strategy.hpp"
 
 #include <fmt/format.h>
 
+#include <algorithm>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace fastmm;
@@ -615,4 +622,180 @@ quote_qty = 1
   bad[2].params["quote_qty"] = "-1";
   CHECK_THROWS_AS(static_cast<void>(run_multiverse(bad, "basic_mm", random_market(rc), 3)),
                   std::invalid_argument);
+}
+
+namespace {
+
+// Quotes on every book update, trade and ticker of every instrument and declares nothing (no
+// watch, no quiet_book): its engine needs every message, the interest an engine starts with. Its
+// quotes step a tick out and back with the messages it saw, so one missed moves them.
+class EveryMessage : public StrategyBase<BasicMMParams> {
+ public:
+  static constexpr std::string_view name() noexcept { return "every_message"; }
+  template <class Ctx, class Book>
+  void on_book(Ctx& ctx, InstrumentId id, const Book& b) noexcept {
+    quote(ctx, id, b);
+  }
+  template <class Ctx>
+  void on_trade(Ctx& ctx, InstrumentId id, const TradeMsg&) noexcept {
+    quote(ctx, id, ctx.book(id));
+  }
+  template <class Ctx>
+  void on_book_ticker(Ctx& ctx, InstrumentId id, const BookTickerMsg&) noexcept {
+    quote(ctx, id, ctx.book(id));
+  }
+
+ private:
+  template <class Ctx, class Book>
+  void quote(Ctx& ctx, InstrumentId id, const Book& b) noexcept {
+    ++seen_;
+    if (!b.is_valid()) return;
+    const Instrument& inst = ctx.instrument(id);
+    const Price mid = b.mid();
+    const Price off = mid * params().half_spread_bps + inst.ticks(static_cast<int>(seen_ % 3));
+    const Qty qty = inst.round_qty(params().quote_qty);
+    DesiredQuotes q;
+    q.bid(inst.round_price(mid - off, Side::Buy), qty);
+    q.ask(inst.round_price(mid + off, Side::Sell), qty);
+    keep_passive(q, b.best_bid().price, b.best_ask().price, inst.tick);
+    static_cast<void>(ctx.set_quotes(id, q));
+  }
+  std::uint64_t seen_ = 0;
+};
+
+template <class S>
+MultiverseFactory factory_of() {
+  return [](std::size_t, const BacktestConfig& cfg, MdSource& source) {
+    MultiverseRun r;
+    r.session = std::make_unique<BacktestSession>(cfg, &source, &S::schema());
+    r.runner = r.session->backend().template make_runner<S>(r.session->deps());
+    r.hooks = r.session->backend().hooks;
+    r.strategy_name = std::string(S::name());
+    return r;
+  };
+}
+
+// check_exact() for a strategy that is not registered.
+template <class S>
+void check_exact_of(const std::vector<BacktestConfig>& cfgs,
+                    const SourceFactory& factory,
+                    int threads) {
+  const std::vector<BacktestResult> mv = run_multiverse(cfgs, factory_of<S>(), factory, threads);
+  REQUIRE(mv.size() == cfgs.size());
+  std::uint64_t fills = 0;
+  for (std::size_t i = 0; i < cfgs.size(); ++i) {
+    CAPTURE(i);
+    const std::unique_ptr<MdSource> source = factory();
+    const BacktestResult alone = run_backtest<S>(cfgs[i], source.get());
+    CHECK(result_difference(alone, mv[i]) == "");
+    fills += alone.fills.size();
+  }
+  CHECK(fills > 0);
+}
+
+// tests/fixtures/ltcusdt: a minute of LTCUSDT on Binance Spot and USD-M as the live connectors
+// journal it, with depth snapshots 1000 levels a side.
+const std::string kLtcusdt = std::string(FASTMM_FIXTURES_DIR) + "/ltcusdt/ltcusdt.fmj";
+
+constexpr const char* kLtcusdtConfig = R"(
+[engine]
+rng_seed = 3
+min_requote_ticks = 1
+min_requote_interval_ms = 0
+min_qty_bps = 8000
+post_only = true
+
+[venues.binance]
+kind = "sim"
+[venues.binance.fees]
+maker_bps = 0.0
+taker_bps = 10.0
+[venues.binance_usdm]
+kind = "sim"
+[venues.binance_usdm.fees]
+maker_bps = -0.5
+taker_bps = 5.0
+
+[[instruments]]
+venue = "binance"
+symbol = "LTCUSDT"
+base = "LTC"
+quote = "USDT"
+asset_class = "spot"
+tick = "0.01"
+lot = "0.001"
+min_qty = "0.001"
+min_notional = "5"
+
+[[instruments]]
+venue = "binance_usdm"
+symbol = "LTCUSDT"
+base = "LTC"
+quote = "USDT"
+asset_class = "perpetual"
+tick = "0.01"
+lot = "0.001"
+min_qty = "0.001"
+min_notional = "20"
+
+[strategy]
+name = "basic_mm"
+[strategy.params]
+half_spread_bps = 0.5
+skew_bps_per_unit = 0.5
+quote_qty = 0.5
+max_inventory = 5
+requote_threshold_ticks = 1
+pull_on_stale_ms = 0
+
+[risk]
+max_order_qty = "10"
+max_order_notional = "5000"
+max_position = "20"
+max_open_orders = 32
+stp = true
+stale_md_ms = 0
+
+[backtest]
+fill_model = "l2_queue"
+latency_fixed_us = 100
+latency_jitter_us = 0
+equity_bar_s = 1
+initial_capital = 100000
+)";
+
+}  // namespace
+
+TEST_CASE("backtest.multiverse.exact: a recorded Binance session, snapshots 1000 levels deep") {
+  const SourceFactory journal = []() -> std::unique_ptr<MdSource> {
+    return std::make_unique<JournalSource>(kLtcusdt);
+  };
+  {
+    // The recording holds messages longer than any a source builds itself.
+    JournalSource source(kLtcusdt);
+    std::uint32_t longest = 0;
+    while (const EventHeader* h = source.next()) longest = std::max(longest, h->len);
+    REQUIRE(longest > sim::kMaxSourceEventBytes);
+  }
+  const BacktestConfig base = config_of(kLtcusdtConfig);
+  SUBCASE("basic_mm") {
+    const ParamGrid grid = {{"half_spread_bps", {"0", "0.5", "2"}}, {"levels", {"1", "2"}}};
+    check_exact(variants(base, grid, 16, stress_seed(111)), "basic_mm", journal);
+    check_exact(variants(base, grid, 12, stress_seed(112)), "basic_mm", journal, 3);
+  }
+  SUBCASE("a strategy that needs every message from the start") {
+    const ParamGrid grid = {{"half_spread_bps", {"0", "0.5", "2"}}};
+    check_exact_of<EveryMessage>(variants(base, grid, 12, stress_seed(113)), journal, 1);
+    check_exact_of<EveryMessage>(variants(base, grid, 9, stress_seed(114)), journal, 3);
+  }
+}
+
+TEST_CASE("backtest.result_difference: a fill 0.1 ms later is a difference (--verify)") {
+  JournalSource source(kLtcusdt);
+  const BacktestResult a = run_backtest(config_of(kLtcusdtConfig), "basic_mm", &source);
+  REQUIRE_FALSE(a.fills.ts.empty());
+  BacktestResult b = a;
+  CHECK(result_difference(a, b) == "");
+  b.fills.ts.back() += 100'000;
+  CHECK(result_difference(a, b).starts_with("fills.ts["));
 }

@@ -317,9 +317,11 @@ class RestingIndex final : public sim::RestingWatch {
 // The market data in flight to one venue's engines, in arrival order; grows when a burst fills it.
 class MdQueue {
  public:
-  void push(const EventHeader& h) {
+  // A copy of `h`, of any length a message has, at the back: the caller stamps it there.
+  EventHeader& push(const EventHeader& h) {
     if (ring_ == nullptr) ring_ = std::make_unique<MsgRing>(std::size_t{1} << 18, false);
-    while (!ring_->try_push(&h, h.len)) {
+    std::byte* p = nullptr;
+    while ((p = ring_->try_reserve(h.len)) == nullptr) {
       auto bigger = std::make_unique<MsgRing>(ring_->capacity() * 2, false);
       while (const std::byte* m = ring_->try_peek()) {
         const auto* e = reinterpret_cast<const EventHeader*>(m);
@@ -328,6 +330,9 @@ class MdQueue {
       }
       ring_ = std::move(bigger);
     }
+    std::memcpy(p, &h, h.len);
+    ring_->commit();
+    return *reinterpret_cast<EventHeader*>(p);
   }
   [[nodiscard]] const EventHeader* head() const noexcept {
     return ring_ == nullptr ? nullptr : reinterpret_cast<const EventHeader*>(ring_->try_peek());
@@ -361,7 +366,8 @@ class WakeIndex {
     stamp_.assign(runs, 0);
   }
 
-  // Files run `run` again where its engine's interest moved.
+  // Files run `run` again where its engine's interest moved; the first time, every instrument: one
+  // whose interest the engine never changed is still at epoch 0.
   void refile(std::uint32_t run, const MdInterest& in) {
     if (in.epoch == seen_[run]) return;
     const std::uint64_t seen = seen_[run];
@@ -371,7 +377,7 @@ class WakeIndex {
     });
     for (std::size_t i = 0; i < n_; ++i) {
       const MdInterest::Instrument& n = in.inst[i];
-      if (n.epoch <= seen) continue;
+      if (seen != 0 && n.epoch <= seen) continue;
       Filed& f = filed_[run * n_ + i];
       // An empty band takes every update.
       const bool every_book =
@@ -594,15 +600,12 @@ struct FeedGroup {
     if (c.recorded_arrival && recorded > now) arrival = arrival + (recorded - now);
     if (arrival < last_arrival[v]) arrival = last_arrival[v];
     last_arrival[v] = arrival;
-    alignas(64) std::array<std::byte, kMaxSourceEventBytes> buf;
-    std::memcpy(buf.data(), &md, md.len);
-    auto* h = reinterpret_cast<EventHeader*>(buf.data());
-    h->exch_ts = now;
-    h->recv_ts = arrival;
-    h->t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
-    h->t1_delta = h->t2_delta = 0;
-    h->seq = 0;
-    queues[v].push(*h);
+    EventHeader& h = queues[v].push(md);
+    h.exch_ts = now;
+    h.recv_ts = arrival;
+    h.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
+    h.t1_delta = h.t2_delta = 0;
+    h.seq = 0;
     ++pushed[v];
     ++forwarded;
     at = arrival;
@@ -611,12 +614,9 @@ struct FeedGroup {
   // Run `run`'s own message `m` goes right ahead of the last message pushed to venue `v`'s queue,
   // at its arrival.
   void own_ahead(std::uint8_t v, std::uint32_t run, const EventHeader& m, Timestamp arrival) {
-    alignas(64) std::array<std::byte, kMaxSourceEventBytes> buf;
-    std::memcpy(buf.data(), &m, m.len);
-    auto* h = reinterpret_cast<EventHeader*>(buf.data());
-    h->recv_ts = arrival;
-    h->t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
-    own[v].push(*h);
+    EventHeader& h = own[v].push(m);
+    h.recv_ts = arrival;
+    h.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
     own_to[v].push_back(OwnAhead{pushed[v], run});
   }
   // The key of the message that goes next and its venue (the lowest on a tie); false: none.

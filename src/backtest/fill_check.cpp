@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace fastmm::bt {
 
@@ -321,10 +322,11 @@ class Walker {
   // The item's event with the session's instrument id (a copy in remap_buf_ when it differs).
   const EventHeader* md_of(const Item& it) {
     if (!it.remap) return it.md;
-    if (it.md->len > sizeof(remap_buf_.bytes)) return nullptr;
-    std::memcpy(remap_buf_.bytes, it.md, it.md->len);
-    remap_buf_.hdr().instrument = it.inst;
-    return &remap_buf_.hdr();
+    if (it.md->len > kMaxMsgBytes) return nullptr;  // no message is longer
+    std::memcpy(remap_buf_.data(), it.md, it.md->len);
+    auto* h = reinterpret_cast<EventHeader*>(remap_buf_.data());
+    h->instrument = it.inst;
+    return h;
   }
 
   void replay(const Item& it) {
@@ -592,7 +594,8 @@ class Walker {
   std::unordered_map<std::uint64_t, std::uint32_t> exec_order_;  // first live fill's exec id
   std::vector<std::vector<std::uint32_t>> active_by_inst_;
   std::vector<Timestamp> sim_end_;  // per order: its simulated cancel (cancel_paths)
-  sim::EventBuf remap_buf_;
+  // As long as a journal's record can be: a depth snapshot of kMaxBookLevelsPerMsg a side.
+  std::vector<std::uint64_t> remap_buf_ = std::vector<std::uint64_t>(kMaxMsgBytes / 8);
   std::vector<std::unique_ptr<Book>> books_;
   std::vector<QueueTouch> touches_;
   std::vector<TradeTape> tapes_;

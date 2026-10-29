@@ -25,6 +25,7 @@ namespace fastmm::bt {
 
 class Tape {
   static constexpr std::size_t kChunkBytes = std::size_t{1} << 16;
+  static_assert(kMaxMsgBytes <= kChunkBytes, "a chunk holds the longest message");
   static constexpr std::uint32_t kStop = 1U << 31;
   struct alignas(64) Block {
     std::byte bytes[64];

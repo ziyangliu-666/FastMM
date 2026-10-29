@@ -1,0 +1,73 @@
+# Records the fixture ltcusdt.fmj from Binance's public market data, no keys:
+#
+#   fastmm-live --config tests/fixtures/ltcusdt/record.toml --dry-run --duration 60s \
+#       --journal tests/fixtures/ltcusdt/ltcusdt.fmj --no-status --no-control
+#
+# LTCUSDT on Spot and on USD-M futures. With up to 10 symbols a venue takes its depth snapshots
+# 1000 levels a side, as the connectors do in a live session: one snapshot message is deeper than
+# a source builds its own (256 a side), which the sweeps over it test.
+
+[engine]
+name = "fixture-ltcusdt"
+cpu = -1
+net_cpus = []
+spin_mode = "adaptive"
+journal = true
+rng_seed = 1
+max_events_per_step = 64
+min_requote_ticks = 1
+min_qty_bps = 8000
+post_only = true
+supports_replace = false
+
+[venues.binance]
+kind = "binance_spot"
+ws_url = "wss://stream.binance.com:9443/stream"
+rest_url = "https://api.binance.com"
+public_only = true
+
+[venues.binance_usdm]
+kind = "binance_usdm"
+ws_url = "wss://fstream.binance.com"
+rest_url = "https://fapi.binance.com"
+public_only = true
+
+[[instruments]]
+venue = "binance"
+symbol = "LTCUSDT"
+base = "LTC"
+quote = "USDT"
+asset_class = "spot"
+tick = "0.01"
+lot = "0.001"
+min_qty = "0.001"
+min_notional = "5"
+
+[[instruments]]
+venue = "binance_usdm"
+symbol = "LTCUSDT"
+base = "LTC"
+quote = "USDT"
+asset_class = "perpetual"
+tick = "0.01"
+lot = "0.001"
+min_qty = "0.001"
+min_notional = "20"
+
+[strategy]
+name = "basic_mm"
+
+[strategy.params]
+half_spread_bps = 1.0
+quote_qty = 0.5
+max_inventory = 5
+
+[risk]
+max_order_qty = "10"
+max_order_notional = "2000"
+max_position = "10"
+max_open_orders = 8
+stale_md_ms = 0
+
+[logging]
+level = "warn"

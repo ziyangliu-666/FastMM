@@ -1,0 +1,10 @@
+{
+ "_source": "recorded",
+ "_recorded_from": "Binance public market data, no keys: wss://stream.binance.com:9443 and https://api.binance.com (Spot), wss://fstream.binance.com and https://fapi.binance.com (USD-M), LTCUSDT; fastmm-live --dry-run with record.toml",
+ "_recorded_at": "2026-10-29T01:06Z, 60 s",
+ "files": {
+  "ltcusdt.fmj": "the session journal fastmm-live wrote: depth snapshots 1000 levels a side, depth updates, book tickers, trades and marks of both instruments; the paper orders of the dry run were refused by the engine and reached no venue",
+  "record.toml": "configuration of the recording",
+  "basic_mm.toml": "configuration of the basic_mm sweep over it"
+ }
+}

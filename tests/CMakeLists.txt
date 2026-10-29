@@ -444,6 +444,17 @@ if(TARGET fastmm-backtest)
           --sweep quote_qty=1,3 --sweep basis_halflife_s=10,60 --threads 3 --verify 8
       EXPECT_REGEX "${_sweep_ok}" REJECT_REGEX "the data has no events|instrument id the configuration lacks")
   endforeach()
+  # A live session's journal (tests/fixtures/ltcusdt): depth snapshots 1000 levels a side.
+  set(_ltcusdt ${PROJECT_SOURCE_DIR}/tests/fixtures/ltcusdt)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_ltcusdt}/basic_mm.toml)
+  file(READ ${_ltcusdt}/basic_mm.toml _toml)
+  string(REPLACE "tests/fixtures/ltcusdt" "${_ltcusdt}" _toml "${_toml}")
+  set(_cfg_ltcusdt ${CMAKE_CURRENT_BINARY_DIR}/tmp/cli/ltcusdt-basic_mm.toml)
+  file(CONFIGURE OUTPUT ${_cfg_ltcusdt} CONTENT "${_toml}" @ONLY)
+  fastmm_cli_test(apps.fastmm-backtest.sweep_recorded.basic_mm.deep_snapshots EXPECT_RC 0
+    CMD $<TARGET_FILE:fastmm-backtest> --config ${_cfg_ltcusdt} --sweep half_spread_bps=0,0.5
+        --sweep levels=1,2 --sweep latency_md_us=0,2000 --threads 3 --verify 8
+    EXPECT_REGEX "${_sweep_ok}" REJECT_REGEX "the data has no events|instrument id the configuration lacks")
   # Coinbase's data alone: Bitstamp's instrument gets no events, and the run says so.
   fastmm_cli_test(apps.fastmm-backtest.instrument_without_data EXPECT_RC 0
     CMD $<TARGET_FILE:fastmm-backtest> --config ${_cfg_xmm}

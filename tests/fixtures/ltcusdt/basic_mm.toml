@@ -1,0 +1,84 @@
+# basic_mm on a minute of LTCUSDT, Binance Spot and USD-M, as the live connectors journal it
+# (ltcusdt.fmj; depth snapshots 1000 levels a side). The sweep test in tests/CMakeLists.txt runs:
+#
+#   fastmm-backtest --config tests/fixtures/ltcusdt/basic_mm.toml \
+#       --sweep half_spread_bps=0,0.5 --sweep levels=1,2 --sweep latency_md_us=0,2000 --verify 8
+
+[engine]
+name = "fixture-ltcusdt-basic-mm"
+journal = false
+rng_seed = 1
+min_requote_ticks = 1
+min_requote_interval_ms = 0
+min_qty_bps = 8000
+post_only = true
+supports_replace = false
+
+[venues.binance]
+kind = "sim"
+
+[venues.binance.fees]
+maker_bps = 0.0
+taker_bps = 10.0
+
+[venues.binance_usdm]
+kind = "sim"
+
+[venues.binance_usdm.fees]
+maker_bps = -0.5
+taker_bps = 5.0
+
+[[instruments]]
+venue = "binance"
+symbol = "LTCUSDT"
+base = "LTC"
+quote = "USDT"
+asset_class = "spot"
+tick = "0.01"
+lot = "0.001"
+min_qty = "0.001"
+min_notional = "5"
+
+[[instruments]]
+venue = "binance_usdm"
+symbol = "LTCUSDT"
+base = "LTC"
+quote = "USDT"
+asset_class = "perpetual"
+tick = "0.01"
+lot = "0.001"
+min_qty = "0.001"
+min_notional = "20"
+
+[strategy]
+name = "basic_mm"
+
+[strategy.params]
+half_spread_bps = 0.5
+skew_bps_per_unit = 0.5
+quote_qty = 0.5
+max_inventory = 5
+requote_threshold_ticks = 1
+pull_on_stale_ms = 0
+
+[risk]
+max_order_qty = "10"
+max_order_notional = "5000"
+max_position = "20"
+max_open_orders = 32
+stp = true
+max_loss = "100000"
+
+[logging]
+level = "warn"
+
+[backtest]
+source = "journal:tests/fixtures/ltcusdt/ltcusdt.fmj"
+fill_model = "l2_queue"
+latency_fixed_us = 2000
+latency_jitter_us = 1000
+latency_md_us = 2000
+equity_bar_s = 10
+initial_capital = 100000
+markout_horizons_s = "1,10"
+output_dir = ""
