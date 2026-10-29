@@ -4,13 +4,22 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-10-29
+
 ### Fixed
-- core: a refused quote replace backs off its side as a refused new order does, so a price outside the venue's band is not resent on every requote.
-- core: a quote the price collar or the fat-finger band refuses backs off its side too, so a strategy price outside the collar during a move is not asked for on every book update.
-- core: a side in reject backoff quotes again when the backoff ends, without waiting for the strategy's next requote.
-- backtest: a sweep over a live session's journal no longer crashes on a depth snapshot deeper than 256 levels a side.
-- backtest: in a sweep, the messages of an instrument a strategy declared nothing about reach it from the first one, as alone, not only once its engine's interest moves.
-- backtest: `fastmm-data fill-check --market` keeps a depth snapshot deeper than 256 levels a side instead of dropping it.
+- core: a quote replace the venue refuses backs off its side for `reject_backoff_ms`.
+- core: a quote the price collar or the fat-finger band refuses backs off its side.
+- core: a side in reject backoff quotes again when the backoff ends.
+- backtest: a sweep over a journal no longer crashes on a depth snapshot deeper than 256 levels.
+- backtest: every point of a sweep gets each message its strategy needs and equals its own backtest.
+- backtest: `fastmm-data fill-check --market` keeps depth snapshots deeper than 256 levels a side.
+
+### Documentation
+- docs: the venue reference is an overview, a page on shared connector behaviour and one per venue.
+- docs: the pages put steps in numbered lists and like facts in tables, with real command output.
+- docs: tables, steps and hand-drawn diagrams with dark variants replace the Mermaid diagrams.
+- docs: the entry pages show the architecture, memory and sweep animations.
+- docs: how the benchmarks are measured moves to `bench/README.md`.
 
 ## [0.10.0] - 2026-10-28
 
