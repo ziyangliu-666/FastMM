@@ -60,7 +60,7 @@ The quote manager compares each wanted level with the order resting in the same 
 | replace | the venue supports it and `supports_replace` is on |
 | cancel, then new | otherwise; the new order goes out once the cancel is acknowledged, and is withheld if the old order filled instead and the balance no longer covers it |
 
-An order waiting for a venue response is left alone until it arrives. A side whose new order or replace the venue refused pauses for `reject_backoff_ms`, then quotes again ([Venue-originated rejects](../reference/errors.md#venue-originated)). Orders sent directly with `ctx.send` skip this step.
+An order waiting for a venue response is left alone until it arrives. A side whose new order or replace the venue, the price collar or the fat-finger band refused pauses for `reject_backoff_ms`, then quotes again ([Venue-originated rejects](../reference/errors.md#venue-originated)). Orders sent directly with `ctx.send` skip this step.
 
 ## 7. Check and record
 

@@ -3131,7 +3131,10 @@ class Engine {
           return false;
         }
         auto res = submit_new(r);
-        if (!res) return false;
+        if (!res) {
+          a.refused = res.error();
+          return false;
+        }
         a.cl_ord_id = *res;
         a.handle = oms_.find(*res);
         return a.handle.valid();
@@ -3148,7 +3151,9 @@ class Engine {
           a.rate_limited = true;
           return false;
         }
-        return submit_replace(a.handle, a.price, a.qty).has_value();
+        auto res = submit_replace(a.handle, a.price, a.qty);
+        if (!res) a.refused = res.error();
+        return res.has_value();
       }
     }
     return false;

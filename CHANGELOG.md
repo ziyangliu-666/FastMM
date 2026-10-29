@@ -6,6 +6,7 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ### Fixed
 - core: a refused quote replace backs off its side as a refused new order does, so a price outside the venue's band is not resent on every requote.
+- core: a quote the price collar or the fat-finger band refuses backs off its side too, so a strategy price outside the collar during a move is not asked for on every book update.
 - core: a side in reject backoff quotes again when the backoff ends, without waiting for the strategy's next requote.
 
 ## [0.10.0] - 2026-10-28

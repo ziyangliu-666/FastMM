@@ -19,7 +19,9 @@
 //     each further refusal up to reject_backoff_max and reset by an ack on that side, so a side
 //     the venue keeps refusing (no balance, a price outside its band during a move) is not resent
 //     on every requote; a requote that meets a working order meanwhile cancels it, as on a venue
-//     without replace, and the New waits for the backoff to end;
+//     without replace, and the New waits for the backoff to end. A New or Replace the engine's own
+//     checks refuse for its price (price collar, fat-finger band: QuoteAction::refused) backs off
+//     the same way, since the next requote during a move asks for a price just as far out;
 //   * an instrument whose venue supports replace (set_replace(), with supports_replace) gets a
 //     single Replace; otherwise Cancel now and New only once the cancel's terminal update arrives
 //     via on_order_update() (cancel-then-new keeps momentary exposure down and never double-quotes
@@ -128,6 +130,8 @@ struct QuoteAction {
   // instrument is retried when tokens come back.
   bool rate_limited;
   VenueId account{};  // New: the pool account to send it from (invalid = automatic)
+  // New / Replace output: the pre-trade check that refused it (None: sent, or not refused by one).
+  RejectReason refused{};
 };
 
 struct QuoteStats {
@@ -436,9 +440,13 @@ class QuoteManager {
     // A post-only cross is a stale price, fixed by the next requote, and a replace of an order the
     // venue no longer has lost a race with its fill or cancel; other venue rejects (no balance,
     // filters, a price outside the venue's band, permissions) repeat until something changes.
-    if (params_.reject_backoff.ns <= 0 || reason == RejectReason::PostOnlyWouldCross ||
-        reason == RejectReason::VenueUnknownOrder)
+    if (reason == RejectReason::PostOnlyWouldCross || reason == RejectReason::VenueUnknownOrder)
       return;
+    back_off(st, side, now);
+  }
+  // Starts or doubles the side's backoff.
+  void back_off(InstState& st, Side side, Timestamp now) noexcept {
+    if (params_.reject_backoff.ns <= 0) return;
     const auto i = static_cast<std::size_t>(side);
     Duration next = st.backoff[i].ns <= 0 ? params_.reject_backoff : st.backoff[i] + st.backoff[i];
     if (params_.reject_backoff_max.ns > 0 && next.ns > params_.reject_backoff_max.ns)
@@ -507,7 +515,7 @@ class QuoteManager {
                       false,
                       false};
         if (!place(a)) {
-          held_back(st, inst.id, a);
+          held_back(st, inst.id, a, now);
           return 0;
         }
         ++stats_.replaces;
@@ -594,7 +602,7 @@ class QuoteManager {
       if (a.withheld) {
         ++stats_.kept_balance;
       } else {
-        held_back(state_[inst.id.value], inst.id, a);
+        held_back(state_[inst.id.value], inst.id, a, now);
       }
       return 0;
     }
@@ -607,10 +615,12 @@ class QuoteManager {
   }
 
   // A failed New or Replace: a rate-limited one waits in the starved queue, anything else was
-  // refused.
-  void held_back(InstState& st, InstrumentId id, const QuoteAction& a) noexcept {
+  // refused; refused for its price, its side backs off.
+  void held_back(InstState& st, InstrumentId id, const QuoteAction& a, Timestamp now) noexcept {
     if (!a.rate_limited) {
       ++stats_.rejected;
+      if (a.refused == RejectReason::PriceCollar || a.refused == RejectReason::FatFinger)
+        back_off(st, a.side, now);
       return;
     }
     ++stats_.kept_rate_limit;

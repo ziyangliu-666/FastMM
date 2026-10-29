@@ -293,8 +293,10 @@ inline constexpr KeySpec kConfigSchema[] = {
      KeyType::Int,
      false,
      "after the venue refuses a quote's new order or replace, other than a post-only cross or an "
-     "order it no longer has, no new orders or replaces on that side for this long, doubling with "
-     "each further refusal, then the side quotes again, ms; 0 = off (default 1000)"},
+     "order it no longer has, or the price collar or fat-finger band refuses it, no new orders or "
+     "replaces on that side for this long, doubling with each further refusal, then the side "
+     "quotes "
+     "again, ms; 0 = off (default 1000)"},
     {"engine",
      "reject_backoff_max_ms",
      KeyType::Int,

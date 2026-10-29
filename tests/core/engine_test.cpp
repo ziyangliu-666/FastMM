@@ -1323,3 +1323,125 @@ TEST_CASE("core.engine: a side the venue refuses for its price band backs off, t
     CHECK(f.engine->quote_manager().stats().reject_backoffs == refused);
   }
 }
+
+namespace {
+// Quotes 5 ticks either side of a fair value the test sets (a leading venue's price, say), on a
+// book update after the fair value moved; never otherwise.
+struct LeadQuoter {
+  Price fair = px("100.00");
+  Price quoted{};
+  template <class Ctx, class Book>
+  void on_book(Ctx& ctx, InstrumentId id, const Book&) noexcept {
+    if (fair == quoted) return;
+    quoted = fair;
+    DesiredQuotes q;
+    static_cast<void>(q.bid(fair - px("0.05"), qt("0.01")));
+    static_cast<void>(q.ask(fair + px("0.05"), qt("0.01")));
+    static_cast<void>(ctx.set_quotes(id, q));
+  }
+};
+}  // namespace
+
+// The live case: the fair value runs ahead of the instrument's own book during a fast move, so the
+// engine's price collar ([risk] price_collar_bps, from the book's mid) refuses every requote. The
+// side backs off instead of asking again on every book update, and quotes again once the book has
+// caught up, though the strategy asks for nothing new.
+TEST_CASE("core.engine: a side the price collar refuses backs off, then quotes again") {
+  for (const bool replace : {false, true}) {
+    CAPTURE(replace);
+    InstrumentTable table = make_table();
+    SimClock clock{Timestamp{seconds(1000).ns}};
+    FakeTransport transport;
+    transport.replace = replace;
+    InlineFeed feed{1 << 20};
+    LeadQuoter strategy;
+    EngineConfig cfg;
+    cfg.risk.max_order_qty = qt("1");
+    cfg.risk.max_position = qt("1");
+    cfg.risk.max_open_orders = 8;
+    cfg.risk.stale_md = seconds(5);
+    cfg.risk.price_collar_bps = 50;
+    cfg.quotes.min_requote_interval = Duration{};
+    cfg.quotes.min_requote_ticks = 1;
+    cfg.quotes.supports_replace = replace;
+    Engine<LeadQuoter, SimClock, FakeTransport, InlineFeed> engine(
+        cfg, table, clock, transport, feed, strategy);
+    engine.warm_up();
+    engine.start();
+
+    std::size_t seen = 0;
+    const auto venue = [&] {  // takes every order, replace and cancel
+      for (; seen < transport.out.size(); ++seen) {
+        const auto* h = reinterpret_cast<const EventHeader*>(transport.out[seen].data());
+        if (h->type == EventType::OutCancel) {
+          OrderCancelAckMsg a{};
+          init_header(a, EventType::OrderCancelAck, InstrumentId{0}, VenueId{0});
+          a.cl_ord_id = transport.at<OutCancelMsg>(seen).cl_ord_id;
+          a.hdr.recv_ts = clock.now();
+          REQUIRE(feed.push(a.hdr));
+          continue;
+        }
+        if (h->type != EventType::OutNewOrder && h->type != EventType::OutReplace) continue;
+        OrderAckMsg a{};
+        init_header(a, EventType::OrderAck, InstrumentId{0}, VenueId{0});
+        a.cl_ord_id = h->type == EventType::OutNewOrder
+                          ? transport.at<OutNewOrderMsg>(seen).cl_ord_id
+                          : transport.at<OutReplaceMsg>(seen).cl_ord_id;
+        a.venue_order_id = "V";
+        a.hdr.recv_ts = clock.now();
+        REQUIRE(feed.push(a.hdr));
+      }
+    };
+    std::uint64_t seq = 1;
+    const auto tick = [&](double mid) {
+      char bid[32];
+      char ask[32];
+      std::snprintf(bid, sizeof bid, "%.2f", mid - 0.01);
+      std::snprintf(ask, sizeof ask, "%.2f", mid + 0.01);
+      std::byte* p = feed.reserve(BookDeltaMsg::size_for(1, 1));
+      REQUIRE(p != nullptr);
+      auto* d = reinterpret_cast<BookDeltaMsg*>(p);
+      init_header(
+          *d, EventType::BookSnapshot, InstrumentId{0}, VenueId{0}, BookDeltaMsg::size_for(1, 1));
+      d->hdr.flags |= EventHeader::kSnapshot;
+      d->hdr.recv_ts = d->hdr.exch_ts = clock.now();
+      d->bid_count = d->ask_count = 1;
+      d->last_update_id = seq++;
+      d->levels()[0] = Level{px(bid), qt("5")};
+      d->levels()[1] = Level{px(ask), qt("5")};
+      feed.commit();
+      for (int i = 0; i < 4; ++i) {
+        while (engine.step() > 0) {
+        }
+        venue();
+      }
+      clock.advance(milliseconds(1));
+    };
+    const auto collar_rejects = [&] {
+      return engine.stats().risk_rejects_by_reason[RejectReason::PriceCollar];
+    };
+    tick(100.0);
+    REQUIRE(engine.oms().open_count() == 2);
+
+    // 1.4 s: the fair value climbs from 100 to 114, a tick a millisecond; the book stays at 100.
+    for (int ms = 0; ms < 1400; ++ms) {
+      strategy.fair = strategy.fair + px("0.01");
+      tick(100.0);
+    }
+    // Both sides leave the 50 bps collar about 55 ms in. Asked for again on every book update, that
+    // was some 2700 refusals; backing off 1 s, then 2 s, it is one or two a side.
+    CHECK(collar_rejects() >= 1);
+    CHECK(collar_rejects() <= 4);
+    if (replace) CHECK(transport.count(EventType::OutReplace) > 0);
+
+    // The book catches up and stays; the strategy asks for nothing new, its quotes go out once the
+    // backoff ends.
+    for (int ms = 0; ms < 3000; ++ms) tick(114.0);
+    CHECK(collar_rejects() <= 4);
+    std::size_t working = 0;
+    engine.oms().for_each_open_order([&](Handle<Order>, const Order& o) {
+      working += o.is_working() && (o.price == px("113.95") || o.price == px("114.05")) ? 1U : 0U;
+    });
+    CHECK(working == 2);
+  }
+}
