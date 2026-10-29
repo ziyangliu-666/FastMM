@@ -9,10 +9,16 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <cstdint>
 #include <string>
 #include <thread>
 
 using namespace fastmm;
+
+namespace {
+// When this binary started: a pid is the session's while its start is within 10 s of this.
+const std::int64_t g_loaded_ns = wall_now().ns;
+}  // namespace
 
 TEST_CASE("core.process_state: this process, its threads and their counters") {
   std::atomic<bool> named{false};
@@ -48,8 +54,8 @@ TEST_CASE("core.process_state: another process, or the pid of one that started e
   CHECK(process_state_json(gone) == R"("process": {"ok": false, "error": "no process 0 here"})");
   CHECK(process_state_prometheus(gone).empty());
   // This process, but the status file says the session started an hour ago: a reused pid.
-  const ProcessState other = read_process_state(::getpid(), wall_now().ns - 3'600'000'000'000);
+  const ProcessState other = read_process_state(::getpid(), g_loaded_ns - 3'600'000'000'000);
   CHECK_FALSE(other.ok);
   CHECK(other.error.find("not the session's process") != std::string::npos);
-  CHECK(read_process_state(::getpid(), wall_now().ns).ok);
+  CHECK(read_process_state(::getpid(), g_loaded_ns).ok);
 }
