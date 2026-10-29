@@ -17,6 +17,7 @@ python3 tools/sbe_gen.py generate --schema tools/sbe/binance_spot_stream_1_0.xml
   --namespace fastmm::venues::binance::sbe_stream --check
 
 ! grep -rnE 'dynamic_cast|std::cout' include src || { echo "forbidden pattern in hot-path code"; exit 1; }
+! git grep -nE "^(<<<<<<<|>>>>>>>) " -- . ":!third_party" || { echo "merge conflict markers"; exit 1; }
 ! grep -rnE 'TEST_CASE\("[^"]*;' tests || { echo "';' in a TEST_CASE name breaks doctest_discover_tests filters"; exit 1; }
 
 python3 tools/doc_snippets.py --check

@@ -1,10 +1,6 @@
 # Add a venue
 
-<<<<<<< HEAD
-Model a JSON-over-WebSocket connector on the five that ship: Binance Spot (`include/fastmm/venues/binance/`), Binance USDⓈ-M (`include/fastmm/venues/binance_usdm/`), Bybit v5 spot and linear perpetuals (`include/fastmm/venues/bybit/`), OKX v5 USDT-margined swaps (`include/fastmm/venues/okx/`) and Deribit options and futures (`include/fastmm/venues/deribit/`). Bybit is the main worked example; Deribit shows JSON-RPC, request credits and options data. Binary wire formats live in `codecs/` ([FIX](../../reference/codecs/fix.md), [Nasdaq](../../reference/codecs/nasdaq.md), [CME MDP 3.0](../../reference/codecs/cme-mdp3.md)), and a connector can build on them: `nasdaq_itch` is a `Venue` over ITCH, MoldUDP64 and OUCH ([Venue connectors](../../reference/venues/nasdaq-itch.md)), and Binance SBE market data is a connector option (`md_format = "sbe"`). FIX and CME MDP 3.0 have no connector yet and are built only with `-DFASTMM_CODEC_FIX=ON` / `-DFASTMM_CODEC_MDP3=ON` ([Optional codecs](../../getting-started/install.md#optional-codecs)); turn the option on in the same change that adds the venue.
-=======
 Write a connector for a new JSON-over-WebSocket exchange, register it, and prove it with the same tests the shipped connectors pass. Throughout, `foo` stands for your venue. Prerequisites: a debug or release build of this repository and the venue's API documentation.
->>>>>>> c558cf17 (docs: the operations, strategy, venue, tutorial and contributing pages lead with the task, put steps in numbered lists with real output and like facts in tables, and the AF_XDP section shows the kernel-bypass animation)
 
 Model it on a shipped connector under `include/fastmm/venues/`:
 
@@ -32,11 +28,7 @@ A connector is one control-path class implementing `fastmm::venues::Venue` (`ven
 
 The market-data sink is lossy: when its ring is full the delta is dropped and the book must resync. The order sink never drops: it spins, then calls its overflow callback, and `fastmm-live` shuts down. Nothing on the hot path allocates, throws or makes a virtual call.
 
-<<<<<<< HEAD
-Read [Venue connectors](../../reference/venues.md) for what the five connectors do today, and its section [What a Binance-compatible simulator must implement](../../reference/venues/binance-spot.md#what-a-binance-compatible-simulator-must-implement) as a list of venue behaviours your connector must handle.
-=======
 Read [Venue connectors](../../reference/venues.md) for what the shipped connectors do, and its [list of venue behaviours](../../reference/venues/binance-spot.md#what-a-binance-compatible-simulator-must-implement) your connector must handle.
->>>>>>> c558cf17 (docs: the operations, strategy, venue, tutorial and contributing pages lead with the task, put steps in numbered lists with real output and like facts in tables, and the AF_XDP section shows the kernel-bypass animation)
 
 ## 2. Lay out the files
 
