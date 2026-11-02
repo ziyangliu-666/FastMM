@@ -279,34 +279,39 @@ OwnOrderLog collect_own_orders(std::span<JournalReader> parts) {
   return c.finish();
 }
 
-OwnOrderStripper::OwnOrderStripper(std::span<JournalReader> parts) {
-  // A checkpoint lists the orders resting then: those this has not seen go out (a part from the
-  // middle of a session) rest from the start.
-  StateAssembler states;
-  const auto rest = [&](const RecordedState* s) {
-    if (s == nullptr) return;
-    for (const StateOrder& o : s->orders) {
-      own_.on_resting(ClientOrderId{o.cl_ord_id},
-                      InstrumentId{o.instrument},
-                      VenueId{o.venue},
-                      static_cast<Side>(o.side),
-                      Price::from_raw(o.price_raw),
-                      Qty::from_raw(o.leaves_raw));
-    }
-  };
+OwnOrderStripper::OwnOrderStripper(std::span<JournalReader> parts) : own_(/*keep_all=*/true) {
   for (JournalReader& reader : parts) {
-    reader.for_each([&](const EventHeader* h) {
-      rest(states.add(*h));
-      if ((h->flags & EventHeader::kOutbound) != 0) {
-        if ((h->flags & EventHeader::kDropped) == 0) own_.on_outbound(*h);
-      } else {
-        own_.on_inbound(*h);
-      }
-    });
+    reader.for_each([&](const EventHeader* h) { take(*h); });
     reader.reset();
   }
-  rest(states.finish());
+  rest(states_.finish());
   own_.index();
+}
+
+OwnOrderStripper::OwnOrderStripper(Duration retention)
+    : own_(/*keep_all=*/false, retention), whole_(false) {}
+
+// A checkpoint lists the orders resting then: those this has not seen go out (a part from the
+// middle of a session) rest from the start.
+void OwnOrderStripper::rest(const RecordedState* s) noexcept {
+  if (s == nullptr) return;
+  for (const StateOrder& o : s->orders) {
+    own_.on_resting(ClientOrderId{o.cl_ord_id},
+                    InstrumentId{o.instrument},
+                    VenueId{o.venue},
+                    static_cast<Side>(o.side),
+                    Price::from_raw(o.price_raw),
+                    Qty::from_raw(o.leaves_raw));
+  }
+}
+
+void OwnOrderStripper::take(const EventHeader& h) {
+  rest(states_.add(h));
+  if ((h.flags & EventHeader::kOutbound) != 0) {
+    if ((h.flags & EventHeader::kDropped) == 0) own_.on_outbound(h);
+  } else {
+    own_.on_inbound(h);
+  }
 }
 
 const EventHeader* OwnOrderStripper::strip(const EventHeader& h, sim::EventBuf& buf) noexcept {
@@ -315,7 +320,7 @@ const EventHeader* OwnOrderStripper::strip(const EventHeader& h, sim::EventBuf& 
     ++stats_.tickers_dropped;
     return nullptr;
   }
-  if (own_.empty()) return &h;
+  if (whole_ && own_.empty()) return &h;
   const Timestamp t = venue_ts(h);
   switch (h.type) {
     case EventType::BookDelta:

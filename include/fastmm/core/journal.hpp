@@ -463,6 +463,9 @@ class JournalReader {
   JournalReader& operator=(JournalReader&& o) noexcept;
 
   [[nodiscard]] Result<void, JournalError> open(const std::string& path) noexcept;
+  // The header and tables of a journal that may still be written, as a private copy: no block is
+  // read and no mapping of the file is kept, so the writer can shrink it (JournalTail).
+  [[nodiscard]] Result<void, JournalError> open_prologue(const std::string& path) noexcept;
   // What open() found wrong, for a message: which check failed and the values it compared (empty
   // after a successful open).
   [[nodiscard]] std::string_view error_detail() const noexcept { return {detail_, detail_len_}; }
@@ -522,6 +525,8 @@ class JournalReader {
   }
 
  private:
+  // Checks and reads the header and tables at map_.
+  [[nodiscard]] Result<void, JournalError> parse_prologue() noexcept;
   void validate() noexcept;  // walks blocks once, sets counts / truncated flag
   [[nodiscard]] const JournalBlockHeader* block_at(std::size_t off) const noexcept;
 

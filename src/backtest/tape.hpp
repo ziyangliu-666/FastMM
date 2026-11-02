@@ -57,7 +57,8 @@ class Tape {
   // The reading thread: every event, then the end; returns early once stop() is called.
   void fill() {
     sim::MdSource& in = ordered_ ? *ordered_ : *source_;
-    const EventHeader* ev = in.next();
+    const EventHeader* ev = nullptr;
+    bool have = false;  // `ev` is the next event, not yet copied
     for (std::uint32_t chunk = 0;; ++chunk) {
       Slot& s = slots_[chunk % slots_.size()];
       for (std::uint32_t u = s.unread.load(std::memory_order_acquire); u != 0;
@@ -67,14 +68,23 @@ class Tape {
       }
       auto* at = reinterpret_cast<std::byte*>(s.data.get());
       std::size_t used = 0;
+      if (!have) {
+        ev = in.next();
+        have = true;
+      }
       while (ev != nullptr && used + ev->len <= kChunkBytes) {
         std::memcpy(at + used, ev, ev->len);  // a multiple of 64: the next one stays aligned
         used += ev->len;
+        // A source that would wait: the readers take what there is first.
+        if (!source_->ready()) {
+          have = false;
+          break;
+        }
         ev = in.next();
       }
-      if (used == 0 && ev != nullptr) throw std::length_error("tape: an event over 64 KiB");
+      if (have && used == 0 && ev != nullptr) throw std::length_error("tape: an event over 64 KiB");
       s.used = used;
-      s.last = ev == nullptr;
+      s.last = have && ev == nullptr;
       s.unread.store(readers_, std::memory_order_relaxed);
       // An add keeps kStop if stop() set it meanwhile.
       if ((filled_.fetch_add(1, std::memory_order_acq_rel) & kStop) != 0) return;

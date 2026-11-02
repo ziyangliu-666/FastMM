@@ -32,6 +32,8 @@ const EventHeader* VenueOrderSource::next() {
       done_ = true;
       break;
     }
+    // A record of the session goes out as it is read: it takes no place in the recording's order.
+    if (h->type == EventType::Padding) return h;
     const std::uint32_t slot = take_slot();
     const std::size_t words = (h->len + sizeof(std::uint64_t) - 1) / sizeof(std::uint64_t);
     std::uint64_t* b = nullptr;

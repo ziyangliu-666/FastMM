@@ -55,6 +55,9 @@ class MdSource {
   // The source yields every order of its books (OrderAddL3 and the rest), from the start of the
   // run: what fill_model = "l3_queue" needs.
   [[nodiscard]] virtual bool order_by_order() const { return false; }
+  // False while next() would wait for data that is not there yet (a source that follows a journal
+  // as it grows, backtest/follow_source.hpp): a reader passes on what it holds before it asks.
+  [[nodiscard]] virtual bool ready() { return true; }
 };
 
 }  // namespace fastmm::sim

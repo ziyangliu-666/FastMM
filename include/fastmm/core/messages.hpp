@@ -428,6 +428,18 @@ struct BalanceMsg {
 static_assert(sizeof(BalanceMsg) == 128 && offsetof(BalanceMsg, asset) == 104 &&
               offsetof(BalanceMsg, flags) == 113 && offsetof(BalanceMsg, withdrawable) == 120);
 
+// A record of a recorded session in the stream of a source that follows its journal, ahead of the
+// market data it must reach the runs before (backtest/follow_source.hpp): `hdr`, of type Padding,
+// which no source yields and no engine takes, then a copy of the record (ParamUpdate, Control,
+// AccountFlow, a Balance that ends a snapshot). It is never journaled and never reaches an engine.
+struct SessionRecordMsg {
+  EventHeader hdr;
+  [[nodiscard]] const EventHeader& record() const noexcept {
+    return *reinterpret_cast<const EventHeader*>(this + 1);
+  }
+};
+static_assert(sizeof(SessionRecordMsg) == 64);
+
 // The venue's reference prices and funding of one derivative (EventType::PerpState), from its
 // public market data. Market data: it rides the market-data ring and the journal, so a replay sees
 // the same values at the same engine times. hdr.exch_ts is the venue's time of the values.

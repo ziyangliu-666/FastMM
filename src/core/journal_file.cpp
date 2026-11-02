@@ -440,6 +440,69 @@ Result<void, JournalError> JournalReader::open(const std::string& path) noexcept
   if (p == MAP_FAILED) return fail(JournalError::MapFailed);
   map_ = static_cast<const std::byte*>(p);
   map_len_ = len;
+  if (auto r = parse_prologue(); !r) return r;
+  validate();
+  reset();
+  return {};
+}
+
+Result<void, JournalError> JournalReader::open_prologue(const std::string& path) noexcept {
+  detail_len_ = 0;
+  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return fail(JournalError::OpenFailed);
+  JournalFileHeader h{};
+  const auto pread_all = [&](void* to, std::size_t len) {
+    auto* d = static_cast<std::byte*>(to);
+    std::size_t off = 0;
+    while (off < len) {
+      const ssize_t n = ::pread(fd, d + off, len - off, static_cast<off_t>(off));
+      if (n < 0 && errno == EINTR) continue;
+      if (n <= 0) return false;
+      off += static_cast<std::size_t>(n);
+    }
+    return true;
+  };
+  if (!pread_all(&h, sizeof h)) {
+    ::close(fd);
+    return fail(JournalError::TooShort);
+  }
+  if (std::memcmp(h.magic, kFileMagic, 4) != 0) {
+    ::close(fd);
+    return fail(JournalError::BadMagic);
+  }
+  if (crc32c(&h, offsetof(JournalFileHeader, crc32c)) != h.crc32c || h.header_bytes < sizeof h) {
+    ::close(fd);
+    return fail(JournalError::HeaderCorrupt);
+  }
+  void* p =
+      ::mmap(nullptr, h.header_bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (p == MAP_FAILED) {
+    ::close(fd);
+    return fail(JournalError::MapFailed);
+  }
+  const bool whole = pread_all(p, h.header_bytes);
+  ::close(fd);
+  if (map_ != nullptr) ::munmap(const_cast<std::byte*>(map_), map_len_);
+  map_ = static_cast<const std::byte*>(p);
+  map_len_ = h.header_bytes;
+  if (!whole) return fail(JournalError::TooShort);
+  if (auto r = parse_prologue(); !r) return r;
+  valid_end_ = first_block_;
+  reset();
+  return {};
+}
+
+Result<void, JournalError> JournalReader::parse_prologue() noexcept {
+  const std::size_t len = map_len_;
+  // Every refusal says which check failed and what it compared: "HeaderCorrupt" alone does not
+  // tell a damaged file from one written by a build whose format this one does not read.
+  const auto why = [&]<class... Args>(
+                       JournalError e, fmt::format_string<Args...> f, Args&&... args) noexcept {
+    detail_len_ =
+        std::min(fmt::format_to_n(detail_, sizeof detail_, f, std::forward<Args>(args)...).size,
+                 sizeof detail_);
+    return fail(e);
+  };
   header_ = reinterpret_cast<const JournalFileHeader*>(map_);
   if (std::memcmp(header_->magic, kFileMagic, 4) != 0) return fail(JournalError::BadMagic);
   if (header_->version < kJournalMinVersion || header_->version > kJournalVersion) {
@@ -528,8 +591,6 @@ Result<void, JournalError> JournalReader::open(const std::string& path) noexcept
     meta_ = std::string_view(text, meta_bytes);
   }
   first_block_ = header_->header_bytes;
-  validate();
-  reset();
   return {};
 }
 

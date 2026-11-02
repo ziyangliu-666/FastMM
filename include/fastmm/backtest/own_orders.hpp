@@ -16,6 +16,7 @@
 // (others_shown, core/queue_model.hpp). The quantities come from
 // OwnQuantity (core/own_quantity.hpp), the object the engine answers StrategyContext::own_qty
 // with, fed the whole journal first.
+#include "fastmm/backtest/journal_state.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/journal.hpp"
@@ -145,6 +146,9 @@ class OwnOrderStripper {
 
   // Reads the whole journal (every part, in recorded order) and resets it.
   explicit OwnOrderStripper(std::span<JournalReader> parts);
+  // Knows only the records take() was given; strip() may be asked about venue times `retention`
+  // before the latest order event. For a journal that is still being written.
+  explicit OwnOrderStripper(Duration retention);
   explicit OwnOrderStripper(JournalReader& reader)
       : OwnOrderStripper(std::span<JournalReader>{&reader, 1}) {}
 
@@ -152,6 +156,9 @@ class OwnOrderStripper {
   [[nodiscard]] Qty own_at(InstrumentId inst, Side side, Price px, Timestamp t) const noexcept {
     return own_.own_at(inst, side, px, t);
   }
+
+  // The next record of the journal, in recorded order.
+  void take(const EventHeader& h);
 
   // `h` with our quantity taken out: `h` itself when nothing changes, a copy in `buf` (in a buffer
   // of the stripper's own when `h` is larger, valid until the next call), or nullptr for a
@@ -164,11 +171,14 @@ class OwnOrderStripper {
   [[nodiscard]] const Stats& stats() const noexcept { return stats_; }
 
  private:
+  void rest(const RecordedState* s) noexcept;
   struct alignas(64) WideBuf {
     std::byte bytes[kMaxMsgBytes];
   };
 
-  OwnQuantity own_{/*keep_all=*/true};
+  OwnQuantity own_;
+  bool whole_ = true;  // read the whole journal first
+  StateAssembler states_;
   Stats stats_;
   // The copy of a message larger than an EventBuf (a depth snapshot of up to
   // kMaxBookLevelsPerMsg a side), returned instead of the caller's buffer.
