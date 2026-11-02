@@ -108,31 +108,40 @@ GatewayProcess spawn_gateway_with(const SessionFiles& f, const std::vector<std::
 }
 
 // What one strategy's journal says about the account's exposure refusals: each refused order
-// would have added to its position (it was flat, or the order was on the side of its position),
-// and after the first one an order that reduced its position was accepted by the venue.
+// would have opened exposure (it was flat, the order was on the side of its position, or it went
+// past zero, which check_exposure counts: a partial fill leaves a position smaller than a quote),
+// and after the first one an order that only closed part of its position was accepted by the
+// venue.
 struct ExposureRefusals {
   std::size_t refused = 0;
-  std::size_t refused_reducing = 0;  // must stay 0
-  bool reducing_acked_after = false;
+  std::size_t refused_closing = 0;  // must stay 0
+  bool closing_acked_after = false;
 };
 ExposureRefusals exposure_refusals(const SessionFiles& f) {
+  struct SentOrder {
+    Side side;
+    std::int64_t qty;  // raw Qty
+  };
   ExposureRefusals out;
   for (const auto& e : std::filesystem::directory_iterator(f.journal_dir)) {
     if (e.path().extension() != ".fmj") continue;
     JournalReader r;
     REQUIRE(r.open(e.path().string()).has_value());
-    std::map<std::uint64_t, Side> side;  // client order id -> side
-    std::int64_t pos = 0;                // raw Qty, from the fills this session booked
+    std::map<std::uint64_t, SentOrder> sent;  // by client order id
+    std::int64_t pos = 0;                     // raw Qty, from the fills this session booked
     std::set<std::string> execs;
+    const auto only_closes = [&](const SentOrder& o) {
+      return opening_qty(pos, o.side, 0, o.qty) == 0;
+    };
     r.for_each([&](const EventHeader* h) {
       if ((h->flags & EventHeader::kOutbound) != 0) {
         if (h->type == EventType::OutNewOrder) {
           const auto& m = msg_cast<OutNewOrderMsg>(h);
-          side[m.cl_ord_id.value] = m.side;
+          sent[m.cl_ord_id.value] = {m.side, m.qty.raw};
         } else if (h->type == EventType::OutReplace) {
           const auto& m = msg_cast<OutReplaceMsg>(h);
-          if (const auto it = side.find(m.orig_cl_ord_id.value); it != side.end())
-            side[m.cl_ord_id.value] = it->second;
+          if (const auto it = sent.find(m.orig_cl_ord_id.value); it != sent.end())
+            sent[m.cl_ord_id.value] = {it->second.side, m.qty.raw};
         }
         return;
       }
@@ -147,15 +156,13 @@ ExposureRefusals exposure_refusals(const SessionFiles& f) {
       } else if (h->type == EventType::OrderReject) {
         const auto& m = msg_cast<OrderRejectMsg>(h);
         if (m.reason != RejectReason::GatewayGrossNotional) return;
-        const auto it = side.find(m.cl_ord_id.value);
-        if (it == side.end()) return;
+        const auto it = sent.find(m.cl_ord_id.value);
+        if (it == sent.end()) return;
         ++out.refused;
-        const bool reduces = pos != 0 && (pos > 0) != (it->second == Side::Buy);
-        if (reduces) ++out.refused_reducing;
+        if (only_closes(it->second)) ++out.refused_closing;
       } else if (h->type == EventType::OrderAck && out.refused > 0) {
-        const auto it = side.find(msg_cast<OrderAckMsg>(h).cl_ord_id.value);
-        if (it != side.end() && pos != 0 && (pos > 0) != (it->second == Side::Buy))
-          out.reducing_acked_after = true;
+        const auto it = sent.find(msg_cast<OrderAckMsg>(h).cl_ord_id.value);
+        if (it != sent.end() && only_closes(it->second)) out.closing_acked_after = true;
       }
     });
   }
@@ -308,12 +315,13 @@ TEST_CASE(
   stop_gateway(g);
   const ExposureRefusals ra = exposure_refusals(c.a);
   const ExposureRefusals rb = exposure_refusals(c.b);
-  INFO("a: refused " << ra.refused << ", reducing among them " << ra.refused_reducing
-                     << "; b: refused " << rb.refused);
+  INFO("a: refused " << ra.refused << ", only closing among them " << ra.refused_closing
+                     << "; b: refused " << rb.refused << ", only closing among them "
+                     << rb.refused_closing);
   CHECK(ra.refused > 0);
-  CHECK(ra.refused_reducing == 0);
-  CHECK(rb.refused_reducing == 0);
-  CHECK(ra.reducing_acked_after);
+  CHECK(ra.refused_closing == 0);
+  CHECK(rb.refused_closing == 0);
+  CHECK(ra.closing_acked_after);
   // Every reject went to the strategy whose order it was.
   for (const SessionFiles* f : {&c.a, &c.b})
     for (const JournalEpochs& j : read_journals(*f)) CHECK(j.crossed.empty());
