@@ -24,9 +24,10 @@ namespace fastmm::sim {
 // a checkpoint ([engine] checkpoint_s, a take-over). `positions` are Reconcile Position messages on
 // the account whose report would set them, `orders` the open orders (format v4).
 struct Checkpoint {
-  Timestamp at;           // the engine time it was written at
-  bool accepted = false;  // a restored state the strategy took
-  std::string strategy;   // the strategy's bytes (none for a strategy that keeps no state)
+  Timestamp at;                // the engine time it was written at
+  bool accepted = false;       // a restored state the strategy took
+  bool before_orders = false;  // written before the session's first order
+  std::string strategy;        // the strategy's bytes (none for a strategy that keeps no state)
   std::vector<ReconcileMsg> positions;
   std::vector<StateOrder> orders;
 };
@@ -65,12 +66,22 @@ struct RecordedSession {
   // order.
   std::vector<BalanceMsg> balances;
   std::vector<AccountFlowMsg> flows;
+  // Replayable Control records in journal order, each as recorded: a command's payload follows its
+  // ControlMsg.
+  std::vector<std::vector<std::uint64_t>> controls;
   // How long the session's own messages took on each path (latency_from_journal).
   RecordedLatency latency;
+  // The journal holds the engine's Start record: it begins where the session began.
+  bool from_session_start = false;
+  // The journal is still being written: the lists above hold what is known at the start of the run,
+  // and the rest reaches the run in its stream (backtest/follow_source.hpp).
+  bool growing = false;
 
   // What initial_state = "journal" starts from. Without `at`: the restored state, else the first
-  // checkpoint, with that checkpoint's positions or the reconciled ones. With `at`: the last
-  // checkpoint written at or before it; nothing (has_state false, no positions) when there is none.
+  // checkpoint, with that checkpoint's positions or the reconciled ones. A journal that begins at
+  // the session's start does not reach ahead for it: only a checkpoint from before the first order
+  // (a warm standby's take-over) is what the session started from. With `at`: the last checkpoint
+  // written at or before it; nothing (has_state false, no positions) when there is none.
   [[nodiscard]] SessionStart start(Timestamp at = {}) const;
   // Each venue's account as it last reported it at or before `at` (every row of a snapshot, then
   // the single rows after it; an asset a snapshot did not name holds nothing), each asset at its
@@ -81,6 +92,27 @@ struct RecordedSession {
   // a live connector's account refreshes.
   [[nodiscard]] std::vector<std::pair<VenueId, Timestamp>> refreshes() const;
 };
+
+// The operator commands a run replays as they reached the session ([backtest]
+// controls_from_journal): quotes pulled and resumed, a flatten, limits changed, a kill switch
+// tripped or reset. A control socket's Stop ends the session and with it the data; what else the
+// engine takes on this path concerns the process, not the trading.
+[[nodiscard]] constexpr bool replayable_control(ControlCommand c) noexcept {
+  switch (c) {
+    case ControlCommand::PullQuotes:
+    case ControlCommand::ResumeQuotes:
+    case ControlCommand::Flatten:
+    case ControlCommand::SetLimits:
+    case ControlCommand::SetUnderlyingLimit:
+    case ControlCommand::TripKill:
+    case ControlCommand::TripVenueKill:
+    case ControlCommand::ResetKill:
+    case ControlCommand::ResetLossBudget:
+      return true;
+    default:
+      return false;
+  }
+}
 
 // The venue's time of a balance row or a flow, else the time it was received.
 [[nodiscard]] inline Timestamp account_time(const EventHeader& h) noexcept {

@@ -108,7 +108,10 @@ std::vector<std::string> grid_names(const ParamGrid& grid) {
 BacktestConfig point_config(const BacktestConfig& start, const ParamMap& point) {
   BacktestConfig cfg = start;
   for (const auto& [k, v] : point) {
-    if (!cfg.set_setting(k, v)) cfg.params[k] = v;
+    if (cfg.set_setting(k, v)) continue;
+    cfg.params[k] = v;
+    // The journal's updates do not take back what this point is there to try.
+    if (cfg.params_from_journal) cfg.params_pinned.push_back(k);
   }
   cfg.output_dir.clear();
   cfg.journal_out.clear();

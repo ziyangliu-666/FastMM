@@ -112,33 +112,21 @@ JournalSource::JournalSource(const std::string& path,
     stripper_ = std::make_unique<OwnOrderStripper>(parts_);
   }
   RecordedLatencyCollector latency;
+  SessionRecorder recorder(session_);
   for (JournalReader& r : parts_) {
     r.for_each([&](const EventHeader* h) {
       latency.on_event(*h);
-      if ((h->flags & EventHeader::kOutbound) != 0) return;
-      if (h->type == EventType::Balance && h->len >= sizeof(BalanceMsg)) {
-        const auto& m = msg_cast<BalanceMsg>(h);
-        if ((m.flags & BalanceMsg::kAccount) == 0) session_.balances.push_back(m);
-        return;
-      }
-      if (h->type == EventType::AccountFlow && h->len >= sizeof(AccountFlowMsg)) {
-        session_.flows.push_back(msg_cast<AccountFlowMsg>(h));
-        return;
-      }
-      if (h->type == EventType::ParamUpdate && h->len >= sizeof(ParamUpdateMsg)) {
-        session_.params.updates.push_back(msg_cast<ParamUpdateMsg>(h));
-        return;
-      }
-      if (!is_market_data(h->type)) return;
+      recorder.add(*h);
+      if ((h->flags & EventHeader::kOutbound) != 0 || !is_market_data(h->type)) return;
       if (md_events_ == 0) first_ts_ = h->exch_ts.valid() ? h->exch_ts : h->recv_ts;
       ++md_events_;
     });
     r.reset();
   }
+  recorder.finish();
   for (const JournalParam& p : parts_.front().params())
     session_.params.table.emplace_back(std::string(p.name), p.type);
   std::vector<sim::RecordedLatency::Sample> latencies = latency.samples();
-  read_states(parts_, session_);
   if (remap_) {
     // An account's venue becomes the configured venue of the first mapped instrument the journal
     // lists on it; a venue with none (a pool member's account) keeps its id.

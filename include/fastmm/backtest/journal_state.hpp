@@ -58,6 +58,25 @@ class StateAssembler {
   bool after_take_over_ = false;
 };
 
+// What a journal says about its session (sim::RecordedSession), filled in from its records one at
+// a time, in journal order: every list but the latencies. JournalSource reads a whole journal with
+// it, FollowSource the start of one that is still being written.
+class SessionRecorder {
+ public:
+  explicit SessionRecorder(sim::RecordedSession& out) noexcept : out_(out) {}
+  void add(const EventHeader& h);
+  // The state still being read at the end of what was read.
+  void finish();
+  // An order has gone out: what is reconciled from now on is not what the session started from.
+  [[nodiscard]] bool ordered() const noexcept { return ordered_; }
+
+ private:
+  void take(const RecordedState* s);
+  sim::RecordedSession& out_;
+  StateAssembler states_;
+  bool ordered_ = false;
+};
+
 // The restored state, the checkpoints and the positions reconciled before the first order of the
 // parts, in order (resets each reader).
 void read_states(std::span<JournalReader> parts, sim::RecordedSession& out);

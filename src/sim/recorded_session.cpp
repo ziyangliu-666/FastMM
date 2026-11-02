@@ -43,7 +43,7 @@ SessionStart RecordedSession::start(Timestamp at) const {
   } else if (restored) {
     use = &*restored;
     from_restored = true;
-  } else if (!checkpoints.empty()) {
+  } else if (!checkpoints.empty() && (!from_session_start || checkpoints.front().before_orders)) {
     use = &checkpoints.front();
   }
   if (use != nullptr) {

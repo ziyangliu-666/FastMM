@@ -17,7 +17,8 @@
 //   latency_cancel_us, latency_cancel_jitter_us, order_service_us
 //   md_arrival = "venue" | "recorded", reorder_window_ms = 1000
 //   balances_from_journal = false, own_orders_in_feed = true, transfer_latency_ms = 0
-//   initial_state = "state_file" | "journal" | "none", params_from_journal = false, params_pinned
+//   initial_state = "state_file" | "journal" | "none", params_from_journal = false, params_pinned,
+//   controls_from_journal = false
 //   [backtest.balances] <ASSET> = "<amount>"  (and [backtest.venues.<name>.balances])
 //   [backtest.positions] <SYMBOL> = "<qty>" | "<qty>@<avg_px>"
 //   start_at = <unix s> | "<UTC time>", latency_from_journal = false
@@ -146,6 +147,9 @@ struct BacktestConfig {
   // params_from_journal leaves these parameters at the configured values: a counterfactual run
   // keeps the session's other updates ([backtest] params_pinned, comma-separated).
   std::vector<std::string> params_pinned;
+  // The data journal's operator commands (sim::replayable_control) reach the engine at the times
+  // the session received them.
+  bool controls_from_journal = false;
   // [ab]: an A/B test of the strategy's parameters (strategies/ab_test.hpp); no arms: none.
   AbSection ab;
   // [ab] assignment = "branch": the arm this run is (an index into ab.arms); fastmm-backtest runs

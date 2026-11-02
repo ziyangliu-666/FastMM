@@ -348,7 +348,8 @@ std::vector<Duration> parse_horizons(const std::string& text) {
 }
 
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 39> kBacktestKeys = {"start_at",
+constexpr std::array<std::string_view, 40> kBacktestKeys = {"start_at",
+                                                            "controls_from_journal",
                                                             "latency_from_journal",
                                                             "latency_fill_us",
                                                             "latency_fill_jitter_us",
@@ -514,6 +515,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
     for (std::string name; std::getline(pinned, name, ',');)
       if (!name.empty()) b.params_pinned.push_back(name);
   }
+  b.controls_from_journal = bt.get_bool("controls_from_journal", false);
   b.ab = cfg.ab;
   if (const std::string s = bt.get_string("initial_state", "state_file"); s == "journal") {
     b.initial_state = InitialState::Journal;

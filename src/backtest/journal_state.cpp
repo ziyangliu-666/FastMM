@@ -3,6 +3,7 @@
 #include "fastmm/core/messages.hpp"
 
 #include <cstring>
+#include <utility>
 #include <vector>
 
 namespace fastmm::bt {
@@ -97,38 +98,78 @@ bool StateAssembler::close() {
   return true;
 }
 
-void read_states(std::span<JournalReader> parts, sim::RecordedSession& out) {
-  StateAssembler a;
-  bool ordered = false;
-  const auto take = [&](const RecordedState* s) {
-    if (s == nullptr) return;
-    if (s->kind == StrategyStateMsg::Kind::Restored) {
-      if (!out.restored) out.restored = checkpoint_of(*s);
-    } else {
-      out.checkpoints.push_back(checkpoint_of(*s));
-    }
-  };
-  for (JournalReader& r : parts) {
-    r.for_each([&](const EventHeader* h) {
-      take(a.add(*h));
-      if ((h->flags & EventHeader::kOutbound) != 0) {
-        if (h->type == EventType::OutNewOrder || h->type == EventType::OutReplace) ordered = true;
-        return;
+void SessionRecorder::take(const RecordedState* s) {
+  if (s == nullptr) return;
+  sim::Checkpoint c = checkpoint_of(*s);
+  c.before_orders = !ordered_;
+  if (s->kind == StrategyStateMsg::Kind::Restored) {
+    if (!out_.restored) out_.restored = std::move(c);
+  } else {
+    out_.checkpoints.push_back(std::move(c));
+  }
+}
+
+void SessionRecorder::add(const EventHeader& h) {
+  take(states_.add(h));
+  if ((h.flags & EventHeader::kOutbound) != 0) {
+    if (h.type == EventType::OutNewOrder || h.type == EventType::OutReplace) ordered_ = true;
+    return;
+  }
+  switch (h.type) {
+    case EventType::EngineTime:
+      if (h.len >= sizeof(EngineTimeMsg) &&
+          msg_cast<EngineTimeMsg>(&h).kind == EngineTimeMsg::Kind::Start)
+        out_.from_session_start = true;
+      return;
+    case EventType::Balance:
+      if (h.len >= sizeof(BalanceMsg) &&
+          (msg_cast<BalanceMsg>(&h).flags & BalanceMsg::kAccount) == 0)
+        out_.balances.push_back(msg_cast<BalanceMsg>(&h));
+      return;
+    case EventType::AccountFlow:
+      if (h.len >= sizeof(AccountFlowMsg)) out_.flows.push_back(msg_cast<AccountFlowMsg>(&h));
+      return;
+    case EventType::ParamUpdate:
+      if (h.len >= sizeof(ParamUpdateMsg))
+        out_.params.updates.push_back(msg_cast<ParamUpdateMsg>(&h));
+      return;
+    case EventType::Control:
+      if (h.len >= sizeof(ControlMsg) &&
+          sim::replayable_control(msg_cast<ControlMsg>(&h).command)) {
+        std::vector<std::uint64_t> bytes((h.len + 7) / 8);
+        std::memcpy(bytes.data(), &h, h.len);
+        out_.controls.push_back(std::move(bytes));
       }
-      if (h->type != EventType::Reconcile || ordered) return;
-      const auto& m = msg_cast<ReconcileMsg>(h);
+      return;
+    case EventType::Reconcile: {
+      if (ordered_) return;
+      const auto& m = msg_cast<ReconcileMsg>(&h);
       if (m.kind != ReconcileMsg::Kind::Position) return;
-      for (ReconcileMsg& x : out.reconciled) {
+      for (ReconcileMsg& x : out_.reconciled) {
         if (x.hdr.instrument == m.hdr.instrument && x.hdr.venue == m.hdr.venue) {
           x = m;
           return;
         }
       }
-      out.reconciled.push_back(m);
-    });
+      out_.reconciled.push_back(m);
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+void SessionRecorder::finish() {
+  take(states_.finish());
+}
+
+void read_states(std::span<JournalReader> parts, sim::RecordedSession& out) {
+  SessionRecorder recorder(out);
+  for (JournalReader& r : parts) {
+    r.for_each([&](const EventHeader* h) { recorder.add(*h); });
     r.reset();
   }
-  take(a.finish());
+  recorder.finish();
 }
 
 std::optional<std::string> restored_state(JournalReader& reader) {
