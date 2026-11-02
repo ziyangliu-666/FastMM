@@ -336,6 +336,20 @@ Each row is one record the session sent or received. The columns are `type,time,
 
 `--symbol <S>` adds that symbol's trades, book tickers and depth. `--symbol '*' --trades-only` adds every public trade; on Binance spot its id is the exec id of your fill against it.
 
+### Score it per time of day
+
+`tools/replay_board.py` puts a backtest over a live journal next to the session, per part of the day:
+
+```bash
+python3 tools/replay_board.py j/session.fmj runs/r --start 2026-10-29T02:30:00Z \
+    --buckets 'night=20-4,pre=4-9.5,reg=9.5-16,post=16-20' --tz America/New_York --rebate-bps 0.8 \
+    --positions start.csv --data ./build/release/bin/fastmm-data
+```
+
+It prints the maker fills, notional, buy share, edge at the fill, markouts at 60 s and 300 s, what the fills and the positions earned, and the mean long inventory, for the session and the run. Both are marked against the same recorded mid with `fastmm-data mark`, which also marks any CSV of `t_ns,symbol` rows. `start.csv` (`symbol,qty`) holds the positions at `--start`, which the money and the long inventory count from.
+
+To see what a change would have done, set the new value under `[strategy.params]` and name the parameter in `[backtest] params_pinned`: the session's other parameter updates still reach the strategy at their times. Read the difference from a second run with a different `--seed` before believing it.
+
 ## Check PnL
 
 A session's PnL has four views, and they should agree:
