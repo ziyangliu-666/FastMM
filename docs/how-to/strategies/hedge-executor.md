@@ -2,7 +2,7 @@
 
 `HedgeExecutor` keeps a strategy's exposure hedged with taker orders on other instruments. The strategy configures it and forwards its hooks; the executor sizes, sends, fails over and de-risks.
 
-`xmm` is built on it ([Quote on one venue, hedge on another](xmm.md)). [`examples/cpp/hedged_mm.cpp`](../../../examples/cpp/hedged_mm.cpp) is a small quoter that uses it.
+`xmm` is built on it ([Cross-exchange market making](xmm.md)). [`examples/cpp/hedged_mm.cpp`](../../../examples/cpp/hedged_mm.cpp) is a small quoter that uses it.
 
 ## Set it up
 

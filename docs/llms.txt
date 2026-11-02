@@ -19,7 +19,7 @@ The Markdown source of every page is in the repository under `docs/`: https://gi
 - [Write hot hooks in Python](https://ziy.bio/FastMM/how-to/strategies/python-hot-hooks/)
 - [Run a Python strategy live](https://ziy.bio/FastMM/how-to/strategies/python-live/)
 - [Register a C++ strategy](https://ziy.bio/FastMM/how-to/strategies/register-a-strategy/)
-- [Quote on one venue, hedge on another](https://ziy.bio/FastMM/how-to/strategies/xmm/)
+- [Cross-exchange market making](https://ziy.bio/FastMM/how-to/strategies/xmm/)
 - [Fixed point](https://ziy.bio/FastMM/reference/fixed-point/): the int64 price and quantity types
 
 ## Reference

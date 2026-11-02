@@ -12,11 +12,11 @@ https://github.com/user-attachments/assets/dcd130c5-28fe-482f-a757-d0fc6550c5b9
 ## Features
 
 - **[Low latency](https://ziy.bio/FastMM/explanation/architecture/#memory).** In the engine a book update becomes an order in 143 ns (p50). Core pinning, busy polling, AF_XDP or DPDK receive and OpenOnload or XLIO order entry tune the host around it.
-- **[Sweeps in one pass](https://ziy.bio/FastMM/explanation/backtesting/#many-runs-in-one-pass).** Thousands of parameter points share one pass over the data, and each gets the result its own backtest gives: 16,384 points over four hours of Binance BTCUSDT futures took 228 s on 8 threads.
-- **[Quote on one venue, hedge on another](https://ziy.bio/FastMM/how-to/strategies/xmm/).** `xmm` makes the market on one exchange and hedges each fill with an IOC on another.
-- **[C++ or Python, backtest or live](https://ziy.bio/FastMM/how-to/strategies/python-hot-hooks/).** One strategy file runs in backtests, replays and live sessions; replays are deterministic and the simulated exchange models queue position. Python hooks marked `@fastmm.hot` compile to machine code with Numba.
-- **[Many accounts, one gateway](https://ziy.bio/FastMM/how-to/operations/run-behind-a-gateway/).** Several sub-accounts trade behind one venue, and strategy processes attach to one `fastmm-gateway` that keeps the exchange connections while they restart.
-- **[A/B tests](https://ziy.bio/FastMM/how-to/strategies/ab-test/).** Parameter sets run side by side, split by instrument, by time block or both, and are compared on markouts and net with paired intervals.
+- **[High-performance backtesting](https://ziy.bio/FastMM/explanation/backtesting/#many-runs-in-one-pass).** Thousands of parameter sets run at once, each with the result its own backtest gives: 16,384 sets over four hours of Binance BTCUSDT futures took 228 s on 8 threads.
+- **[Cross-exchange market making](https://ziy.bio/FastMM/how-to/strategies/xmm/).** `xmm` quotes on one exchange and hedges each fill with an IOC on another.
+- **[One strategy for backtest, replay and live](https://ziy.bio/FastMM/how-to/strategies/python-hot-hooks/).** One strategy file, in C++ or Python, runs in backtests, replays and live sessions; replays are deterministic and the simulated exchange models queue position. Python hooks marked `@fastmm.hot` compile to machine code with Numba.
+- **[Multi-account trading](https://ziy.bio/FastMM/how-to/operations/run-behind-a-gateway/).** Several sub-accounts trade behind one venue, and strategy processes attach to one `fastmm-gateway` that keeps the exchange connections while they restart.
+- **[Live A/B tests](https://ziy.bio/FastMM/how-to/strategies/ab-test/).** Parameter sets run side by side in a live session, split by instrument, by time block or both, and are compared on markouts and net with paired intervals.
 
 ## Quickstart
 

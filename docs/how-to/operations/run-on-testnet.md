@@ -40,7 +40,7 @@ set -a && . ./.env && set +a
 | `xmm`: Spot Demo quotes, USDⓈ-M Demo hedges | `configs/xmm-binance-demo.toml` | the Binance variables |
 | `xmm`: USDⓈ-M Demo quotes, Bybit testnet hedges | `configs/xmm-demo.toml` | the Binance and Bybit variables |
 
-The two Binance Demo environments share one set of keys; every other environment has its own, and none accepts live-exchange keys. Since the Binance configs share variable names, load one set of Binance keys at a time. The `xmm` configs quote on the first venue and hedge every fill on the second ([Quote on one venue, hedge on another](../strategies/xmm.md#run-it)). Coinbase Advanced Trade has no practice environment ([Venue connectors](../../reference/venues/coinbase.md#advanced-trade)).
+The two Binance Demo environments share one set of keys; every other environment has its own, and none accepts live-exchange keys. Since the Binance configs share variable names, load one set of Binance keys at a time. The `xmm` configs quote on the first venue and hedge every fill on the second ([Cross-exchange market making](../strategies/xmm.md#run-it)). Coinbase Advanced Trade has no practice environment ([Venue connectors](../../reference/venues/coinbase.md#advanced-trade)).
 
 ## 3. The environments
 

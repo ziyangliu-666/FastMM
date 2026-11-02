@@ -1,4 +1,4 @@
-# Quote on one venue, hedge on another (xmm)
+# Cross-exchange market making (xmm)
 
 `xmm` quotes one instrument as a maker and hedges each fill with a taker IOC on a second instrument, usually the same underlying on another venue. A third instrument can take the hedge when the second cannot.
 
