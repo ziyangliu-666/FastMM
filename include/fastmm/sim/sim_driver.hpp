@@ -165,6 +165,10 @@ class SimDriver {
     slow_ = h;
     slow_next_ = h.run != nullptr ? h.first : Timestamp::max();
   }
+  // The slow tier has something to do by `t` as well.
+  void slow_at(Timestamp t) noexcept {
+    if (t < slow_next_) slow_next_ = t;
+  }
   void set_measure_wall_clock(bool v) noexcept { measure_ = v; }
 
   // on_start; seeds the book and publishes the first snapshot in coupled mode. The venues'

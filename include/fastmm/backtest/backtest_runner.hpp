@@ -79,6 +79,20 @@ class BacktestSession {
   [[nodiscard]] bool stopped() const noexcept;
   BacktestResult end(std::string_view strategy_name);
 
+  // A run over a journal that is being followed (backtest/follow_source.hpp): a record of the
+  // session it did not have at its start, before the run has reached the record's time.
+  void take_record(const EventHeader& record);
+  // What the run has so far: the fills up to the event it last took and the equity bars it has
+  // passed. A caller that keeps what it needs of them can forget_rows() the first `fills` and
+  // `bars`: a run over weeks of data then holds about one bar's worth. end()'s result covers what
+  // was not forgotten. Fills whose markouts are still to come stay.
+  [[nodiscard]] const FillRows& fill_rows() const noexcept;
+  [[nodiscard]] const EquityRows& equity_rows() const noexcept;
+  // Returns how many fills it forgot.
+  std::size_t forget_rows(std::size_t fills, std::size_t bars);
+  // The order messages the run has sent.
+  [[nodiscard]] std::uint64_t orders_sent() const noexcept;
+
  private:
   struct Loop;
   bool advance(sim::SimKey limit);
@@ -104,9 +118,19 @@ class BacktestSession {
   // the accounts start from.
   std::vector<AccountFlowMsg> flows_;
   std::vector<std::pair<VenueId, Timestamp>> refreshes_;
+  // controls_from_journal: the session's operator commands (each as recorded), in time order.
+  std::vector<std::vector<std::uint64_t>> controls_;
   // params_from_journal: the session's updates on this strategy's schema, and the schedule they go
   // to when the caller sets none.
   std::vector<ParamUpdateMsg> journal_params_;
+  [[nodiscard]] bool journal_param(ParamUpdateMsg& m) const noexcept;
+  [[nodiscard]] bool flow_applies(VenueId v, Timestamp t) const;
+  [[nodiscard]] bool refresh_applies(VenueId v, Timestamp t) const;
+  void wake_slow_tier();
+  std::vector<int> param_map_;  // recorded field index -> this schema's, -1: none
+  // balances_from_journal: each venue's first snapshot, what its account starts from.
+  std::vector<std::pair<VenueId, Timestamp>> account_origin_;
+  bool following_ = false;  // the journal is still being written
   std::unique_ptr<sim::ParamSchedule> own_params_;
   std::unique_ptr<Impl> impl_;
   RunnerDeps deps_;

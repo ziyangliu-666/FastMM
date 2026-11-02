@@ -30,9 +30,6 @@ namespace {
 
 using sim::SimKey;
 
-// Runs one pass holds at most: each keeps an engine and a simulated venue, several MB.
-constexpr std::size_t kMaxRunsPerPass = 128;
-
 Timestamp event_time(const EventHeader& h) noexcept {
   return h.exch_ts.valid() ? h.exch_ts : h.recv_ts;
 }
@@ -677,11 +674,14 @@ class Pass {
   Pass(const std::vector<BacktestConfig>& cfgs,
        std::span<const std::size_t> which,
        const MultiverseFactory& make,
-       MdSource& source)
-      : first_(cfgs[which.front()]),
+       MdSource& source,
+       const MultiverseWatch* watch = nullptr)
+      : watch_(watch),
+        first_(cfgs[which.front()]),
         model_(first_.transport.fill_model),
         world_(first_.instruments.size()),
         index_(first_.instruments.size(), which.size()) {
+    source_start_ = source.start_ts();
     world_.set_l3(model_ == sim::FillModel::L3Queue);
     runs_.reserve(which.size());
     // Each run joins its feed group as it is built: an engine that follows a market lets its own
@@ -745,7 +745,20 @@ class Pass {
         ++by_instrument[std::min<std::size_t>(h->instrument.value, by_instrument.size() - 1)];
       return h;
     };
-    const EventHeader* ev = count(events.next());
+    // The records of a followed session take effect ahead of the event after them.
+    const auto next_event = [&]() {
+      const EventHeader* h = events.next();
+      while (h != nullptr && h->type == EventType::Padding) {
+        take_record(reinterpret_cast<const SessionRecordMsg*>(h)->record());
+        h = events.next();
+      }
+      return count(h);
+    };
+    if (watch_ != nullptr) {
+      next_tick_ = source_start_ + watch_->every;
+      for (Run& r : runs_) watched_.push_back(WatchedRun{r.index, r.parts.session.get(), r.live});
+    }
+    const EventHeader* ev = next_event();
     for (;;) {
       const SimKey src = ev != nullptr ? SimKey{event_time(*ev), SimKey::kSource} : SimKey::never();
       FeedGroup* g = nullptr;
@@ -772,7 +785,7 @@ class Pass {
       }
       if (ev == nullptr) break;
       recorded_event(*ev, src);
-      ev = count(events.next());
+      ev = next_event();
     }
     warn_unfed_instruments(first_.instruments, by_instrument);
     next_src_ = Timestamp::max();
@@ -855,8 +868,27 @@ class Pass {
     }
   }
 
+  void take_record(const EventHeader& record) {
+    for (std::uint32_t k = 0; k < runs_.size(); ++k) {
+      if (!runs_[k].live) continue;
+      runs_[k].parts.session->take_record(record);
+      rekey(k);
+    }
+  }
+  // Every run has taken everything before `now`: the watch reads them, and may stop some.
+  void tick(Timestamp now) {
+    for (std::size_t k = 0; k < runs_.size(); ++k) {
+      Run& r = runs_[k];
+      if (r.live && watch_->drop && watch_->drop(r.index)) die(static_cast<std::uint32_t>(k));
+      watched_[k].live = r.live;
+    }
+    watch_->tick(now, watched_);
+    next_tick_ = now + watch_->every;
+  }
+
   void recorded_event(const EventHeader& ev, SimKey key) {
     advance_all(key);
+    if (watch_ != nullptr && key.t >= next_tick_) tick(key.t);
     const Timestamp t = key.t;
     const bool late = t < last_src_;
     world_.before(ev, t);
@@ -1018,6 +1050,10 @@ class Pass {
     for (const HeapEntry& e : held_) heap_.push(e);
   }
 
+  const MultiverseWatch* watch_;
+  std::vector<WatchedRun> watched_;
+  Timestamp next_tick_{};
+  Timestamp source_start_{};
   // The thread's log lines carry the time and name of the run it steps, and as they were after.
   LogClockScope log_clock_;
   LogRunScope log_run_;
@@ -1119,7 +1155,8 @@ std::vector<BacktestResult> run_multiverse(const std::vector<BacktestConfig>& cf
                                            const MultiverseFactory& make,
                                            const SourceFactory& source_factory,
                                            int threads,
-                                           const ResultHook& done) {
+                                           const ResultHook& done,
+                                           const MultiverseWatch* watch) {
   std::vector<BacktestResult> out(cfgs.size());
   if (cfgs.empty()) return out;
   check_shareable(cfgs);
@@ -1133,6 +1170,10 @@ std::vector<BacktestResult> run_multiverse(const std::vector<BacktestConfig>& cf
   const std::size_t per_wave = w * kMaxRunsPerPass;
   const std::size_t g = std::min(cfgs.size(), (cfgs.size() + per_wave - 1) / per_wave * w);
   w = std::min(w, g);
+  if (watch != nullptr && g > w) {
+    throw std::invalid_argument("multiverse: a watched run is one wave: at most " +
+                                std::to_string(kMaxRunsPerPass) + " configurations per thread");
+  }
   std::vector<std::vector<std::size_t>> passes(g);
   for (std::size_t i = 0; i < cfgs.size(); ++i) passes[i % g].push_back(i);
   const Duration window = cfgs.front().reorder_window;
@@ -1145,7 +1186,7 @@ std::vector<BacktestResult> run_multiverse(const std::vector<BacktestConfig>& cf
     for (const std::vector<std::size_t>& runs : passes) {
       {
         const std::unique_ptr<MdSource> source = open();
-        Pass pass(cfgs, runs, make, *source);
+        Pass pass(cfgs, runs, make, *source, watch);
         run_alone(pass, *source, window, out, done);
       }
       release_freed_memory();
@@ -1184,7 +1225,7 @@ std::vector<BacktestResult> run_multiverse(const std::vector<BacktestConfig>& cf
           pool.emplace_back([&, k] {
             try {
               Tape::Cursor cursor(tape);
-              Pass pass(cfgs, passes[k], make, cursor);
+              Pass pass(cfgs, passes[k], make, cursor, watch);
               pass.run(cursor, tape.ordered(), out, serial);
             } catch (...) {
               fail();
@@ -1203,11 +1244,12 @@ std::vector<BacktestResult> run_multiverse(const std::vector<BacktestConfig>& cf
                                            std::string_view strategy,
                                            const SourceFactory& source_factory,
                                            int threads,
-                                           const ResultHook& done) {
+                                           const ResultHook& done,
+                                           const MultiverseWatch* watch) {
   if (cfgs.empty()) return {};
   check_shareable(cfgs);
   return run_multiverse(
-      cfgs, registry_factory(find_strategy(strategy)), source_factory, threads, done);
+      cfgs, registry_factory(find_strategy(strategy)), source_factory, threads, done, watch);
 }
 
 std::vector<BacktestResult> run_multiverse(const std::vector<BacktestConfig>& cfgs,

@@ -17,11 +17,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace fastmm::bt {
 
@@ -58,6 +60,8 @@ struct RunTier {
   std::uint64_t flows_short = 0;  // the account had less free than left it live
   std::span<const std::pair<VenueId, Timestamp>> refreshes;
   std::size_t next_refresh = 0;
+  std::span<const std::vector<std::uint64_t>> controls;  // in time order
+  std::size_t next_control = 0;
   sim::SlowHooks user{};
   Timestamp user_next = Timestamp::max();
 
@@ -100,6 +104,15 @@ struct RunTier {
     }
     for (; next_refresh < refreshes.size() && refreshes[next_refresh].second <= now; ++next_refresh)
       transport->publish_snapshot(refreshes[next_refresh].first, now);
+    for (; next_control < controls.size() && control_time(controls[next_control]) <= now;
+         ++next_control) {
+      const auto& head = *reinterpret_cast<const EventHeader*>(controls[next_control].data());
+      if (!feed->push(head)) throw std::runtime_error("backtest: the engine's feed is full");
+    }
+  }
+
+  [[nodiscard]] static Timestamp control_time(const std::vector<std::uint64_t>& bytes) noexcept {
+    return reinterpret_cast<const EventHeader*>(bytes.data())->recv_ts;
   }
 
   [[nodiscard]] Timestamp next() const noexcept {
@@ -107,12 +120,15 @@ struct RunTier {
         next_flow < flows.size() ? sim::account_time(flows[next_flow].hdr) : Timestamp::max();
     const Timestamp refresh =
         next_refresh < refreshes.size() ? refreshes[next_refresh].second : Timestamp::max();
+    const Timestamp control =
+        next_control < controls.size() ? control_time(controls[next_control]) : Timestamp::max();
     return std::min({user_next,
                      next_look,
                      port ? port->next_due() : Timestamp::max(),
                      trade_at,
                      flow,
-                     refresh});
+                     refresh,
+                     control});
   }
 
   static Timestamp run(void* ctx, Timestamp now) {
@@ -402,44 +418,23 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
           "before it are not replayed, so [strategy.params] must hold the values as of its start");
     }
     const sim::RecordedParams* rp = &recorded->params;
-    // Recorded field index -> this schema's, by name and type (as a replay maps them).
-    std::vector<int> map(rp->table.size(), -1);
+    // Recorded field index -> this schema's, by name and type (as a replay maps them); a pinned
+    // parameter maps to nothing.
+    param_map_.assign(rp->table.size(), -1);
+    const auto pinned = [&](std::string_view name) {
+      return std::find(cfg_.params_pinned.begin(), cfg_.params_pinned.end(), name) !=
+             cfg_.params_pinned.end();
+    };
     for (std::size_t i = 0; i < rp->table.size(); ++i) {
       for (std::size_t j = 0; schema != nullptr && j < schema->size(); ++j) {
         const ParamDesc& d = schema->begin()[j];
         if (rp->table[i].first == d.name &&
-            rp->table[i].second == static_cast<std::uint8_t>(d.type))
-          map[i] = static_cast<int>(j);
+            rp->table[i].second == static_cast<std::uint8_t>(d.type) && !pinned(d.name))
+          param_map_[i] = static_cast<int>(j);
       }
     }
     for (ParamUpdateMsg m : rp->updates) {
-      if (!rp->table.empty()) {
-        std::uint32_t kept = 0;
-        const std::uint32_t n = std::min<std::uint32_t>(m.count, ParamUpdateMsg::kMaxFields);
-        for (std::uint32_t i = 0; i < n; ++i) {
-          const int to = m.field[i] < map.size() ? map[m.field[i]] : -1;
-          if (to < 0) continue;
-          m.field[kept] = static_cast<std::uint16_t>(to);
-          m.value[kept] = m.value[i];
-          ++kept;
-        }
-        m.count = kept;
-      }
-      // Recorded values of the pinned parameters are left out.
-      std::uint32_t free = 0;
-      const std::uint32_t mapped = std::min<std::uint32_t>(m.count, ParamUpdateMsg::kMaxFields);
-      for (std::uint32_t i = 0; i < mapped; ++i) {
-        const bool pinned = schema != nullptr && m.field[i] < schema->size() &&
-                            std::find(cfg_.params_pinned.begin(),
-                                      cfg_.params_pinned.end(),
-                                      schema->begin()[m.field[i]].name) != cfg_.params_pinned.end();
-        if (pinned) continue;
-        m.field[free] = m.field[i];
-        m.value[free] = m.value[i];
-        ++free;
-      }
-      m.count = free;
-      if (m.count != 0) journal_params_.push_back(m);
+      if (journal_param(m)) journal_params_.push_back(m);
     }
     FASTMM_LOG_INFO("backtest: {} parameter updates of the journal replayed",
                     journal_params_.size());
@@ -485,31 +480,20 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
     // The account events after the balances the accounts start from: the flows of money in and
     // out, and the connector's refreshes. A pool whose treasury the run simulates moves its own
     // money: the session's flows of its accounts are left out.
-    const auto traded_venue = [&](VenueId v) {
-      return std::any_of(
-          cfg_.instruments.begin(), cfg_.instruments.end(), [&](const Instrument& i) {
-            return i.venue == cfg_.transport.pools.primary(v);
-          });
-    };
-    const auto treasury_member = [&](VenueId v) {
-      return std::any_of(
-          cfg_.treasuries.begin(), cfg_.treasuries.end(), [&](const TreasuryConfig& t) {
-            return std::find(t.members.begin(), t.members.end(), v) != t.members.end();
-          });
-    };
     const std::vector<std::pair<VenueId, Timestamp>> refreshes = recorded->refreshes();
-    const auto origin = [&](VenueId v) {
-      if (trade_at_.valid()) return trade_at_;
-      for (const auto& [venue, t] : refreshes) {
-        if (venue == v) return t;  // the first snapshot
-      }
-      return Timestamp{};
-    };
+    for (const std::pair<VenueId, Timestamp>& r : refreshes) {
+      const bool seen = std::any_of(account_origin_.begin(),
+                                    account_origin_.end(),
+                                    [&](const auto& a) { return a.first == r.first; });
+      if (!seen) account_origin_.push_back(r);  // the first snapshot
+    }
     std::size_t left_out = 0;
     for (const AccountFlowMsg& f : recorded->flows) {
+      if (!flow_applies(f.hdr.venue, sim::account_time(f.hdr))) continue;
       const VenueId v = f.hdr.venue;
-      if (!traded_venue(v) || sim::account_time(f.hdr) <= origin(v)) continue;
-      if (treasury_member(v)) {
+      if (std::any_of(cfg_.treasuries.begin(), cfg_.treasuries.end(), [&](const TreasuryConfig& t) {
+            return std::find(t.members.begin(), t.members.end(), v) != t.members.end();
+          })) {
         ++left_out;
         continue;
       }
@@ -520,7 +504,7 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
           return sim::account_time(x.hdr) < sim::account_time(y.hdr);
         });
     for (const auto& [v, t] : refreshes) {
-      if (traded_venue(v) && t > origin(v)) refreshes_.emplace_back(v, t);
+      if (refresh_applies(v, t)) refreshes_.emplace_back(v, t);
     }
     std::stable_sort(refreshes_.begin(), refreshes_.end(), [](const auto& x, const auto& y) {
       return x.second < y.second;
@@ -531,6 +515,23 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
         refreshes_.size(),
         left_out > 0 ? fmt::format(" ({} flows of a simulated treasury's pool left out)", left_out)
                      : std::string());
+  }
+  if (cfg_.controls_from_journal) {
+    if (recorded == nullptr) {
+      throw std::invalid_argument(
+          "backtest: controls_from_journal needs a journal as the data source");
+    }
+    controls_ = recorded->controls;
+    std::stable_sort(controls_.begin(), controls_.end(), [](const auto& x, const auto& y) {
+      return RunTier::control_time(x) < RunTier::control_time(y);
+    });
+    FASTMM_LOG_INFO("backtest: {} operator commands of the journal replayed", controls_.size());
+  }
+  following_ = recorded != nullptr && recorded->growing;
+  if (following_ && cfg_.latency_from_journal) {
+    throw std::invalid_argument(
+        "backtest: latency_from_journal needs the whole journal: a journal being followed has "
+        "only its past");
   }
   Timestamp start = cfg_.start;
   if (source_ != nullptr && source_->start_ts().valid()) start = source_->start_ts();
@@ -590,6 +591,40 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
   deps_.params = cfg_.params;
   deps_.journal_ring = impl_->journal_ring.get();
   deps_.backend = backend_.get();
+}
+
+bool BacktestSession::journal_param(ParamUpdateMsg& m) const noexcept {
+  if (!param_map_.empty()) {
+    std::uint32_t kept = 0;
+    const std::uint32_t n = std::min<std::uint32_t>(m.count, ParamUpdateMsg::kMaxFields);
+    for (std::uint32_t i = 0; i < n; ++i) {
+      const int to = m.field[i] < param_map_.size() ? param_map_[m.field[i]] : -1;
+      if (to < 0) continue;
+      m.field[kept] = static_cast<std::uint16_t>(to);
+      m.value[kept] = m.value[i];
+      ++kept;
+    }
+    m.count = kept;
+  }
+  return m.count != 0;
+}
+
+// A flow after the balances its account starts from, on an account of a venue traded here.
+bool BacktestSession::flow_applies(VenueId v, Timestamp t) const {
+  const bool traded =
+      std::any_of(cfg_.instruments.begin(), cfg_.instruments.end(), [&](const Instrument& i) {
+        return i.venue == cfg_.transport.pools.primary(v);
+      });
+  if (!traded) return false;
+  if (trade_at_.valid()) return t > trade_at_;
+  for (const auto& [venue, first] : account_origin_) {
+    if (venue == v) return t > first;
+  }
+  return true;
+}
+
+bool BacktestSession::refresh_applies(VenueId v, Timestamp t) const {
+  return flow_applies(v, t);
 }
 
 // [ab]: the test's publisher puts each update on the schedule at the time it is asked for, which
@@ -682,6 +717,7 @@ struct BacktestSession::Loop {
   std::unique_ptr<sim::SimDriver> driver;
   std::unique_ptr<sim::VenueOrderSource> ordered;
   std::unique_ptr<RunTier> tier;
+  sim::ParamSchedule* schedule = nullptr;
   Timestamp start{};
   Timestamp bar_end{};
   Duration step{};
@@ -732,7 +768,7 @@ void BacktestSession::begin(const sim::EngineHooks& hooks,
   }
   if (impl_->journal_file) driver.set_journal_writer(impl_->journal_file.get());
   sim::ParamSchedule* schedule = params_;
-  if (!journal_params_.empty()) {
+  if (!journal_params_.empty() || (following_ && cfg_.params_from_journal)) {
     if (schedule == nullptr) {
       own_params_ = std::make_unique<sim::ParamSchedule>();
       schedule = own_params_.get();
@@ -748,8 +784,10 @@ void BacktestSession::begin(const sim::EngineHooks& hooks,
     ab_->schedule = schedule;
   }
   driver.set_param_schedule(schedule);
+  lp.schedule = schedule;
   std::unique_ptr<RunTier>& tier = lp.tier;
-  if (!cfg_.treasuries.empty() || trade_at_.valid() || !flows_.empty() || !refreshes_.empty()) {
+  if (!cfg_.treasuries.empty() || trade_at_.valid() || !flows_.empty() || !refreshes_.empty() ||
+      !controls_.empty() || following_) {
     tier = std::make_unique<RunTier>();
     tier->transport = &b.transport;
     tier->feed = &b.feed;
@@ -779,12 +817,16 @@ void BacktestSession::begin(const sim::EngineHooks& hooks,
     // Those before the run's start are in the balances the accounts start from.
     tier->flows = flows_;
     tier->refreshes = refreshes_;
+    tier->controls = controls_;
     while (tier->next_flow < flows_.size() &&
            sim::account_time(flows_[tier->next_flow].hdr) < b.clock.now())
       ++tier->next_flow;
     while (tier->next_refresh < refreshes_.size() &&
            refreshes_[tier->next_refresh].second < b.clock.now())
       ++tier->next_refresh;
+    while (tier->next_control < controls_.size() &&
+           RunTier::control_time(controls_[tier->next_control]) < b.clock.now())
+      ++tier->next_control;
     tier->user = slow_;
     tier->user_next = slow_.run != nullptr ? slow_.first : Timestamp::max();
     sim::SlowHooks tier_hooks;
@@ -913,6 +955,134 @@ void BacktestSession::credit_market_data(std::uint64_t n) noexcept {
 
 bool BacktestSession::stopped() const noexcept {
   return loop_->driver->stopped();
+}
+
+void BacktestSession::wake_slow_tier() {
+  Loop& lp = *loop_;
+  RunTier& tier = *lp.tier;
+  tier.flows = flows_;
+  tier.refreshes = refreshes_;
+  tier.controls = controls_;
+  lp.driver->slow_at(tier.next());
+}
+
+void BacktestSession::take_record(const EventHeader& record) {
+  Loop& lp = *loop_;
+  if (lp.done) return;
+  // Each list stays in time order past what the run has taken, its equal times in journal order.
+  const auto insert = [](auto& list, std::size_t from, auto item, auto time) {
+    const auto at =
+        std::upper_bound(list.begin() + static_cast<std::ptrdiff_t>(std::min(from, list.size())),
+                         list.end(),
+                         time(item),
+                         [&](Timestamp t, const auto& x) { return t < time(x); });
+    list.insert(at, std::move(item));
+  };
+  switch (record.type) {
+    case EventType::ParamUpdate: {
+      if (!cfg_.params_from_journal) return;
+      ParamUpdateMsg m = msg_cast<ParamUpdateMsg>(&record);
+      if (journal_param(m)) lp.schedule->at(m.hdr.recv_ts, m);
+      return;
+    }
+    case EventType::Control: {
+      if (!cfg_.controls_from_journal) return;
+      std::vector<std::uint64_t> bytes((record.len + 7) / 8);
+      std::memcpy(bytes.data(), &record, record.len);
+      insert(controls_, lp.tier->next_control, std::move(bytes), RunTier::control_time);
+      wake_slow_tier();
+      return;
+    }
+    case EventType::AccountFlow: {
+      if (!cfg_.balances_from_journal) return;
+      const auto& f = msg_cast<AccountFlowMsg>(&record);
+      if (!flow_applies(f.hdr.venue, sim::account_time(f.hdr))) return;
+      if (std::any_of(cfg_.treasuries.begin(), cfg_.treasuries.end(), [&](const TreasuryConfig& t) {
+            return std::find(t.members.begin(), t.members.end(), f.hdr.venue) != t.members.end();
+          }))
+        return;
+      insert(flows_, lp.tier->next_flow, f, [](const AccountFlowMsg& x) {
+        return sim::account_time(x.hdr);
+      });
+      wake_slow_tier();
+      return;
+    }
+    case EventType::Balance: {
+      if (!cfg_.balances_from_journal) return;
+      const VenueId v = record.venue;
+      const Timestamp t = sim::account_time(record);
+      const bool seen = std::any_of(account_origin_.begin(),
+                                    account_origin_.end(),
+                                    [&](const auto& a) { return a.first == v; });
+      if (!seen) {
+        account_origin_.emplace_back(v, t);
+        return;
+      }
+      if (!refresh_applies(v, t)) return;
+      insert(refreshes_, lp.tier->next_refresh, std::make_pair(v, t), [](const auto& x) {
+        return x.second;
+      });
+      wake_slow_tier();
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+const FillRows& BacktestSession::fill_rows() const noexcept {
+  return impl_->fills;
+}
+
+const EquityRows& BacktestSession::equity_rows() const noexcept {
+  return impl_->equity;
+}
+
+std::uint64_t BacktestSession::orders_sent() const noexcept {
+  return backend_->transport.stats().orders_sent + backend_->transport.stats().replaces_sent;
+}
+
+std::size_t BacktestSession::forget_rows(std::size_t fills, std::size_t bars) {
+  Impl& im = *impl_;
+  for (const std::size_t n : im.next_) fills = std::min(fills, n);
+  const auto drop = [](auto& col, std::size_t n) {
+    col.erase(col.begin(), col.begin() + static_cast<std::ptrdiff_t>(std::min(n, col.size())));
+  };
+  if (fills != 0) {
+    FillRows& f = im.fills;
+    drop(f.ts, fills);
+    drop(f.instrument, fills);
+    drop(f.side, fills);
+    drop(f.price, fills);
+    drop(f.qty, fills);
+    drop(f.fee, fills);
+    drop(f.cl_ord_id, fills);
+    drop(f.liquidity, fills);
+    drop(f.mid, fills);
+    drop(f.best_bid, fills);
+    drop(f.best_ask, fills);
+    drop(f.queue_ahead, fills);
+    for (std::vector<std::int64_t>& col : f.markout_mid) drop(col, fills);
+    for (std::size_t& n : im.next_) n -= fills;
+    loop_->stop_fills = static_cast<std::size_t>(-1);
+  }
+  if (bars != 0) {
+    EquityRows& e = im.equity;
+    drop(e.ts, bars);
+    drop(e.realized, bars);
+    drop(e.unrealized, bars);
+    drop(e.fees, bars);
+    drop(e.position, bars);
+    drop(e.mid, bars);
+    drop(e.quoted, bars);
+    for (InstrumentEquityRows& r : e.by_instrument) {
+      drop(r.pnl, bars);
+      drop(r.position, bars);
+      drop(r.mid, bars);
+      drop(r.quoted, bars);
+    }
+  }
+  return fills;
 }
 
 BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,

@@ -41,6 +41,7 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -61,6 +62,24 @@ struct MultiverseRun {
 using MultiverseFactory =
     std::function<MultiverseRun(std::size_t index, const BacktestConfig& cfg, MdSource& source)>;
 
+// What a caller watches of a multiverse as it runs (backtest/shadow.hpp). Every `every` of the
+// data's time, at the first recorded event at or past it, a pass calls `tick` on its thread with
+// its runs, each having taken everything before `now`. Reading a run there changes nothing it does.
+// `drop` is asked then for each live run: true stops it for good (its result is what it has).
+// A watched multiverse is one wave: the configurations must fit `threads` passes.
+struct WatchedRun {
+  std::size_t index = 0;  // into the configurations
+  BacktestSession* session = nullptr;
+  bool live = true;  // false: over (its engine stopped, or `drop`)
+};
+struct MultiverseWatch {
+  Duration every{};
+  std::function<void(Timestamp now, std::span<const WatchedRun> runs)> tick;
+  std::function<bool(std::size_t index)> drop;
+};
+// The most runs one pass holds.
+inline constexpr std::size_t kMaxRunsPerPass = 128;
+
 // Throws std::invalid_argument when the configurations cannot share a pass: fill_model must be
 // l2_queue or l3_queue, the data recorded (not synthetic), and the instrument tables and reorder
 // windows the same.
@@ -69,14 +88,16 @@ using MultiverseFactory =
                                                          const MultiverseFactory& make,
                                                          const SourceFactory& source_factory,
                                                          int threads = 0,
-                                                         const ResultHook& done = {});
+                                                         const ResultHook& done = {},
+                                                         const MultiverseWatch* watch = nullptr);
 
 // The runs of a registered strategy; also throws for an unknown strategy.
 [[nodiscard]] std::vector<BacktestResult> run_multiverse(const std::vector<BacktestConfig>& cfgs,
                                                          std::string_view strategy,
                                                          const SourceFactory& source_factory,
                                                          int threads = 0,
-                                                         const ResultHook& done = {});
+                                                         const ResultHook& done = {},
+                                                         const MultiverseWatch* watch = nullptr);
 
 // Every run in one pass over `source`, read from its current position (reset() it first to
 // reuse one), on the calling thread.
