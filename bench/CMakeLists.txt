@@ -74,6 +74,10 @@ set_target_properties(fastmm-bench-queue-truth PROPERTIES RUNTIME_OUTPUT_DIRECTO
 
 # Variants of a strategy over one pass of recorded data (bt::run_multiverse) against the same
 # variants as separate backtests (--check compares them exactly). Needs recorded data.
+add_executable(fastmm-bench-shadow shadow_load.cpp)
+fastmm_target_defaults(fastmm-bench-shadow)
+target_link_libraries(fastmm-bench-shadow PRIVATE fastmm::backtest)
+set_target_properties(fastmm-bench-shadow PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin/bench)
 add_executable(fastmm-bench-multiverse multiverse.cpp)
 fastmm_target_defaults(fastmm-bench-multiverse)
 target_link_libraries(fastmm-bench-multiverse PRIVATE fastmm::backtest)
