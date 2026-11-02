@@ -4,6 +4,7 @@
 //   fastmm-data convert --config configs/backtest-binance.toml
 //       --data binance:BTCUSDT,2024-03-27 --out ~/.cache/fastmm/data/btcusdt-2024-03-27.fmj
 //   fastmm-data fill-check runs/demo-1/session.fmj [--conservatism 0,0.5,1] [--csv orders.csv]
+//   fastmm-data mark session.fmj fills.csv [--horizons-s 0,60,300] [--bars mids.csv]
 //       [--horizons-ms 100,1000,10000] [--pre-ms 100] [--market recorded.fmj]
 //   fastmm-data calibrate a.fmj b.fmj c.fmj [--conservatism ...] [--backtest [--config f.toml]]
 //       [--from-live-state] [--csv grid.csv]
@@ -24,6 +25,7 @@
 #include "fastmm/backtest/data_registry.hpp"
 #include "fastmm/backtest/fill_check.hpp"
 #include "fastmm/backtest/live_analysis.hpp"
+#include "fastmm/backtest/mark_fills.hpp"
 #include "fastmm/backtest/order_events.hpp"
 #include "fastmm/cli/data.hpp"
 #include "fastmm/cli/modules.hpp"
@@ -92,6 +94,19 @@ int data(int argc, char** argv) {
       "--symbol", event_symbols, "also the market data of this symbol, '*' every one (repeatable)");
   bool events_trades_only = false;
   events_cmd->add_flag("--trades-only", events_trades_only, "--symbol: trades only, no books");
+  CLI::App* mark_cmd = app.add_subcommand(
+      "mark", "the mid of a journal at each row's time and horizons after it, for rows of a CSV");
+  std::string mark_journal;
+  std::vector<std::string> mark_inputs;
+  std::vector<double> mark_horizons_s;
+  std::string mark_bars;
+  double mark_bar_s = 60;
+  mark_cmd->add_option("journal", mark_journal, "the session's first part")->required();
+  mark_cmd->add_option("inputs", mark_inputs, "CSVs with columns t_ns and symbol")->required();
+  mark_cmd->add_option("--horizons-s", mark_horizons_s, "horizons in seconds (default 0)")
+      ->delimiter(',');
+  mark_cmd->add_option("--bars", mark_bars, "also write every symbol's mid per bar to this CSV");
+  mark_cmd->add_option("--bar-s", mark_bar_s, "the bar of --bars, in seconds (default 60)");
   CLI::App* fill_check = app.add_subcommand(
       "fill-check",
       "how many of a live session's resting orders the l2_queue fill model would have filled");
@@ -215,7 +230,7 @@ int data(int argc, char** argv) {
     return 0;
   }
   if (!list->parsed() && !convert->parsed() && !fill_check->parsed() && !calibrate->parsed() &&
-      !analyze->parsed() && !ab->parsed() && !events_cmd->parsed())
+      !analyze->parsed() && !ab->parsed() && !events_cmd->parsed() && !mark_cmd->parsed())
     return usage_error(app,
                        "a command is required: list, convert, fill-check, calibrate, analyze, ab "
                        "or events");
@@ -269,6 +284,21 @@ int data(int argc, char** argv) {
       return kExitData;
     }
     std::fputs(("\n" + bt::format_backtest_gaps(gaps)).c_str(), stdout);
+    return 0;
+  }
+  if (mark_cmd->parsed()) {
+    bt::MarkOptions opt;
+    opt.horizons_ns.clear();
+    for (const double h : mark_horizons_s) opt.horizons_ns.push_back(std::llround(h * 1e9));
+    if (opt.horizons_ns.empty()) opt.horizons_ns.push_back(0);
+    opt.bars_out = mark_bars;
+    opt.bar_ns = std::llround(mark_bar_s * 1e9);
+    try {
+      bt::mark_fills(mark_journal, mark_inputs, opt);
+    } catch (const std::exception& e) {
+      std::fprintf(stderr, "%s: %s\n", prog, e.what());
+      return kExitData;
+    }
     return 0;
   }
   if (events_cmd->parsed()) {

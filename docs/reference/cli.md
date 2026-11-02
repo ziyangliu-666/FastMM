@@ -244,6 +244,8 @@ SUBCOMMANDS:
                               replays fastest
   events                      a session's own orders, venue answers, balances and parameter
                               updates as CSV
+  mark                        the mid of a journal at each row's time and horizons after it,
+                              for rows of a CSV
   fill-check                  how many of a live session's resting orders the l2_queue fill
                               model would have filled
   analyze                     what a live session's fills were worth: maker share, spread
