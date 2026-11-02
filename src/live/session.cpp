@@ -37,9 +37,11 @@
 
 #include <fmt/format.h>
 
+#include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
 #include <sched.h>
+#include <spawn.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -62,6 +64,8 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+
+extern char** environ;
 
 namespace fastmm::live {
 
@@ -772,6 +776,45 @@ bool trades_with_keys(const Config& cfg) {
 namespace {
 
 int run_session(const Config& cfg, const LiveOptions& opts);
+
+// [shadow] enabled: fastmm-shadow, from this program's directory, in a process and a session of its
+// own. It reads the journal and owes this process nothing: this one neither waits for it nor hears
+// of it again, and it moves itself off the engine's and the network threads' cores. A second
+// session finds the one already running by its lock, and it leaves by itself ([shadow]
+// idle_exit_s).
+void start_shadow(const Config& cfg, const LiveOptions& opts) {
+  std::error_code ec;
+  const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", ec);
+  const std::filesystem::path exe = cfg.shadow.program.empty()
+                                        ? self.parent_path() / "fastmm-shadow"
+                                        : std::filesystem::path(cfg.shadow.program);
+  if (ec || !std::filesystem::exists(exe, ec)) {
+    FASTMM_LOG_WARN("[shadow] enabled, but there is no {}", exe.string());
+    return;
+  }
+  const std::string log = cfg.engine.journal_dir + "/" + cfg.engine.name + ".shadow.log";
+  const std::string idle = std::to_string(cfg.shadow.idle_exit_s);
+  const char* argv[] = {
+      exe.c_str(), "--config", opts.config_path.c_str(), "--idle-exit", idle.c_str(), nullptr};
+  posix_spawn_file_actions_t files;
+  posix_spawn_file_actions_init(&files);
+  posix_spawn_file_actions_addopen(&files, 0, "/dev/null", O_RDONLY, 0);
+  posix_spawn_file_actions_addopen(&files, 1, log.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+  posix_spawn_file_actions_adddup2(&files, 1, 2);
+  posix_spawnattr_t attr;
+  posix_spawnattr_init(&attr);
+  posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
+  pid_t pid = 0;
+  const int rc =
+      posix_spawn(&pid, exe.c_str(), &files, &attr, const_cast<char* const*>(argv), environ);
+  posix_spawnattr_destroy(&attr);
+  posix_spawn_file_actions_destroy(&files);
+  if (rc != 0) {
+    FASTMM_LOG_WARN("[shadow] could not start {}: {}", exe.string(), std::strerror(rc));
+    return;
+  }
+  FASTMM_LOG_INFO("[shadow] {} started, pid {}, log {}", exe.string(), pid, log);
+}
 
 // A dry run's configuration: nothing a keyed session of the engine reads is read or written. It
 // runs as `<name>-dryrun` (its status file, control socket, journal), takes no instance lock,
@@ -1825,6 +1868,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
                     path,
                     to_string(jopts.sync),
                     jopts.max_bytes);
+    if (cfg.shadow.enabled && !opts.dry_run) start_shadow(cfg, opts);
   }
 
   LiveBackend backend{&clock, &transport, &feed};

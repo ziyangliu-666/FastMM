@@ -13,8 +13,11 @@ namespace fastmm::top {
 struct MetricsServer {
   [[nodiscard]] bool listen(const std::string& bind_spec, std::string* error);
   // Serves until `stop` becomes non-zero, reading a fresh snapshot for every scrape; a scrape
-  // that finds no session answers with fastmm_up 0.
-  void serve(const std::string& status_path, const std::atomic<int>& stop);
+  // that finds no session answers with fastmm_up 0. `shadow_path`, when it exists, adds a shadow's
+  // fastmm_shadow_* metrics.
+  void serve(const std::string& status_path,
+             const std::string& shadow_path,
+             const std::atomic<int>& stop);
   [[nodiscard]] std::string address() const;
   ~MetricsServer();
 

@@ -10,7 +10,7 @@
 # Builds the preset into build/package-<preset> (DPDK comes from pkg-config's libdpdk, or
 # scripts/build-dpdk.sh builds it there the first time) and writes
 # dist/fastmm-<version>-x86_64.tar.gz with dist/fastmm-<version>-x86_64.tar.gz.sha256 beside it:
-#   bin/      fastmm-live fastmm-gateway fastmm-ctl fastmm-top fastmm-pnl fastmm-replay
+#   bin/      fastmm-live fastmm-gateway fastmm-ctl fastmm-top fastmm-pnl fastmm-replay fastmm-shadow
 #             fastmm-sim-exchange fastmm-sim-itch
 #   tests/    fastmm_xdp_tests fastmm_dpdk_tests (scripts/xdp-test.sh --build .),
 #             fixtures/tls/ (the simulator's self-signed certificate)
@@ -63,7 +63,7 @@ scripts/wheels/build-openssl.sh "$OPENSSL_ROOT_DIR"
 [[ -f "$B/CMakeCache.txt" ]] || cmake --preset "$PRESET" -B "$B" \
   -DFASTMM_OPENSSL_STATIC=ON -DOPENSSL_ROOT_DIR="$OPENSSL_ROOT_DIR" \
   -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
-TOOLS=(fastmm-live fastmm-gateway fastmm-ctl fastmm-top fastmm-pnl fastmm-replay
+TOOLS=(fastmm-live fastmm-gateway fastmm-ctl fastmm-top fastmm-pnl fastmm-replay fastmm-shadow
   fastmm-sim-exchange fastmm-sim-itch)
 cmake --build "$B" -j"$(nproc)" --target "${TOOLS[@]}" fastmm_xdp_tests
 grep -q '^FASTMM_NATIVE_ARCH:BOOL=ON' "$B/CMakeCache.txt" &&

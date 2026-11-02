@@ -191,6 +191,12 @@ if(FASTMM_BUILD_NET)
         FASTMM_CTL_EXE="$<TARGET_FILE:fastmm-ctl>")
       add_dependencies(fastmm_integration_tests fastmm-top fastmm-ctl)
     endif()
+    # shadow_test.cpp follows whole fastmm-live sessions with a fastmm-shadow.
+    if(TARGET fastmm_integration_tests AND TARGET fastmm-live AND TARGET fastmm-shadow)
+      target_compile_definitions(fastmm_integration_tests PRIVATE
+        FASTMM_SHADOW_EXE="$<TARGET_FILE:fastmm-shadow>")
+      add_dependencies(fastmm_integration_tests fastmm-shadow fastmm-live)
+    endif()
     fastmm_test(live        LABELS "live"        LIBS fastmm::venues fastmm::backtest)
   endif()
 endif()
@@ -341,7 +347,7 @@ function(fastmm_cli_test name)
 endfunction()
 
 # Every program: --help exits 0 and prints a usage line, an unknown flag exits 2 and names it.
-foreach(_prog fastmm-live fastmm-backtest fastmm-data fastmm-replay fastmm-pnl fastmm-sim-exchange
+foreach(_prog fastmm-live fastmm-backtest fastmm-data fastmm-replay fastmm-shadow fastmm-pnl fastmm-sim-exchange
               fastmm-sim-itch fastmm-top fastmm-ctl fastmm-gateway)
   if(TARGET ${_prog})
     fastmm_cli_test(apps.${_prog}.help EXPECT_RC 0 CMD $<TARGET_FILE:${_prog}> --help

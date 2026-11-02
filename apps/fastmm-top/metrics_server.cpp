@@ -1,6 +1,7 @@
 #include "metrics_server.hpp"
 
 #include "fastmm/core/process_state.hpp"
+#include "fastmm/core/shadow_status.hpp"
 #include "fastmm/core/status_prometheus.hpp"
 #include "fastmm/core/status_segment.hpp"
 #include "fastmm/core/time.hpp"
@@ -140,9 +141,13 @@ bool MetricsServer::listen(const std::string& bind_spec, std::string* error) {
   return true;
 }
 
-void MetricsServer::serve(const std::string& status_path, const std::atomic<int>& stop) {
+void MetricsServer::serve(const std::string& status_path,
+                          const std::string& shadow_path,
+                          const std::atomic<int>& stop) {
   StatusReader reader;
   StatusSnapshot snapshot;
+  ShadowStatusReader shadow_reader;
+  ShadowStatus shadow;
   std::string request(kRequestMax, '\0');
   while (stop.load() == 0) {
     pollfd p{fd_, POLLIN, 0};
@@ -162,6 +167,11 @@ void MetricsServer::serve(const std::string& status_path, const std::atomic<int>
     if (path == "/metrics") {
       std::string error;
       if (!reader.is_open()) static_cast<void>(reader.open(status_path, &error));
+      if (!shadow_reader.is_open() && !shadow_path.empty())
+        static_cast<void>(shadow_reader.open(shadow_path));
+      const std::string shadow_text = shadow_reader.read(shadow)
+                                          ? shadow_status_prometheus(shadow, wall_now().ns)
+                                          : std::string();
       if (reader.is_open() && reader.read(snapshot))
         respond(client,
                 "200 OK",
@@ -170,7 +180,8 @@ void MetricsServer::serve(const std::string& status_path, const std::atomic<int>
                     (snapshot.state == StatusRunState::Stopped
                          ? std::string()
                          : process_state_prometheus(read_process_state(
-                               static_cast<std::int32_t>(snapshot.pid), snapshot.started_ns))));
+                               static_cast<std::int32_t>(snapshot.pid), snapshot.started_ns))) +
+                    shadow_text);
       else
         respond(client, "200 OK", "text/plain; version=0.0.4; charset=utf-8", kDown);
     } else if (path == "/" || path.empty()) {

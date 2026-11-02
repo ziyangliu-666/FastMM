@@ -5,6 +5,7 @@
 #include "metrics_server.hpp"
 
 #include "fastmm/core/process_state.hpp"
+#include "fastmm/core/shadow_status.hpp"
 #include "fastmm/core/status_segment.hpp"
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
@@ -39,6 +40,7 @@ static int run(int argc, char** argv) {
   std::string gateway;
   std::string path;
   std::string metrics;
+  std::string shadow_path;
   int interval_ms = 500;
   bool once = false;
   bool json = false;
@@ -60,6 +62,11 @@ static int run(int argc, char** argv) {
       ->option_text("<engine>");
   app.add_option("--path", path, "read this status file (fastmm-live or fastmm-gateway --status)")
       ->option_text("<file>");
+  app.add_option("--shadow",
+                 shadow_path,
+                 "read fastmm-shadow's status from this file (default with --name: "
+                 "/dev/shm/fastmm-<engine>.shadow, shown when it exists)")
+      ->option_text("<file>");
   app.add_option("--interval", interval_ms, "refresh period, default 500")
       ->option_text("<ms>")
       ->check(CLI::Range(50, 3'600'000));
@@ -80,6 +87,7 @@ static int run(int argc, char** argv) {
   if (path.empty() && !gateway.empty()) path = fastmm::default_gateway_status_path(gateway);
   if (path.empty())
     return fastmm::cli::usage_error(app, "one of --name, --gateway or --path is required");
+  if (shadow_path.empty() && !name.empty()) shadow_path = fastmm::default_shadow_status_path(name);
   once = once || json;
   const bool color = !no_color && ::isatty(STDOUT_FILENO) != 0;
   std::signal(SIGINT, on_signal);
@@ -99,7 +107,7 @@ static int run(int argc, char** argv) {
     std::printf(
         "fastmm-top: serving http://%s/metrics from %s\n", server.address().c_str(), path.c_str());
     std::fflush(stdout);
-    server.serve(path, g_signal);
+    server.serve(path, shadow_path, g_signal);
     return 0;
   }
 
@@ -108,7 +116,11 @@ static int run(int argc, char** argv) {
   std::string error;
   bool first = true;
   fastmm::ProcessState prev_process;
+  fastmm::ShadowStatusReader shadow_reader;
+  fastmm::ShadowStatus shadow;
   while (g_signal.load() == 0) {
+    if (!shadow_reader.is_open() && !shadow_path.empty())
+      static_cast<void>(shadow_reader.open(shadow_path));
     // A segment of another version is refused by open() (smaller layout) or fails read() (same
     // size or larger); either way segment_version() names it.
     if (!reader.is_open() && !reader.open(path, &error) && reader.segment_version() == 0) {
@@ -135,6 +147,13 @@ static int run(int argc, char** argv) {
         } else {
           frame += fastmm::format_process_state(ps, prev_process.ok ? &prev_process : nullptr);
           prev_process = ps;
+        }
+      }
+      if (shadow_reader.read(shadow)) {
+        if (json) {
+          frame.insert(frame.size() - 2, ", \"shadow\": " + fastmm::shadow_status_json(shadow));
+        } else {
+          frame += fastmm::format_shadow_status(shadow, fastmm::wall_now().ns);
         }
       }
     } else if (version != 0 && version != fastmm::kStatusVersion) {
