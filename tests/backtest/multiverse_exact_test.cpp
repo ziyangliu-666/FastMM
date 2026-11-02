@@ -16,6 +16,7 @@
 #include "fastmm/backtest/sweep.hpp"
 #include "fastmm/config/config.hpp"
 #include "fastmm/core/rng.hpp"
+#include "fastmm/core/seqlock.hpp"
 #include "fastmm/strategies/basic_mm.hpp"
 #include "fastmm/strategies/quoting.hpp"
 #include "fastmm/strategies/strategy.hpp"
@@ -37,11 +38,25 @@ using namespace fastmm::bt::testutil;
 
 namespace {
 
+#ifdef FASTMM_SEQLOCK_TSAN
+constexpr bool kThreadSanitizer = true;
+#else
+constexpr bool kThreadSanitizer = false;
+#endif
+
+// One worker runs its passes on the calling thread, and the backtests alone run there too: nothing
+// runs concurrently, so ThreadSanitizer has nothing to check at many times the run time. The other
+// presets compare these results, and the cases with several workers run under it too.
+constexpr bool nothing_to_check(int threads) {
+  return kThreadSanitizer && threads == 1;
+}
+
 // Runs `cfgs` in multiverses (with `threads` workers) and alone, and checks every result.
 void check_exact(const std::vector<BacktestConfig>& cfgs,
                  const std::string& strategy,
                  const SourceFactory& factory,
                  int threads = 1) {
+  if (nothing_to_check(threads)) return;
   const std::vector<BacktestResult> mv = run_multiverse(cfgs, strategy, factory, threads);
   REQUIRE(mv.size() == cfgs.size());
   std::uint64_t fills = 0;
@@ -680,6 +695,7 @@ template <class S>
 void check_exact_of(const std::vector<BacktestConfig>& cfgs,
                     const SourceFactory& factory,
                     int threads) {
+  if (nothing_to_check(threads)) return;
   const std::vector<BacktestResult> mv = run_multiverse(cfgs, factory_of<S>(), factory, threads);
   REQUIRE(mv.size() == cfgs.size());
   std::uint64_t fills = 0;
