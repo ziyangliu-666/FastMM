@@ -315,6 +315,26 @@ struct LoggingSection {
 };
 
 // Free-form section used by the sim / backtest libraries: dotted keys -> stringified value.
+// [shadow]: fastmm-shadow's settings (backtest/shadow.hpp, docs/reference/configuration.md#shadow).
+struct ShadowSection {
+  bool enabled = false;
+  int threads = 1;
+  int window_s = 60;
+  int settle_s = 10;
+  int max_lag_s = 300;
+  int nice = 10;
+  int idle_exit_s = 3600;
+  std::vector<int> cpus;
+  std::string program;  // empty: fastmm-shadow beside this program
+  std::string report;   // empty: <journal_dir>/<name>.shadow.json
+  std::string status;   // empty: /dev/shm/fastmm-<name>.shadow
+  std::vector<std::pair<std::string, std::vector<std::string>>> grid;
+  std::vector<std::map<std::string, std::string>> points;
+  [[nodiscard]] bool configured() const noexcept {
+    return enabled || !grid.empty() || !points.empty();
+  }
+};
+
 struct GenericSection {
   std::map<std::string, std::string> values;
   std::map<std::string, int> lines;  // key -> line in the file; absent for keys set in code
@@ -350,6 +370,7 @@ class Config {
   // read by fastmm-live, fastmm-gateway, the backtester and replay (build_fx_plan, core/fx.hpp).
   AccountingSpec accounting;
   LoggingSection logging;
+  ShadowSection shadow;
   GenericSection sim;
   GenericSection backtest;
   // [storage]: the backend name and whatever keys that backend reads. Free-form, like [sim] and

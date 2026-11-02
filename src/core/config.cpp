@@ -577,6 +577,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
                                                         "gateway",
                                                         "accounting",
                                                         "logging",
+                                                        "shadow",
                                                         "sim",
                                                         "backtest",
                                                         "storage"};
@@ -1050,6 +1051,52 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
       fail_at(*t->get("status_interval_s"), "status_interval_s must be >= 0 (0 = none)");
     parse_level(cfg.logging.level);
     parse_level(cfg.logging.mirror_level);
+  }
+
+  if (const auto* t = doc["shadow"].as_table()) {
+    validate_table(*t, "shadow");
+    ShadowSection& s = cfg.shadow;
+    s.enabled = t->at_path("enabled").value_or(s.enabled);
+    s.threads = static_cast<int>(t->at_path("threads").value_or(std::int64_t{s.threads}));
+    s.window_s = static_cast<int>(t->at_path("window_s").value_or(std::int64_t{s.window_s}));
+    s.settle_s = static_cast<int>(t->at_path("settle_s").value_or(std::int64_t{s.settle_s}));
+    s.max_lag_s = static_cast<int>(t->at_path("max_lag_s").value_or(std::int64_t{s.max_lag_s}));
+    s.nice = static_cast<int>(t->at_path("nice").value_or(std::int64_t{s.nice}));
+    s.idle_exit_s =
+        static_cast<int>(t->at_path("idle_exit_s").value_or(std::int64_t{s.idle_exit_s}));
+    s.program = t->at_path("program").value_or(s.program);
+    s.report = t->at_path("report").value_or(s.report);
+    s.status = t->at_path("status").value_or(s.status);
+    if (s.threads < 1) fail_at(*t->get("threads"), "shadow.threads must be >= 1");
+    if (s.window_s < 1) fail_at(*t->get("window_s"), "shadow.window_s must be >= 1");
+    if (s.settle_s < 0) fail_at(*t->get("settle_s"), "shadow.settle_s must be >= 0");
+    if (s.max_lag_s < 0) fail_at(*t->get("max_lag_s"), "shadow.max_lag_s must be >= 0");
+    if (const auto* a = t->get_as<toml::array>("cpus")) {
+      for (const toml::node& n : *a)
+        s.cpus.push_back(static_cast<int>(n.value_or(std::int64_t{-1})));
+    }
+    if (const auto* grid = t->get_as<toml::table>("grid")) {
+      for (const auto& [k, v] : *grid) {
+        const auto* values = v.as_array();
+        if (values == nullptr || values->empty())
+          fail_at(v, fmt::format("shadow.grid.{} must be a non-empty array", k.str()));
+        std::vector<std::string> out;
+        for (const toml::node& n : *values) out.push_back(stringify(n));
+        s.grid.emplace_back(std::string(k.str()), std::move(out));
+      }
+    }
+    if (const auto* points = t->get("points")) {
+      const auto* list = points->as_array();
+      if (list == nullptr) fail_at(*points, "shadow.points must be [[shadow.points]] tables");
+      for (const toml::node& n : *list) {
+        if (!n.is_table()) fail_at(n, "shadow.points must be [[shadow.points]] tables");
+        std::map<std::string, std::string> p;
+        for (const auto& [k, v] : *n.as_table()) p[std::string(k.str())] = stringify(v);
+        s.points.push_back(std::move(p));
+      }
+    }
+  } else if (doc.contains("shadow")) {
+    fail_at(*doc.get("shadow"), "[shadow] must be a table");
   }
 
   if (const auto* t = doc["sim"].as_table()) flatten(*t, "", cfg.sim);
@@ -1684,6 +1731,43 @@ std::string Config::effective_toml() const {
   if (logging.status_interval_s >= 0) lg.insert("status_interval_s", logging.status_interval_s);
   root.insert("logging", std::move(lg));
 
+  if (shadow.configured()) {
+    toml::table t;
+    t.insert("enabled", shadow.enabled);
+    t.insert("threads", shadow.threads);
+    t.insert("window_s", shadow.window_s);
+    t.insert("settle_s", shadow.settle_s);
+    t.insert("max_lag_s", shadow.max_lag_s);
+    t.insert("nice", shadow.nice);
+    t.insert("idle_exit_s", shadow.idle_exit_s);
+    if (!shadow.cpus.empty()) {
+      toml::array list;
+      for (const int c : shadow.cpus) list.push_back(c);
+      t.insert("cpus", std::move(list));
+    }
+    if (!shadow.program.empty()) t.insert("program", shadow.program);
+    if (!shadow.report.empty()) t.insert("report", shadow.report);
+    if (!shadow.status.empty()) t.insert("status", shadow.status);
+    if (!shadow.grid.empty()) {
+      toml::table grid;
+      for (const auto& [k, values] : shadow.grid) {
+        toml::array a;
+        for (const std::string& v : values) a.push_back(v);
+        grid.insert(k, std::move(a));
+      }
+      t.insert("grid", std::move(grid));
+    }
+    if (!shadow.points.empty()) {
+      toml::array points;
+      for (const auto& p : shadow.points) {
+        toml::table row;
+        for (const auto& [k, v] : p) row.insert(k, v);
+        points.push_back(std::move(row));
+      }
+      t.insert("points", std::move(points));
+    }
+    root.insert("shadow", std::move(t));
+  }
   if (!sim.values.empty()) root.insert("sim", generic_table(sim));
   if (!backtest.values.empty()) root.insert("backtest", generic_table(backtest));
   if (!storage.values.empty()) root.insert("storage", generic_table(storage));

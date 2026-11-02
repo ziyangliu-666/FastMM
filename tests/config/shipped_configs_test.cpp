@@ -175,6 +175,63 @@ lot = "0.00001"
   CHECK(Config::parse(head).effective_toml().find("allow_unlimited") == std::string::npos);
 }
 
+TEST_CASE("config: [shadow] reads its keys and survives the effective configuration") {
+  const std::string head = R"([venues.sim]
+kind = "sim"
+[[instruments]]
+venue = "sim"
+symbol = "X"
+base = "B"
+quote = "Q"
+tick = "0.01"
+lot = "1"
+)";
+  const std::string shadow = R"(
+[shadow]
+enabled = true
+threads = 2
+window_s = 30
+settle_s = 5
+max_lag_s = 0
+nice = 5
+idle_exit_s = 60
+cpus = [4, 5]
+program = "bin/my-shadow"
+report = "r.json"
+status = "s.status"
+[shadow.grid]
+half_spread_bps = [3, 8.5]
+[[shadow.points]]
+quote_qty = 2
+half_spread_bps = 1
+)";
+  const Config c = Config::parse(head + shadow);
+  CHECK(c.shadow.enabled);
+  CHECK(c.shadow.threads == 2);
+  CHECK(c.shadow.window_s == 30);
+  CHECK(c.shadow.settle_s == 5);
+  CHECK(c.shadow.max_lag_s == 0);
+  CHECK(c.shadow.cpus == std::vector<int>{4, 5});
+  CHECK(c.shadow.grid.size() == 1);
+  CHECK(c.shadow.grid[0].second == std::vector<std::string>{"3", "8.5"});
+  REQUIRE(c.shadow.points.size() == 1);
+  CHECK(c.shadow.points[0].at("quote_qty") == "2");
+  // What a journal embeds gives the same section back.
+  Config::LoadOptions lo;
+  lo.substitute_env = false;
+  const Config again = Config::parse(c.effective_toml(), lo);
+  CHECK(again.shadow.enabled);
+  CHECK(again.shadow.grid == c.shadow.grid);
+  CHECK(again.shadow.points == c.shadow.points);
+  CHECK(again.shadow.program == "bin/my-shadow");
+  CHECK(again.shadow.idle_exit_s == 60);
+  CHECK_FALSE(Config::parse(head).shadow.configured());
+  CHECK(Config::parse(head).effective_toml().find("[shadow]") == std::string::npos);
+  CHECK_THROWS_AS(static_cast<void>(Config::parse(head + "[shadow]\nwindow = 3\n")), ConfigError);
+  CHECK_THROWS_AS(static_cast<void>(Config::parse(head + "[shadow]\nwindow_s = 0\n")), ConfigError);
+  CHECK_THROWS_AS(static_cast<void>(Config::parse(head + "[shadow.grid]\nk = 3\n")), ConfigError);
+}
+
 TEST_CASE("config: unknown [risk] and [backtest] keys are errors with their line") {
   const char* const head = R"([venues.sim]
 kind = "sim"
