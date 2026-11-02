@@ -1,11 +1,11 @@
 # FastMM
 
-- **[Low latency](explanation/architecture.md#memory).** In the engine a book update becomes an order in 143 ns (p50). Core pinning, busy polling, AF_XDP or DPDK receive and OpenOnload or XLIO order entry tune the host around it.
-- **[High-performance backtesting](explanation/backtesting.md#many-runs-in-one-pass).** Thousands of parameter sets run at once, each with the result its own backtest gives: 16,384 sets over four hours of Binance BTCUSDT futures took 228 s on 8 threads.
-- **[Cross-exchange market making](how-to/strategies/xmm.md).** `xmm` quotes on one exchange and hedges each fill with an IOC on another.
-- **[One strategy for backtest, replay and live](how-to/strategies/python-hot-hooks.md).** One strategy file, in C++ or Python, runs in backtests, replays and live sessions; replays are deterministic and the simulated exchange models queue position. Python hooks marked `@fastmm.hot` compile to machine code with Numba.
-- **[Multi-account trading](how-to/operations/run-behind-a-gateway.md).** Several sub-accounts trade behind one venue, and strategy processes attach to one `fastmm-gateway` that keeps the exchange connections while they restart.
-- **[Live A/B tests](how-to/strategies/ab-test.md).** Parameter sets run side by side in a live session, split by instrument, by time block or both, and are compared on markouts and net with paired intervals.
+- [Low latency](explanation/architecture.md#memory)
+- [High-performance backtesting](explanation/backtesting.md#many-runs-in-one-pass)
+- [Cross-exchange market making](how-to/strategies/xmm.md)
+- [One strategy for backtest, replay and live](how-to/strategies/python-hot-hooks.md)
+- [Multi-account trading](how-to/operations/run-behind-a-gateway.md)
+- [Live A/B tests](how-to/strategies/ab-test.md)
 
 <video class="fastmm-video" controls preload="none" poster="assets/explainer-poster.jpg" src="https://github.com/ziyangliu-666/FastMM/releases/download/v0.5.1/fastmm-explainer.mp4"></video>
 
