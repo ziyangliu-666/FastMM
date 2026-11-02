@@ -420,6 +420,20 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
         }
         m.count = kept;
       }
+      // Recorded values of the pinned parameters are left out.
+      std::uint32_t free = 0;
+      const std::uint32_t mapped = std::min<std::uint32_t>(m.count, ParamUpdateMsg::kMaxFields);
+      for (std::uint32_t i = 0; i < mapped; ++i) {
+        const bool pinned = schema != nullptr && m.field[i] < schema->size() &&
+                            std::find(cfg_.params_pinned.begin(),
+                                      cfg_.params_pinned.end(),
+                                      schema->begin()[m.field[i]].name) != cfg_.params_pinned.end();
+        if (pinned) continue;
+        m.field[free] = m.field[i];
+        m.value[free] = m.value[i];
+        ++free;
+      }
+      m.count = free;
       if (m.count != 0) journal_params_.push_back(m);
     }
     FASTMM_LOG_INFO("backtest: {} parameter updates of the journal replayed",

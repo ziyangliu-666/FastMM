@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -347,7 +348,7 @@ std::vector<Duration> parse_horizons(const std::string& text) {
 }
 
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 38> kBacktestKeys = {"start_at",
+constexpr std::array<std::string_view, 39> kBacktestKeys = {"start_at",
                                                             "latency_from_journal",
                                                             "latency_fill_us",
                                                             "latency_fill_jitter_us",
@@ -358,6 +359,7 @@ constexpr std::array<std::string_view, 38> kBacktestKeys = {"start_at",
                                                             "markout_horizons_s",
                                                             "initial_state",
                                                             "params_from_journal",
+                                                            "params_pinned",
                                                             "orders_10s",
                                                             "orders_1d",
                                                             "source",
@@ -507,6 +509,11 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   }
   b.latency_from_journal = bt.get_bool("latency_from_journal", false);
   b.params_from_journal = bt.get_bool("params_from_journal", false);
+  {
+    std::stringstream pinned(bt.get_string("params_pinned", ""));
+    for (std::string name; std::getline(pinned, name, ',');)
+      if (!name.empty()) b.params_pinned.push_back(name);
+  }
   b.ab = cfg.ab;
   if (const std::string s = bt.get_string("initial_state", "state_file"); s == "journal") {
     b.initial_state = InitialState::Journal;

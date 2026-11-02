@@ -211,6 +211,24 @@ TEST_CASE("backtest.journal_state: params_from_journal replays the session's par
                        std::invalid_argument);
 }
 
+TEST_CASE("backtest.journal_state: params_pinned keeps a parameter from the session's updates") {
+  const std::string path = tmp_path("journal_state_pinned.fmj");
+  {
+    JournalBuilder j(path, true);
+    j.book(true, {{"100.00", "5"}}, {{"100.02", "5"}});
+    j.now += 1000;
+    j.param_update(2, qt("0.5").raw);  // quote_qty, index 2 of the schema
+    j.now += 1000;
+    j.book(false, {{"100.00", "4"}}, {});
+  }
+  JournalSource src(path, true);
+  BacktestConfig cfg = journal_config(InitialState::StateFile);
+  cfg.params_from_journal = true;
+  cfg.params_pinned = {"quote_qty"};
+  static_cast<void>(run_backtest<Remembers>(cfg, &src));
+  CHECK(Remembers::last_quote_qty == qt("0.01"));
+}
+
 TEST_CASE("backtest.journal_state: checkpoints by time, their open orders, and the take-overs") {
   const std::string path = tmp_path("journal_state_checkpoints.fmj");
   const auto orders_bytes = [](std::vector<StateOrder> os) {
