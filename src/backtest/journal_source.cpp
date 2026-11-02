@@ -185,6 +185,11 @@ JournalSource::JournalSource(const std::string& path,
     }
   }
   session_.latency = sim::RecordedLatency(latencies);
+  {
+    const EventHeader* first = parts_.front().next();
+    session_.starts_mid_session = first != nullptr && first->seq > 1;
+    parts_.front().reset();
+  }
 }
 
 const EventHeader* JournalSource::next() {

@@ -58,6 +58,9 @@ struct RecordedSession {
   // session restored from its store and what its venues reported at the start.
   std::vector<ReconcileMsg> reconciled;
   RecordedParams params;
+  // The journal starts at a later part of its session: the parameter updates of the parts before
+  // it are not here, and the configuration is the one the session started with.
+  bool starts_mid_session = false;
   // The account rows (BalanceMsg without kAccount) and the flows (AccountFlowMsg), in journal
   // order.
   std::vector<BalanceMsg> balances;

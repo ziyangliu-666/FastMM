@@ -175,3 +175,13 @@ TEST_CASE("backtest.journal_parts: a later part read on its own has the engine c
     CHECK(wrong == 0);
   }
 }
+
+TEST_CASE("backtest.journal_parts: a journal read from a later part says it starts mid-session") {
+  const auto dir = fresh_dir("fastmm_parts_mid_session");
+  const std::string path = (dir / "s.fmj").string();
+  const InstrumentTable table = one_instrument();
+  const std::vector<std::string> parts = write_session(path, table, 77, 30'000);
+  REQUIRE(parts.size() >= 2);
+  CHECK_FALSE(JournalSource(parts[0]).recorded()->starts_mid_session);
+  CHECK(JournalSource(parts[1], false, false).recorded()->starts_mid_session);
+}

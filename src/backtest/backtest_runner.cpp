@@ -396,6 +396,11 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
       throw std::invalid_argument(
           "backtest: params_from_journal needs a journal as the data source");
     }
+    if (recorded->starts_mid_session) {
+      FASTMM_LOG_WARN(
+          "backtest: the journal starts at a later part of its session: the parameter updates "
+          "before it are not replayed, so [strategy.params] must hold the values as of its start");
+    }
     const sim::RecordedParams* rp = &recorded->params;
     // Recorded field index -> this schema's, by name and type (as a replay maps them).
     std::vector<int> map(rp->table.size(), -1);
