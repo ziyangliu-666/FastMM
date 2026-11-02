@@ -314,6 +314,16 @@ A run from a checkpoint is deterministic and its journal replays bit for bit. Wi
 
 A venue slows down when the market does, while the latency model draws from one distribution. A cancel that wins its race in the model may have lost it live. `[backtest] latency_from_journal` makes each simulated message take the live delay at the same moment, where that is longer than the model's draw. It uses the order sent within 2 ms on the same account and instrument, else the nearest one; a reply takes the nearest reply.
 
+## Following a live session
+
+A [shadow sweep](../how-to/operations/shadow-sweeps.md) runs points of a sweep over a session's journal while the session writes it. Its result is a function of the journal: a point's result does not depend on how far the journal had been written when it was computed.
+
+A backtest of a finished journal reads ahead. It strips the session's own orders from the feed with every order's whole life in hand, and it schedules parameter updates before the run starts. A shadow cannot, so it runs `settle_s` behind what the journal has reached: before it takes a market-data event of venue time `t`, it has read every record up to the first one received at `t + settle_s`. The two give the same stream unless the journal says something about a venue time more than `settle_s` after it. The shadow counts those records as `late`; with 0, the two are the same.
+
+The points run from the session's start for the whole session, and nothing re-anchors them until the next restart. The live point's positions therefore part from the session's as the simulated fills part from the real ones, and past that point a window's error mixes the fill model's error with the difference in inventory. The report shows both positions per instrument, so the gap can be read. A point restarted from each checkpoint would hold that gap down, at the price of an equality with the backtest that can be checked, and of a warm-up per window for each point; a strategy with no `state()` could not take part at all.
+
+A variant is compared with the live point window by window, so market moves common to both cancel. The intervals come from resampling runs of consecutive windows, the same draws for all the variants, and hold for all of them at once. A variant is `better` only when its whole interval lies above the simulation's error at the live parameters: a simulation that is wrong by 40 on the session it can check has not shown that a variant is better by 30.
+
 ## See also
 
 * [Configuration](../reference/configuration.md#backtest): every `[backtest]` and `[sim]` key

@@ -8,7 +8,7 @@ FastMM is a C++20 market-making engine with Python bindings. One strategy file r
 |---|---|---|
 | Install | `pip install "fastmm-engine[hot]"`, plus `[live]` for venues | build this repository with CMake |
 | Strategies | `fastmm.Strategy` subclasses, hooks marked `@fastmm.hot` compiled by Numba | structs on `StrategyBase<Params>` (`include/fastmm/strategy.hpp`) |
-| Programs | the `fastmm` command: `init`, `report`, `sim`, `run` | `fastmm-live`, `fastmm-backtest`, `fastmm-replay`, `fastmm-gateway`, `fastmm-ctl`, `fastmm-top`, `fastmm-pnl`, `fastmm-sim-exchange`, `fastmm-sim-itch` in `build/<preset>/bin/` |
+| Programs | the `fastmm` command: `init`, `report`, `sim`, `run` | `fastmm-live`, `fastmm-backtest`, `fastmm-replay`, `fastmm-shadow`, `fastmm-gateway`, `fastmm-ctl`, `fastmm-top`, `fastmm-pnl`, `fastmm-sim-exchange`, `fastmm-sim-itch` in `build/<preset>/bin/` |
 | First page | `docs/getting-started/quickstart.md` | `docs/getting-started/cpp-quickstart.md` |
 
 The PyPI package is `fastmm-engine`, imported as `fastmm`. `pip install fastmm` installs an unrelated project. The wheels are Linux x86-64, CPython 3.10 or later.

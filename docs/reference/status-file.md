@@ -191,6 +191,10 @@ The `feed` entry of a `nasdaq_itch` venue ([Nasdaq TotalView-ITCH](venues/nasdaq
 | `xdp_rx_dropped`, `xdp_rx_invalid_descs`, `xdp_rx_ring_full`, `xdp_fill_ring_empty` | u64 | `XDP_STATISTICS` summed over the sockets; on `dpdk`, `xdp_rx_dropped` is the port's `imissed` plus `rx_nombuf` |
 | `xdp_fallback` | u64 | subscribed datagrams passed to the kernel because their RX queue has no socket |
 
+## Shadow status
+
+`fastmm-shadow` publishes its own file, `/dev/shm/fastmm-<[engine] name>.shadow` (`[shadow] status`), with the same sequence counter and `magic` `0x3144414853464D`, `version` 1. Layout: `include/fastmm/core/shadow_status.hpp`. `fastmm-top --name <name>` shows it under the session's status when it exists ([Shadow sweeps](../how-to/operations/shadow-sweeps.md#read-it)).
+
 ## Gateway block
 
 A gateway (`kind` 1) fills these snapshot fields; the engine counters and latencies stay zero:

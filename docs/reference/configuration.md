@@ -811,6 +811,28 @@ BTC = "binance:BTCUSDT"     # BTC in USDT: the mid of BTCUSDT
 | `status_interval_s` | integer |  | seconds between the per-venue status lines, 0 = none (default 1 with a log file, 10 on stderr) |
 <!-- END config-keys -->
 
+## `[shadow]`
+
+Read by `fastmm-shadow` and, for `enabled`, by `fastmm-live` ([Shadow sweeps](../how-to/operations/shadow-sweeps.md)). The simulated venue's settings are the `[backtest]` keys below; a key in `[shadow.grid]` and `[[shadow.points]]` is a strategy parameter or one of the settings a sweep can vary ([Running a sweep](../explanation/backtesting.md#running-a-sweep)).
+
+<!-- BEGIN config-keys shadow -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `enabled` | boolean |  | fastmm-live starts fastmm-shadow from its own directory, which follows the session's journal in a process of its own (default false) |
+| `program` | string |  | the program fastmm-live starts: an application's own fastmm::cli::shadow for its own strategies (default fastmm-shadow in fastmm-live's directory) |
+| `threads` | integer |  | threads that step the points, at most 128 points each, plus one that reads the journal when there are two or more (default 1) |
+| `window_s` | integer |  | length of a comparison window, seconds: the error of the simulation and the variants' intervals are per window, and each window closes settle_s after its end (default 60) |
+| `settle_s` | integer |  | how far behind the journal the simulation runs, seconds: what the journal says about a venue time (acks, fills, parameter updates) must arrive within this for the runs to equal a backtest of the finished journal; the report counts what came later (default 10) |
+| `max_lag_s` | integer |  | behind the session by more than this and not catching up, the highest-numbered half of the variants stop, seconds; the live point never does; 0 = never (default 300) |
+| `idle_exit_s` | integer |  | a shadow fastmm-live started leaves when no session has written for this long, seconds (default 3600) |
+| `cpus` | integer array |  | CPU cores the process may use; empty = every core but [engine] cpu and net_cpus (default []) |
+| `nice` | integer |  | the process's nice value (default 10) |
+| `report` | string |  | the report, rewritten as each window closes (default "<journal_dir>/<name>.shadow.json"), and beside it one line per window (.jsonl) |
+| `status` | string |  | the status file fastmm-top reads (default "/dev/shm/fastmm-<name>.shadow") |
+| `grid` | table |  | variants, the cartesian product of <key> = [values]: strategy parameters and the backtest settings a sweep can vary |
+| `points` | any |  | more variants, [[shadow.points]] with one table of <key> = value each |
+<!-- END config-keys -->
+
 ## `[storage]`
 
 Free-form: each backend reads its own keys ([Storage](storage.md#configuration)). The keys every backend shares:
@@ -861,8 +883,9 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `journal_out` | string | `""` | When set, the backtest session is also recorded as a `.fmj` journal |
 | `own_orders_in_feed` | bool | `true` | The simulated venues' feed shows the strategy's resting orders, as a live venue's does: the engine's book and book tickers show our quantity (`OwnLevels` messages) and the engine takes it out where it needs to (`ctx.own_qty`, `ctx.best_ex_self`, `ctx.queue_ahead`); `false` shows the recorded data alone ([Backtesting](../explanation/backtesting.md#our-orders-in-the-feed)) |
 | `initial_state` | string | `"state_file"` | Where the strategy's starting state comes from: `state_file` reads `[strategy] state_file` when set; `journal` takes the data journal's: the state the recorded session restored at its start, else its first state snapshot, with the positions of that snapshot, or with the positions the session restored and reconciled before its first order ([Backtesting](../explanation/backtesting.md#starting-from-the-live-sessions-state)); `none` starts the strategy fresh. `journal` needs a journal as the data source |
-| `params_from_journal` | bool | `false` | The data journal's parameter updates reach the strategy at the times the recorded session received them, their fields mapped by name and type onto the strategy's schema (as `fastmm-replay` maps them); the data source must be a journal. A journal read from a later part of its session has only the updates from there on: `[strategy.params]` must hold the values as of its start, and the run warns |
+| `params_from_journal` | bool | `false` | The data journal's parameter updates reach the strategy at the times the recorded session received them, their fields mapped by name and type onto the strategy's schema (as `fastmm-replay` maps them), except the parameters a sweep's point sets; the data source must be a journal |
 | `params_pinned` | string | `""` | Parameter names, comma separated, that `params_from_journal` leaves at their configured values: a run of what a change would have done keeps the session's other updates |
+| `controls_from_journal` | bool | `false` | The data journal's operator commands reach the engine at the times the recorded session received them: quotes pulled and resumed, a flatten, limits changed, a kill switch tripped or reset. The data source must be a journal |
 | `start_at` | number or string | none | Unix time in seconds, or a UTC time (`"2026-10-20T08:00:00Z"`), that trading starts at: with `initial_state = "journal"` at the last checkpoint of the data journal at or before it, whose state the strategy restores, else at this time. Before it the run reads the data and the engine refuses orders (`NotReconciled`); then every venue reconciles with the start positions ([Backtesting](../explanation/backtesting.md#starting-inside-a-live-session)) |
 | `balances_from_journal` | bool | `false` | Each venue's account starts from the balances the journal recorded for it: its first snapshot, or with `start_at` its account as the venue last reported it when trading starts (every asset at its total; account-wide margin rows are left out); a venue without one keeps `[backtest.balances]`. From then on the account follows the session's account events: each recorded flow of money in or out (`AccountFlow`, [Venues](venues/connector-behaviour.md#balances)) at its time, a withdrawal at most what the run has free, and a full snapshot whenever the session's connector refreshed the account. A pool whose treasury the run simulates moves its own money: the recorded flows of its accounts are left out. The data source must be one journal |
 | `latency_from_journal` | bool | `false` | The simulated venues follow the latencies the data journal's own messages had: an order or cancel takes the time a live one sent at about the same moment on the same account took to reach the venue (the one of the same instrument within 2 ms, else the nearest within 20 ms), a reply the time the nearest live reply took to come back, wherever that is more than 1 ms longer than the model's draw. Quiet moments keep the model; a burst, when the venue's gateway and its replies slow down, gets what the session got ([Backtesting](../explanation/backtesting.md#starting-inside-a-live-session)). The data source must be a journal |

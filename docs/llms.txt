@@ -36,6 +36,7 @@ The Markdown source of every page is in the repository under `docs/`: https://gi
 - [Run on a testnet or Binance Demo](https://ziy.bio/FastMM/how-to/operations/run-on-testnet/)
 - [Deploy a release](https://ziy.bio/FastMM/how-to/operations/deploy/)
 - [Run in production](https://ziy.bio/FastMM/how-to/operations/running-in-production/)
+- [Shadow sweeps](https://ziy.bio/FastMM/how-to/operations/shadow-sweeps/): variants of a strategy over a live session's journal as it is written, beside its real fills
 - [Go-live checklist](https://ziy.bio/FastMM/how-to/operations/go-live-checklist/)
 - [Troubleshooting](https://ziy.bio/FastMM/how-to/operations/troubleshooting/)
 

@@ -81,6 +81,21 @@ A run's engine and venue take about 6 MB, so a sweep on 8 threads holds at most 
 
 Up to 1,024 points the sweep is one wave of 8 passes, each paying about 2 s for its books. Past that, each wave pays it again, and a point costs what its own run costs.
 
+## Following a live session
+
+A [shadow sweep](../how-to/operations/shadow-sweeps.md) over 2.5 hours of a recorded session on several venues, reading it as fast as it can, on the desktop. `basic_mm` requotes at every tick on every instrument, so it works much harder than a session that rests its quotes.
+
+| Points | Threads | CPU per market-data event per point | Core time per session-hour per point | Memory per point | Session pace per thread |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 2,682 ns | 7.5 s | 56 MB | 478 times |
+| 8 | 1 | 1,987 ns | 5.6 s | 17 MB | 80 times |
+| 32 | 1 | 3,662 ns | 10.3 s | 12 MB | 11 times |
+| 128 | 2 | 8,131 ns | 22.9 s | 11 MB | 2.5 times |
+
+The time per point grows with the points of a pass: their engines no longer fit the caches together. One point's row holds what all the points share, the reading of the journal.
+
+Memory stays flat over the session: a point holds its current window. Reproduce it with `fastmm-bench-shadow --journal <first part> --strategy basic_mm --points 8` ([`bench/shadow_load.cpp`](../../bench/shadow_load.cpp)); `--compare` prints how many events of the stream differ from those of a finished journal's.
+
 ## GPUs
 
 FastMM runs no part of a sweep on a GPU, for three reasons:

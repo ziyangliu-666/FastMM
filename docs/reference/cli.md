@@ -323,6 +323,32 @@ OPTIONS:
 
 [Journals, replay and PnL](../how-to/operations/journals-replay-pnl.md#replay) explains what-if replays and journals without outbound copies.
 
+## fastmm-shadow
+
+Runs variants of a live session's strategy over its journal as it is written ([Shadow sweeps](../how-to/operations/shadow-sweeps.md)).
+
+<!-- BEGIN cli-help fastmm-shadow -->
+```text
+Runs variants of a live session's strategy over its journal as it is written,
+beside the session's real fills.
+
+usage: fastmm-shadow [OPTIONS]
+
+OPTIONS:
+  -h, --help                  print this help and exit
+  --version                   print the version and exit
+  --config <file.toml>        the session's configuration; its [shadow] table says what to
+                              run
+  --session <file.fmj>        follow this journal (its first part) to its end and exit;
+                              without it, the sessions of [engine] journal_dir and name, the
+                              newest and each one after it
+  --threads <n>               threads that step the points ([shadow] threads)
+  --idle-exit <s>             leave when no session has come for this long after the last
+                              ended, default never
+  --verbose                   log what the runs do, as a backtest does
+```
+<!-- END cli-help -->
+
 ## fastmm-pnl
 
 Queries the [store](storage.md) a session wrote: what it traded, PnL and funding by day and instrument, and what the last session left behind. It reads the store, not a journal.
@@ -605,6 +631,8 @@ OPTIONS:
   --gateway <engine>          read the fastmm-gateway's /dev/shm/fastmm-<engine>.gw.status
                               ([engine] name in its config)
   --path <file>               read this status file (fastmm-live or fastmm-gateway --status)
+  --shadow <file>             read fastmm-shadow's status from this file (default with
+                              --name: /dev/shm/fastmm-<engine>.shadow, shown when it exists)
   --interval <ms>             refresh period, default 500
   --once                      print one frame and exit (exit code 3 if no status is
                               available)

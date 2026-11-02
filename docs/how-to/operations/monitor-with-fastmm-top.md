@@ -19,6 +19,7 @@ The session writes its counters, PnL, kill state, latencies and venue states to 
 | `--json` | print one snapshot as JSON |
 | `--metrics <[host:]port>` | serve Prometheus metrics instead of drawing ([below](#scrape-it-with-prometheus)) |
 | `--gateway <name>` | read a `fastmm-gateway`'s file, `/dev/shm/fastmm-<name>.gw.status` ([Run behind a gateway](run-behind-a-gateway.md#monitor)) |
+| `--shadow <file>` | read `fastmm-shadow`'s status from this file; with `--name`, `/dev/shm/fastmm-<name>.shadow` when it exists ([Shadow sweeps](shadow-sweeps.md#read-it)) |
 
 For a dry run, use `--name <name>-dryrun`; its orders show as `paper orders=`, what the engine would have sent.
 

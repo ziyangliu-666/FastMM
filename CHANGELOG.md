@@ -5,7 +5,16 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- backtest: shadow sweeps: `[shadow]` and `fastmm-shadow` run variants of a strategy over a live session's journal as it is written, with the simulation's error against the session's real fills and simultaneous intervals on the variants.
+- backtest: `JournalTail` and `FollowSource` read a journal while it is written, parts and all, and give the stream a finished journal gives.
+- backtest: `[backtest] controls_from_journal` replays a session's operator commands.
+- python: `fastmm.shadow` follows a journal with a C++ strategy or a class with hot hooks.
+- apps: `fastmm-top` shows a shadow's status, and `--metrics` its `fastmm_shadow_*` gauges.
 - core: `[engine] quote_room_reserve`: a quote is not moved towards the touch while the account it rests on has no more than this many orders left in its venue order windows; the resting order stays instead of a cancel whose new order the window refuses (default 0, -1 off).
+
+### Changed
+- backtest: `initial_state = "journal"` over a journal that begins at the session's start takes no periodic checkpoint from after its first order for the start's state.
+- backtest: a sweep's point with `params_from_journal` keeps the parameters it sets against the journal's updates.
 
 ## [0.10.1] - 2026-10-29
 
