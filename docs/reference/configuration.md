@@ -738,8 +738,8 @@ Read by `fastmm-gateway` only: account guards over every attached strategy, chec
 | `burst` | integer |  | fastmm-gateway: token-bucket capacity of orders_per_sec, orders (default orders_per_sec) |
 | `max_open_notional` | any |  | fastmm-gateway: refuse an order that would take the notional working at its venue, over every attached strategy and both sides, past this; settlement currency, decimal |
 | `max_loss` | any |  | fastmm-gateway: trip the account's kill switch when the net PnL of every strategy together, carried across restarts in the gateway's kill file, reaches -max_loss; decimal, in [accounting] reporting_currency when set |
-| `max_gross_notional` | any |  | fastmm-gateway: refuse an order that would take the sum of the account's \|position\| at the marks past this, unless it reduces its instrument's position; decimal |
-| `max_net_notional` | any |  | fastmm-gateway: refuse an order that would take the account's net position at the marks further past this, unless it reduces its instrument's position; decimal |
+| `max_gross_notional` | any |  | fastmm-gateway: refuse an order that would take the sum of the account's \|position\| at the marks past this, unless it only closes its instrument's position (an order through zero counts what it opens); decimal |
+| `max_net_notional` | any |  | fastmm-gateway: refuse an order that would take the account's net position at the marks further past this, unless it only closes its instrument's position (an order through zero counts what it opens); decimal |
 | `underlying` | table |  | fastmm-gateway: one [gateway.underlying.BTC] table per base asset: the account's net limit, over every strategy and venue |
 | `check_balance` | boolean |  | fastmm-gateway: refuse an order the venue's reported balance, less the orders and fills of every attached strategy since, cannot cover (default true) |
 | `shared` | table |  | fastmm-gateway: one [gateway.shared."venue:symbol"] table per instrument that several strategies may trade at once (default: one strategy per instrument) |

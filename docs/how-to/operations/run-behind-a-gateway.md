@@ -92,7 +92,7 @@ Every order passes the gateway on its way to the venue. These checks run in orde
 | the account's kill switch is off | `max_loss` | `GatewayAccountKilled` |
 | it would not trade with another strategy's resting order on a shared instrument | `[gateway.shared]` | `GatewaySelfTrade` |
 | notional working at the venue, both sides, every strategy; a replace counts the difference | `max_open_notional` | `GatewayOpenNotional` |
-| the account's positions at the marks plus this order; reducing orders pass | `max_gross_notional`, `max_net_notional` | `GatewayGrossNotional`, `GatewayNetNotional` |
+| the account's positions at the marks plus the part of this order that opens exposure; an order that only closes a position passes, and one through zero counts what it would open | `max_gross_notional`, `max_net_notional` | `GatewayGrossNotional`, `GatewayNetNotional` |
 | net position in the base asset over every venue, plus working orders on that side; orders towards zero pass | `[gateway.underlying.<BASE>] max_net` | `GatewayUnderlyingNet`, `GatewayUnderlyingMarkUnknown` |
 | the venue's last balance, moved by every strategy's orders and fills since, covers the order | `check_balance` | `GatewayBalanceShort` |
 | new orders and replaces of every strategy together, per venue; cancels always go | `orders_per_sec`, `burst` | `GatewayRateLimit` |

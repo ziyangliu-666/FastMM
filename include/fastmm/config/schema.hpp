@@ -786,13 +786,15 @@ inline constexpr KeySpec kConfigSchema[] = {
      KeyType::Any,
      false,
      "fastmm-gateway: refuse an order that would take the sum of the account's |position| at the "
-     "marks past this, unless it reduces its instrument's position; decimal"},
+     "marks past this, unless it only closes its instrument's position (an order through zero "
+     "counts what it opens); decimal"},
     {"gateway",
      "max_net_notional",
      KeyType::Any,
      false,
      "fastmm-gateway: refuse an order that would take the account's net position at the marks "
-     "further past this, unless it reduces its instrument's position; decimal"},
+     "further past this, unless it only closes its instrument's position (an order through zero "
+     "counts what it opens); decimal"},
     {"gateway",
      "underlying",
      KeyType::Table,
