@@ -433,6 +433,12 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
           param_map_[i] = static_cast<int>(j);
       }
     }
+    // A journal with no field table numbers its fields as this schema does.
+    if (rp->table.empty() && schema != nullptr && !cfg_.params_pinned.empty()) {
+      param_map_.assign(schema->size(), -1);
+      for (std::size_t j = 0; j < schema->size(); ++j)
+        if (!pinned(schema->begin()[j].name)) param_map_[j] = static_cast<int>(j);
+    }
     for (ParamUpdateMsg m : rp->updates) {
       if (journal_param(m)) journal_params_.push_back(m);
     }

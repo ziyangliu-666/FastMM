@@ -42,6 +42,7 @@
 #include <poll.h>
 #include <sched.h>
 #include <spawn.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -778,10 +779,10 @@ namespace {
 int run_session(const Config& cfg, const LiveOptions& opts);
 
 // [shadow] enabled: fastmm-shadow, from this program's directory, in a process and a session of its
-// own. It reads the journal and owes this process nothing: this one neither waits for it nor hears
-// of it again, and it moves itself off the engine's and the network threads' cores. A second
-// session finds the one already running by its lock, and it leaves by itself ([shadow]
-// idle_exit_s).
+// own. It reads the journal and owes this process nothing: only a detached thread reaps it, and
+// this one never hears of it again, and it moves itself off the engine's and the network threads'
+// cores. A second session finds the one already running by its lock, and it leaves by itself
+// ([shadow] idle_exit_s).
 void start_shadow(const Config& cfg, const LiveOptions& opts) {
   std::error_code ec;
   const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", ec);
@@ -814,6 +815,7 @@ void start_shadow(const Config& cfg, const LiveOptions& opts) {
     return;
   }
   FASTMM_LOG_INFO("[shadow] {} started, pid {}, log {}", exe.string(), pid, log);
+  std::thread([pid] { static_cast<void>(::waitpid(pid, nullptr, 0)); }).detach();  // no zombie
 }
 
 // A dry run's configuration: nothing a keyed session of the engine reads is read or written. It
