@@ -52,6 +52,7 @@ from ._core import (
 from ._hot.decl import HotCompileError, State, hot
 from ._slow.decl import every
 from ._slow.replay import ReplayResult, replay
+from ._shadow import shadow
 from ._sweep import sweep, walk_forward
 from .data import load_csv
 from .live import run_live
@@ -124,6 +125,7 @@ __all__ = [
     "run_backtest",
     "run_live",
     "strategies",
+    "shadow",
     "sweep",
     "sweep_frame",
     "walk_forward",

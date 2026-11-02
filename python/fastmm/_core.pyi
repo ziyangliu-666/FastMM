@@ -1889,6 +1889,10 @@ def _journal_config(path: typing.Any) -> BacktestConfig:
     """
     Internal: the configuration a journal embeds (RuntimeError when it has none).
     """
+def _journal_params(path: str) -> dict[str, str]:
+    """
+    Internal: the strategy parameters a journal's embedded configuration sets, from its prologue alone; fastmm.shadow uses it.
+    """
 def _replay_hot_strategy(path: typing.Any, config: BacktestConfig, name: str, program: dict, verify: bool, param_updates: bool) -> dict:
     """
     Internal: replay of a compiled hot strategy from a journal; use fastmm.replay().
@@ -1904,6 +1908,14 @@ def _run_hot_strategy(config: BacktestConfig, data: typing.Any, name: str, param
 def _run_strategy(config: BacktestConfig, data: typing.Any, instance: typing.Any, name: str, hooks: collections.abc.Sequence[str], params: dict, balances: typing.Any = None, perp_states: typing.Any = None) -> tuple:
     """
     Internal: backtest of a fastmm.Strategy instance with the GIL held; use fastmm.run_backtest(config, data, strategy=MyStrategy). `balances`: BalanceMsg rows (ts_ns, venue, asset, free, locked, total, equity, maintenance, flags) merged into the data by time. `perp_states`: PerpStateMsg rows (ts_ns, inst, mark, index, funding_rate, funding_interval_s, next_funding_ns), a None field not carried.
+    """
+def _shadow(journal: str, variants: typing.Any, threads: typing.SupportsInt | typing.SupportsIndex = 1, window_s: typing.SupportsInt | typing.SupportsIndex = 60, settle_s: typing.SupportsInt | typing.SupportsIndex = 10, max_lag_s: typing.SupportsInt | typing.SupportsIndex = 300, report: str = '', status: str = '') -> tuple[str, dict]:
+    """
+    Internal: a registered C++ strategy's live point and variants over a journal as it is written (backtest/shadow.hpp); fastmm.shadow uses it.
+    """
+def _shadow_hot_strategy(journal: str, variants: list, programs: list, metadata: str, options: dict) -> tuple:
+    """
+    Internal: the live point and the variants of a compiled hot strategy over a journal as it is written (backtest/shadow.hpp); fastmm.shadow uses it.
     """
 def _shared_start(config: BacktestConfig) -> BacktestConfig:
     """
@@ -1995,5 +2007,5 @@ def walk_forward(config: BacktestConfig, grid: typing.Any, folds: typing.Support
     Walk-forward sweep: the points (a grid or a list, as in sweep) run on `folds` consecutive time slices of `data`, and the best point of fold i-1 by `metric` is scored on fold i. metric: net_pnl, realized_pnl, sharpe_bar, spread_captured_bps, or a callable of a BacktestResult returning a number, higher is better. Returns a dict: metric, folds (start_ts, end_ts, best, chosen, in_sample, out_of_sample, hindsight, scores, points), mean_in_sample, mean_out_of_sample, mean_hindsight, choice_changes and table (the printable report). folds=1 runs exactly fastmm.sweep. The synthetic market needs fill_model='l2_queue' for folds > 1. This entry point runs a registered C++ strategy; fastmm.walk_forward also takes a fastmm.Strategy class.
     """
 _SWEEP_SETTINGS: tuple = ('latency_fixed_us', 'latency_jitter_us', 'latency_md_us', 'latency_md_jitter_us', 'p_drop', 'queue_conservatism', 'maker_fee_bps', 'taker_fee_bps')
-__version__: str = '0.9.0'
+__version__: str = '0.10.1'
 _store_schema_version: int = 12

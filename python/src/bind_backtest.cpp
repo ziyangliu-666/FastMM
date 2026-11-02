@@ -15,6 +15,7 @@
 #include "fastmm/backtest/journal_source.hpp"
 #include "fastmm/backtest/replay.hpp"
 #include "fastmm/backtest/result.hpp"
+#include "fastmm/backtest/shadow.hpp"
 #include "fastmm/backtest/sweep.hpp"
 #include "fastmm/backtest/synthetic_source.hpp"
 
@@ -30,6 +31,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -998,6 +1000,83 @@ void bind_backtest(py::module_& m) {
       py::arg("slow") = py::none(),
       "Internal: backtest of a compiled hot strategy with the GIL released; use "
       "fastmm.run_backtest(config, data, strategy=MyStrategy).");
+
+  m.def(
+      "_journal_params",
+      [](const std::string& path) {
+        JournalReader r;
+        if (auto o = r.open_prologue(path); !o)
+          throw py::value_error("cannot read journal " + path + ": " + r.describe(o.error()));
+        const sim::RecordedSession none;
+        return bt::shadow_config(r, none, seconds(60)).params;
+      },
+      py::arg("path"),
+      "Internal: the strategy parameters a journal's embedded configuration sets, from its "
+      "prologue alone; fastmm.shadow uses it.");
+
+  m.def(
+      "_shadow",
+      [](const std::string& journal,
+         const py::object& variants,
+         int threads,
+         int window_s,
+         int settle_s,
+         int max_lag_s,
+         const std::string& report,
+         const std::string& status) {
+        bt::ShadowOptions o;
+        o.variants = parse_grid(variants).points;
+        o.threads = threads;
+        o.window = seconds(window_s);
+        o.settle = seconds(settle_s);
+        o.max_lag = seconds(max_lag_s);
+        o.report_path = report;
+        o.status_path = status;
+        std::atomic<bool> stop{false};
+        o.stop = &stop;
+        bt::Shadow shadow(std::move(o));
+        bt::ShadowSessionResult result;
+        std::exception_ptr error;
+        std::atomic<bool> finished{false};
+        {
+          const py::gil_scoped_release release;
+          std::thread worker([&] {
+            try {
+              result = shadow.session(journal);
+            } catch (...) {
+              error = std::current_exception();
+            }
+            finished.store(true);
+          });
+          while (!finished.load()) {
+            sleep_for(milliseconds(100));
+            const py::gil_scoped_acquire gil;
+            if (PyErr_CheckSignals() != 0) {
+              PyErr_Clear();
+              stop.store(true);
+            }
+          }
+          worker.join();
+        }
+        if (error) std::rethrow_exception(error);
+        py::dict out;
+        out["late"] = result.late;
+        out["late_start"] = result.late_start;
+        out["md_events"] = result.md_events;
+        out["windows"] = shadow.windows();
+        out["stopped"] = result.stopped;
+        return py::make_tuple(shadow.report_json(), out);
+      },
+      py::arg("journal"),
+      py::arg("variants"),
+      py::arg("threads") = 1,
+      py::arg("window_s") = 60,
+      py::arg("settle_s") = 10,
+      py::arg("max_lag_s") = 300,
+      py::arg("report") = "",
+      py::arg("status") = "",
+      "Internal: a registered C++ strategy's live point and variants over a journal as it is "
+      "written (backtest/shadow.hpp); fastmm.shadow uses it.");
 
   m.def(
       "sweep",

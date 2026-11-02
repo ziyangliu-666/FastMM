@@ -11,10 +11,12 @@
 #include "fastmm/backtest/multiverse.hpp"
 #include "fastmm/backtest/replay.hpp"
 #include "fastmm/backtest/result.hpp"
+#include "fastmm/backtest/shadow.hpp"
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/engine.hpp"
 #include "fastmm/core/engine_runner.hpp"
 #include "fastmm/core/enums.hpp"
+#include "fastmm/core/thread_utils.hpp"
 #include "fastmm/sim/param_schedule.hpp"
 #include "fastmm/sim/sim_backend.hpp"
 #include "fastmm/sim/sim_driver.hpp"
@@ -371,7 +373,99 @@ py::list sweep_hot_strategy(const std::vector<bt::BacktestConfig>& cfgs,
   return out;
 }
 
+// The points of a hot strategy over a journal as it is written (backtest/shadow.hpp): the reading
+// and the runs go on threads of their own, this one takes the GIL back to look for Ctrl-C.
+py::tuple shadow_hot_strategy(const std::string& journal,
+                              const bt::SweepPoints& variants,
+                              const py::list& programs,
+                              const std::string& strategy_meta,
+                              const py::dict& options) {
+  std::vector<std::unique_ptr<HotRun>> runs;
+  for (std::size_t i = 0; i < programs.size(); ++i) {
+    runs.push_back(
+        std::make_unique<HotRun>(programs[i].cast<py::dict>(), strategy_meta, py::none()));
+  }
+  std::atomic<bool> stop{false};
+  bt::ShadowOptions o;
+  o.variants = variants;
+  o.threads = options["threads"].cast<int>();
+  o.window = seconds(options["window_s"].cast<int>());
+  o.settle = seconds(options["settle_s"].cast<int>());
+  o.max_lag = seconds(options["max_lag_s"].cast<int>());
+  o.report_path = options["report"].cast<std::string>();
+  o.status_path = options["status"].cast<std::string>();
+  o.stop = &stop;
+  o.factory = [&](std::size_t i, const bt::BacktestConfig& cfg, sim::MdSource& source) {
+    HotRun& r = *runs[i];
+    r.build(cfg, &source);
+    bt::MultiverseRun out;
+    out.session = std::move(r.session);
+    out.runner = std::move(r.runner);
+    out.hooks = r.hooks;
+    out.strategy_name = cfg.strategy;
+    out.on_end = [&r] { r.end(); };
+    return out;
+  };
+  bt::Shadow shadow(std::move(o));
+  bt::ShadowSessionResult result;
+  std::exception_ptr error;
+  std::atomic<bool> finished{false};
+  {
+    const py::gil_scoped_release release;
+    const Running running;
+    std::thread worker([&] {
+      try {
+        result = shadow.session(journal);
+      } catch (...) {
+        error = std::current_exception();
+      }
+      finished.store(true);
+    });
+    while (!finished.load()) {
+      sleep_for(milliseconds(100));
+      const py::gil_scoped_acquire gil;
+      if (PyErr_CheckSignals() != 0) {
+        PyErr_Clear();
+        stop.store(true);
+      }
+    }
+    worker.join();
+  }
+  if (error) std::rethrow_exception(error);
+  py::dict out;
+  out["late"] = result.late;
+  out["late_start"] = result.late_start;
+  out["md_events"] = result.md_events;
+  out["windows"] = shadow.windows();
+  out["stopped"] = result.stopped;
+  return py::make_tuple(shadow.report_json(), out);
+}
+
 void bind_hot(py::module_& m) {
+  m.def(
+      "_shadow_hot_strategy",
+      [](const std::string& journal,
+         const py::list& variants,
+         const py::list& programs,
+         const std::string& metadata,
+         const py::dict& options) {
+        bt::SweepPoints points;
+        for (const py::handle v : variants) {
+          ParamMap p;
+          for (const auto& [k, x] : v.cast<py::dict>())
+            p[py::str(k).cast<std::string>()] = py::str(x).cast<std::string>();
+          points.push_back(std::move(p));
+        }
+        return shadow_hot_strategy(journal, points, programs, metadata, options);
+      },
+      py::arg("journal"),
+      py::arg("variants"),
+      py::arg("programs"),
+      py::arg("metadata"),
+      py::arg("options"),
+      "Internal: the live point and the variants of a compiled hot strategy over a journal as it "
+      "is written (backtest/shadow.hpp); fastmm.shadow uses it.");
+
   m.def(
       "_sweep_hot_strategy",
       [](const py::list& configs,
