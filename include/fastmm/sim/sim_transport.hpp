@@ -152,6 +152,10 @@ struct SimTransportConfig {
   // the engine follows our quantity in it (own_in_feed(), ctx.own_qty). The coupled generator's
   // book always holds them.
   bool own_orders_in_feed = true;
+  // A cancel of an order the venue no longer holds (Binance -2011) is followed by an open-order
+  // snapshot of that account (ReconcileMsg Begin, OpenOrder rows, End), as the Binance connector
+  // asks for one on that reject (VenueAction::Reconcile). Off: the reject alone.
+  bool reconcile_on_unknown_cancel = false;
 
   // The settings `v` runs with: its entry in `venues`, or the fields above.
   [[nodiscard]] SimVenueConfig venue_config(VenueId v) const noexcept {
@@ -211,6 +215,7 @@ struct SimTransportStats {
   std::uint64_t l3_unknown = 0;
   std::uint64_t cancel_acks = 0;
   std::uint64_t cancel_rejects = 0;
+  std::uint64_t reconciles = 0;  // open-order snapshots sent (reconcile_on_unknown_cancel)
   std::uint64_t expired = 0;
   std::uint64_t md_forwarded = 0;
   std::uint64_t md_delivered = 0;
@@ -609,7 +614,8 @@ class SimTransport final : public MatchingSink {
     Timestamp last_user_arrival{};
     OrderWindow orders_10s;  // SimVenueConfig::orders_10s / orders_1d
     OrderWindow orders_1d;
-    std::uint64_t taken = 0;  // new orders and replaces sent (OrderBudget::orders_taken)
+    std::uint64_t taken = 0;     // new orders and replaces sent (OrderBudget::orders_taken)
+    ClientOrderId last_taken{};  // the last new or replacement order that reached the venue
     bool md_recorded_arrival;
     std::uint8_t index = 0;          // in links_
     Duration order_service;          // SimVenueConfig::order_service
@@ -622,6 +628,8 @@ class SimTransport final : public MatchingSink {
 
   // venue-side order handling
   void venue_new(const OutNewOrderMsg& m, Timestamp now) noexcept;
+  // reconcile_on_unknown_cancel: the open orders of `l`'s account at `ts` as a snapshot.
+  void publish_open_orders(Link& l, Timestamp ts) noexcept;
   void venue_cancel(const OutCancelMsg& m, Timestamp now) noexcept;
   void venue_replace(const OutReplaceMsg& m, Timestamp now) noexcept;
   // The price at which `qty` costs what a market order for it on `side` pays sweeping the venue's

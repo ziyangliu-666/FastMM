@@ -348,7 +348,7 @@ std::vector<Duration> parse_horizons(const std::string& text) {
 }
 
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 40> kBacktestKeys = {"start_at",
+constexpr std::array<std::string_view, 41> kBacktestKeys = {"start_at",
                                                             "controls_from_journal",
                                                             "latency_from_journal",
                                                             "latency_fill_us",
@@ -386,6 +386,7 @@ constexpr std::array<std::string_view, 40> kBacktestKeys = {"start_at",
                                                             "md_arrival",
                                                             "balances_from_journal",
                                                             "own_orders_in_feed",
+                                                            "reconcile_on_unknown_cancel",
                                                             "reorder_window_ms",
                                                             "transfer_latency_ms"};
 
@@ -494,6 +495,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   if (transfer_ms < 0) throw ConfigError("backtest.transfer_latency_ms must be >= 0");
   b.transfer_latency = milliseconds(transfer_ms);
   t.own_orders_in_feed = bt.get_bool("own_orders_in_feed", true);
+  t.reconcile_on_unknown_cancel = bt.get_bool("reconcile_on_unknown_cancel", false);
   b.balances_from_journal = bt.get_bool("balances_from_journal", false);
   b.positions = read_positions(bt, b.instruments);
   if (bt.has("start_at")) {

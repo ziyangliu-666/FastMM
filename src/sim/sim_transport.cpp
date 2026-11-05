@@ -233,6 +233,17 @@ void SimTransport::process_order_arrival() noexcept {
     }
     return;
   }
+  if (cfg_.reconcile_on_unknown_cancel) {
+    if (h->type == EventType::OutNewOrder) {
+      const auto& m = msg_cast<OutNewOrderMsg>(h);
+      Link& l = link_for(m.hdr);
+      if (m.cl_ord_id.value > l.last_taken.value) l.last_taken = m.cl_ord_id;
+    } else if (h->type == EventType::OutReplace) {
+      const auto& m = msg_cast<OutReplaceMsg>(h);
+      Link& l = order_link(m.orig_cl_ord_id, m.hdr.instrument);
+      if (m.cl_ord_id.value > l.last_taken.value) l.last_taken = m.cl_ord_id;
+    }
+  }
   switch (h->type) {
     case EventType::OutNewOrder:
       venue_new(msg_cast<OutNewOrderMsg>(h), now);
@@ -1269,6 +1280,62 @@ void SimTransport::emit_cancel_reject(ClientOrderId id,
   m.venue_code = -2011;  // Binance: unknown order sent
   m.text = "Unknown order sent.";
   push_order_wire(l, m.hdr, ts);
+  if (cfg_.reconcile_on_unknown_cancel) publish_open_orders(l, ts);
+}
+// The account's open orders as the venue holds them at `ts`, behind the reject on the order wire.
+// The watermark is the last order the venue had taken, so the engine leaves later ones alone.
+void SimTransport::publish_open_orders(Link& l, Timestamp ts) noexcept {
+  ++stats_.reconciles;
+  const auto push = [&](ReconcileMsg& m) {
+    m.hdr.venue = l.id;
+    m.hdr.exch_ts = ts;
+    const Timestamp arrival = std::max(l.last_order_arrival, ts);
+    l.last_order_arrival = arrival;
+    m.hdr.recv_ts = arrival;
+    m.hdr.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
+    m.hdr.seq = 0;
+    if (!wire_push(l, kOrderWire, m.hdr)) ++stats_.wire_full;
+  };
+  ReconcileMsg begin{};
+  init_header(begin, EventType::Reconcile, InstrumentId{}, l.id);
+  begin.kind = ReconcileMsg::Kind::Begin;
+  begin.flags = ReconcileMsg::kSentWatermark | ReconcileMsg::kExecutionsExact;
+  begin.sent_watermark = l.last_taken;
+  push(begin);
+  const auto row = [&](ClientOrderId id,
+                       std::uint64_t order_id,
+                       InstrumentId inst,
+                       Side side,
+                       Price px,
+                       Qty qty,
+                       Qty cum) {
+    if (&order_link(id, inst) != &l) return;
+    ReconcileMsg m{};
+    init_header(m, EventType::Reconcile, inst, l.id);
+    m.kind = ReconcileMsg::Kind::OpenOrder;
+    m.side = side;
+    m.state = cum.is_positive() ? OrderState::PartiallyFilled : OrderState::Live;
+    m.cl_ord_id = id;
+    put_decimal(m.venue_order_id, order_id);
+    m.price = px;
+    m.orig_qty = qty;
+    m.cum_qty = cum;
+    push(m);
+  };
+  if (queue_mode()) {
+    queue_.for_each([&](QueuePositionModel::Handle32, const QueuedOrder& o) {
+      row(o.cl_ord_id, o.order_id, o.instrument, o.side, o.price, o.qty, o.cum_qty);
+    });
+  } else if (me_ != nullptr) {
+    me_->for_each_open_order([&](const SimOrder& o) {
+      if (o.account == kStrategyAccount)
+        row(o.cl_ord_id, o.order_id, o.instrument, o.side, o.price, o.qty, o.cum_qty);
+    });
+  }
+  ReconcileMsg end{};
+  init_header(end, EventType::Reconcile, InstrumentId{}, l.id);
+  end.kind = ReconcileMsg::Kind::End;
+  push(end);
 }
 void SimTransport::emit_expired(
     ClientOrderId id, std::uint64_t order_id, InstrumentId inst, Qty cum, Timestamp ts) noexcept {

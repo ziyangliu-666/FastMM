@@ -110,6 +110,8 @@ struct Venue {
       if (h->type == EventType::OrderCancelAck) cancels.push_back(h->exch_ts);
       if (h->type == EventType::OrderFill)
         filled.push_back(reinterpret_cast<const OrderFillMsg*>(h)->cl_ord_id.value);
+      if (h->type == EventType::Reconcile)
+        recon.push_back(*reinterpret_cast<const ReconcileMsg*>(h));
       feed.release();
     }
   }
@@ -121,6 +123,7 @@ struct Venue {
   std::vector<Timestamp> acks;
   std::vector<Timestamp> cancels;
   std::vector<std::uint64_t> filled;
+  std::vector<ReconcileMsg> recon;
 };
 
 }  // namespace
@@ -196,4 +199,35 @@ TEST_CASE("sim.order_service: a cancel takes its own latency when one is given")
   x.run(5000);
   REQUIRE(x.cancels.size() == 1);
   CHECK(x.cancels[0] == at(1040));
+}
+
+TEST_CASE(
+    "sim.order_service: a cancel the venue refuses as unknown brings an open-order snapshot") {
+  for (const bool on : {false, true}) {
+    CAPTURE(on);
+    sim::SimTransportConfig c = config();
+    c.reconcile_on_unknown_cancel = on;
+    Venue x(c);
+    x.bid(0, 1, "99.70");
+    x.bid(0, 2, "99.60");
+    x.run(1000);
+    REQUIRE(x.acks.size() == 2);
+    x.cancel(2000, 7);        // the venue holds no order 7 (one that filled, in a live race)
+    x.bid(2000, 3, "99.50");  // sent with it, taken in after: above the watermark
+    x.run(3000);
+    if (!on) {
+      CHECK(x.recon.empty());
+      continue;
+    }
+    REQUIRE(x.recon.size() == 4);
+    CHECK(x.recon[0].kind == ReconcileMsg::Kind::Begin);
+    CHECK((x.recon[0].flags & ReconcileMsg::kSentWatermark) != 0);
+    CHECK(x.recon[0].sent_watermark == ClientOrderId{2});
+    CHECK(x.recon[1].kind == ReconcileMsg::Kind::OpenOrder);
+    CHECK(x.recon[2].kind == ReconcileMsg::Kind::OpenOrder);
+    CHECK(x.recon[1].cl_ord_id.value + x.recon[2].cl_ord_id.value == 3);  // orders 1 and 2
+    CHECK(x.recon[1].orig_qty == qt("0.1"));
+    CHECK(x.recon[3].kind == ReconcileMsg::Kind::End);
+    CHECK(x.v.stats().reconciles == 1);
+  }
 }
