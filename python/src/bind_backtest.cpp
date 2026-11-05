@@ -258,6 +258,7 @@ py::dict transport_dict(const sim::SimTransportStats& s) {
   d["md_forwarded"] = s.md_forwarded;
   d["md_delivered"] = s.md_delivered;
   d["own_levels"] = s.own_levels;
+  d["own_tickers"] = s.own_tickers;
   d["order_events_delivered"] = s.order_events_delivered;
   d["fees_charged"] = raw_to_float(s.fees_charged.raw);
   return d;

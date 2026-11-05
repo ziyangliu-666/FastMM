@@ -35,8 +35,11 @@
 //     own_orders_in_feed the feed shows the strategy's resting orders, as a live venue's does:
 //     the recorded messages go out as recorded, and when our resting quantity on an instrument
 //     changed, an OwnLevelsMsg with our quantity at the prices that changed goes right ahead of
-//     the instrument's next message, at its arrival. The engine shows it in its book and tickers
-//     (Engine::show_own), so every run over the same data reads the same recorded messages.
+//     the instrument's next message, at its arrival. Under the queue models an order of ours that
+//     rests at or inside the recorded touch, or leaves it, does not wait: it goes out at once with
+//     a synthetic ticker of the recorded touch (own_touch), as a live venue's ticker shows it. The
+//     engine shows it in its book and tickers (Engine::show_own), so every run over the same data
+//     reads the same recorded messages.
 #include "fastmm/core/account_pool.hpp"
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
@@ -211,7 +214,8 @@ struct SimTransportStats {
   std::uint64_t expired = 0;
   std::uint64_t md_forwarded = 0;
   std::uint64_t md_delivered = 0;
-  std::uint64_t own_levels = 0;  // OwnLevels messages: our quantity in the feed changed
+  std::uint64_t own_levels = 0;   // OwnLevels messages: our quantity in the feed changed
+  std::uint64_t own_tickers = 0;  // book tickers sent because our order changed the touch
   std::uint64_t order_events_delivered = 0;
   Notional fees_charged{};
 };
@@ -723,6 +727,12 @@ class SimTransport final : public MatchingSink {
   // Our orders in the recorded feed (own_orders_in_feed): note_own() marks a level of ours that
   // changed; the instrument's next message carries the change (own_levels()).
   void note_own(InstrumentId id, Side side, Price px) noexcept;
+  // A live venue's book ticker goes out as soon as the touch changes, our own orders' changes
+  // included, not with the instrument's next recorded message: an order of ours that rests at or
+  // inside the recorded touch, or leaves it, sends a ticker of the recorded touch at venue time
+  // `now` (synthetic), with our quantity ahead of it (own_levels()); the engine shows ours in it.
+  // The queue fill models only: under the matching model our quantity follows the next message.
+  void own_touch(InstrumentId id, Side side, Price px, Timestamp now) noexcept;
   // Our resting quantity at a price, from the fill model.
   [[nodiscard]] Qty model_own_at(InstrumentId id, Side side, Price px) const noexcept;
   // Venue of an instrument; an unknown one (a cancel of an order the venue never saw) goes

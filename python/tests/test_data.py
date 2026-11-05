@@ -106,7 +106,8 @@ def test_run_backtest_accepts_a_source_spec(tmp_path, example_config):
     spec = f"binance:BTCUSDT,2024-03-27,trades=false,dir={tmp_path}"
 
     result = fastmm.run_backtest(example_config, data=spec, strategy="basic_mm")
-    assert result.md_events == 2 + result.transport_stats()["own_levels"]
+    ts = result.transport_stats()
+    assert result.md_events == 2 + ts["own_levels"] + ts["own_tickers"]
 
     out = tmp_path / "day.fmj"
     assert fastmm.convert_data(spec, str(out), example_config) == 2

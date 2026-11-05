@@ -26,7 +26,8 @@ def test_basic_mm_exact_reproduces_the_committed_fixture_hash(example_config):
     assert cpp.outbound_sha256 == expected
     assert py.outbound_sha256 == expected
     assert py.outbound_messages == cpp.outbound_messages > 0
-    assert py.md_events == cpp.md_events == 1000 + cpp.transport_stats()["own_levels"]
+    ts = cpp.transport_stats()
+    assert py.md_events == cpp.md_events == 1000 + ts["own_levels"] + ts["own_tickers"]
     assert py.strategy == "py:BasicMMExact"
     assert py.params["quote_qty"] == "0.002" and py.params["levels"] == "1"
 

@@ -16,7 +16,7 @@
 <!-- output: tutorial-backtest --config configs/backtest-example.toml --data synthetic --strategy first_mm --param edge_bps=0.002 --seed 7 --duration 60 --out runs/tutorial/backtest --journal-out runs/tutorial/backtest.fmj -->
 ```text
 tutorial-backtest: note: ignoring [strategy.params] of 'basic_mm' for --strategy first_mm
-backtest first_mm  seed=7  md_events=16108  steps=17797  wall=0.03s
+backtest first_mm  seed=7  md_events=16752  steps=18441  wall=0.03s
   net pnl                        -25.8169
   fills (maker / taker)          491 (491 / 0)
   ...
@@ -64,10 +64,10 @@ Open the file in a browser. It shows the equity curve and the inventory on one t
 
 <!-- output: tutorial-replay --journal runs/tutorial/backtest.fmj --verify -->
 ```text
-journal  runs/tutorial/backtest.fmj: format v5, 19065 messages (16108 market data, 1198 outbound), rng_seed 1, strategy 'first_mm'
+journal  runs/tutorial/backtest.fmj: format v5, 19709 messages (16752 market data, 1198 outbound), rng_seed 1, strategy 'first_mm'
 session  epoch 1, quoting enabled, cancel-replace venues 0, engine clock recorded
 config   embedded in the journal (hash 6ada6230f2657be1)
-replay   strategy=first_mm events=17803
+replay   strategy=first_mm events=18447
 recorded outbound 1198 msgs sha256 72b6e437ae296cb2bb1472f3a77e244dd6ce8da08690c8704ebe023cf857d75a
 replayed outbound 1198 msgs sha256 72b6e437ae296cb2bb1472f3a77e244dd6ce8da08690c8704ebe023cf857d75a
 replay MATCH

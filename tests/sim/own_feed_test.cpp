@@ -74,6 +74,16 @@ std::vector<Msg> drain(sim::SimTransport& v, SimClock& clock, InlineFeed& feed, 
   return out;
 }
 
+// The market data among them (the order answers left out).
+std::vector<Msg> md(std::vector<Msg> v) {
+  std::erase_if(v, [](const Msg& m) {
+    const EventType t = m.hdr().type;
+    return t != EventType::OwnLevels && t != EventType::BookTicker && t != EventType::BookDelta &&
+           t != EventType::BookSnapshot && t != EventType::Trade;
+  });
+  return v;
+}
+
 void depth(sim::SimTransport& v,
            std::int64_t us,
            std::initializer_list<Level> bids,
@@ -157,8 +167,8 @@ sim::SimTransportConfig config(sim::FillModel model, bool own) {
 
 }  // namespace
 
-TEST_CASE("sim.own_feed: our resting quantity follows the instrument's next message") {
-  for (const sim::FillModel model : {sim::FillModel::L2Queue, sim::FillModel::Matching}) {
+TEST_CASE("sim.own_feed: an order of ours at or inside the touch goes out at once, with a ticker") {
+  for (const sim::FillModel model : {sim::FillModel::L2Queue}) {
     CAPTURE(static_cast<int>(model));
     const InstrumentTable t = table();
     SimClock clock{at(0)};
@@ -169,54 +179,87 @@ TEST_CASE("sim.own_feed: our resting quantity follows the instrument's next mess
     ticker(v, 10, "99.00", "101.00");
     static_cast<void>(drain(v, clock, feed, at(20)));
 
-    // A bid inside the spread rests at 110 us; nothing goes out until the instrument's next
-    // message, which goes out as recorded, right behind our quantity at its arrival.
+    // A bid inside the spread rests: a live venue's ticker shows the new touch at once, so our
+    // quantity goes out with a ticker of the recorded touch, which the engine shows ours in.
     REQUIRE(v.send(bid(1, "99.50", "0.3").hdr));
-    std::vector<Msg> w = drain(v, clock, feed, at(1000));
-    CHECK(find(w, EventType::OwnLevels) == nullptr);
-    ticker(v, 1100, "99.00", "101.00");
-    w = drain(v, clock, feed, at(2000));
+    std::vector<Msg> w = md(drain(v, clock, feed, at(1000)));
     REQUIRE(w.size() == 2);
     REQUIRE(w[0].hdr().type == EventType::OwnLevels);
     const auto& o = w[0].as<OwnLevelsMsg>();
     CHECK(o.bid_count == 1);
     CHECK(o.ask_count == 0);
     CHECK(level(o, Side::Buy, px("99.50")) == qt("0.3"));
-    CHECK(w[0].hdr().exch_ts == at(1100));
     CHECK(w[0].hdr().recv_ts == w[1].hdr().recv_ts);
+    CHECK(w[0].hdr().exch_ts == w[1].hdr().exch_ts);
     CHECK((w[0].hdr().flags & EventHeader::kSynthetic) != 0);
-    CHECK(w[1].hdr().type == EventType::BookTicker);
+    REQUIRE(w[1].hdr().type == EventType::BookTicker);
+    CHECK((w[1].hdr().flags & EventHeader::kSynthetic) != 0);
     CHECK(w[1].as<BookTickerMsg>().bid_px == px("99.00"));
+    CHECK(w[1].as<BookTickerMsg>().bid_qty == qt("1"));
+    CHECK(w[1].as<BookTickerMsg>().ask_px == px("101.00"));
     CHECK(w[1].hdr().venue_seq == 7);
     CHECK(v.stats().own_levels == 1);
+    CHECK(v.stats().own_tickers == 1);
+    // The instrument's next message goes out as recorded, nothing ahead of it.
+    ticker(v, 1100, "99.00", "101.00");
+    w = md(drain(v, clock, feed, at(2000)));
+    REQUIRE(w.size() == 1);
+    CHECK((w[0].hdr().flags & EventHeader::kSynthetic) == 0);
 
-    // A second bid at the recorded 99.00: only what changed goes out.
+    // A second bid at the recorded 99.00, the touch: the same, only what changed.
     REQUIRE(v.send(bid(2, "99.00", "0.2").hdr));
-    static_cast<void>(drain(v, clock, feed, at(3000)));
-    depth(v, 3100, {{px("98.00"), qt("3")}}, {});
-    w = drain(v, clock, feed, at(4000));
+    w = md(drain(v, clock, feed, at(3000)));
     REQUIRE(w.size() == 2);
-    CHECK(level(w[1].as<BookDeltaMsg>(), Side::Buy, px("98.00")) == qt("3"));
-    CHECK(level(w[1].as<BookDeltaMsg>(), Side::Buy, px("99.00")) == Qty::from_raw(-1));
     const auto& o2 = w[0].as<OwnLevelsMsg>();
     CHECK(o2.bid_count == 1);
     CHECK(level(o2, Side::Buy, px("99.00")) == qt("0.2"));
+    CHECK(w[1].hdr().type == EventType::BookTicker);
+    depth(v, 3100, {{px("98.00"), qt("3")}}, {});
+    w = md(drain(v, clock, feed, at(4000)));
+    REQUIRE(w.size() == 1);
+    CHECK(level(w[0].as<BookDeltaMsg>(), Side::Buy, px("98.00")) == qt("3"));
+    CHECK(level(w[0].as<BookDeltaMsg>(), Side::Buy, px("99.00")) == Qty::from_raw(-1));
 
-    // Cancelled: both levels go to zero with the next message; then nothing more.
+    // Cancelled: each leaves the touch, and each goes out with a ticker; then nothing more.
     REQUIRE(v.send(cancel(1).hdr));
     REQUIRE(v.send(cancel(2).hdr));
-    static_cast<void>(drain(v, clock, feed, at(5000)));
+    w = md(drain(v, clock, feed, at(5000)));
+    REQUIRE(w.size() == 4);
+    CHECK(level(w[0].as<OwnLevelsMsg>(), Side::Buy, px("99.50")).is_zero());
+    CHECK(w[1].hdr().type == EventType::BookTicker);
+    CHECK(level(w[2].as<OwnLevelsMsg>(), Side::Buy, px("99.00")).is_zero());
+    CHECK(w[3].hdr().type == EventType::BookTicker);
     depth(v, 5100, {}, {{px("101.00"), qt("2")}});
-    w = drain(v, clock, feed, at(6000));
-    REQUIRE(w.size() == 2);
-    const auto& o3 = w[0].as<OwnLevelsMsg>();
-    CHECK(o3.bid_count == 2);
-    CHECK(level(o3, Side::Buy, px("99.50")).is_zero());
-    CHECK(level(o3, Side::Buy, px("99.00")).is_zero());
-    depth(v, 6100, {}, {{px("101.00"), qt("3")}});
-    w = drain(v, clock, feed, at(7000));
+    w = md(drain(v, clock, feed, at(6000)));
     CHECK(w.size() == 1);
-    CHECK(v.stats().own_levels == 3);
+    CHECK(v.stats().own_levels == 4);
+    CHECK(v.stats().own_tickers == 4);
+  }
+}
+
+TEST_CASE(
+    "sim.own_feed: an order behind the touch, or any under the matching model, follows the "
+    "instrument's next message") {
+  for (const bool matching : {false, true}) {
+    CAPTURE(matching);
+    const InstrumentTable t = table();
+    SimClock clock{at(0)};
+    sim::SimTransport v(
+        clock, t, config(matching ? sim::FillModel::Matching : sim::FillModel::L2Queue, true));
+    InlineFeed feed(1 << 20);
+    depth(v, 0, {{px("99.00"), qt("1")}, {px("98.00"), qt("2")}}, {{px("101.00"), qt("1")}}, true);
+    ticker(v, 10, "99.00", "101.00");
+    static_cast<void>(drain(v, clock, feed, at(20)));
+    const char* p = matching ? "99.50" : "98.50";
+    REQUIRE(v.send(bid(1, p, "0.3").hdr));
+    std::vector<Msg> w = md(drain(v, clock, feed, at(1000)));
+    CHECK(w.empty());
+    depth(v, 1100, {{px("98.00"), qt("3")}}, {});
+    w = md(drain(v, clock, feed, at(2000)));
+    REQUIRE(w.size() == 2);
+    CHECK(level(w[0].as<OwnLevelsMsg>(), Side::Buy, px(p)) == qt("0.3"));
+    CHECK(w[0].hdr().exch_ts == at(1100));
+    CHECK(v.stats().own_tickers == 0);
   }
 }
 

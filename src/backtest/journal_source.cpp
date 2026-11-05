@@ -117,7 +117,8 @@ JournalSource::JournalSource(const std::string& path,
     r.for_each([&](const EventHeader* h) {
       latency.on_event(*h);
       recorder.add(*h);
-      if ((h->flags & EventHeader::kOutbound) != 0 || !is_market_data(h->type)) return;
+      if ((h->flags & EventHeader::kOutbound) != 0 || !is_market_data(h->type) || own_ticker(*h))
+        return;
       if (md_events_ == 0) first_ts_ = h->exch_ts.valid() ? h->exch_ts : h->recv_ts;
       ++md_events_;
     });
@@ -187,7 +188,8 @@ const EventHeader* JournalSource::next() {
       ++at_;
       continue;
     }
-    if (!is_market_data(h->type) || (h->flags & EventHeader::kOutbound) != 0) continue;
+    if (!is_market_data(h->type) || (h->flags & EventHeader::kOutbound) != 0 || own_ticker(*h))
+      continue;
     if (stripper_) {
       h = stripper_->strip(*h, buf_);
       if (h == nullptr) continue;

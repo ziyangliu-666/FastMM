@@ -13,6 +13,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: `[engine] quote_room_reserve`: a quote is not moved towards the touch while the account it rests on has no more than this many orders left in its venue order windows; the resting order stays instead of a cancel whose new order the window refuses (default 0, -1 off).
 
 ### Changed
+- sim: under the queue fill models an order of ours that rests at or inside the touch, or leaves it, goes out in the feed at once with a ticker of the touch, as a live venue's book ticker shows it, instead of with the instrument's next recorded message.
 - backtest: `initial_state = "journal"` over a journal that begins at the session's start takes no periodic checkpoint from after its first order for the start's state.
 - backtest: a sweep's point with `params_from_journal` keeps the parameters it sets against the journal's updates.
 

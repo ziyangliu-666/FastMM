@@ -82,7 +82,7 @@ The first command lists the built-in strategies with their parameters. The secon
 
 <!-- output: fastmm-backtest --config configs/backtest-example.toml --data synthetic --out - -->
 ```text
-backtest basic_mm  seed=1  md_events=15955  steps=16745  wall=0.01s
+backtest basic_mm  seed=1  md_events=16032  steps=16822  wall=0.01s
   net pnl                        -12.1548
   realized / unrealized / fees   0.0086 / 0.0001 / 12.1635
   fills (maker / taker)          147 (147 / 0)

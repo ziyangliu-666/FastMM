@@ -266,9 +266,11 @@ RunResult run_on_source(const std::vector<std::vector<std::byte>>& msgs,
   driver.run_all();
   driver.finish();
   CHECK(driver.stats().source_events == msgs.size());
-  // Every recorded message, and our quantity each time it changed.
+  // Every recorded message, our quantity each time it changed, and a ticker each time ours
+  // changed the touch.
   CHECK(transport.stats().own_levels > 0);
-  CHECK(transport.stats().md_forwarded == msgs.size() + transport.stats().own_levels);
+  CHECK(transport.stats().md_forwarded ==
+        msgs.size() + transport.stats().own_levels + transport.stats().own_tickers);
   CHECK(engine->stats().book_updates > 10);
   CHECK(engine->stats().orders_sent > 0);
   CHECK(transport.stats().wire_full == 0);

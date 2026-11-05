@@ -20,7 +20,8 @@ def test_parity_with_cpp_golden_fixture(example_config):
     expected = FIXTURE_SHA.read_text().strip()
     assert result.outbound_sha256 == expected
     # the recorded events and a book ticker each time our orders moved the top of book
-    assert result.md_events == 1000 + result.transport_stats()["own_levels"]
+    ts = result.transport_stats()
+    assert result.md_events == 1000 + ts["own_levels"] + ts["own_tickers"]
     assert result.strategy == "basic_mm"
 
 

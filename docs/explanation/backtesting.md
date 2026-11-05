@@ -48,6 +48,8 @@ A live venue's depth and book ticker show our resting orders, so a strategy read
 
 Without it a strategy acts on a book a live venue never showed. `lead_mm` never improves on its own order, because a live book shows it at the touch. When the level it had improved on goes, a feed without our order shows the next level as the touch, and the strategy chases it down and back with a cancel and a new order each time.
 
+A live venue also publishes a book ticker the moment the touch changes, ours included: an order of ours that rests at or inside the touch, or leaves it, shows in the next ticker about a millisecond later. Under the queue fill models the simulated venue does the same. Such an order goes out at once, as a ticker of the recorded touch at the order's venue time with our quantity in it, instead of waiting for the instrument's next recorded message, which on a thin book can be seconds away. A strategy that reacts to the touch then sees its own quote arrive and leave as it would live; one whose own quotes feed back into its decisions repeats that loop in the backtest too. The simulator counts them (`own_tickers` in its transport statistics). An order behind the touch, and every order under the matching model, still shows with the instrument's next message.
+
 The recorded messages themselves are never changed, so every run over the same data reads the same messages ([Many runs in one pass](#many-runs-in-one-pass)). `ctx.own_qty` follows our quantity in the feed as on a live venue.
 
 ## Venue time

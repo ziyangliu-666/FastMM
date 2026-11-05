@@ -17,8 +17,9 @@
 // ask was only ours is dropped. Public trades are kept, our own fills included: the aggressor
 // existed whether or not our order did, and without it would have traded with the next order at
 // that price, which is what a simulated order there stands for. A backtest's journal from format
-// v5 on has nothing of ours in its market data (our quantity is in its OwnLevels records, which a
-// source never reads), so strip_own leaves it as it is.
+// v5 on has nothing of ours in its market data (our quantity is in its OwnLevels records, and the
+// tickers its simulated venue sent for our orders are flagged kSynthetic; a source reads neither),
+// so strip_own leaves it as it is.
 //
 // remap: the journal numbers its instruments as the recording session did, so two recordings of
 // different instrument sets both count from 0 and, merged, overwrite each other's books. Given the
@@ -77,6 +78,11 @@ class JournalSource final : public MdSource {
   [[nodiscard]] static bool is_market_data(EventType t) noexcept {
     return t == EventType::BookDelta || t == EventType::BookSnapshot || t == EventType::Trade ||
            t == EventType::BookTicker || t == EventType::OptionTicker || t == EventType::PerpState;
+  }
+  // A ticker a backtest's simulated venue sent because our order changed the touch: ours, as the
+  // journal's OwnLevels records are, not the market's.
+  [[nodiscard]] static bool own_ticker(const EventHeader& h) noexcept {
+    return h.type == EventType::BookTicker && (h.flags & EventHeader::kSynthetic) != 0;
   }
 
  private:

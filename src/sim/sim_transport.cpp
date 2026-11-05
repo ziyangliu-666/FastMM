@@ -972,6 +972,7 @@ void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
   queue_.get(h).crossed = cum;
   queue_.get(h).prio = (world_->l3_arrivals() << SimWorld::kPrioShift) | ++own_arrivals_;
   note_own(id, n.side, n.price);
+  own_touch(id, n.side, n.price, now);
 }
 
 void SimTransport::queue_cancel(ClientOrderId id, InstrumentId route, Timestamp now) noexcept {
@@ -984,6 +985,7 @@ void SimTransport::queue_cancel(ClientOrderId id, InstrumentId route, Timestamp 
   queue_remove(h);
   note_own(o.instrument, o.side, o.price);
   emit_cancel_ack(o.cl_ord_id, o.order_id, o.instrument, o.cum_qty, now);
+  own_touch(o.instrument, o.side, o.price, now);
 }
 
 void SimTransport::queue_replace(const OutReplaceMsg& m, Timestamp now) noexcept {
@@ -1000,12 +1002,14 @@ void SimTransport::queue_replace(const OutReplaceMsg& m, Timestamp now) noexcept
       note_own(o.instrument, o.side, o.price);
       emit_cancel_ack(o.cl_ord_id, o.order_id, o.instrument, o.cum_qty, now);
       emit_ack(m.cl_ord_id, new_order_id, o.instrument, now);
+      own_touch(o.instrument, o.side, o.price, now);
       return;
     }
   }
   queue_remove(h);
   note_own(o.instrument, o.side, o.price);
   emit_cancel_ack(o.cl_ord_id, o.order_id, o.instrument, o.cum_qty, now);
+  own_touch(o.instrument, o.side, o.price, now);
   NewOrder n;
   n.account = kStrategyAccount;
   n.cl_ord_id = m.cl_ord_id;
@@ -1472,6 +1476,45 @@ void SimTransport::note_own(InstrumentId id, Side side, Price px) noexcept {
   if (std::find(changed.begin(), changed.end(), key) != changed.end()) return;
   if (changed.empty() && watch_ != nullptr) watch_->on_own_changed(watch_run_, id);
   changed.push_back(key);
+}
+
+void SimTransport::own_touch(InstrumentId id, Side side, Price px, Timestamp now) noexcept {
+  if (own_feed_ == nullptr || touch_ == nullptr || id.value >= instruments_.size()) return;
+  const QueueTouch& t = touch_[id.value];
+  if (!t.valid()) return;
+  const Price top = t.px(side);
+  if (top.is_positive() && (side == Side::Buy ? px < top : px > top)) return;
+  // A side whose recorded level was only ours shows no quantity of others: nothing to send.
+  if ((t.bid_px.is_positive() && t.bid_qty.is_zero()) ||
+      (t.ask_px.is_positive() && t.ask_qty.is_zero()))
+    return;
+  BookTickerMsg m{};
+  init_header(m, EventType::BookTicker, id, link(id).id);
+  m.hdr.flags |= EventHeader::kSynthetic;
+  m.hdr.venue_seq = t.id;
+  m.bid_px = t.bid_px;
+  m.bid_qty = t.bid_qty;
+  m.ask_px = t.ask_px;
+  m.ask_qty = t.ask_qty;
+  // On the order wire, behind the order's own answer: a run of a multiverse that shares its
+  // recorded feed with others has that wire to itself, and its draws of the feed's latency stay
+  // those of the recorded messages.
+  Link& l = link(id);
+  const Timestamp arrival = std::max(now + l.lat.md_in_params().fixed, l.last_order_arrival);
+  l.last_order_arrival = arrival;
+  const auto push = [&](EventHeader& h) {
+    h.exch_ts = now;
+    h.recv_ts = arrival;
+    h.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
+    h.t1_delta = h.t2_delta = 0;
+    h.seq = 0;
+    if (!wire_push(l, kOrderWire, h)) ++stats_.wire_full;
+  };
+  if (const OwnLevelsMsg* own = own_levels(id, now); own != nullptr)
+    push(own_buf_->as<OwnLevelsMsg>().hdr);
+  push(m.hdr);
+  ++stats_.own_tickers;
+  ++stats_.md_forwarded;
 }
 
 const OwnLevelsMsg* SimTransport::own_levels(InstrumentId id, Timestamp now) noexcept {

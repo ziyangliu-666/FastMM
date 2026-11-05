@@ -726,6 +726,7 @@ std::string result_difference(const BacktestResult& a, const BacktestResult& b) 
   val("transport.md_forwarded", a.transport.md_forwarded, b.transport.md_forwarded);
   val("transport.md_delivered", a.transport.md_delivered, b.transport.md_delivered);
   val("transport.own_levels", a.transport.own_levels, b.transport.own_levels);
+  val("transport.own_tickers", a.transport.own_tickers, b.transport.own_tickers);
   val("transport.l3_events", a.transport.l3_events, b.transport.l3_events);
   val("metrics.orders", a.metrics.orders, b.metrics.orders);
   val("metrics.cancels", a.metrics.cancels, b.metrics.cancels);

@@ -254,7 +254,8 @@ bool FollowSource::fetch() {
         if (!writer_gone_) return false;
         continue;
       }
-      if ((h->flags & EventHeader::kOutbound) != 0 || !JournalSource::is_market_data(h->type))
+      if ((h->flags & EventHeader::kOutbound) != 0 || !JournalSource::is_market_data(h->type) ||
+          JournalSource::own_ticker(*h))
         continue;
       held_ = h;
     }
