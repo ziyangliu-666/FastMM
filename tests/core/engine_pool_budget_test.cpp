@@ -58,15 +58,17 @@ struct PoolOutbox {
     return true;
   }
   // The connector of `v` publishes `used` of `limit` in its 10 s window, having taken `taken`;
-  // `cap`: the count its rate limiter stops at (negative: the limit).
+  // `cap`: the count its rate limiter stops at (negative: the limit); `ends_ns`: when the window
+  // rolls (0: unknown).
   void publish(VenueId v,
                std::int64_t used,
                std::int64_t limit,
                std::uint64_t taken,
-               std::int64_t cap = -1) {
+               std::int64_t cap = -1,
+               std::int64_t ends_ns = 0) {
     OrderBudget b;
     b.venue_known = true;
-    b.orders_10s = RateWindow{10'000, used, limit, cap};
+    b.orders_10s = RateWindow{10'000, used, limit, cap, ends_ns};
     b.orders_taken = taken;
     budget[v.value].store(b);
   }
@@ -644,4 +646,105 @@ TEST_CASE("core.engine pool: without a published budget a quote always moves") {
   REQUIRE(ctx.set_quotes(kBtc, Fixture::two_sided(kMember1, "99.60", "100.40")));
   CHECK(f.transport.count(EventType::OutCancel) == 2);
   CHECK(f.engine->quote_manager().stats().kept_room == 0);
+}
+
+TEST_CASE("core.engine pool: a full window says when it frees, and is read empty once it has") {
+  Fixture f;
+  auto& ctx = f.engine->context();
+  const std::int64_t now = f.clock.now().ns;
+  for (const VenueId v : {kPrimary, kMember2}) f.transport.publish(v, 0, 100, 0, 90);
+  f.transport.publish(kMember1, 90, 100, 0, 90, now + seconds(3).ns);
+  CHECK(ctx.order_budget(kMember1).wait_ns == seconds(3).ns);
+  CHECK(ctx.order_budget(kMember2).wait_ns == 0);
+  CHECK(ctx.send(Fixture::buy().account(kMember1)).error() == RejectReason::RateLimit);
+  f.clock.advance(seconds(1));
+  CHECK(ctx.order_budget(kMember1).wait_ns == seconds(2).ns);
+  // The window has rolled; the connector has not published since. The engine reads it empty and
+  // the next window's end.
+  f.clock.advance(seconds(2));
+  const OrderBudget b = ctx.order_budget(kMember1);
+  CHECK(b.orders_10s.used == 0);
+  CHECK(b.orders_10s.ends_ns == now + seconds(13).ns);
+  CHECK(b.wait_ns == 0);
+  REQUIRE(ctx.send(Fixture::buy().account(kMember1)));
+  CHECK(ctx.order_budget(kMember1).orders_10s.used == 1);
+  // A 429's pause: its end, then over without a publication. Without one (a 418): unknown.
+  OrderBudget paused;
+  paused.venue_known = true;
+  paused.venue_paused = true;
+  paused.paused_until_ns = f.clock.now().ns + seconds(2).ns;
+  f.transport.budget[kMember2.value].store(paused);
+  CHECK(ctx.order_budget(kMember2).wait_ns == seconds(2).ns);
+  f.clock.advance(seconds(2));
+  CHECK_FALSE(ctx.order_budget(kMember2).venue_paused);
+  paused.paused_until_ns = 0;
+  f.transport.budget[kMember2.value].store(paused);
+  CHECK(ctx.order_budget(kMember2).wait_ns == OrderBudget::kUnlimited);
+}
+
+TEST_CASE("core.engine pool: the bucket's wait is the budget's wait while the windows have room") {
+  Fixture f(10, 1);
+  auto& ctx = f.engine->context();
+  for (const VenueId v : {kPrimary, kMember1, kMember2}) f.transport.publish(v, 0, 100, 0, 90);
+  REQUIRE(ctx.send(Fixture::buy()));
+  const OrderBudget b = ctx.order_budget(kMember1);
+  CHECK(b.local_tokens == 0);
+  CHECK(b.wait_ns == b.local_wait_ns);
+  CHECK(b.wait_ns > 0);
+}
+
+TEST_CASE("core.engine pool: a refusal retried every second for minutes writes a few records") {
+  Fixture f;
+  auto& ctx = f.engine->context();
+  for (const VenueId v : {kPrimary, kMember1, kMember2}) f.transport.publish(v, 90, 100, 0, 90);
+  constexpr int kRetries = 420;  // seven minutes
+  std::vector<RejectRecord> r;
+  for (int k = 0; k < kRetries; ++k) {
+    CHECK(ctx.send(Fixture::buy().account(kMember1)).error() == RejectReason::RateLimit);
+    f.clock.advance(seconds(1));
+    static_cast<void>(f.engine->step());
+    for (const RejectRecord& x : f.rejects()) r.push_back(x);
+  }
+  const std::size_t in_run = r.size();
+  // The hold has reached a minute: the last five minutes wrote about one record a minute.
+  std::size_t last_five = 0;
+  const std::int64_t end = f.clock.now().ns;
+  for (const RejectRecord& x : r)
+    last_five += end - x.hdr.engine_ts.ns <= seconds(300).ns ? 1U : 0U;
+  CHECK(last_five <= 7);
+  f.engine->finish();
+  for (const RejectRecord& x : f.rejects()) r.push_back(x);
+  CHECK(in_run <= 20);
+  std::uint64_t counted = 0;
+  for (const RejectRecord& x : r) {
+    CHECK(x.hdr.venue == kMember1);
+    CHECK(x.source == RejectSource::AccountOrders10s);
+    counted += x.folded + 1;
+  }
+  CHECK(counted == kRetries);
+}
+
+TEST_CASE("core.engine pool: a refusal after a minute without it starts the hold again") {
+  Fixture f;
+  auto& ctx = f.engine->context();
+  for (const VenueId v : {kPrimary, kMember1, kMember2}) f.transport.publish(v, 90, 100, 0, 90);
+  for (int k = 0; k < 30; ++k) {
+    static_cast<void>(ctx.send(Fixture::buy().account(kMember1)));
+    f.clock.advance(seconds(1));
+  }
+  static_cast<void>(f.rejects());
+  f.clock.advance(seconds(61));
+  static_cast<void>(f.engine->step());  // records what the run still counted
+  static_cast<void>(f.rejects());
+  CHECK(ctx.send(Fixture::buy().account(kMember1)).error() == RejectReason::RateLimit);
+  CHECK(f.rejects().size() == 1);
+  // Within 100 ms: counted. After it: recorded again.
+  f.clock.advance(milliseconds(50));
+  CHECK(ctx.send(Fixture::buy().account(kMember1)).error() == RejectReason::RateLimit);
+  CHECK(f.rejects().empty());
+  f.clock.advance(milliseconds(100));
+  CHECK(ctx.send(Fixture::buy().account(kMember1)).error() == RejectReason::RateLimit);
+  const std::vector<RejectRecord> r = f.rejects();
+  REQUIRE(r.size() == 1);
+  CHECK(r[0].folded == 1);
 }

@@ -472,7 +472,7 @@ def test_on_risk_reject_and_order_budget(example_config):
     assert b.local_tokens is None  # orders_per_sec is not set
     assert not b.venue_known and not b.venue_paused
     assert b.orders_10s is None and b.orders_1m is None and b.weight is None
-    assert b.orders_remaining is None
+    assert b.orders_remaining is None and b.wait_ns == 0
     assert "venue unknown" in repr(b)
 
 

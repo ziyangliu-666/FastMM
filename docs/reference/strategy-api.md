@@ -316,14 +316,16 @@ All fields are zero before the first sample. `venue_health` costs one lookup; `r
 | `OrderBudget` field | Meaning |
 |---|---|
 | `local_tokens` | orders the `[risk] orders_per_sec` bucket admits now; `kUnlimited` with the limit off |
-| `local_wait_ns` | time until the bucket admits the next order, 0 if it admits one now; a strategy refused `RateLimit` waits this long |
+| `local_wait_ns` | time until the bucket admits the next order, 0 if it admits one now |
+| `wait_ns` | time until every limit admits an order again: 0 while `orders_remaining() > 0`, else the latest of `local_wait_ns`, the end of each full window and the end of a pause; `kUnlimited` where the end is unknown (a 418). A strategy refused `RateLimit` waits this long |
 | `orders_10s`, `orders_1m`, `orders_1d` | the venue's order counts per 10 s, minute and day: its last report plus the orders sent since |
 | `weight` | request weight over the venue's shortest window: 6000 a minute on Binance Spot, 2400 on USDⓈ-M |
 | `venue_paused` | the connector sends nothing: a 429 `Retry-After` or a 418 |
+| `paused_until_ns` | when a 429's pause ends, on the engine's clock; 0 for a 418 |
 | `venue_known` | the connector has published counts |
 | `orders_remaining()` | the least of the windows |
 
-Each window is a `RateWindow`: `window_ms`, `used`, `limit`, `cap`, `known()`, `remaining()`. `cap` is where the connector stops sending, 90 % of `limit`, and `remaining()` counts up to it.
+Each window is a `RateWindow`: `window_ms`, `used`, `limit`, `cap`, `ends_ns`, `known()`, `remaining()`. `cap` is where the connector stops sending, 90 % of `limit`, and `remaining()` counts up to it. `ends_ns` is when the window rolls, on the engine's clock (0 unknown); once it has passed, `order_budget` reads the window as empty without waiting for the connector's next publication.
 
 The venue fields come from the connector's thread and are not journaled. A backtest, a replay and a strategy attached to `fastmm-gateway` see `venue_known == false` and every window unlimited.
 
@@ -401,7 +403,7 @@ An order goes to one account and stays there. `Order::venue`, `OmsUpdate` and `F
 5. No member covers the order: it goes to the primary, which refuses it as the venue does.
 
 - Orders sent to an account since its connector last published count against it, so one burst spreads over the pool.
-- `send` refuses with `RateLimit`, without reaching the connector, an order whose account has a window at its cap or a paused connector.
+- `send` refuses with `RateLimit`, without reaching the connector, an order whose account has a window at its cap or a paused connector. `order_budget(account).wait_ns` says how long until that account admits one again: a strategy that resends a pinned order waits that long rather than retrying on every event.
 - Cancels count in no order window.
 - A member with its order link down or kill switch engaged gets no new orders; a kill of the primary stops the pool.
 - `set_quotes` routes the same way, one order at a time.

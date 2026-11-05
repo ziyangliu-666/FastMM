@@ -19,6 +19,7 @@
 #include <charconv>
 #include <cstring>
 #include <memory>
+#include <string_view>
 #include <vector>
 
 using namespace fastmm;
@@ -861,4 +862,63 @@ TEST_CASE("hotpath.noalloc: engine writes a checkpoint") {
     journal_ring.release();
   }
   CHECK(states == 3);
+}
+
+namespace {
+struct QuietStrategy {
+  static std::string_view name() noexcept { return "quiet"; }
+};
+// A connector's published budget, the same for every account.
+struct BudgetTransport : NullTransport {
+  OrderBudget budget;
+  bool venue_budget(VenueId, OrderBudget& out) const noexcept {
+    out = budget;
+    return budget.venue_known;
+  }
+};
+}  // namespace
+
+// An order refused for a full window, retried every second for minutes: the budget's wait, the
+// fold's backoff and its records, and the window read empty once its end has passed.
+TEST_CASE("hotpath.noalloc: engine refuses retries into a full window and folds their records") {
+  InstrumentTable table;
+  REQUIRE(table.add(make_inst()));
+  SimClock clock{Timestamp{seconds(1000).ns}};
+  BudgetTransport transport;
+  transport.budget.venue_known = true;
+  transport.budget.orders_10s = RateWindow{10'000, 90, 100, 90, clock.now().ns + seconds(600).ns};
+  InlineFeed feed{1 << 20};
+  MsgRing records{1 << 20};
+  QuietStrategy strategy;
+  EngineConfig cfg;
+  cfg.risk.max_order_qty = qt("1");
+  cfg.risk.max_open_orders = 8;
+  REQUIRE(cfg.pools.add(VenueId{1}, VenueId{0}));
+  using E = Engine<QuietStrategy, SimClock, BudgetTransport, InlineFeed>;
+  auto engine =
+      std::make_unique<E>(cfg, table, clock, transport, feed, strategy, nullptr, &records);
+  engine->warm_up();
+  engine->start();
+  auto& ctx = engine->context();
+  const auto order = NewOrderRequest::limit(InstrumentId{0}, Side::Buy, px("99.50"), qt("0.01"))
+                         .account(VenueId{0});
+  int waited = 0;
+  int refused = 0;
+  bool sent = false;
+  {
+    NoAllocScope guard(true);
+    for (int k = 0; k < 300; ++k) {
+      waited += ctx.order_budget(VenueId{0}).wait_ns > 0 ? 1 : 0;
+      refused += ctx.send(order) ? 0 : 1;
+      clock.advance(seconds(1));
+      static_cast<void>(engine->step());
+      while (records.try_peek() != nullptr) records.release();
+    }
+    clock.advance(seconds(301));
+    sent = ctx.send(order).has_value();
+  }
+  CHECK(waited == 300);
+  CHECK(refused == 300);
+  CHECK(sent);
+  CHECK(transport.sent == 1);
 }

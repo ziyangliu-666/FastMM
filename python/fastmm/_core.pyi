@@ -1606,6 +1606,9 @@ class OrderBudget:
     def venue_paused(self) -> bool:
         ...
     @property
+    def wait_ns(self) -> int | None:
+        ...
+    @property
     def weight(self) -> tuple[int, int] | None:
         ...
 class RiskReject:

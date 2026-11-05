@@ -114,8 +114,10 @@ bool SimTransport::venue_budget(VenueId v, OrderBudget& out) const noexcept {
     if (l.id != v) continue;
     if (!l.limited()) return false;
     const Timestamp now = clock_.now();
-    out.orders_10s = RateWindow{10'000, l.orders_10s.used_at(now), l.orders_10s.limit};
-    out.orders_1d = RateWindow{86'400'000, l.orders_1d.used_at(now), l.orders_1d.limit};
+    out.orders_10s = RateWindow{
+        10'000, l.orders_10s.used_at(now), l.orders_10s.limit, -1, l.orders_10s.ends_at(now)};
+    out.orders_1d = RateWindow{
+        86'400'000, l.orders_1d.used_at(now), l.orders_1d.limit, -1, l.orders_1d.ends_at(now)};
     out.venue_known = true;
     out.orders_taken = l.taken;
     return true;

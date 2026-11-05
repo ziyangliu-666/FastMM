@@ -5,6 +5,7 @@
 // runs per market-data message.
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/seqlock.hpp"
+#include "fastmm/core/time.hpp"
 #include "fastmm/net/connection.hpp"
 #include "fastmm/net/http_client.hpp"
 #include "fastmm/net/url.hpp"
@@ -124,22 +125,29 @@ struct IdText {
 // refuses at (RateWindow::cap), so the engine's routing and RateLimit stop where the connector
 // would. A window that has run out is read as empty, the way can_send would roll it. `taken`: the
 // order commands (new orders and replaces) the connector has taken off the engine's ring
-// (Venue::orders_taken_).
+// (Venue::orders_taken_). `wall`: the engine's clock (wall-clock ns) at the limiter's `now`, for
+// the times the windows and a pause end (RateWindow::ends_ns, OrderBudget::paused_until_ns).
 [[nodiscard]] inline OrderBudget budget_of(const RateLimiter& r,
                                            std::int64_t now,
-                                           std::uint64_t taken) noexcept {
-  auto window = [now, &r](const RateBucket& b, bool orders) {
+                                           std::uint64_t taken,
+                                           std::int64_t wall) noexcept {
+  const std::int64_t to_wall = wall - now;
+  auto window = [now, to_wall, &r](const RateBucket& b, bool orders) {
     RateWindow w;
     w.window_ms = b.window_ns / 1'000'000;
     w.limit = b.limit;
     w.cap = orders ? r.order_cap_of(b.limit) : r.cap_of(b.limit);
-    w.used = b.window_ns > 0 && now - b.window_start >= b.window_ns ? 0 : b.used;
+    const bool over = b.window_ns > 0 && now - b.window_start >= b.window_ns;
+    w.used = over ? 0 : b.used;
+    if (b.window_ns > 0)
+      w.ends_ns = (over ? b.aligned_start(now) : b.window_start) + b.window_ns + to_wall;
     return w;
   };
   OrderBudget out;
   out.venue_known = true;
   out.orders_taken = taken;
   out.venue_paused = r.hard_stopped() || r.in_cooldown(now);
+  if (out.venue_paused && !r.hard_stopped()) out.paused_until_ns = r.cooldown_until() + to_wall;
   for (std::size_t i = 0; i < RateLimiter::kMaxBuckets; ++i) {
     const std::optional<RateBucket> b = r.order_bucket(i);
     if (!b) continue;
@@ -159,6 +167,12 @@ struct IdText {
       out.weight = window(*b, false);
   }
   return out;
+}
+// The same at the wall clock read now.
+[[nodiscard]] inline OrderBudget budget_of(const RateLimiter& r,
+                                           std::int64_t now,
+                                           std::uint64_t taken) noexcept {
+  return budget_of(r, now, taken, wall_now().ns);
 }
 
 // One order the rate limiter refused (RateLimiter::check), counted by the limit that refused it.

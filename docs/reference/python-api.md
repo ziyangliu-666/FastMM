@@ -159,10 +159,11 @@ The fields and their meaning are in [Fees, risk headroom and venue health](strat
 | `Fees` | `maker_bps`, `taker_bps`, `maker_cbps`, `taker_cbps` |
 | `RiskHeadroom` | `order_tokens`, `open_orders` (int); `max_order_qty`, `max_order_notional`, `buy_qty`, `sell_qty`, `underlying_buy_qty`, `underlying_sell_qty`, `gross_notional`, `net_buy_notional`, `net_sell_notional`, `exposure_buy_notional`, `exposure_sell_notional`, `loss_budget`, `balance_buy_qty`, `balance_sell_qty` (float, each with a `_raw` int); `None` for a limit that is off |
 | `VenueHealth` | `feed_lag_ns`, `feed_lag_base_ns`, `feed_lag_excess_ns`, `ack_rtt_ns`, `ack_rtt_smoothed_ns`, `md_updated_ns`, `ack_updated_ns`, `md_samples`, `ack_samples`, `gate_engagements`, `gated` |
-| `OrderBudget` | `local_tokens`, `orders_10s`, `orders_1m`, `orders_1d`, `weight`, `venue_paused`, `venue_known`, `orders_remaining` |
+| `OrderBudget` | `local_tokens`, `orders_10s`, `orders_1m`, `orders_1d`, `weight`, `venue_paused`, `venue_known`, `orders_remaining`, `wait_ns` |
 
 - `OrderBudget.local_tokens` is the `[risk] orders_per_sec` bucket, `None` with the limit off.
 - Each window is `(used, limit)`, or `None` where the venue declares no such window. `orders_remaining` counts up to where the connector stops, 90 % of each limit.
+- `wait_ns` is how long until every limit admits an order again, 0 while one does, `None` where that is unknown.
 - `venue_known` is `False` in a backtest.
 
 ### Balance and perpetual values

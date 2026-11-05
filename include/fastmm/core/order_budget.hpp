@@ -20,6 +20,9 @@ struct RateWindow {
   // refuses an order past threshold * limit (90 %) with VenueRateLimit without sending it.
   // Negative: the limit itself (a simulated venue, which refuses only past it).
   std::int64_t cap = -1;
+  // When the window rolls and its count starts again from zero, on the engine's clock (wall-clock
+  // ns live, the simulated clock in a backtest). 0: unknown.
+  std::int64_t ends_ns = 0;
   [[nodiscard]] bool known() const noexcept { return limit > 0; }
   // The count the window admits: the connector's cap, else the venue's limit.
   [[nodiscard]] std::int64_t admits() const noexcept {
@@ -53,6 +56,9 @@ struct OrderBudget {
   // The connector sends nothing: the venue asked for a pause (429 Retry-After, -1003) or REST is
   // stopped (418).
   bool venue_paused = false;
+  // When the pause ends, on the engine's clock; 0: unknown (a 418 lasts until an operator clears
+  // it).
+  std::int64_t paused_until_ns = 0;
   // A connector published its budget. False in a backtest, a replay and behind a gateway: every
   // venue field is then unknown and reads as unlimited.
   bool venue_known = false;
@@ -61,12 +67,31 @@ struct OrderBudget {
   // since (ctx.order_budget), so the orders of one burst see each other before the connector has
   // published again.
   std::uint64_t orders_taken = 0;
+  // Nanoseconds until every limit admits an order again (ctx.order_budget fills it): 0 while
+  // orders_remaining() > 0, else the latest of the bucket's local_wait_ns, the end of each window
+  // that admits nothing and the end of the pause; kUnlimited where one of those is unknown. A
+  // strategy whose order was refused RateLimit waits this long rather than resending on every
+  // event.
+  std::int64_t wait_ns = 0;
 
   // Orders every known limit admits now: the windows up to the connector's caps.
   [[nodiscard]] std::int64_t orders_remaining() const noexcept {
     if (venue_paused) return 0;
     return std::min(
         {local_tokens, orders_10s.remaining(), orders_1m.remaining(), orders_1d.remaining()});
+  }
+  // wait_ns as of `now_ns` (the engine's clock).
+  [[nodiscard]] std::int64_t wait_from(std::int64_t now_ns) const noexcept {
+    if (orders_remaining() > 0) return 0;
+    std::int64_t wait = local_tokens > 0 ? 0 : local_wait_ns;
+    const auto until = [&wait, now_ns](std::int64_t end_ns) {
+      wait = end_ns == 0 ? kUnlimited : std::max(wait, end_ns - now_ns);
+    };
+    for (const RateWindow* w : {&orders_10s, &orders_1m, &orders_1d}) {
+      if (w->remaining() == 0 && wait != kUnlimited) until(w->ends_ns);
+    }
+    if (venue_paused && wait != kUnlimited) until(paused_until_ns);
+    return std::max<std::int64_t>(wait, 0);
   }
 };
 

@@ -1557,6 +1557,8 @@ void bind_strategy_api(py::module_& m) {
       .def_property_readonly(
           "orders_remaining",
           [room_raw](const OrderBudgetInfo& x) { return room_raw(x.b.orders_remaining()); })
+      .def_property_readonly("wait_ns",
+                             [room_raw](const OrderBudgetInfo& x) { return room_raw(x.b.wait_ns); })
       .def("__repr__", [](const OrderBudgetInfo& x) {
         return "<OrderBudget local_tokens " +
                (x.b.local_tokens == OrderBudget::kUnlimited ? std::string("unlimited")

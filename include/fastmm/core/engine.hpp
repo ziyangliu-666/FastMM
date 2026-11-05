@@ -607,21 +607,35 @@ class Engine {
   // count the new orders and replaces sent to the account that the publication had not seen yet
   // (OrderBudget::orders_taken): the connector publishes after the venue answers, so without them
   // every order of a burst would see the room the first one saw.
+  // A window whose end (RateWindow::ends_ns) has passed since the publication is read as the
+  // connector's limiter rolls it, empty, and a pause past its end as over; OrderBudget::wait_ns
+  // is the time until the account admits an order again.
   [[nodiscard]] OrderBudget order_budget(VenueId v) const noexcept {
     OrderBudget b;
-    if constexpr (requires(const Transport& t, OrderBudget& o) {
-                    { t.venue_budget(v, o) } -> std::same_as<bool>;
+    const std::int64_t t = now().ns;
+    if constexpr (requires(const Transport& tr, OrderBudget& o) {
+                    { tr.venue_budget(v, o) } -> std::same_as<bool>;
                   }) {
-      if (transport_.venue_budget(v, b) && v.value < kMaxVenues &&
-          sent_orders_[v.value] > b.orders_taken) {
-        const auto unseen = static_cast<std::int64_t>(sent_orders_[v.value] - b.orders_taken);
+      if (transport_.venue_budget(v, b)) {
         for (RateWindow* w : {&b.orders_10s, &b.orders_1m, &b.orders_1d}) {
-          if (w->known()) w->used += unseen;
+          const std::int64_t len = w->window_ms * 1'000'000;
+          if (w->ends_ns == 0 || t < w->ends_ns || len <= 0) continue;
+          w->used = 0;
+          w->ends_ns += (((t - w->ends_ns) / len) + 1) * len;
+        }
+        if (b.venue_paused && b.paused_until_ns != 0 && t >= b.paused_until_ns)
+          b.venue_paused = false;
+        if (v.value < kMaxVenues && sent_orders_[v.value] > b.orders_taken) {
+          const auto unseen = static_cast<std::int64_t>(sent_orders_[v.value] - b.orders_taken);
+          for (RateWindow* w : {&b.orders_10s, &b.orders_1m, &b.orders_1d}) {
+            if (w->known()) w->used += unseen;
+          }
         }
       }
     }
-    b.local_tokens = risk_.bucket().available(now());
-    b.local_wait_ns = risk_.bucket().wait_ns(now());
+    b.local_tokens = risk_.bucket().available(Timestamp{t});
+    b.local_wait_ns = risk_.bucket().wait_ns(Timestamp{t});
+    b.wait_ns = b.wait_from(t);
     return b;
   }
 
@@ -1431,7 +1445,9 @@ class Engine {
 
   // RejectRecord folding, per instrument, side and account (record_reject).
   struct RejectFold {
-    std::int64_t last_ns = std::numeric_limits<std::int64_t>::min() / 2;
+    std::int64_t last_ns = std::numeric_limits<std::int64_t>::min() / 2;  // the last record
+    std::int64_t seen_ns = std::numeric_limits<std::int64_t>::min() / 2;  // the last refusal
+    std::int64_t hold_ns = RejectRecord::kFoldNs;  // refusals within this of last_ns are counted
     std::uint32_t pending = 0;
     RejectReason reason{};
     RejectSource source{};
@@ -1570,10 +1586,13 @@ class Engine {
 
   // One refusal for the store (RejectRecord), with the account's budget as the engine sees it
   // now. Refusals of the instrument, side and account with the same reason, source and flags
-  // within kFoldNs of the last record are counted, not recorded; a different one first records
-  // what was counted. Each account folds on its own (reject_fold_index): a pool's accounts refused
-  // in turn would otherwise all be counted under the first one, and an exit under an order that
-  // adds.
+  // within the fold's hold of the last record are counted, not recorded; a different one first
+  // records what was counted. The hold starts at kFoldNs and doubles with each record of a run of
+  // the same refusal, up to kFoldMaxNs, so a strategy retrying a refused order on every event or
+  // tick writes a few records a minute however long the run lasts; a refusal after kFoldMaxNs
+  // without one, or a different one, starts again from kFoldNs. Each account folds on its own
+  // (reject_fold_index): a pool's accounts refused in turn would otherwise all be counted under the
+  // first one, and an exit under an order that adds.
   FASTMM_NOINLINE void record_reject(RejectReason reason,
                                      RejectSource source,
                                      InstrumentId id,
@@ -1590,7 +1609,9 @@ class Engine {
     if (id.value < kMaxInstruments && account.value < kMaxVenues) {
       fold = &reject_folds_[reject_fold_index(id, side, account)];
       const bool same = fold->reason == reason && fold->source == source && fold->flags == flags;
-      if (same && now_.ns - fold->last_ns < RejectRecord::kFoldNs) {
+      const bool run = same && now_.ns - fold->seen_ns < RejectRecord::kFoldMaxNs;
+      fold->seen_ns = now_.ns;
+      if (run && now_.ns - fold->last_ns < fold->hold_ns) {
         ++fold->pending;
         reject_folds_pending_ = true;
         return;
@@ -1600,6 +1621,8 @@ class Engine {
       } else if (fold->pending != 0) {
         flush_reject_fold(*fold, id, side);
       }
+      fold->hold_ns =
+          run ? std::min(fold->hold_ns * 2, RejectRecord::kFoldMaxNs) : RejectRecord::kFoldNs;
       fold->pending = 0;
     }
     emit_reject(
@@ -1631,6 +1654,7 @@ class Engine {
                 f.pending - 1);
     f.pending = 0;
     f.last_ns = now_.ns;
+    f.hold_ns = std::min(f.hold_ns * 2, RejectRecord::kFoldMaxNs);
   }
   [[nodiscard]] static std::size_t reject_fold_index(InstrumentId id,
                                                      Side side,
@@ -1639,7 +1663,7 @@ class Engine {
             kMaxVenues) +
            account.value;
   }
-  // Folds that have counted refusals and seen none for kFoldNs by `now`: recorded with each
+  // Folds that have counted refusals and whose hold has passed by `now`: recorded with each
   // periodic publication (publish_latency), rather than when that account is refused again or the
   // session ends. `now` is the publication's clock: engine time (now_) moves only with events.
   void flush_stale_reject_folds(Timestamp now) noexcept {
@@ -1648,7 +1672,7 @@ class Engine {
     for (std::size_t k = 0; k < kRejectFolds; ++k) {
       RejectFold& f = reject_folds_[k];
       if (f.pending == 0) continue;
-      if (now.ns - f.last_ns < RejectRecord::kFoldNs) {
+      if (now.ns - f.last_ns < f.hold_ns) {
         left = true;
         continue;
       }
@@ -2019,12 +2043,24 @@ class Engine {
     if (u.changed) {
       ++stats_.venue_rejects;
       stats_.venue_rejects_by_reason.add(m.reason);
-      FASTMM_LOG_WARN(
-          "order {} rejected: {} ({})", encode_cl_ord_id(m.cl_ord_id), m.reason, m.venue_code);
+      // The connector's own limiter refused it (never sent): logged as the risk refusals are, at
+      // most once per reason and reject_log_interval, so retries into a full window do not flood
+      // the log.
+      const bool local = m.text.view().starts_with("local rate limit");
+      std::uint64_t suppressed = 0;
+      if (!local) {
+        FASTMM_LOG_WARN(
+            "order {} rejected: {} ({})", encode_cl_ord_id(m.cl_ord_id), m.reason, m.venue_code);
+      } else if (reject_log_.admit(m.reason, now_, suppressed)) {
+        FASTMM_LOG_WARN("order {} rejected: {} ({}) ({} more suppressed)",
+                        encode_cl_ord_id(m.cl_ord_id),
+                        m.reason,
+                        m.text.view(),
+                        suppressed);
+      }
       if (u.order.instrument.valid()) note_refusal(u.order.instrument, u.order.side, m.reason);
       if (FASTMM_UNLIKELY(records_.enabled()) && u.order.instrument.valid()) {
         const Order& o = u.order;
-        const bool local = m.text.view().starts_with("local rate limit");
         std::uint8_t flags = RejectRecord::kFromVenue;
         if (o.has(Order::kReduceOnly)) flags |= RejectRecord::kReduceOnly;
         if (reduces(o.instrument, o.side, o.qty)) flags |= RejectRecord::kReduces;

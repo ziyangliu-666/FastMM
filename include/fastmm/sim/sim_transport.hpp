@@ -574,6 +574,10 @@ class SimTransport final : public MatchingSink {
     [[nodiscard]] std::int64_t used_at(Timestamp now) const noexcept {
       return limit > 0 && now.ns / width_ns == index ? count : 0;
     }
+    // When the window holding `now` ends.
+    [[nodiscard]] std::int64_t ends_at(Timestamp now) const noexcept {
+      return ((now.ns / width_ns) + 1) * width_ns;
+    }
   };
   // One simulated venue: its latency model and its two wires to the engine.
   struct Link {

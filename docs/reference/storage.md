@@ -299,7 +299,7 @@ One row per refused order, keyed `(session_id, seq)` (version 9).
 | `venue_local` | the connector's own limiter; `text` names the window |
 | `venue` | the venue |
 
-Refusals with the same instrument, side, account, reason, source and flags within 100 ms of the row are folded into it. A pending count is written at the next once-a-second publication or at the session's end.
+Refusals with the same instrument, side, account, reason, source and flags within a hold of the row are folded into it. The hold is 100 ms after the first row and doubles with each row of the same refusal, up to 60 s; a minute without that refusal, or a different one, starts it again at 100 ms. A strategy that resends a refused order on every tick therefore writes about one row a minute once the run has lasted a few minutes. A pending count is written at the next once-a-second publication after its hold, or at the session's end.
 
 ### ab_arms
 
