@@ -1066,6 +1066,7 @@ class Engine {
     const bool renews_params = h->type == EventType::ParamUpdate;
     const bool quoting_before = quoting_enabled();
     if (!renews_params) check_param_age();
+    check_reconcile_hold();
     // Quotes held back for want of an order token go first, oldest first, before this event's own
     // requote can take the token.
     if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
@@ -2440,6 +2441,23 @@ class Engine {
     if (m.origin == ParamUpdateMsg::Origin::Control) publish_live(latency_pub_.load());
   }
 
+  // A reconciliation's End normally follows its Begin in the same batch (the connector sends the
+  // snapshot whole). One still open kReconcileHold after its Begin (an End lost or held up) pulls
+  // the held quotes, keeping them for End to place again: the strategy cannot move them meanwhile.
+  FASTMM_FORCE_INLINE void check_reconcile_hold() noexcept {
+    if (FASTMM_LIKELY(reconciling_ == 0) || reconcile_hold_over_ || now_ < reconcile_hold_until_)
+      return;
+    reconcile_hold_over_ = true;
+    FASTMM_LOG_WARN(
+        "a reconciliation has not ended {} ms after it began: its held quotes are pulled",
+        kReconcileHold.millis());
+    enter_api();
+    Placer place{this};
+    for (const Instrument& inst : instruments_) {
+      if (quotes_.paused(inst.id)) quotes_.pull_quotes(inst, oms_, place, /*keep_desired=*/true);
+    }
+    flush_out();
+  }
   FASTMM_FORCE_INLINE void check_param_age() noexcept {
     if (FASTMM_UNLIKELY(param_deadline_armed_ && now_ >= param_deadline_)) expire_params();
   }
@@ -2675,6 +2693,10 @@ class Engine {
     own_inbound(m.hdr);
     switch (m.kind) {
       case ReconcileMsg::Kind::Begin: {
+        if (reconciling_ == 0) {
+          reconcile_hold_until_ = now_ + kReconcileHold;
+          reconcile_hold_over_ = false;
+        }
         reconciling_ |= venue_mask(m.hdr.venue);
         reconcile_exact_ = (m.flags & ReconcileMsg::kExecutionsExact) != 0;
         if (reconcile_exact_) {
@@ -2687,10 +2709,13 @@ class Engine {
               "that no fill covered is an estimate, and an order it drops cannot be told from one "
               "that filled");
         }
-        Placer place{this};
-        for (const Instrument& inst : instruments_)
-          quotes_.pull_quotes(inst, oms_, place, /*keep_desired=*/true);  // resumed at End
-        flush_out();
+        // The quotes hold where they rest until End: the snapshot was taken before Begin was
+        // sent, so cancelling them here changes nothing it says, and End re-applies the desired
+        // quotes to what it leaves, so an order that still matches stays. (Cancelling them sent
+        // each one again identically at End, every quote of every account for one account's
+        // reconciliation.) An End that does not follow within kReconcileHold pulls them
+        // (check_reconcile_hold): quotes the strategy cannot move do not rest for long.
+        for (const Instrument& inst : instruments_) quotes_.pause_quotes(inst.id);
         oms_.reconcile_begin(m.hdr.venue,
                              (m.flags & ReconcileMsg::kSentWatermark) != 0
                                  ? std::optional<ClientOrderId>(m.sent_watermark)
@@ -2728,13 +2753,17 @@ class Engine {
   }
 
   // The strategy is not asked again after a reconciliation (BasicMM requotes on a mid move), so
-  // the quotes paused at Begin are placed again here. An instrument that cannot quote now (kill
-  // switch, quoting disabled, no valid book) is pulled for good instead: its kept quotes are stale.
+  // the quotes paused at Begin are re-applied here to the orders resting now. An instrument that
+  // cannot quote now (kill switch, quoting disabled, no valid book) is pulled for good instead: its
+  // kept quotes are stale.
   void resume_quotes() noexcept {
     Placer place{this};
     const Timestamp now = now_;
     for (const Instrument& inst : instruments_) {
-      if (!quotes_.resumable(inst.id)) continue;
+      if (!quotes_.resumable(inst.id)) {
+        static_cast<void>(quotes_.resume(inst, oms_, now, place));  // ends the pause only
+        continue;
+      }
       if (quoting_enabled(inst.id) && books_[inst.id.value].is_valid()) {
         quotes_.resume(inst, oms_, now, place);
       } else {
@@ -3074,6 +3103,7 @@ class Engine {
       // As process() does for the journaled marker a replay reads back.
       const bool quoting_before = quoting_enabled();
       check_param_age();
+      check_reconcile_hold();
       if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
       if (FASTMM_UNLIKELY(quotes_.backoff_due(now_))) retry_backed_off();
       call_batch_end();
@@ -3128,6 +3158,7 @@ class Engine {
       }
     }
     check_param_age();
+    check_reconcile_hold();
     // As process() does for the journaled timer a replay reads back.
     if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
     if (FASTMM_UNLIKELY(quotes_.backoff_due(now_))) retry_backed_off();
@@ -4513,6 +4544,9 @@ class Engine {
   // A venue has reported balances: orders update their holds and check_balance applies.
   bool balances_live_ = false;
   std::uint32_t reconciling_ = 0;  // bit per venue between its reconciliation's Begin and End
+  static constexpr Duration kReconcileHold = milliseconds(250);
+  Timestamp reconcile_hold_until_{};  // check_reconcile_hold: the held quotes are pulled after it
+  bool reconcile_hold_over_ = false;  // ... and have been, for this reconciliation
   // Bit per venue whose first reconciliation since the start has not ended (await_reconcile): its
   // position is the store's plus whatever the execution replay has booked so far, so no order is
   // sent (NotReconciled) and quoting stays off until every one of them has.

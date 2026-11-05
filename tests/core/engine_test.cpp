@@ -571,7 +571,7 @@ TEST_CASE(
   std::fclose(out);
 }
 
-TEST_CASE("core.engine: reconcile marks unseen orders cancelled, pauses quoting until End") {
+TEST_CASE("core.engine: reconcile marks unseen orders cancelled, holds the rest until End") {
   Fixture f(false);
   f.push_book("100.00", "100.02", 1, true);
   f.drain();
@@ -585,7 +585,7 @@ TEST_CASE("core.engine: reconcile marks unseen orders cancelled, pauses quoting 
   f.drain();
   CHECK(f.engine->reconciling());
   CHECK_FALSE(f.engine->quoting_enabled());
-  CHECK(f.transport.count(EventType::OutCancel) == 2);  // quotes pulled at begin
+  CHECK(f.transport.count(EventType::OutCancel) == 0);  // the quotes hold where they rest
   m.kind = ReconcileMsg::Kind::OpenOrder;
   m.cl_ord_id = bid.cl_ord_id;
   m.venue_order_id = "VB";
@@ -600,21 +600,16 @@ TEST_CASE("core.engine: reconcile marks unseen orders cancelled, pauses quoting 
   CHECK_FALSE(f.engine->reconciling());
   CHECK(f.engine->position(InstrumentId{0}).qty == qt("0.003"));
   const std::vector<OutNewOrderMsg> sent = f.news();
-  // The ask (unseen) was marked cancelled. The venue still has the bid: the pull's cancel is in
-  // flight, so the bid stays pending and is not cancelled again.
+  // The ask (unseen) was marked cancelled. The venue still has the bid, which is what the quotes
+  // still ask for: it rests on, neither cancelled nor sent again.
   CHECK(f.engine->oms().classify(sent[1].cl_ord_id) == OrderClass::RecentlyTerminal);
-  CHECK(f.state(bid.cl_ord_id) == OrderState::PendingCancel);
-  CHECK(f.transport.count(EventType::OutCancel) == 2);
-  // Quoting resumes at End: the free ask level at once, the bid level once its cancel ack arrives.
+  CHECK(f.state(bid.cl_ord_id) == OrderState::Live);
+  CHECK(f.transport.count(EventType::OutCancel) == 0);
+  // Quoting resumes at End: the ask level the snapshot freed is placed again.
   REQUIRE(sent.size() == 3);
   CHECK(sent[2].side == Side::Sell);
   CHECK(sent[2].price == px("100.12"));
   CHECK(f.engine->oms().open_count() == 2);
-  f.cancel_ack_all();
-  f.drain();
-  REQUIRE(f.news().size() == 4);
-  CHECK(f.news()[3].side == Side::Buy);
-  CHECK(f.news()[3].price == px("99.90"));
 }
 
 TEST_CASE("core.engine: serialize latency starts at the decision of the same event") {
@@ -745,7 +740,7 @@ TEST_CASE(
   CHECK(f.engine->stats().invalid_fee_assets == 1);
 }
 
-TEST_CASE("core.engine: quotes pulled for a reconciliation work again after End, mid unchanged") {
+TEST_CASE("core.engine: quotes held through a reconciliation stay after End, mid unchanged") {
   Fixture f(false);
   f.push_book("100.00", "100.02", 1, true);
   f.drain();
@@ -755,32 +750,85 @@ TEST_CASE("core.engine: quotes pulled for a reconciliation work again after End,
   REQUIRE(quoted.size() == 2);
   f.reconcile(ReconcileMsg::Kind::Begin, ClientOrderId{}, quoted[1].cl_ord_id);
   f.drain();
-  REQUIRE(f.transport.count(EventType::OutCancel) == 2);  // pulled at Begin
-  // The snapshot still shows both quotes: the pull's cancels are in flight.
+  CHECK(f.transport.count(EventType::OutCancel) == 0);  // held, not pulled
   f.reconcile(ReconcileMsg::Kind::OpenOrder, quoted[0].cl_ord_id);
   f.reconcile(ReconcileMsg::Kind::OpenOrder, quoted[1].cl_ord_id);
   f.reconcile(ReconcileMsg::Kind::End);
   f.drain();
   CHECK_FALSE(f.engine->reconciling());
   CHECK(f.engine->quoting_enabled());
-  CHECK(f.state(quoted[0].cl_ord_id) == OrderState::PendingCancel);
-  CHECK(f.state(quoted[1].cl_ord_id) == OrderState::PendingCancel);
-  CHECK(f.transport.count(EventType::OutCancel) == 2);
+  // The book has not moved and the venue has both quotes: they rest on, nothing is sent. (A pull
+  // at Begin cancelled them and sent both again, identically, once the cancels were in.)
+  CHECK(f.state(quoted[0].cl_ord_id) == OrderState::Live);
+  CHECK(f.state(quoted[1].cl_ord_id) == OrderState::Live);
+  CHECK(f.transport.count(EventType::OutCancel) == 0);
   CHECK(f.transport.count(EventType::OutNewOrder) == 2);
-  // The cancel acks arrive after End. The book has not moved, yet both levels are quoted again.
-  f.cancel_ack_all();
+  CHECK(f.engine->oms().open_count() == 2);
+  // The strategy's next quotes move them as usual.
+  f.push_book("100.10", "100.12", 2, true);
   f.drain();
-  const std::vector<OutNewOrderMsg> requoted = f.news();
-  REQUIRE(requoted.size() == 4);
-  CHECK(requoted[2].side == Side::Buy);
-  CHECK(requoted[2].price == quoted[0].price);
-  CHECK(requoted[3].side == Side::Sell);
-  CHECK(requoted[3].price == quoted[1].price);
+  CHECK(f.transport.count(EventType::OutCancel) == 2);
+}
+
+TEST_CASE(
+    "core.engine: a fill between a reconciliation's Begin and End is booked, its level placed at "
+    "End") {
+  Fixture f(false);
+  f.push_book("100.00", "100.02", 1, true);
+  f.drain();
   f.ack_all_new();
   f.drain();
-  CHECK(f.engine->oms().open_count() == 2);
-  CHECK(f.state(requoted[2].cl_ord_id) == OrderState::Live);
-  CHECK(f.state(requoted[3].cl_ord_id) == OrderState::Live);
+  const std::vector<OutNewOrderMsg> quoted = f.news();
+  REQUIRE(quoted.size() == 2);
+  REQUIRE(quoted[0].side == Side::Buy);
+  f.reconcile(ReconcileMsg::Kind::Begin, ClientOrderId{}, quoted[1].cl_ord_id);
+  f.drain();
+  // The bid fills while the snapshot is read in: booked at once, its level waits for End.
+  f.fill(quoted[0].cl_ord_id, Side::Buy, "99.90", "0.01", "e1");
+  f.drain();
+  CHECK(f.engine->position(InstrumentId{0}).qty == qt("0.01"));
+  CHECK(f.transport.count(EventType::OutNewOrder) == 2);
+  f.reconcile(ReconcileMsg::Kind::OpenOrder, quoted[1].cl_ord_id);
+  f.reconcile(ReconcileMsg::Kind::End);
+  f.drain();
+  // End placed the bid's level again; the ask rested through the reconciliation (BasicMM's
+  // requote after End, skewed by the new position, is what moves it: one cancel, its New waiting
+  // for the ack).
+  const std::vector<OutNewOrderMsg> sent = f.news();
+  REQUIRE(sent.size() == 3);
+  CHECK(sent[2].side == Side::Buy);
+  CHECK(f.transport.count(EventType::OutCancel) == 1);
+  CHECK(f.transport.at<OutCancelMsg>(f.transport.out.size() - 1).cl_ord_id == quoted[1].cl_ord_id);
+}
+
+TEST_CASE("core.engine: a reconciliation whose End does not come pulls the held quotes") {
+  Fixture f(false);
+  f.push_book("100.00", "100.02", 1, true);
+  f.drain();
+  f.ack_all_new();
+  f.drain();
+  const std::vector<OutNewOrderMsg> quoted = f.news();
+  REQUIRE(quoted.size() == 2);
+  f.reconcile(ReconcileMsg::Kind::Begin, ClientOrderId{}, quoted[1].cl_ord_id);
+  f.drain();
+  f.clock.advance(milliseconds(100));
+  f.push_book("100.00", "100.02", 2, true);
+  f.drain();
+  CHECK(f.transport.count(EventType::OutCancel) == 0);  // held
+  // No End 250 ms after the Begin: the quotes the strategy cannot move come off.
+  f.clock.advance(milliseconds(200));
+  f.push_book("100.00", "100.02", 3, true);
+  f.drain();
+  CHECK(f.transport.count(EventType::OutCancel) == 2);
+  CHECK(f.engine->reconciling());
+  f.cancel_ack_all();
+  f.drain();
+  CHECK(f.transport.count(EventType::OutNewOrder) == 2);
+  // The End places them again.
+  f.reconcile(ReconcileMsg::Kind::End);
+  f.drain();
+  CHECK_FALSE(f.engine->reconciling());
+  CHECK(f.transport.count(EventType::OutNewOrder) == 4);
 }
 
 TEST_CASE("core.engine: orders sent after the open-orders request stay tracked through End") {

@@ -112,7 +112,7 @@ One input event runs through the hooks in this order:
 Quoting is disabled by an operator pull (`PullQuotes`), the kill switch, a reconciliation, or parameters older than `max_param_age_ms` ([Parameter updates](#parameter-updates)). A lost connection does not disable it; `on_connection` reports that. A dry run quotes, and its orders are acknowledged on paper.
 
 - The engine compares `ctx.quoting_enabled()` before and after each event, fired timer and `on_start`, and calls the hook once all flags are final.
-- At the end of a reconciliation the hook fires after the paused quotes are placed again, so a requote from it replaces them.
+- A reconciliation holds the resting quotes where they are; at its end the engine re-applies the last quotes to what the snapshot left (an order that still matches stays) and then fires the hook, so a requote from it moves them.
 - It never fires from inside a context call: a kill switch tripped by `set_quotes` or `send` is reported after the calling hook returns.
 - It does not fire for the initial state; `on_start` reads `ctx.quoting_enabled()`.
 

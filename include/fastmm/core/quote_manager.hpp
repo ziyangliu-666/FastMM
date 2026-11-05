@@ -29,8 +29,10 @@
 //   * such a deferred New (QuoteAction::deferred) that the balance no longer covers -- the order it
 //     replaced filled instead of cancelling -- is withheld (QuoteAction::withheld, kept_balance)
 //     rather than refused by risk: the target predates the fill, the strategy's next quotes decide;
-//   * pull_quotes(keep_desired) pauses an instrument (the engine during reconciliation): resume()
-//     re-applies the last desired quotes unless the instrument was pulled for good meanwhile;
+//   * pause_quotes() holds an instrument's orders where they rest (the engine during a
+//     reconciliation): nothing is sent, moved or cancelled until resume(), which re-applies the
+//     last desired quotes against them, so an order that still matches is kept rather than
+//     cancelled and sent again; pull_quotes(keep_desired) does the same with the orders cancelled;
 //   * a move towards the touch (a bid up, an ask down) that the placer holds (QuoteAction::held:
 //     the account the order rests on has no more than QuoteParams::room_reserve orders left in its
 //     venue order windows) keeps the resting order where it is: the move would spend one of the
@@ -201,6 +203,7 @@ class QuoteManager {
                           Placer&& place) noexcept {
     InstState& st = state_[inst.id.value];
     st.pulled = false;
+    st.paused = false;
     st.resumable = false;
     st.desired = desired;
     std::uint32_t actions = 0;
@@ -246,6 +249,7 @@ class QuoteManager {
       st.desired.clear();
     }
     st.pulled = true;
+    st.paused = false;
     std::uint32_t actions = 0;
     for (Side side : {Side::Buy, Side::Sell}) {
       for (std::uint32_t lvl = 0; lvl < kMaxQuoteLevels; ++lvl) {
@@ -260,13 +264,27 @@ class QuoteManager {
     return actions;
   }
 
-  // Re-applies the desired quotes kept by pull_quotes(keep_desired). Returns the actions placed.
+  // Holds the instrument's orders as they are until resume(): no New, Cancel or Replace, and a
+  // target recorded for a slot is dropped (resume() re-applies the whole ladder). The last desired
+  // quotes are kept for resume() unless the instrument was already pulled. Sends nothing.
+  void pause_quotes(InstrumentId id) noexcept {
+    InstState& st = state_[id.value];
+    st.resumable = st.resumable || (!st.pulled && !st.desired.empty());
+    st.paused = true;
+    for (auto& side : st.slots)
+      for (Slot& slot : side) slot.apply_want = false;
+  }
+  [[nodiscard]] bool paused(InstrumentId id) const noexcept { return state_[id.value].paused; }
+
+  // Ends a pause and re-applies the desired quotes kept by pause_quotes() or
+  // pull_quotes(keep_desired) to the orders resting now. Returns the actions placed.
   template <class Placer>
   std::uint32_t resume(const Instrument& inst,
                        const Oms& oms,
                        Timestamp now,
                        Placer&& place) noexcept {
     InstState& st = state_[inst.id.value];
+    st.paused = false;
     if (!st.resumable) return 0;
     const DesiredQuotes desired = st.desired;
     return reconcile(inst, desired, oms, now, place);
@@ -293,7 +311,7 @@ class QuoteManager {
                       Timestamp now,
                       Placer&& place) noexcept {
     InstState& st = state_[inst.id.value];
-    if (st.pulled) return 0;
+    if (st.pulled || st.paused) return 0;
     ++stats_.retries;
     const DesiredQuotes desired = st.desired;
     return reconcile(inst, desired, oms, now, place);
@@ -331,7 +349,7 @@ class QuoteManager {
                                  Timestamp now,
                                  Placer&& place) noexcept {
     InstState& st = state_[inst.id.value];
-    if (st.pulled) return 0;
+    if (st.pulled || st.paused) return 0;
     const DesiredQuotes desired = st.desired;
     return reconcile(inst, desired, oms, now, place);
   }
@@ -364,6 +382,7 @@ class QuoteManager {
         static_cast<void>(cancel(inst, side, lvl, slot, place));
         return;
       }
+      if (st.paused) return;
       if (slot.apply_want &&
           (u.prev == OrderState::PendingNew || u.prev == OrderState::PendingReplace)) {
         slot.apply_want = false;
@@ -379,7 +398,7 @@ class QuoteManager {
     slot.handle = Handle<Order>{};
     slot.cl_ord_id = ClientOrderId{};
     slot.awaiting_terminal = false;
-    if (st.pulled || !slot.apply_want) return;
+    if (st.pulled || st.paused || !slot.apply_want) return;
     slot.apply_want = false;
     if (!slot.want.qty.is_positive()) return;
     if (backing_off(st, side, now)) {
@@ -427,7 +446,8 @@ class QuoteManager {
     std::uint32_t used[2] = {};
     DesiredQuotes desired;
     bool pulled = false;
-    bool resumable = false;  // paused by pull_quotes(keep_desired): resume() re-applies `desired`
+    bool paused = false;     // pause_quotes(): orders held where they rest until resume()
+    bool resumable = false;  // paused or pulled with keep_desired: resume() re-applies `desired`
     bool venue_no_replace = false;    // the venue cannot amend in place (set_replace)
     bool replace = false;             // supports_replace && !venue_no_replace
     Duration backoff[2] = {};         // current backoff per side (0 = none)

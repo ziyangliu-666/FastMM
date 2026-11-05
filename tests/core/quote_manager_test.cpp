@@ -587,6 +587,43 @@ TEST_CASE("core.quote_manager: resume re-applies quotes paused with keep_desired
   CHECK(qm.resume(inst, h.oms, Timestamp{4}, h) == 0);
 }
 
+TEST_CASE(
+    "core.quote_manager: a pause holds resting orders, and resume keeps the ones still asked for") {
+  const Instrument inst = make_inst();
+  QuoteParams p;
+  p.min_requote_interval = Duration{};
+  QuoteManager qm(p);
+  Harness h;
+  qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, Timestamp{}, h);
+  h.ack_all();
+  const Handle<Order> bid = qm.slot_handle(inst.id, Side::Buy, 0);
+  const Handle<Order> ask = qm.slot_handle(inst.id, Side::Sell, 0);
+  qm.pause_quotes(inst.id);
+  CHECK(qm.paused(inst.id));
+  CHECK(qm.resumable(inst.id));
+  CHECK_FALSE(qm.pulled(inst.id));
+  CHECK(h.actions.size() == 2);  // nothing sent: no cancel
+  // The ask ends meanwhile (a reconciliation found it gone): its slot frees, nothing is placed yet.
+  const ClientOrderId ask_id = h.oms.get(ask).cl_ord_id;
+  static_cast<void>(h.oms.request_cancel(ask));
+  qm.on_order_update(h.oms.on_cancel_ack(cancel_ack_msg(ask_id)), inst, h.oms, Timestamp{1}, h);
+  CHECK(h.count(QuoteActionKind::New) == 2);
+  CHECK(qm.retry(inst, h.oms, Timestamp{1}, h) == 0);  // a token retry does not end the pause
+  // Resume: the bid still matches and stays; only the freed ask is placed.
+  CHECK(qm.resume(inst, h.oms, Timestamp{2}, h) == 1);
+  CHECK_FALSE(qm.paused(inst.id));
+  CHECK(qm.slot_handle(inst.id, Side::Buy, 0) == bid);
+  CHECK(h.count(QuoteActionKind::Cancel) == 0);
+  CHECK(h.count(QuoteActionKind::New) == 3);
+  CHECK(h.oms.get(qm.slot_handle(inst.id, Side::Sell, 0)).price == px("101.00"));
+  // A pause with nothing to resume still ends at resume().
+  QuoteManager idle(p);
+  idle.pause_quotes(inst.id);
+  CHECK_FALSE(idle.resumable(inst.id));
+  CHECK(idle.resume(inst, h.oms, Timestamp{3}, h) == 0);
+  CHECK_FALSE(idle.paused(inst.id));
+}
+
 TEST_CASE("core.quote_manager: quotes short of a token wait, and are retried oldest first") {
   Instrument a = make_inst();
   Instrument b = make_inst();

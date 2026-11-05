@@ -18,6 +18,9 @@ All notable changes are recorded here (Keep a Changelog format).
 - backtest: `initial_state = "journal"` over a journal that begins at the session's start takes no periodic checkpoint from after its first order for the start's state.
 - backtest: a sweep's point with `params_from_journal` keeps the parameters it sets against the journal's updates.
 
+### Fixed
+- core: a reconciliation holds the resting quotes instead of cancelling them, so the quotes still asked for are not sent again at its end; every quote of every account was cancelled and re-sent for one account's reconciliation, which on Binance follows each cancel that loses its race with a fill.
+
 ## [0.10.1] - 2026-10-29
 
 ### Fixed
