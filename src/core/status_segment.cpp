@@ -463,6 +463,14 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                         s.flatten_instruments_left,
                         reset(color));
   }
+  if (s.reduce_only != 0) {
+    kill += fmt::format("  {}REDUCE-ONLY{}", color ? "\x1b[33m" : "", reset(color));
+  } else if (s.reduce_only_instruments != 0) {
+    kill += fmt::format("  {}REDUCE-ONLY ({} instruments){}",
+                        color ? "\x1b[33m" : "",
+                        s.reduce_only_instruments,
+                        reset(color));
+  }
   fmt::format_to(std::back_inserter(out),
                  "state      {}{}{}{}  uptime={}  updated {:.1f}s ago\n\n",
                  paint(color, state),
@@ -491,6 +499,13 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                    to_string(static_cast<FlattenState>(s.flatten_state)),
                    s.flatten_instruments_left,
                    s.flatten_orders);
+  }
+  if (s.reduce_only_instruments != 0) {
+    fmt::format_to(std::back_inserter(out),
+                   "reduce     session={} venues={:#x} instruments={}\n",
+                   s.reduce_only != 0 ? "on" : "off",
+                   s.reduce_only_venues,
+                   s.reduce_only_instruments);
   }
   const auto rejects = [](std::uint64_t total, const StatusRejectCount* entries) {
     return total == 0 ? std::string("0")
@@ -1136,14 +1151,16 @@ void json_quotes(std::string& out, const StatusSnapshot& s) {
     if (k != 0) out += ", ";
     fmt::format_to(it,
                    "{{\"symbol\": {}, \"venue\": {}, \"position\": \"{}\", \"avg_px\": \"{}\", "
-                   "\"realized\": \"{}\", \"unrealized\": \"{}\", \"mid\": \"{}\"",
+                   "\"realized\": \"{}\", \"unrealized\": \"{}\", \"mid\": \"{}\", "
+                   "\"reduce_only\": {}",
                    json_string(name_of(sq.symbol, sizeof sq.symbol)),
                    q.venue,
                    money(q.position_raw),
                    money(q.avg_px_raw),
                    money(q.realized_raw),
                    money(q.unrealized_raw),
-                   money(q.mid_raw));
+                   money(q.mid_raw),
+                   q.reduce_only != 0);
     for (std::size_t sd = 0; sd < 2; ++sd) {
       const LiveQuoteSide& x = q.sides[sd];
       fmt::format_to(
@@ -1201,6 +1218,7 @@ std::string format_status_json(const StatusSnapshot& s) {
                  "\"kill_reason\": \"{}\", \"kill_latched\": {}, \"pnl_carry_raw\": {}, "
                  "\"flatten_state\": \"{}\", \"flatten_instruments_left\": {}, "
                  "\"flatten_orders\": {}, "
+                 "\"reduce_only\": {{\"session\": {}, \"venues\": {}, \"instruments\": {}}}, "
                  "\"risk_bucket\": {{\"tokens\": {}, \"wait_ns\": {}, \"orders_per_sec\": {}, "
                  "\"burst\": {}}}, "
                  "\"params\": {{\"applied\": {}, \"last_seq\": {}, \"last_ns\": {}, "
@@ -1235,6 +1253,9 @@ std::string format_status_json(const StatusSnapshot& s) {
                  to_string(static_cast<FlattenState>(s.flatten_state)),
                  s.flatten_instruments_left,
                  s.flatten_orders,
+                 s.reduce_only != 0,
+                 s.reduce_only_venues,
+                 s.reduce_only_instruments,
                  s.risk_tokens,
                  s.risk_token_wait_ns,
                  s.risk_orders_per_sec,

@@ -92,7 +92,8 @@ struct LiveQuoteSide {
 struct LiveQuoteInstrument {
   std::uint32_t instrument = 0;
   std::uint8_t venue = 0;
-  std::uint8_t pad_[3] = {};
+  std::uint8_t reduce_only = 0;  // reduce-only mode holds the instrument
+  std::uint8_t pad_[2] = {};
   std::int64_t position_raw = 0;
   std::int64_t avg_px_raw = 0;
   std::int64_t realized_raw = 0;

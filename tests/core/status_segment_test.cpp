@@ -345,7 +345,7 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   CHECK(frame.find("fallback=5") != std::string::npos);
 
   const std::string json = format_status_json(s);
-  CHECK(json.find(R"({"kind": "engine", "version": 24,)") == 0);
+  CHECK(json.find(R"({"kind": "engine", "version": 25,)") == 0);
   CHECK(json.find(R"("engine": "binance-demo")") != std::string::npos);
   CHECK(json.find(R"("tick_to_trade": {"count": 10, "p50_ns": 106495, "p99_ns": 216053, )"
                   R"("p999_ns": 250000, "max_ns": 300000})") != std::string::npos);
@@ -505,7 +505,7 @@ TEST_CASE("core.status_segment: a gateway's snapshot round trips and shows its a
 
   const std::string json = format_status_json(got);
   INFO(json);
-  CHECK(json.find(R"({"kind": "gateway", "version": 24,)") == 0);
+  CHECK(json.find(R"({"kind": "gateway", "version": 25,)") == 0);
   CHECK(json.find(R"("gateway": "gw")") != std::string::npos);
   CHECK(json.find(R"("net_pnl": -0.25, "realized": 1.5)") != std::string::npos);
   CHECK(json.find(R"("engine": "mm-a", "pid": 1001)") != std::string::npos);
@@ -720,4 +720,28 @@ TEST_CASE("core.status_segment: the quote table and the strategy's metrics in th
         std::string::npos);
   CHECK(json.find(R"("note": "inventory_cap", "budget": "500", )") != std::string::npos);
   CHECK(json.find(R"("metrics": {"alloc_btc": 0.4})") != std::string::npos);
+}
+
+TEST_CASE("core.status_segment: reduce-only mode in the frame and the JSON form") {
+  StatusSnapshot s = sample();
+  CHECK(format_status(s, s.updated_ns, false).find("REDUCE-ONLY") == std::string::npos);
+  CHECK(format_status_json(s).find(
+            R"("reduce_only": {"session": false, "venues": 0, "instruments": 0})") !=
+        std::string::npos);
+  s.reduce_only_venues = 2;
+  s.reduce_only_instruments = 3;
+  s.quote_count = 1;
+  set_status_name(s.quotes[0].symbol, "BTCUSDT");
+  s.quotes[0].q.reduce_only = 1;
+  std::string frame = format_status(s, s.updated_ns, false);
+  CHECK(frame.find("  REDUCE-ONLY (3 instruments)") != std::string::npos);
+  CHECK(frame.find("reduce     session=off venues=0x2 instruments=3\n") != std::string::npos);
+  const std::string json = format_status_json(s);
+  CHECK(json.find(R"("reduce_only": {"session": false, "venues": 2, "instruments": 3})") !=
+        std::string::npos);
+  CHECK(json.find(R"("mid": "0", "reduce_only": true)") != std::string::npos);
+  s.reduce_only = 1;
+  frame = format_status(s, s.updated_ns, false);
+  CHECK(frame.find("  REDUCE-ONLY  ") != std::string::npos);
+  CHECK(frame.find("reduce     session=on") != std::string::npos);
 }

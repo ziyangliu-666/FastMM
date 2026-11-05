@@ -757,3 +757,39 @@ def test_balances_merge_into_the_synthetic_market(example_config):
     with pytest.raises(ValueError, match="l2_queue"):
         fastmm._core._run_strategy(cfg, "synthetic", fastmm.Strategy(), "plain", [], {},
                                    balances=[])
+
+
+def _reduce_only_config(seconds=10):
+    from conftest import EXAMPLE_TOML
+
+    text = EXAMPLE_TOML.read_text().replace("[risk]\n", "[risk]\nreduce_only = true\n", 1)
+    cfg = fastmm.BacktestConfig.from_toml_string(text)
+    cfg.clear_params()
+    cfg.duration_s = seconds
+    return cfg
+
+
+def test_reduce_only_refuses_an_order_that_adds(example_config):
+    class Probe(Strategy):
+        def on_start(self, ctx):
+            (inst,) = ctx.instruments
+            self.held = (ctx.reduce_only(inst), ctx.reduce_only(0))
+            self.refused = None
+
+        def on_book(self, ctx, inst, book):
+            if self.refused is not None or not book.valid:
+                return
+            try:
+                ctx.send(inst, BUY, book.best_bid[0] - 5.0, 0.001, post_only=True)
+                self.refused = ""
+            except fastmm.OrderRejected as e:
+                self.refused = str(e)
+
+    s = Probe()
+    fastmm.run_backtest(_cfg(example_config), data=FIXTURE_FMJ, strategy=s)
+    assert s.held == (False, False) and s.refused == ""
+    s = Probe()
+    r = fastmm.run_backtest(_reduce_only_config(), data=FIXTURE_FMJ, strategy=s)
+    assert s.held == (True, True)
+    assert "ReduceOnly" in s.refused  # flat: every order adds
+    assert len(r.fills["ts"]) == 0

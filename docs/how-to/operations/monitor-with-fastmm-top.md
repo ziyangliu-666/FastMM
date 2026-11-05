@@ -41,6 +41,7 @@ The file stays after the session ends, with a final `stopped` frame. Its layout 
 | `VENUE KILLED` | at least one venue's kill switch is engaged |
 | `LATCHED` | a `max_loss` trip is recorded in `[engine] kill_file`, so the next start refuses to trade ([Kill switch and shutdown](kill-switch-and-shutdown.md#the-latched-loss-budget)) |
 | `FLATTENING (<n> left)` | an [operator flatten](operate-a-running-session.md#flatten) is running |
+| `REDUCE-ONLY`, `REDUCE-ONLY (<n> instruments)` | [reduce-only mode](operate-a-running-session.md#reduce-only-mode) holds the whole session, or that many instruments |
 
 ### Lines
 
@@ -156,6 +157,7 @@ scrape_configs:
 | `fastmm_kills_total`, `fastmm_venue_kills_total` | counter | kill switch trips |
 | `fastmm_treasury_in_flight`, `fastmm_treasury_sent_total`, `_done_total`, `_failed_total`, `_timed_out_total`, `_limited_total`, `_dry_run_plans_total`, `_errors_total` | gauge, counter | the pool treasuries, summed over the pools; only with a treasury |
 | `fastmm_flatten_state`, `fastmm_flatten_instruments_left`, `fastmm_flatten_orders_total` | gauge, gauge, counter | the operator flatten ([Operating a running session](operate-a-running-session.md#flatten)) |
+| `fastmm_reduce_only_instruments` | gauge | instruments [reduce-only mode](operate-a-running-session.md#reduce-only-mode) holds |
 | `fastmm_latency_quantile_seconds{interval,quantile}`, `fastmm_latency_samples_total{interval}` | gauge, counter | the engine intervals above, per publishing window |
 | `fastmm_venue_*{venue}` | gauge, counter | channel states, synced books, market-data messages, order traffic, reconnects, REST errors, rate-limit cooldowns, clock offset, wire tick-to-trade quantiles over the session and, in `fastmm_venue_tick_to_trade_recent_quantile_seconds{venue,window}` (`1m`, `1h`), over the last minute and hour |
 | `fastmm_quote_obstacle{symbol,side}`, `fastmm_quote_obstacle_seconds{symbol,side}` | gauge | the quote table's obstacle as a number (0 quoting, 1 not wanted, 2 quoting off, 3 pulled, 4 venue killed, 5 feed lag, 6 backoff, 7 starved, 8 refused, 9 pending) and how long it has held as of the snapshot |

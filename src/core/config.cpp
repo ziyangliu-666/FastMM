@@ -754,6 +754,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
       get(*t, "supports_replace", v.supports_replace);
       get(*t, "public_only", v.public_only);
       get(*t, "pool_of", v.pool_of);
+      get(*t, "reduce_only", v.reduce_only);
       get(*t, "insecure_tls", v.insecure_tls);
       get(*t, "recv_window_ms", v.recv_window_ms);
       get(*t, "source_ip", v.source_ip);
@@ -950,6 +951,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     if (r.max_feed_lag_ms < 0) throw ConfigError("risk.max_feed_lag_ms must be >= 0");
     get(*t, "check_balance", r.check_balance);
     get(*t, "allow_unlimited", r.allow_unlimited);
+    get(*t, "reduce_only", r.reduce_only);
     get_underlying(*t, "risk", r.underlying);
   }
 
@@ -1128,6 +1130,15 @@ PoolPlan Config::pool_plan() const noexcept {
   return plan;
 }
 
+std::uint32_t Config::reduce_only_venues() const noexcept {
+  std::uint32_t mask = 0;
+  for (const VenueSection& v : venues) {
+    const VenueId id = venue_id(v.name);
+    if (v.reduce_only && id.valid() && id.value < 32U) mask |= 1U << id.value;
+  }
+  return mask;
+}
+
 TreasuryConfig Config::treasury_config(std::string_view primary) const {
   TreasuryConfig c;
   const VenueSection* v = venue(primary);
@@ -1284,6 +1295,7 @@ std::string Config::redacted() const {
     kv("supports_replace", v.supports_replace);
     kv("public_only", v.public_only);
     if (!v.pool_of.empty()) kq("pool_of", v.pool_of);
+    if (v.reduce_only) kv("reduce_only", v.reduce_only);
     kv("insecure_tls", v.insecure_tls);
     if (!v.ca_file.empty()) kq("ca_file", v.ca_file);
     kv("recv_window_ms", v.recv_window_ms);
@@ -1369,6 +1381,7 @@ std::string Config::redacted() const {
   if (risk.max_feed_lag_ms != 0) kv("max_feed_lag_ms", risk.max_feed_lag_ms);
   if (!risk.check_balance) kv("check_balance", risk.check_balance);
   if (risk.allow_unlimited) kv("allow_unlimited", risk.allow_unlimited);
+  if (risk.reduce_only) kv("reduce_only", risk.reduce_only);
   for (const auto& [k, v] : risk.underlying.max_net) {
     fmt::format_to(std::back_inserter(out), "\n[risk.underlying.{}]\n", k);
     kq("max_net", v);
@@ -1563,6 +1576,7 @@ std::string Config::effective_toml() const {
       t.insert("supports_replace", v.supports_replace);
       t.insert("public_only", v.public_only);
       if (!v.pool_of.empty()) t.insert("pool_of", v.pool_of);
+      if (v.reduce_only) t.insert("reduce_only", true);
       t.insert("insecure_tls", v.insecure_tls);
       t.insert("ca_file", v.ca_file);
       t.insert("recv_window_ms", static_cast<std::int64_t>(v.recv_window_ms));
@@ -1674,6 +1688,7 @@ std::string Config::effective_toml() const {
     r.insert("max_feed_lag_ms", static_cast<std::int64_t>(risk.max_feed_lag_ms));
   if (!risk.check_balance) r.insert("check_balance", false);
   if (risk.allow_unlimited) r.insert("allow_unlimited", true);
+  if (risk.reduce_only) r.insert("reduce_only", true);
   if (risk.underlying.configured()) r.insert("underlying", underlying_table(risk.underlying));
   root.insert("risk", std::move(r));
 

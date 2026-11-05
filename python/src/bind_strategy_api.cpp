@@ -1420,6 +1420,14 @@ void bind_strategy_api(py::module_& m) {
       .def_property_readonly("killed",
                              [](const ContextHandle& c) { return c.engine().risk().killed(); })
       .def(
+          "reduce_only",
+          [](const ContextHandle& c, py::handle inst) {
+            return c.engine().reduce_only(c.run->resolve(inst));
+          },
+          py::arg("inst"),
+          "Reduce-only mode holds the instrument: an order that would take its position further "
+          "from zero is refused (fastmm-ctl reduce-only, [risk] reduce_only).")
+      .def(
           "request_stop",
           [](const ContextHandle& c) { c.engine().context().request_stop(); },
           "End the backtest after the current event.")

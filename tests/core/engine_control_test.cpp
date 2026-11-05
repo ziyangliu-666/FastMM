@@ -526,3 +526,125 @@ TEST_CASE("core.engine.control: ResetLossBudget measures net PnL from zero again
   r.control(ControlCommand::ResetLossBudget);
   CHECK(r.engine->kill_reason() == KillReason::MaxLoss);
 }
+
+namespace {
+// Acknowledges an order the engine sent on kA's venue.
+void ack(Rig& r, ClientOrderId id) {
+  OrderAckMsg a{};
+  init_header(a, EventType::OrderAck, kA, VenueId{0});
+  a.cl_ord_id = id;
+  a.venue_order_id = FixedString<40>(std::to_string(id.value).c_str());
+  r.push(a);
+}
+// The side of the order a cancel is for, from the new orders sent.
+Side side_of(const Rig& r, ClientOrderId id) {
+  for (const OutNewOrderMsg& n : r.transport.news())
+    if (n.cl_ord_id == id) return n.side;
+  FAIL("no new order " << id.value);
+  return Side::Buy;
+}
+NewOrderRequest limit(InstrumentId id, Side side, const char* price, const char* qty) {
+  NewOrderRequest q{};
+  q.instrument = id;
+  q.side = side;
+  q.type = OrderType::Limit;
+  q.price = px(price);
+  q.qty = qt(qty);
+  return q;
+}
+}  // namespace
+
+TEST_CASE("core.engine.control: reduce-only cancels the adding side and refuses what adds") {
+  Rig r;
+  r.book(kA, "100.00", "100.02");
+  r.fill(kA, Side::Buy, "100.00", "0.500");  // long: the bid adds, the ask reduces
+  for (const OutNewOrderMsg& n : r.transport.news()) ack(r, n.cl_ord_id);
+  const std::size_t news = r.transport.news().size();
+  const std::size_t cancels = r.cancels().size();
+
+  r.control(ControlCommand::ReduceOnly, kA, VenueId::invalid(), 1);
+  CHECK(r.engine->reduce_only(kA));
+  CHECK_FALSE(r.engine->reduce_only(kB));
+  CHECK(r.engine->reduce_only_count() == 1);
+  CHECK(r.engine->stats().reduce_only_switches == 1);
+  const std::vector<OutCancelMsg> cs = r.cancels();
+  REQUIRE(cs.size() == cancels + 1);
+  CHECK(side_of(r, cs.back().cl_ord_id) == Side::Buy);
+  {
+    OrderCancelAckMsg c{};
+    init_header(c, EventType::OrderCancelAck, kA, VenueId{0});
+    c.cl_ord_id = cs.back().cl_ord_id;
+    r.push(c);
+  }
+
+  // The strategy asks for both sides again: the bid is refused, the ask it already has stays.
+  r.book(kA, "100.00", "100.02");
+  CHECK(r.transport.news().size() == news);
+  CHECK(r.engine->stats().risk_rejects_by_reason[RejectReason::ReduceOnly] >= 1);
+  // A direct order that reduces passes; one through zero that ends no nearer zero does not.
+  auto& ctx = r.engine->context();
+  CHECK(ctx.reduce_only(kA));
+  const auto sent = ctx.send(limit(kA, Side::Sell, "100.05", "0.400"));
+  REQUIRE(sent.has_value());
+  // With the ask of 0.010 and this 0.400 resting, 0.090 is left to close: a sell of 0.170 goes
+  // through zero by less than that, and after it nothing is left.
+  CHECK(ctx.send(limit(kA, Side::Sell, "100.05", "0.170")).has_value());
+  CHECK(ctx.send(limit(kA, Side::Sell, "100.05", "0.050")).error() == RejectReason::ReduceOnly);
+  // Cancels always pass.
+  ack(r, *sent);
+  CHECK(ctx.cancel(*sent).has_value());
+
+  // Off without a scope clears every scope; the bid comes back.
+  r.control(ControlCommand::ReduceOnly, InstrumentId::invalid(), VenueId::invalid(), 0);
+  CHECK_FALSE(r.engine->reduce_only(kA));
+  CHECK(r.engine->reduce_only_count() == 0);
+  const std::size_t before = r.transport.news().size();
+  r.book(kA, "100.00", "100.02");
+  REQUIRE(r.transport.news().size() > before);
+  CHECK(r.transport.news().back().side == Side::Buy);
+}
+
+TEST_CASE("core.engine.control: reduce-only by venue and for the session") {
+  Rig r;
+  r.control(ControlCommand::ReduceOnly, InstrumentId::invalid(), VenueId{1}, 1);
+  CHECK_FALSE(r.engine->reduce_only(kA));
+  CHECK(r.engine->reduce_only(kB));
+  CHECK(r.engine->reduce_only_venues() == 2U);
+  // Flat: every order on kB adds; kA quotes as before.
+  r.book(kA, "100.00", "100.02");
+  r.book(kB, "200.00", "200.02");
+  for (const OutNewOrderMsg& n : r.transport.news()) CHECK(n.hdr.instrument == kA);
+  CHECK(r.engine->stats().risk_rejects_by_reason[RejectReason::ReduceOnly] == 2);
+
+  r.control(ControlCommand::ReduceOnly, InstrumentId::invalid(), VenueId::invalid(), 1);
+  CHECK(r.engine->reduce_only_session());
+  CHECK(r.engine->reduce_only(kA));
+  CHECK(r.engine->reduce_only_count() == 2);
+  // A venue's off leaves the session's on.
+  r.control(ControlCommand::ReduceOnly, InstrumentId::invalid(), VenueId{1}, 0);
+  CHECK(r.engine->reduce_only(kB));
+}
+
+TEST_CASE("core.engine.control: an order in flight when reduce-only came on is cancelled at ack") {
+  Rig r;
+  r.book(kA, "100.00", "100.02");  // flat: both quotes add, neither acknowledged yet
+  REQUIRE(r.transport.news().size() == 2);
+  r.control(ControlCommand::ReduceOnly, kA, VenueId::invalid(), 1);
+  CHECK(r.cancels().empty());
+  for (const OutNewOrderMsg& n : r.transport.news()) ack(r, n.cl_ord_id);
+  CHECK(r.cancels().size() == 2);
+}
+
+TEST_CASE("core.engine.control: [risk] reduce_only starts the session reduce-only") {
+  InstrumentTable table = make_table();
+  SimClock clock{Timestamp{seconds(1000).ns}};
+  Transport transport;
+  InlineFeed feed{1 << 20};
+  Quoter strategy;
+  EngineConfig cfg;
+  cfg.reduce_only = true;
+  auto engine = std::make_unique<Rig::E>(cfg, table, clock, transport, feed, strategy);
+  CHECK(engine->reduce_only_session());
+  CHECK(engine->reduce_only(kA));
+  CHECK(engine->reduce_only(kB));
+}

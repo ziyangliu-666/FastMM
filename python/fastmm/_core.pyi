@@ -1375,6 +1375,10 @@ class Context:
         """
         Float in [0, 1) from the engine's seeded RNG (deterministic).
         """
+    def reduce_only(self, inst: typing.Any) -> bool:
+        """
+        Reduce-only mode holds the instrument: an order that would take its position further from zero is refused (fastmm-ctl reduce-only, [risk] reduce_only).
+        """
     def replace(self, order_id: typing.SupportsInt | typing.SupportsIndex, price: typing.Any, qty: typing.Any) -> None:
         """
         Cancel-replace (venues that support it). Raises OrderRejected.

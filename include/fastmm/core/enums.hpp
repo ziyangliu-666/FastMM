@@ -156,6 +156,9 @@ enum class RejectReason : std::uint8_t {
   // above the free base asset, a spot buy whose notional plus taker fee is above the free quote
   // asset, a derivative whose initial margin is above the available margin ([risk] check_balance).
   BalanceShort = 23,
+  // Reduce-only mode (fastmm-ctl reduce-only, [risk] reduce_only) holds the order's instrument, and
+  // the order, with the open orders on its side, would leave the position no nearer zero.
+  ReduceOnly = 24,
   // OMS / transport
   PoolExhausted = 32,
   UnknownOrder = 33,
@@ -239,6 +242,8 @@ enum class RejectReason : std::uint8_t {
       return "UnderlyingMarkUnknown";
     case RejectReason::BalanceShort:
       return "BalanceShort";
+    case RejectReason::ReduceOnly:
+      return "ReduceOnly";
     case RejectReason::PoolExhausted:
       return "PoolExhausted";
     case RejectReason::UnknownOrder:
@@ -491,6 +496,11 @@ enum class ControlCommand : std::uint8_t {
   // A new [risk] max_loss period began (max_loss_period = "utc_day"): the engine measures net PnL
   // from zero again, unrealized PnL included; a tripped kill switch stays tripped.
   ResetLossBudget = 15,
+  // Reduce-only mode (arg: 1 on, 0 off; hdr.instrument: one instrument, else hdr.venue: one
+  // venue's instruments, else the whole session): new orders and replaces that would take a
+  // position further from zero are refused (RejectReason::ReduceOnly), and turning it on cancels
+  // the working orders on each instrument's adding side. An off without a scope clears every scope.
+  ReduceOnly = 16,
 };
 [[nodiscard]] constexpr std::string_view to_string(ControlCommand c) noexcept {
   switch (c) {
@@ -526,6 +536,8 @@ enum class ControlCommand : std::uint8_t {
       return "Transfer";
     case ControlCommand::ResetLossBudget:
       return "ResetLossBudget";
+    case ControlCommand::ReduceOnly:
+      return "ReduceOnly";
   }
   return "?";
 }

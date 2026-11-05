@@ -19,7 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define FASTMM_HOT_ABI_VERSION 2
+#define FASTMM_HOT_ABI_VERSION 3
 
 #define FASTMM_HOT_BOOK_DEPTH 10  /* book levels per side a hook can read */
 #define FASTMM_HOT_QUOTE_LEVELS 8 /* quote levels per side a hook can write (kMaxQuoteLevels) */
@@ -88,6 +88,8 @@ typedef struct fastmm_hot_ctx {
   uint8_t ask_is_raw[FASTMM_HOT_QUOTE_LEVELS];
   int64_t quiet_lo_raw; /* FASTMM_HOT_FLAG_QUIET: on_book only once the mid is at or beyond */
   int64_t quiet_hi_raw; /* one of these, or the book is invalid */
+  /* input */
+  uint8_t reduce_only; /* reduce-only mode holds the instrument: quote only the side that reduces */
 } fastmm_hot_ctx;
 
 typedef struct fastmm_hot_book {
@@ -127,8 +129,8 @@ typedef int32_t (*fastmm_hot_fn)(uint8_t* self, fastmm_hot_ctx* ctx, fastmm_hot_
 #define FASTMM_HOT_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
 #endif
 
-/* Layout of ABI version 2 (x86-64 System V). */
-FASTMM_HOT_STATIC_ASSERT(sizeof(fastmm_hot_ctx) == 680, "fastmm_hot_ctx size");
+/* Layout of ABI version 3 (x86-64 System V). */
+FASTMM_HOT_STATIC_ASSERT(sizeof(fastmm_hot_ctx) == 688, "fastmm_hot_ctx size");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, tick) == 16, "fastmm_hot_ctx.tick");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, fill_price) == 80, "fastmm_hot_ctx.fill_price");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, action) == 112, "fastmm_hot_ctx.action");
@@ -136,6 +138,8 @@ FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, bid_px) == 136, "fastmm_hot_ct
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, bid_is_raw) == 648, "fastmm_hot_ctx.bid_is_raw");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, quiet_lo_raw) == 664,
                          "fastmm_hot_ctx.quiet_lo_raw");
+FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, reduce_only) == 680,
+                         "fastmm_hot_ctx.reduce_only");
 FASTMM_HOT_STATIC_ASSERT(sizeof(fastmm_hot_book) == 744, "fastmm_hot_book size");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_book, n_bids) == 12, "fastmm_hot_book.n_bids");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_book, mid) == 24, "fastmm_hot_book.mid");

@@ -38,6 +38,10 @@ constexpr std::string_view kUsage =
     "                                           configured parameters\n"
     "  ab promote <arm>                         end it with every instrument on that arm's\n"
     "                                           parameters\n"
+    "  reduce-only on|off [--instrument SYM | --venue NAME]\n"
+    "                                           refuse orders that add to a position:\n"
+    "                                           everywhere, or in that scope; off without\n"
+    "                                           a scope clears every scope\n"
     "  flatten [--instrument SYM] [--max-slippage-bps N]  work the position off, reduce-only\n"
     "  kill                                     trip the kill switch (quotes pulled, all\n"
     "                                           orders cancelled; the position stays)\n"
@@ -296,6 +300,22 @@ std::string control_command(std::string_view request, ControlPlane& plane) {
         scope,
         0,
         std::string(verb) + " queued");
+  }
+  if (verb == "reduce-only") {
+    if (args.empty() || (args[0] != "on" && args[0] != "off"))
+      return error("reduce-only takes on or off, then --instrument SYM or --venue NAME");
+    const bool on = args[0] == "on";
+    Scope scope;
+    if (const std::string err = parse_args(plane, args.subspan(1), true, false, false, scope);
+        !err.empty())
+      return error(err);
+    if (scope.instrument.valid() && scope.venue.valid())
+      return error("give --instrument or --venue, not both");
+    return submit_control(plane,
+                          ControlCommand::ReduceOnly,
+                          scope,
+                          on ? 1 : 0,
+                          on ? "reduce-only on queued" : "reduce-only off queued");
   }
   if (verb == "param") {
     Scope scope;

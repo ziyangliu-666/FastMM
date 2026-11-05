@@ -67,6 +67,7 @@ Checked in the order listed, not numeric order; the first failure decides. A lim
 | 9 | `FatFinger` | `[risk] fat_finger_bps` | a trade prints nearer the price |
 | 10 | `MaxOrderQty` | `[risk] max_order_qty` | the order is smaller |
 | 11 | `MaxOrderNotional` | `[risk] max_order_notional` | the order is smaller |
+| 24 | `ReduceOnly` | `fastmm-ctl reduce-only`, `[risk] reduce_only` | the order leaves the position nearer zero, or the mode is switched off ([Reduce-only mode](../how-to/operations/operate-a-running-session.md#reduce-only-mode)) |
 | 12 | `MaxPosition` | `[risk] max_position` | the position or the same-side open orders shrink |
 | 19 | `FxRateUnknown` | `[accounting]` | the settlement currency's source book updates within `[accounting] stale_fx_ms`; position-reducing orders pass |
 | 17 | `MaxGrossNotional` | `[risk] max_gross_notional` | the portfolio's \|position\| shrinks, or the order only takes its instrument's position towards zero (what goes past zero counts) |

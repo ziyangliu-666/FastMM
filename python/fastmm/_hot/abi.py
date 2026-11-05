@@ -9,7 +9,7 @@ import numpy as np
 
 from .. import _core
 
-VERSION = 2
+VERSION = 3
 BOOK_DEPTH = 10
 QUOTE_LEVELS = 8
 
@@ -65,6 +65,7 @@ CTX_DTYPE = np.dtype(
         ("ask_is_raw", "u1", (QUOTE_LEVELS,)),
         ("quiet_lo_raw", "i8"),
         ("quiet_hi_raw", "i8"),
+        ("reduce_only", "u1"),
     ],
     align=True,
 )

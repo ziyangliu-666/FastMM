@@ -133,9 +133,14 @@ struct EngineLiveStats {
   // Operator flatten (ControlCommand::Flatten): how far it got, how many instruments in its scope
   // still hold a position and how many reduce-only orders it has sent.
   FlattenState flatten_state = FlattenState::Off;
-  std::uint8_t pad_[2] = {};
+  // Reduce-only mode (ControlCommand::ReduceOnly): 1 for the whole session; the venues it was
+  // turned on for (bit per venue id) and the instruments it holds through any scope.
+  std::uint8_t reduce_only = 0;
+  std::uint8_t pad_[1] = {};
   std::uint32_t flatten_instruments_left = 0;
   std::uint64_t flatten_orders = 0;
+  std::uint32_t reduce_only_venues = 0;
+  std::uint32_t reduce_only_instruments = 0;
   // Why each venue's flag was first set, by venue id (RiskEngine::venue_slot).
   std::array<KillReason, kKillVenueSlots> venue_kill_reasons{};
   // Time-weighted quoting presence for the session: what a market-maker programme measures.

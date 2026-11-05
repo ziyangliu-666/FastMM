@@ -70,6 +70,11 @@ struct EngineConfig {
   // not per process); fastmm-live reads it from the durable kill state (core/session_state.hpp).
   Notional pnl_carry{};
   bool quoting_enabled = true;
+  // [risk] reduce_only: the session starts in reduce-only mode for every instrument
+  // (ControlCommand::ReduceOnly turns it off).
+  bool reduce_only = false;
+  // [venues.<x>] reduce_only: ... for the instruments of these venues, bit per venue id.
+  std::uint32_t reduce_only_venues = 0;
   // Bit v: venue v's positions are not current until its first reconciliation ends. A live
   // session sets it for the venues that replay executions at connect: until then the position is
   // the store's plus whatever the replay has booked so far, and an order sized, hedged or

@@ -283,3 +283,44 @@ TEST_CASE("backtest.journal_state: checkpoints by time, their open orders, and t
   CHECK(s.start().strategy == "s1");                 // no time: the first one
   CHECK(take_over_states(r) == std::vector<std::string>{"handed"});
 }
+
+namespace {
+// What ctx.reduce_only said at each book.
+class ReadsReduceOnly : public StrategyBase<BasicMMParams> {
+ public:
+  static constexpr std::string_view name() noexcept { return "reads_reduce_only"; }
+  static inline std::vector<bool> seen;
+  template <class Ctx, class Book>
+  void on_book(Ctx& ctx, InstrumentId id, const Book&) noexcept {
+    seen.push_back(ctx.reduce_only(id));
+  }
+};
+}  // namespace
+
+TEST_CASE(
+    "backtest.journal_state: controls_from_journal replays the session's reduce-only switches") {
+  const std::string path = tmp_path("journal_state_reduce_only.fmj");
+  {
+    JournalBuilder j(path, true);
+    j.book(true, {{"100.00", "5"}}, {{"100.02", "5"}});
+    j.now += 1000;
+    j.control(ControlCommand::ReduceOnly, 1);
+    j.now += 1000;
+    j.book(false, {{"100.00", "4"}}, {});
+    j.now += 1000;
+    j.control(ControlCommand::ReduceOnly, 0);
+    j.now += 1000;
+    j.book(false, {{"100.00", "3"}}, {});
+  }
+  for (const bool replay : {false, true}) {
+    CAPTURE(replay);
+    ReadsReduceOnly::seen.clear();
+    JournalSource src(path, true);
+    REQUIRE(src.recorded()->controls.size() == 2);
+    BacktestConfig cfg = journal_config(InitialState::StateFile);
+    cfg.controls_from_journal = replay;
+    static_cast<void>(run_backtest<ReadsReduceOnly>(cfg, &src));
+    CHECK(ReadsReduceOnly::seen == (replay ? std::vector<bool>{false, true, false}
+                                           : std::vector<bool>{false, false, false}));
+  }
+}

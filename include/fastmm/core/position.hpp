@@ -44,6 +44,17 @@ static_assert(sizeof(Position) == 64 && std::is_trivially_copyable_v<Position>);
   if (room <= 0) return qty;
   return qty > room ? qty - room : 0;
 }
+// Reduce-only mode: counted as opening_qty counts, the order leaves the position nearer zero than
+// `ahead` left it. It only closes, or it goes through zero by less than it closes (long 10, a sell
+// of 15 passes and one of 20 does not). Nothing passes on a flat position. All raw Qty.
+[[nodiscard]] constexpr bool nearer_zero(std::int64_t q,
+                                         Side side,
+                                         std::int64_t ahead,
+                                         std::int64_t qty) noexcept {
+  if (q == 0 || (q > 0) == (side == Side::Buy)) return false;
+  const std::int64_t room = (q < 0 ? -q : q) - ahead;
+  return room > 0 && qty - room < room;
+}
 // `part` of an order of `qty` whose notional is `n`, rounded up (a cap check is not lenient).
 [[nodiscard]] inline Notional notional_share(Notional n,
                                              std::int64_t part,

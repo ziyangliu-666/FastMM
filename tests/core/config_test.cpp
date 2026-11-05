@@ -933,3 +933,21 @@ TEST_CASE("core.config: [risk] max_loss_period is total or utc_day") {
                        doctest::Contains("max_loss_period must be"),
                        ConfigError);
 }
+
+TEST_CASE("core.config: reduce_only in [risk] and per venue survives the effective configuration") {
+  const Config off = Config::parse(pool_toml(""));
+  CHECK_FALSE(off.risk.reduce_only);
+  CHECK(off.reduce_only_venues() == 0);
+  CHECK(off.effective_toml().find("reduce_only") == std::string::npos);
+  std::string text = pool_toml("[risk]\nreduce_only = true\n");
+  text.replace(text.find("[venues.binance_b]"), 0, "reduce_only = true\n");
+  const Config cfg = Config::parse(text);
+  CHECK(cfg.risk.reduce_only);
+  CHECK(cfg.venues[0].reduce_only);
+  CHECK_FALSE(cfg.venues[1].reduce_only);
+  CHECK(cfg.reduce_only_venues() == 1U);
+  const Config back = Config::parse(cfg.effective_toml());
+  CHECK(back.risk.reduce_only);
+  CHECK(back.reduce_only_venues() == 1U);
+  CHECK(cfg.redacted().find("reduce_only = true") != std::string::npos);
+}

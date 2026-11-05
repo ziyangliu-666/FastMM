@@ -34,6 +34,7 @@ constexpr const char* kExamples =
     "  fastmm-ctl --name mm params\n"
     "  fastmm-ctl --name mm limits max_position=0.5 orders_per_sec=10\n"
     "  fastmm-ctl --name mm flatten --max-slippage-bps 15\n"
+    "  fastmm-ctl --name mm reduce-only on --venue binance\n"
     "  fastmm-ctl --gateway gw attachments\n"
     "  fastmm-ctl --gateway gw pull --venue binance\n"
     "  fastmm-ctl --gateway gw clear-kill\n"

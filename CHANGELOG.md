@@ -11,6 +11,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - python: `fastmm.shadow` follows a journal with a C++ strategy or a class with hot hooks.
 - apps: `fastmm-top` shows a shadow's status, and `--metrics` its `fastmm_shadow_*` gauges.
 - core: `[engine] quote_room_reserve`: a quote is not moved towards the touch while the account it rests on has no more than this many orders left in its venue order windows; the resting order stays instead of a cancel whose new order the window refuses (default 0, -1 off).
+- core: reduce-only mode (`fastmm-ctl reduce-only on|off`, `[risk] reduce_only`) refuses orders that add to a position, per session, venue or instrument, and `ctx.reduce_only(id)` reads it.
 
 ### Changed
 - sim: under the queue fill models an order of ours that rests at or inside the touch, or leaves it, goes out in the feed at once with a ticker of the touch, as a live venue's book ticker shows it, instead of with the instrument's next recorded message.

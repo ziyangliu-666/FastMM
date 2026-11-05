@@ -142,6 +142,9 @@ struct RiskInputs {
   // the position, which the global kill switch lets through so a killed session can work its
   // inventory off. A venue's kill still refuses it.
   bool flatten = false;
+  // Reduce-only mode holds the order's instrument (Engine::reduce_only): an order that would leave
+  // the position no nearer zero is refused (nearer_zero, core/position.hpp).
+  bool reduce_only = false;
 };
 
 struct RiskStats {
@@ -527,6 +530,10 @@ class RiskEngine {
     if (limits_.max_order_notional.is_positive() && notional > limits_.max_order_notional) {
       return RejectReason::MaxOrderNotional;
     }
+    if (FASTMM_UNLIKELY(in.reduce_only) && in.position != nullptr &&
+        !nearer_zero(
+            in.position->qty.raw, o.side, in.open_same_side.raw - exclude_open.raw, o.qty.raw))
+      return RejectReason::ReduceOnly;
     if (limits_.max_position.is_positive() && in.position != nullptr) {
       // predicted = position + (same-side open - excluded) + this order, in the order's direction
       const std::int64_t dir = sign(o.side);

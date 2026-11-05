@@ -413,6 +413,9 @@ void engine_metrics(Exposition& e, const StatusSnapshot& s) {
           "instruments in the flatten's scope that still hold a position",
           static_cast<double>(s.flatten_instruments_left));
   e.counter("fastmm_flatten_orders_total", "reduce-only orders a flatten sent", s.flatten_orders);
+  e.gauge("fastmm_reduce_only_instruments",
+          "instruments reduce-only mode holds (fastmm-ctl reduce-only)",
+          static_cast<double>(s.reduce_only_instruments));
   if (s.treasury.pools != 0) {
     const StatusTreasury& t = s.treasury;
     e.gauge("fastmm_treasury_in_flight",

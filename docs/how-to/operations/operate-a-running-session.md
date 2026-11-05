@@ -40,6 +40,7 @@ Replies start with `ok` or `error`, and `fastmm-ctl` exits 0 or 1, except for `s
 | `kill` | Trips the global kill switch: quoting off, quotes pulled, working orders cancelled. The position stays. |
 | `unkill` | Clears the kill switch and quotes again, as `SIGHUP` does, including a [latched `max_loss`](kill-switch-and-shutdown.md#the-latched-loss-budget). |
 | `flatten [--instrument SYM] [--max-slippage-bps N]` | The engine works the position off itself, also while the kill switch is set ([below](#flatten)). |
+| `reduce-only on\|off [--instrument SYM \| --venue NAME]` | Refuses every order that would take a position further from zero, in the whole session or one scope ([below](#reduce-only-mode)). |
 | `param <name>=<value> ... [--instrument SYM] [--source WHO]` | New strategy parameters ([below](#confirm-a-parameter-change)). |
 | `params [--instrument SYM]` | The parameters' values and the update counters. |
 | `limits <key>=<value> ... [--force]` | New risk limits ([below](#change-a-limit)). |
@@ -166,6 +167,34 @@ When the engine trips its own kill switch, `fastmm-live` exits. Set `[engine] on
 ### A restart during a flatten
 
 A restart does not resume a flatten. The shutdown cancels the slice in flight, the new session quotes as `[engine] quoting_enabled` says, and the position is still there; run `flatten` again. `tools/journal_dump.py` on the old journal prints the `Flatten` command, each sweep and each order.
+
+## Reduce-only mode
+
+`reduce-only on` keeps the strategy trading out of its positions and stops it from building new ones, for example over a market open. Orders that reduce keep working.
+
+```bash
+fastmm-ctl --name sim-local reduce-only on --instrument BTCUSDT
+fastmm-ctl --name sim-local reduce-only off
+```
+
+While the mode holds an instrument:
+
+| Order | What happens |
+|---|---|
+| New order or replace that leaves the position, with our open orders on its side, nearer zero | sent; one through zero passes when it closes more than it opens (long 10, a sell of 15) |
+| Any other new order or replace, every one on a flat position | refused with `ReduceOnly` ([Reject reasons](../../reference/errors.md#pre-trade-checks-engine)) |
+| Working order on the side that adds when the mode comes on | cancelled; one still in flight is cancelled at its acknowledgement |
+| Cancel, flatten slice | sent |
+
+The scopes add up: an instrument is held while its own, its venue's or the session's switch is on; a pool's members follow the primary's venue switch. `off` with a scope clears that switch only; `off` without one clears every switch. `[risk] reduce_only = true` starts the session with the session's switch on, and `[venues.<name>] reduce_only = true` with that venue's ([Configuration](../../reference/configuration.md#risk)).
+
+A strategy reads the mode with `ctx.reduce_only(id)` ([Strategy API](../../reference/strategy-api.md#context)) and quotes only the reducing side; one that does not read it has its adding quotes refused. `fastmm-top` shows `REDUCE-ONLY`, and `status` adds a line:
+
+```text
+reduce     session=off venues=0x0 instruments=1
+```
+
+Each switch is journaled, so `fastmm-replay` reproduces it, and a backtest over the journal replays it with `[backtest] controls_from_journal = true`. A restart starts from the configuration, not from the last switch.
 
 ## Rotate the log
 

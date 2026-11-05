@@ -678,3 +678,16 @@ def test_a_declared_quiet_band_changes_no_result(example_config):
     alone = [fastmm.run_backtest(cfg, data="synthetic", strategy=Requoter,
                                  params={"declare": d, "ticks": 3}) for d in (0, 1)]
     assert alone[0].outbound_sha256 == alone[1].outbound_sha256
+
+
+def test_hot_ctx_reads_reduce_only(example_config):
+    class Reads(Strategy):
+        @fastmm.hot
+        def on_book(self, ctx, book):
+            ctx.fail(1 + ctx.reduce_only)
+
+    text = EXAMPLE_TOML.read_text().replace("[risk]\n", "[risk]\nreduce_only = true\n", 1)
+    for cfg, code in ((example_config, 1), (fastmm.BacktestConfig.from_toml_string(text), 2)):
+        with pytest.raises(fastmm.StrategyError) as ei:
+            fastmm.run_backtest(_synthetic(cfg, 2), data="synthetic", strategy=Reads)
+        assert ei.value.fail_code == code

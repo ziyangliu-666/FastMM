@@ -110,3 +110,50 @@ TEST_CASE("sim_exchange replay: an operator sequence replays to the identical ou
   CHECK(r.outbound_sha256 == r.recorded_sha256);
   CHECK(r.ok());
 }
+
+TEST_CASE("sim_exchange replay: a reduce-only window replays to the identical outbound stream") {
+  const std::string path = fresh_journal("control_reduce_only.fmj");
+  ServerFixture fx;
+  LiveEngineOptions opts;
+  opts.journal_path = path;
+  opts.session_epoch = kEpoch;
+  Config cfg = sim_local_config(fx, false);
+  LiveEngine live(cfg, opts);
+  live.start();
+  REQUIRE(fills_at_least(fx, 2, 30000));
+
+  // On for the one instrument: its adding side is cancelled and every order that would add is
+  // refused while BasicMM keeps quoting both sides; then off for the whole session.
+  REQUIRE(live.control(ControlCommand::ReduceOnly, kFirst, VenueId::invalid(), 1));
+  REQUIRE(wait_until([&] { return live.live_stats().reduce_only_instruments == 1; }, 5000));
+  std::this_thread::sleep_for(std::chrono::milliseconds(700));
+  REQUIRE(live.control(ControlCommand::ReduceOnly, InstrumentId::invalid(), VenueId::invalid(), 0));
+  REQUIRE(wait_until([&] { return live.live_stats().reduce_only_instruments == 0; }, 5000));
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  live.stop();
+
+  const EngineStats& es = live.engine().stats();
+  CHECK(es.reduce_only_switches == 2);
+  MESSAGE("refused while reduce-only: " << es.risk_rejects_by_reason[RejectReason::ReduceOnly]
+                                        << ", fills " << es.fills);
+
+  std::size_t switches = 0;
+  {
+    JournalReader reader;
+    REQUIRE(reader.open(path));
+    reader.for_each([&](const EventHeader* h) {
+      if (h->type == EventType::Control && (h->flags & EventHeader::kOutbound) == 0 &&
+          msg_cast<ControlMsg>(h).command == ControlCommand::ReduceOnly)
+        ++switches;
+    });
+  }
+  CHECK(switches == 2);
+
+  const bt::ReplayResult r = bt::replay_journal(path);
+  INFO("expected: " << r.expected_message);
+  INFO("actual:   " << r.actual_message);
+  CHECK(r.first_mismatch == -1);
+  CHECK(r.outbound_messages == r.recorded_messages);
+  CHECK(r.outbound_sha256 == r.recorded_sha256);
+  CHECK(r.ok());
+}

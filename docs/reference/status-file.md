@@ -21,7 +21,7 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`.
 1. The writer makes the counter odd, writes the snapshot, then makes it even again.
 2. A reader copies the snapshot and keeps it when the counter was even and unchanged across the copy; otherwise it retries.
 
-`magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 24) sit at the same offsets in every version. The layout is internal ([Public API](public-api.md)): read it with `fastmm-top` from the same build. Another version is refused:
+`magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 25) sit at the same offsets in every version. The layout is internal ([Public API](public-api.md)): read it with `fastmm-top` from the same build. Another version is refused:
 
 ```text
 <file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)
@@ -53,6 +53,8 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`.
 | `flatten_state` | u8 | operator flatten: 0 off, 1 working, 2 flat, 3 timed out, 4 stopped ([Operating a running session](../how-to/operations/operate-a-running-session.md#flatten)) |
 | `flatten_instruments_left` | u32 | instruments in the flatten's scope that still hold a position |
 | `flatten_orders` | u64 | reduce-only orders the flatten has sent |
+| `reduce_only` | u8 | 1 while reduce-only mode holds the whole session ([Reduce-only mode](../how-to/operations/operate-a-running-session.md#reduce-only-mode)) |
+| `reduce_only_venues`, `reduce_only_instruments` | u32, u32 | the venues it was turned on for (bit per venue id), and the instruments it holds through any scope |
 | `kind` | u8 | 0 `fastmm-live`, 1 `fastmm-gateway` |
 | `realized_pnl_raw`, `unrealized_pnl_raw`, `fees_raw` | i64 | settlement currency, or `[accounting] reporting_currency` when it is set; raw fixed point (divide by 1e8) |
 | `pnl_carry_raw` | i64 | net PnL of earlier sessions that `[risk] max_loss` is measured against, from `[engine] kill_file` |
@@ -134,6 +136,7 @@ What each side of an instrument asks for, what works there and what is in the wa
 |---|---|---|
 | `symbol` | char[24] | the instrument |
 | `instrument`, `venue` | u32, u8 | its id and its venue's index |
+| `reduce_only` | u8 | 1 while reduce-only mode holds the instrument |
 | `position_raw`, `avg_px_raw`, `realized_raw`, `unrealized_raw` | i64 | the position, its average price and PnL, settlement currency |
 | `mid_raw` | i64 | the book's mid, 0 without a two-sided book |
 | `sides` | 2 x side entry | buy, then sell |

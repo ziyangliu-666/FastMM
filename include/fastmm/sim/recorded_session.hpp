@@ -95,8 +95,8 @@ struct RecordedSession {
 
 // The operator commands a run replays as they reached the session ([backtest]
 // controls_from_journal): quotes pulled and resumed, a flatten, limits changed, a kill switch
-// tripped or reset. A control socket's Stop ends the session and with it the data; what else the
-// engine takes on this path concerns the process, not the trading.
+// tripped or reset, reduce-only mode switched. A control socket's Stop ends the session and with it
+// the data; what else the engine takes on this path concerns the process, not the trading.
 [[nodiscard]] constexpr bool replayable_control(ControlCommand c) noexcept {
   switch (c) {
     case ControlCommand::PullQuotes:
@@ -108,6 +108,7 @@ struct RecordedSession {
     case ControlCommand::TripVenueKill:
     case ControlCommand::ResetKill:
     case ControlCommand::ResetLossBudget:
+    case ControlCommand::ReduceOnly:
       return true;
     default:
       return false;

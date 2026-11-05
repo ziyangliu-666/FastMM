@@ -385,6 +385,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      "for, with its own keys, balances and order-count windows; no instruments or market data of "
      "its own (default none)"},
     {"venues.*",
+     "reduce_only",
+     KeyType::Bool,
+     false,
+     "start in reduce-only mode for this venue's instruments: orders that would take a position "
+     "further from zero are refused until fastmm-ctl reduce-only off --venue <name> (default "
+     "false)"},
+    {"venues.*",
      "recv_window_ms",
      KeyType::Int,
      false,
@@ -737,6 +744,12 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "refuse an order the venue's reported balance, less this session's orders and fills since, "
      "cannot cover; off for a venue until it reports balances (default true)"},
+    {"risk",
+     "reduce_only",
+     KeyType::Bool,
+     false,
+     "start in reduce-only mode for every instrument: orders that would take a position further "
+     "from zero are refused until fastmm-ctl reduce-only off (default false)"},
     {"risk",
      "allow_unlimited",
      KeyType::Bool,

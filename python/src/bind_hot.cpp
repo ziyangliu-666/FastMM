@@ -88,6 +88,7 @@ py::dict ctx_layout() {
   FASTMM_HOT_OFFSET(d, fastmm_hot_ctx, fail_code)
   FASTMM_HOT_OFFSET(d, fastmm_hot_ctx, quiet_lo_raw)
   FASTMM_HOT_OFFSET(d, fastmm_hot_ctx, quiet_hi_raw)
+  FASTMM_HOT_OFFSET(d, fastmm_hot_ctx, reduce_only)
   FASTMM_HOT_OFFSET(d, fastmm_hot_ctx, bid_px)
   FASTMM_HOT_OFFSET(d, fastmm_hot_ctx, bid_qty)
   FASTMM_HOT_OFFSET(d, fastmm_hot_ctx, ask_px)

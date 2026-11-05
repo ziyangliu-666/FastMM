@@ -30,29 +30,30 @@ The first failing check decides the reason.
 | 10 | `FatFinger` | a limit price is further from the last trade than the band | `fat_finger_bps` |
 | 11 | `MaxOrderQty` | the quantity exceeds the limit | `max_order_qty` |
 | 12 | `MaxOrderNotional` | the order value exceeds the limit | `max_order_notional` |
-| 13 | `MaxPosition` | position plus same-side open orders plus this order would exceed the limit in absolute value and increase exposure | `max_position` |
-| 14 | `FxRateUnknown` | the order opens exposure in a settlement currency whose rate is unknown or stale, while a limit reads the totals | `[accounting]` |
-| 15 | `MaxGrossNotional` | the portfolio's summed \|position\| at the last marks plus what this order opens would pass the cap | `max_gross_notional` |
-| 16 | `MaxNetNotional` | the portfolio's signed position sum would move further past the cap, and this order opens exposure | `max_net_notional` |
-| 17 | `UnderlyingMarkUnknown` | an inverse contract of the order's underlying has a position or open orders, or is the order's instrument, and no current mark | `[risk.underlying]` |
-| 18 | `MaxUnderlyingNet` | the net position in the order's underlying, with the open orders on the order's side and this order, would move further past the limit | `[risk.underlying.<BASE>] max_net` |
-| 19 | `MaxOpenOrders` | the instrument already has this many open orders (new orders only) | `max_open_orders` |
-| 20 | `SelfTradePrevention` | a limit price would trade against one of our own resting orders | `stp` |
-| 21 | `BalanceShort` | the account's balance on the venue does not cover the order ([Balance check](#balance-check)) | `check_balance` |
-| 22 | `VenueKilled` | a pool member's order and the pool's primary venue is killed ([account pools](../reference/configuration.md#account-pools)) | |
-| 23 | `RateLimit` | a pool order's account cannot send it now: its connector is paused or an order window is at its cap (`ctx.order_budget`) | |
-| 24 | `RateLimit` | the token bucket is empty | `orders_per_sec`, `burst` |
+| 13 | `ReduceOnly` | [reduce-only mode](../how-to/operations/operate-a-running-session.md#reduce-only-mode) holds the instrument and the order, with the open orders on its side, would leave the position no nearer zero; a `flatten`'s order passes | `fastmm-ctl reduce-only`, `reduce_only` |
+| 14 | `MaxPosition` | position plus same-side open orders plus this order would exceed the limit in absolute value and increase exposure | `max_position` |
+| 15 | `FxRateUnknown` | the order opens exposure in a settlement currency whose rate is unknown or stale, while a limit reads the totals | `[accounting]` |
+| 16 | `MaxGrossNotional` | the portfolio's summed \|position\| at the last marks plus what this order opens would pass the cap | `max_gross_notional` |
+| 17 | `MaxNetNotional` | the portfolio's signed position sum would move further past the cap, and this order opens exposure | `max_net_notional` |
+| 18 | `UnderlyingMarkUnknown` | an inverse contract of the order's underlying has a position or open orders, or is the order's instrument, and no current mark | `[risk.underlying]` |
+| 19 | `MaxUnderlyingNet` | the net position in the order's underlying, with the open orders on the order's side and this order, would move further past the limit | `[risk.underlying.<BASE>] max_net` |
+| 20 | `MaxOpenOrders` | the instrument already has this many open orders (new orders only) | `max_open_orders` |
+| 21 | `SelfTradePrevention` | a limit price would trade against one of our own resting orders | `stp` |
+| 22 | `BalanceShort` | the account's balance on the venue does not cover the order ([Balance check](#balance-check)) | `check_balance` |
+| 23 | `VenueKilled` | a pool member's order and the pool's primary venue is killed ([account pools](../reference/configuration.md#account-pools)) | |
+| 24 | `RateLimit` | a pool order's account cannot send it now: its connector is paused or an order window is at its cap (`ctx.order_budget`) | |
+| 25 | `RateLimit` | the token bucket is empty | `orders_per_sec`, `burst` |
 
 A limit of 0 turns its check off, and every limit defaults to off. The checks against the instrument's reference data always run. `fastmm-live` with real keys refuses to start without `max_position` or `max_order_notional`, and `max_loss`, unless `[risk] allow_unlimited = true`.
 
-- Market orders skip the price checks 4, 9, 10 and 20.
+- Market orders skip the price checks 4, 9, 10 and 21.
 - A replace leaves the existing order's remaining quantity out of the position prediction and does not count against `max_open_orders`.
 - `MaxPosition` counts same-side open orders, so a quote ladder cannot pass `max_position` even if it fills entirely.
 - Only an order that passes every check takes a token from the bucket. An order refused for another reason, a full or paused pool account included, leaves the tokens to the orders that are sent.
 - The notional of checks 6 and 12 is in the instrument's settlement currency: `price * qty * multiplier` for a linear contract, `qty * multiplier / price` for an inverse one.
-- Checks 14 to 16 pass the part of an order that takes its position towards zero, after our open orders on that side. The rest opens exposure and is checked as a new order.
+- Checks 15 to 17 pass the part of an order that takes its position towards zero, after our open orders on that side. The rest opens exposure and is checked as a new order.
 - Long 1 and selling 3, the 2 past zero meet the gross cap on their own notional, and the net cap on the net the whole order leaves. An order that only closes passes, even where it moves a hedged net further from zero.
-- Checks 15 and 16 compare in the reporting currency when `[accounting]` converts ([Currencies](#currencies)).
+- Checks 16 and 17 compare in the reporting currency when `[accounting]` converts ([Currencies](#currencies)).
 
 ## Feed-lag gate
 
@@ -79,7 +80,7 @@ The first message 100 ms after the last late one releases the gate, and the stra
 
 ## Balance check
 
-Check 21 refuses an order that the account's free balance on its venue does not cover. The engine keeps one balance row per venue and asset: the base and quote of each spot instrument, the settlement asset of each derivative, and an account row for venues that report account-wide margin.
+Check 22 refuses an order that the account's free balance on its venue does not cover. The engine keeps one balance row per venue and asset: the base and quote of each spot instrument, the settlement asset of each derivative, and an account row for venues that report account-wide margin.
 
 Connectors report balances as snapshots after every reconciliation and at start-up, plus the private stream's updates where the venue has one ([Venues](../reference/venues/connector-behaviour.md#balances)). In a backtest the simulated venue sends them ([Backtesting](backtesting.md#balances)). The reports are journaled, so a replay rebuilds the same rows.
 
@@ -199,7 +200,7 @@ Nothing resets a kill switch automatically. After a kill the engine tripped itse
 
 - It does not replace the strategy's own limits. `first_mm` stops quoting a side at `max_position`; `[risk] max_position` is a second limit that holds when the strategy has a bug. Set the risk limit above the strategy's.
 - Position limits are per instrument, and per base asset with `[risk.underlying]`. The portfolio limits `max_gross_notional`, `max_net_notional` and `max_loss` cover one session, and need `[accounting]` across settlement currencies. Across strategies only `fastmm-gateway`'s `[gateway]` limits see the account.
-- It knows no venue rules beyond reference data, the account's balances (check 21) and its own order rate limit (check 24). Connectors back off on the venue's rate-limit responses ([Venue connectors](../reference/venues.md)), and the engine pauses a side after venue rejects and after price-collar or fat-finger refusals of its quotes (`[engine] reject_backoff_ms`).
+- It knows no venue rules beyond reference data, the account's balances (check 22) and its own order rate limit (check 25). Connectors back off on the venue's rate-limit responses ([Venue connectors](../reference/venues.md)), and the engine pauses a side after venue rejects and after price-collar or fat-finger refusals of its quotes (`[engine] reject_backoff_ms`).
 - Cancels never take a token. A `set_quotes` short of a token is not refused: it waits, and the engine places the latest waiting quotes as the bucket refills. `[engine] quote_token_reserve` keeps tokens for the strategy's own orders and for quotes that reduce the position.
 - An account whose venue order window is used up gets no move of a quote towards the touch (`[engine] quote_room_reserve`): the resting order stays where it is, rather than being cancelled for a new one the window would refuse, and the account's last orders go to empty levels and to moves away from the touch.
 - It does not protect against a venue that stops answering. Loss of the order channel triggers a REST cancel-all in the connector; beyond that, see [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md).

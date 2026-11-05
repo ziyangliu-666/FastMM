@@ -143,8 +143,9 @@ struct EngineStats {
   std::uint64_t replayed_foreign_fills = 0;
   // Reconciliations the engine asked a venue for (ControlCommand::Reconcile).
   std::uint64_t reconcile_requests = 0;
-  std::uint64_t ack_timeouts = 0;      // PendingNew orders force-cancelled by the ack sweep
-  std::uint64_t flattens = 0;          // operator flattens started (ControlCommand::Flatten)
+  std::uint64_t ack_timeouts = 0;          // PendingNew orders force-cancelled by the ack sweep
+  std::uint64_t flattens = 0;              // operator flattens started (ControlCommand::Flatten)
+  std::uint64_t reduce_only_switches = 0;  // ControlCommand::ReduceOnly applied
   std::uint64_t treasury_records = 0;  // pool treasury transfer steps (ControlCommand::Transfer)
   std::uint64_t flatten_orders = 0;    // reduce-only orders a flatten sent
   std::uint64_t steps = 0;
@@ -245,6 +246,9 @@ class Engine {
           awaiting_ |= venue_mask(v);
       }
     }
+    ro_session_ = cfg.reduce_only;
+    ro_venues_ = cfg.reduce_only_venues;
+    refresh_reduce_only();
   }
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
@@ -550,6 +554,16 @@ class Engine {
   [[nodiscard]] FlattenState flatten_state() const noexcept { return flatten_state_; }
   // The instrument it covers; invalid when it covers every instrument.
   [[nodiscard]] InstrumentId flatten_scope() const noexcept { return flatten_scope_; }
+  // Reduce-only mode holds the instrument (ControlCommand::ReduceOnly, [risk] reduce_only): an
+  // order or replace on it that would leave its position no nearer zero is refused.
+  [[nodiscard]] bool reduce_only(InstrumentId id) const noexcept {
+    return id.value < kMaxInstruments && reduce_only_[id.value];
+  }
+  // The scopes it was turned on for: the whole session, the venues (bit per venue id), and how
+  // many instruments it holds through any of them.
+  [[nodiscard]] bool reduce_only_session() const noexcept { return ro_session_; }
+  [[nodiscard]] std::uint32_t reduce_only_venues() const noexcept { return ro_venues_; }
+  [[nodiscard]] std::uint32_t reduce_only_count() const noexcept { return ro_count_; }
   // A venue's orders and position are being reconciled, or (EngineConfig::await_reconcile) have
   // not been since the session started: the positions may still be missing fills.
   [[nodiscard]] bool reconciling() const noexcept { return (reconciling_ | awaiting_) != 0; }
@@ -1530,6 +1544,7 @@ class Engine {
       q.realized_raw = p.realized.raw;
       q.unrealized_raw = p.unrealized.raw;
       q.mid_raw = books_[inst.id.value].mid().raw;
+      q.reduce_only = reduce_only_[inst.id.value] ? 1 : 0;
       for (const Side side : {Side::Buy, Side::Sell}) {
         QuoteTrack& t = quote_track_[track_index(inst.id, side)];
         LiveQuoteSide& out = q.sides[static_cast<std::size_t>(side)];
@@ -2036,6 +2051,9 @@ class Engine {
       health_.on_ack(u.order.venue, now_ - u.order.created, now_);
     if (u.changed && u.prev == OrderState::PendingReplace && !keep) queue_.remove(u.slot);
     after_oms_update(u, m.hdr);
+    // An order in flight when reduce-only mode came on could not be cancelled then.
+    if (FASTMM_UNLIKELY(ro_count_ != 0) && u.changed && u.handle.valid())
+      cancel_if_adding(u.handle);
   }
   void on_order_reject(const OrderRejectMsg& m) noexcept {
     own_inbound(m.hdr);
@@ -2473,6 +2491,9 @@ class Engine {
       case ControlCommand::Flatten:
         begin_flatten(c.hdr.instrument, static_cast<std::int64_t>(c.arg));
         break;
+      case ControlCommand::ReduceOnly:
+        set_reduce_only(c.hdr.instrument, c.hdr.venue, c.arg != 0);
+        break;
       case ControlCommand::SetLimits:
         // The payload sits past the ControlMsg prefix; a short record (another producer, an older
         // journal) is ignored rather than read out of bounds.
@@ -2744,6 +2765,69 @@ class Engine {
     for (const Instrument& inst : instruments_) {
       if (inst.venue == v) quotes_.pull_quotes(inst, oms_, place);
     }
+    flush_out();
+  }
+
+  // ControlCommand::ReduceOnly. Turning it on cancels the working orders on the side of each
+  // instrument it now holds that takes the position away from zero (both sides when flat); an
+  // order still in flight is cancelled at its ack. The strategy reads it with ctx.reduce_only.
+  void set_reduce_only(InstrumentId id, VenueId v, bool on) noexcept {
+    if (id.valid()) {
+      if (!instruments_.contains(id)) return;
+      ro_inst_[id.value] = on;
+    } else if (v.valid()) {
+      ro_venues_ = on ? ro_venues_ | venue_mask(v) : ro_venues_ & ~venue_mask(v);
+    } else if (on) {
+      ro_session_ = true;
+    } else {
+      ro_session_ = false;
+      ro_venues_ = 0;
+      ro_inst_.fill(false);
+    }
+    refresh_reduce_only();
+    ++stats_.reduce_only_switches;
+    FASTMM_LOG_INFO("reduce-only {} ({}): {} instruments held",
+                    on ? "on" : "off",
+                    id.valid()  ? instruments_.get(id).symbol.view()
+                    : v.valid() ? venue_name(v)
+                                : std::string_view("session"),
+                    ro_count_);
+    if (on) {
+      enter_api();
+      for (const Instrument& inst : instruments_) {
+        if (!reduce_only_[inst.id.value]) continue;
+        StaticVector<Handle<Order>, kMaxOpenOrders> handles;
+        oms_.for_each_open_order(inst.id, [&](Handle<Order> h, const Order& o) {
+          if (o.is_working() && adds(inst.id, o.side)) static_cast<void>(handles.push_back(h));
+        });
+        for (Handle<Order> h : handles) static_cast<void>(submit_cancel(h));
+      }
+      flush_out();
+    }
+    // At once rather than with the next latency publication: the status shows the switch.
+    publish_live(latency_pub_.load());
+  }
+  void refresh_reduce_only() noexcept {
+    ro_count_ = 0;
+    for (const Instrument& inst : instruments_) {
+      if (inst.id.value >= kMaxInstruments) continue;
+      const bool held =
+          ro_session_ || (ro_venues_ & venue_mask(inst.venue)) != 0 || ro_inst_[inst.id.value];
+      reduce_only_[inst.id.value] = held;
+      ro_count_ += held ? 1U : 0U;
+    }
+  }
+  // An order on `side` takes the instrument's position away from zero (either side when flat).
+  [[nodiscard]] bool adds(InstrumentId id, Side side) const noexcept {
+    const std::int64_t q = positions_.get(id).qty.raw;
+    return q == 0 || (q > 0) == (side == Side::Buy);
+  }
+  FASTMM_NOINLINE void cancel_if_adding(Handle<Order> h) noexcept {
+    if (!oms_.is_live(h)) return;
+    const Order& o = oms_.get(h);
+    if (!o.is_working() || !reduce_only(o.instrument) || !adds(o.instrument, o.side)) return;
+    enter_api();
+    static_cast<void>(submit_cancel(h));
     flush_out();
   }
 
@@ -3282,6 +3366,7 @@ class Engine {
     in.primary_killed = account != inst.venue && risk_.venue_killed(inst.venue);
     in.account_full = window_full;
     in.flatten = flatten;
+    in.reduce_only = reduce_only_[req.instrument.value];
     const RejectReason rr = risk_.check_new(oi, inst, in);
     if (FASTMM_UNLIKELY(rr != RejectReason::None)) {
       ++stats_.risk_rejects;
@@ -3455,6 +3540,7 @@ class Engine {
                                          holds_[h.idx],
                                          o.has(Order::kReduceOnly),
                                          in.open_same_side - o.leaves_qty());
+    in.reduce_only = reduce_only_[o.instrument.value];
     const RejectReason rr = risk_.check_replace(oi, o, inst, in);
     if (FASTMM_UNLIKELY(rr != RejectReason::None)) {
       ++stats_.risk_rejects;
@@ -3869,6 +3955,9 @@ class Engine {
     live.flatten_state = flatten_state_;
     live.flatten_instruments_left = flatten_state_ == FlattenState::Off ? 0 : flatten_left();
     live.flatten_orders = stats_.flatten_orders;
+    live.reduce_only = ro_session_ ? 1 : 0;
+    live.reduce_only_venues = ro_venues_;
+    live.reduce_only_instruments = ro_count_;
     presence_.settle(now_);
     const QuotePresenceStats presence = presence_.total();
     live.quoting_elapsed_ns = presence.elapsed_ns;
@@ -4459,6 +4548,13 @@ class Engine {
   // The flatten slice each instrument has in flight (invalid: none).
   std::array<ClientOrderId, kMaxInstruments> flatten_order_{};
   std::uint32_t venue_pulled_ = 0;
+  // Reduce-only mode by scope (ControlCommand::ReduceOnly), and reduce_only_ per instrument, the
+  // union the risk check reads; ro_count_ instruments it holds.
+  bool ro_session_ = false;
+  std::uint32_t ro_venues_ = 0;
+  std::array<bool, kMaxInstruments> ro_inst_{};
+  std::array<bool, kMaxInstruments> reduce_only_{};
+  std::uint32_t ro_count_ = 0;
   // Bit per venue whose order link is not live (ConnectionStateMsg channel 1): the pool routing
   // skips such a member.
   std::uint32_t order_link_down_ = 0;

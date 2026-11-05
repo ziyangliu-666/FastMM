@@ -443,3 +443,32 @@ TEST_CASE("integration.control: control_request asks, probes and reports an abse
   socket.close();
   CHECK(control_request(path, {}, 200, reply) == ControlReply::Unreachable);
 }
+
+TEST_CASE("integration.control: reduce-only carries on or off and its scope to the control ring") {
+  Fake f;
+  CHECK(f.run("reduce-only on") == "ok reduce-only on queued (every instrument)\n");
+  CHECK(f.last().command == ControlCommand::ReduceOnly);
+  CHECK(f.last().arg == 1);
+  CHECK_FALSE(f.last().hdr.instrument.valid());
+  CHECK_FALSE(f.last().hdr.venue.valid());
+
+  CHECK(f.run("reduce-only off --instrument ETHUSDT") ==
+        "ok reduce-only off queued (instrument ETHUSDT)\n");
+  CHECK(f.last().arg == 0);
+  CHECK(f.last().hdr.instrument == InstrumentId{1});
+  CHECK(f.run("reduce-only on --venue bybit").starts_with("ok"));
+  CHECK(f.last().arg == 1);
+  CHECK(f.last().hdr.venue == VenueId{1});
+  CHECK_FALSE(f.last().hdr.instrument.valid());
+
+  const std::size_t sent = f.sent.size();
+  CHECK(f.run("reduce-only").starts_with("error reduce-only takes on or off"));
+  CHECK(f.run("reduce-only maybe").starts_with("error"));
+  CHECK(f.run("reduce-only on --instrument NOPE").starts_with("error"));
+  CHECK(f.run("reduce-only on --instrument BTCUSDT --venue bybit").starts_with("error"));
+  CHECK(f.run("reduce-only on --max-slippage-bps 5").starts_with("error"));
+  CHECK(f.sent.size() == sent);
+  f.ring_full = true;
+  CHECK(f.run("reduce-only on").starts_with("error the control ring is full"));
+  CHECK(control_usage().find("reduce-only on|off") != std::string_view::npos);
+}

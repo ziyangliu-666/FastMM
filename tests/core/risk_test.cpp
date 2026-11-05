@@ -354,3 +354,57 @@ TEST_CASE("core.position: exposure totals follow the positions and their marks")
   CHECK(t.gross_exposure().is_zero());
   CHECK(t.net_exposure().is_zero());
 }
+
+TEST_CASE("core.risk: reduce-only passes an order that leaves the position nearer zero") {
+  // Long 10 (raw units of 1): closing, and through zero by less than it closes, pass.
+  CHECK(nearer_zero(10, Side::Sell, 0, 10));
+  CHECK(nearer_zero(10, Side::Sell, 0, 15));
+  CHECK_FALSE(nearer_zero(10, Side::Sell, 0, 20));  // short 10: no nearer zero
+  CHECK_FALSE(nearer_zero(10, Side::Buy, 0, 1));
+  CHECK_FALSE(nearer_zero(0, Side::Buy, 0, 1));
+  CHECK_FALSE(nearer_zero(0, Side::Sell, 0, 1));
+  // Our open sells of 6 take their share of the way first: 4 left to close.
+  CHECK(nearer_zero(10, Side::Sell, 6, 4));
+  CHECK(nearer_zero(10, Side::Sell, 6, 7));
+  CHECK_FALSE(nearer_zero(10, Side::Sell, 6, 8));
+  CHECK_FALSE(nearer_zero(10, Side::Sell, 10, 1));
+  CHECK(nearer_zero(-10, Side::Buy, 0, 12));
+  CHECK_FALSE(nearer_zero(-10, Side::Sell, 0, 1));
+}
+
+TEST_CASE("core.risk: reduce-only refuses new orders and replaces that add") {
+  const Instrument inst = make_inst();
+  RiskLimits l = limits();
+  l.max_position = Qty{};
+  const Timestamp now{seconds(100).ns};
+  RiskEngine risk(l, now);
+  risk.on_book(inst.id, Price::from_int(100), now);
+  risk.on_trade(inst.id, Price::from_int(100));
+  Position pos{};
+  pos.qty = Qty::from_int(2);
+  RiskInputs in{now, &pos, Notional{}, Notional{}, Qty{}, 0, Price{}};
+  in.reduce_only = true;
+  CHECK(risk.check_new(intent(Side::Buy, "100", "0.1"), inst, in) == RejectReason::ReduceOnly);
+  CHECK(risk.check_new(intent(Side::Sell, "100", "2"), inst, in) == RejectReason::None);
+  CHECK(risk.check_new(intent(Side::Sell, "100", "3"), inst, in) == RejectReason::None);
+  CHECK(risk.check_new(intent(Side::Sell, "100", "4"), inst, in) == RejectReason::ReduceOnly);
+  // Open sells of 2 already close the position: one more sell would open a short.
+  in.open_same_side = Qty::from_int(2);
+  CHECK(risk.check_new(intent(Side::Sell, "100", "1"), inst, in) == RejectReason::ReduceOnly);
+  // A replace of that order leaves its own leaves out: it may move or shrink.
+  Order existing{};
+  existing.instrument = inst.id;
+  existing.side = Side::Sell;
+  existing.qty = Qty::from_int(2);
+  CHECK(risk.check_replace(intent(Side::Sell, "101", "2"), existing, inst, in) ==
+        RejectReason::None);
+  CHECK(risk.check_replace(intent(Side::Sell, "101", "5"), existing, inst, in) ==
+        RejectReason::ReduceOnly);
+  // Off: the same order passes.
+  in.reduce_only = false;
+  CHECK(risk.check_new(intent(Side::Buy, "100", "0.1"), inst, in) == RejectReason::None);
+  // A flatten's order carries no position and is never refused by it.
+  in.reduce_only = true;
+  in.position = nullptr;
+  CHECK(risk.check_new(intent(Side::Buy, "100", "0.1"), inst, in) == RejectReason::None);
+}

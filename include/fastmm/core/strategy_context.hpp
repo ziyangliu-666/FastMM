@@ -193,6 +193,10 @@ class StrategyContext {
   // with NotReconciled until then). Positions may be missing fills while this holds.
   [[nodiscard]] bool reconciling() const noexcept { return e_->reconciling(); }
   [[nodiscard]] bool killed() const noexcept { return e_->risk().killed(); }
+  // Reduce-only mode holds the instrument (fastmm-ctl reduce-only, [risk] reduce_only): an order
+  // or replace that would leave its position no nearer zero is refused with
+  // RejectReason::ReduceOnly. A strategy that reads it quotes only the side that reduces.
+  [[nodiscard]] bool reduce_only(InstrumentId id) const noexcept { return e_->reduce_only(id); }
   // One venue's kill switch: new orders to it are refused and set_quotes ignores its instruments.
   [[nodiscard]] bool venue_killed(VenueId v) const noexcept { return e_->risk().venue_killed(v); }
   // The venue's [venues.<name>], for log lines ("venue <id>" when the session names none).

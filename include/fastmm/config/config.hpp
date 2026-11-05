@@ -177,6 +177,9 @@ struct VenueSection {
   // its own keys, balances and order-count windows, and has no instruments or market data of its
   // own (core/account_pool.hpp). Empty: a venue of its own.
   std::string pool_of;
+  // The session starts in reduce-only mode for this venue's instruments (fastmm-ctl reduce-only
+  // off --venue <name> ends it).
+  bool reduce_only = false;
   bool insecure_tls = false;
   std::string ca_file;
   int recv_window_ms = 3000;
@@ -276,6 +279,9 @@ struct RiskSection {
   // A keyed fastmm-live session starts without max_position (or max_order_notional) and
   // max_loss only with this set.
   bool allow_unlimited = false;
+  // The session starts in reduce-only mode for every instrument (fastmm-ctl reduce-only off ends
+  // it).
+  bool reduce_only = false;
   // [risk.underlying.<BASE>] max_net: net position per base asset over every instrument, base
   // units.
   UnderlyingSpec underlying;
@@ -385,6 +391,8 @@ class Config {
   [[nodiscard]] VenueId venue_id(std::string_view name) const noexcept;  // invalid if unknown
   // The account pools ([venues.<x>] pool_of), by venue id; inactive without any.
   [[nodiscard]] PoolPlan pool_plan() const noexcept;
+  // The venues whose [venues.<x>] reduce_only is set, bit per venue id (EngineConfig).
+  [[nodiscard]] std::uint32_t reduce_only_venues() const noexcept;
   // The treasury of the pool whose primary is `primary` ([venues.<primary>.treasury]), typed; a
   // disabled one when the venue has none.
   [[nodiscard]] TreasuryConfig treasury_config(std::string_view primary) const;

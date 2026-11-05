@@ -126,7 +126,7 @@ py:SkewMM: parameter 'levels': cannot parse '2.5' as int (a whole number)
 | Quoting | `set_quotes(inst, bids, asks) -> bool`, `pull_quotes(inst)`, `pull_all_quotes()`, `working_quote(inst, side, level=0) -> Order or None` |
 | Direct orders | `send(inst, side, price, qty, *, post_only=False, reduce_only=False, ioc=False, tag=0) -> int`, `cancel(order_id) -> bool`, `replace(order_id, price, qty)`, `order(order_id) -> Order or None`, `open_qty(inst, side)` |
 | Timers | `every(period_ns, tag=0) -> int`, `once(delay_ns, tag=0) -> int`, `cancel_timer(timer_id) -> bool` |
-| Control | `quoting_enabled`, `killed`, `request_stop()`: the run ends after the current event |
+| Control | `quoting_enabled`, `killed`, `reduce_only(inst)` ([reduce-only mode](../how-to/operations/operate-a-running-session.md#reduce-only-mode)), `request_stop()`: the run ends after the current event |
 | Venue state | `fees(inst)` -> `Fees`, `risk_headroom(inst)` -> `RiskHeadroom`, `venue_health(venue=0)` -> `VenueHealth`, `order_budget(venue=0)` -> `OrderBudget` |
 | Balances | `balance(venue, asset)` -> `Balance`, `margin(venue=0)` -> `Margin`, `balance_room(inst, side, price)` -> float or `None`, `balances_live()` ([Balances](strategy-api.md#balances)) |
 | Perpetuals | `mark(inst)`, `index(inst)` -> `RefPrice`, `funding(inst)` -> `Funding` ([Perpetuals](strategy-api.md#perpetuals)) |
@@ -323,6 +323,7 @@ The hot `ctx` has no execution view: no `own_qty`, `queue_ahead` or order times.
 | `tick`, `lot`, `min_qty`, `position` | floats, the tick in the quote currency and the rest in base units, each with a `_raw` field |
 | `quoting_enabled` | 1 while quoting is enabled and the instrument's venue is not killed; the engine ignores quotes otherwise |
 | `connected` | in `on_connection`: 1 when the venue's connection is live |
+| `reduce_only` | 1 while [reduce-only mode](../how-to/operations/operate-a-running-session.md#reduce-only-mode) holds the instrument: an order that adds to the position is refused |
 | `fill_side`, `fill_maker`, `fill_price`, `fill_qty` | in `on_fill`: `fastmm.BUY` (0) or `fastmm.SELL` (1), 1 for a maker fill, price and quantity with `_raw` fields; 0 in other hooks |
 
 | Method | Intent |

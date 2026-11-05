@@ -51,7 +51,8 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 22: estimated fills: booked, pending (no execution has named them yet), forgotten.
 // 23: the store: whether one runs, its rows, its errors and the records the engine dropped.
 // 24: the feed's L3 book window moves (book_recentres, book_recentre_failures).
-inline constexpr std::uint32_t kStatusVersion = 24;
+// 25: reduce-only mode (the session, the venues, the instruments it holds; per quote row).
+inline constexpr std::uint32_t kStatusVersion = 25;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 inline constexpr std::size_t kStatusMaxUnderlyings = 8;    // kMaxUnderlyings
@@ -362,9 +363,13 @@ struct StatusSnapshot {
   // hold a position and how many reduce-only orders it has sent.
   std::uint8_t flatten_state = 0;
   StatusKind kind = StatusKind::Engine;
-  std::uint8_t pad_[1] = {};
+  // Reduce-only mode (fastmm-ctl reduce-only): 1 for the whole session; the venues it was turned
+  // on for (bit per venue id) and how many instruments it holds through any scope.
+  std::uint8_t reduce_only = 0;
   std::uint32_t flatten_instruments_left = 0;
   std::uint64_t flatten_orders = 0;
+  std::uint32_t reduce_only_venues = 0;
+  std::uint32_t reduce_only_instruments = 0;
   char engine_name[32] = {};
   char strategy[32] = {};
   // engine

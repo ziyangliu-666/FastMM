@@ -455,6 +455,7 @@ class HotStrategy {
     c.now_ns = ctx.now().ns;
     c.instrument = static_cast<std::int32_t>(id.value);
     c.quoting_enabled = (ctx.quoting_enabled() && !ctx.venue_killed(inst.venue)) ? 1 : 0;
+    c.reduce_only = ctx.reduce_only(id) ? 1 : 0;
     c.tick_raw = inst.tick.raw;
     c.lot_raw = inst.lot.raw;
     c.min_qty_raw = inst.min_qty.raw;

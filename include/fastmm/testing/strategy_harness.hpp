@@ -165,6 +165,14 @@ class StrategyHarness {
   }
   void pull_quotes() { control(ControlCommand::PullQuotes); }
   void resume_quotes() { control(ControlCommand::ResumeQuotes); }
+  // Reduce-only mode on or off, for the whole session or one instrument (ctx.reduce_only).
+  void reduce_only(bool on, InstrumentId id = InstrumentId::invalid()) {
+    ControlMsg c{};
+    init_header(c, EventType::Control, id);
+    c.command = ControlCommand::ReduceOnly;
+    c.arg = on ? 1 : 0;
+    push(c.hdr);
+  }
 
   // A ParamUpdate of `values` (names and values as in [strategy.params]) for all instruments, at
   // the current time: the strategy's parameters change and on_params runs. Validated against the

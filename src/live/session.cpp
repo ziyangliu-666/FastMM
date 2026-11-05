@@ -1654,6 +1654,8 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   deps.engine.cpu = cfg.engine.cpu;
   deps.engine.spin_mode = cfg.spin_mode();
   deps.engine.risk = cfg.risk_limits();
+  deps.engine.reduce_only = cfg.risk.reduce_only;
+  deps.engine.reduce_only_venues = cfg.reduce_only_venues();
   deps.engine.quotes = cfg.quote_params();
   deps.engine.fx = fx_plan;
   deps.engine.fees = fees;
@@ -2275,6 +2277,9 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     snap.flatten_state = static_cast<std::uint8_t>(live.flatten_state);
     snap.flatten_instruments_left = live.flatten_instruments_left;
     snap.flatten_orders = live.flatten_orders;
+    snap.reduce_only = live.reduce_only;
+    snap.reduce_only_venues = live.reduce_only_venues;
+    snap.reduce_only_instruments = live.reduce_only_instruments;
     snap.realized_pnl_raw = live.stats.realized_pnl_raw;
     snap.unrealized_pnl_raw = live.stats.unrealized_pnl_raw;
     snap.fees_raw = live.stats.fees_raw;

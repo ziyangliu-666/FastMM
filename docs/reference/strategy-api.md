@@ -215,6 +215,7 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().cancel_timer(TimerId{})), bool
 static_assert(std::same_as<decltype(lvalue<Ctx>().quoting_enabled()), bool>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().killed()), bool>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().venue_killed(VenueId{})), bool>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().reduce_only(InstrumentId{})), bool>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().request_stop()), void>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().trip_kill(KillReason::StrategyError)), void>);
 // randomness (seeded from the configuration)
@@ -242,6 +243,7 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().rng()), Xoshiro256ss&>);
 | `watch(id, on)` | `watch(id, false)` stops `on_book`, `on_book_ticker`, `on_trade` and `on_option_ticker` for an instrument; its book stays current |
 | `quiet_book(id, lo, hi)`, `quiet_book(id)` | calls `on_book` only once the mid reaches `lo` or `hi` or the book turns invalid; the one-argument form ends it |
 | `quoting_enabled()`, `killed()`, `venue_killed(venue)` | quoting state, the global kill switch, one venue's kill switch |
+| `reduce_only(id)` | [reduce-only mode](../how-to/operations/operate-a-running-session.md#reduce-only-mode) holds the instrument: an order or replace that would leave its position no nearer zero is refused with `ReduceOnly`, so quote only the side that reduces |
 | `note_quote(id, side, reason, budget = {})` | why the strategy quotes a side as it does, up to 23 bytes, and its budget, for `fastmm-top`'s quote table ([Monitoring](../how-to/operations/monitor-with-fastmm-top.md)) |
 | `metric(name, value)` | publishes a named number in the status file, `fastmm-top` and `fastmm_strategy_metric`; first 32 names, 23 bytes each |
 | `request_stop()` | sets the stop flag: a backtest ends after the current step; replay always drains the journal |
