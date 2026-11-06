@@ -57,6 +57,7 @@ The file stays after the session ends, with a final `stopped` frame. Its layout 
 | latency | per interval: count, p50, p99, p99.9 and max ([below](#latency-intervals)) |
 | per venue | channel states, synced books, messages, resyncs, orders, cancels, reconnects, REST errors, clock offset, wire tick-to-trade p50, and the `kill` reason (`-` while trading) |
 | `quotes` | per instrument and side ([below](#quotes)) |
+| `params` | each instrument in an `[ab]` arm or holding parameter values of its own: the arm, and how many parameters are its own ([Run a live A/B by instrument](../strategies/live-ab-by-instrument.md)) |
 | `metrics` | the values the strategy publishes with `ctx.metric` |
 | `process` | the host's view of the session ([below](#process)) |
 | feed | per `nasdaq_itch` venue: state, receive backend, packets per line, A/B skew, gaps, recoveries, snapshots, reorder high-water mark, kernel-to-T0 p50 and p99 ([Receive a multicast feed](multicast-feeds.md#7-check-the-feed)) |

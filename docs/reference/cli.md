@@ -388,6 +388,8 @@ OPTIONS:
   --test <name>               ab: the [ab] name (default: the newest session's)
   --horizons-ms <ms,...>      ab: recorded horizons to show (default: all)
   --resamples <n>             ab: resamples of the days (default 2000)
+  --maker-rebate-bps <bps>    ab: a rebate paid apart from the fills, bps of maker notional
+                              (default 0)
 
 SUBCOMMANDS:
   sessions                    one row per session: when it ran, what it made, how it ended

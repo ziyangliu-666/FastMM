@@ -22,7 +22,7 @@ Blocks are `block_s` long and start at multiples of it since 1970-01-01 UTC, so 
 
 `branch` takes nothing from the market's noise: both arms see the same data, and the simulator's draws are the same until their orders differ. It tests what a change would have done over a recorded session, not how it does live, and `fastmm-live` refuses it. From a checkpoint of a live session, each arm starts in the session's state ([Replay a live session](../operations/replay-live-session.md#compare-two-configurations-from-a-checkpoint)).
 
-A strategy keeps a parameter set per instrument when it derives from `StrategyBase<Params, ParamScope::PerInstrument>` and reads `params(id)` ([Strategy API](../../reference/strategy-api.md#parameters-per-instrument)); `basic_mm` and `avellaneda_stoikov` do.
+A strategy keeps a parameter set per instrument when it derives from `StrategyBase<Params, ParamScope::PerInstrument>` and reads `params(id)` ([Strategy API](../../reference/strategy-api.md#parameters-per-instrument)); `basic_mm`, `avellaneda_stoikov` and every Python strategy do.
 
 ## Configure it
 
