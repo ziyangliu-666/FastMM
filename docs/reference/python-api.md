@@ -88,11 +88,11 @@ A class may also carry state between sessions ([State across sessions](strategy-
 
 | Member | Does |
 |---|---|
-| `restore(self, data: bytes) -> bool` | gets the file's bytes once, after `on_start`, or a checkpoint's in a backtest with `[backtest] start_at` |
+| `restore(self, data: bytes) -> bool` | gets the file's bytes once, after `on_start`, or a checkpoint's in a backtest with `[backtest] initial_state = "journal"` and `start_at` |
 | `state(self) -> bytes \| str` | written to the file every `state_interval_s` and at the end, and into every journal checkpoint |
-| `state_version = 1` | the layout of those bytes; a backtest refuses a checkpoint of another version |
+| `state_version` | class attribute, an `int`: the layout of those bytes (0 when absent); a run refuses a state file or checkpoint of another version |
 
-`ctx.request_checkpoint()` writes a checkpoint once the events waiting are handled, besides `[engine] checkpoint_s`.
+`ctx.request_checkpoint()` writes a checkpoint once the events waiting are handled, besides `[engine] checkpoint_s`. `BacktestConfig` takes `checkpoint_s`, `initial_state` and `start_at` from its TOML (`from_toml`, `from_toml_string`).
 
 ## Parameters
 

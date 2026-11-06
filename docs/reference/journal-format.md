@@ -223,7 +223,7 @@ A `StrategyState` message (type 30, 128 bytes followed by its bytes, padded to 6
 | `Restored` | once, after `on_start`, when `[strategy] state_file` held something | 0 |
 | `Snapshot` | every `[engine] checkpoint_s` ([Configuration](configuration.md#engine)), after a synthetic `Timer` record when the strategy called `ctx.request_checkpoint()`, and at a warm standby's take-over right after the `TakeOver` record | 0, 1, 2 (v3: 0, 1) |
 
-`recv_ts` is the engine time of the state, and its records are written back to back. `fastmm-replay` stages the strategy bytes of the checkpoint after each `TakeOver` for the take-over to restore.
+`recv_ts` is the engine time of the state, and its records are written back to back. The `[strategy] state_file` holds the same strategy bytes after a 16-byte head: `FMSTATE1`, the `state_version` as a little-endian `uint32` and 4 zero bytes; a file without it is read whole as version 0. `fastmm-replay` stages the strategy bytes of the checkpoint after each `TakeOver` for the take-over to restore.
 
 ## Parameter updates
 

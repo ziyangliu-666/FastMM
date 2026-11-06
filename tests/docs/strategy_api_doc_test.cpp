@@ -392,7 +392,12 @@ class LearntSpread : public StrategyBase<AllHooksParams> {
   }
   bool restore(std::string_view bytes) noexcept {
     StateReader r(bytes);
-    return r.get(edge_) && r.get(fills_) && r.done();
+    std::array<double, 2> edge{};
+    std::uint64_t fills = 0;
+    if (!r.get(edge) || !r.get(fills) || !r.done()) return false;  // keeps what it has
+    edge_ = edge;
+    fills_ = fills;
+    return true;
   }
 
  private:

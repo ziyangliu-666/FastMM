@@ -56,7 +56,7 @@ A strategy that implements `state()` and `restore()` starts the run from what it
 
 3. To write a checkpoint at a moment of the strategy's choosing, such as after it refits its model, call `ctx.request_checkpoint()`.
 
-The log line `journal: started from the checkpoint of <ns> ns (<n> bytes, <m> positions)` gives the size of the state restored. To backtest such a journal from its start without the state, set `initial_state = "none"`.
+The log line `journal: started from the checkpoint of <ns> ns (<n> bytes, <m> positions)` gives the size of the state restored; a version mismatch exits with code 3. Without `initial_state = "journal"` the run starts from the strategy's state file, or empty.
 
 ## Compare with the live session
 
