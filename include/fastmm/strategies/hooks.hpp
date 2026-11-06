@@ -180,10 +180,11 @@ concept KeepsState = requires(S& s, std::string_view bytes) {
 };
 
 // The layout of the bytes state() returns: `static constexpr std::uint32_t state_version`, or a
-// `state_version()` member; 0 when the strategy declares none. Every checkpoint records it, and a
-// backtest or a replay refuses to hand restore() a checkpoint of another version.
+// `state_version()` member function; 0 when the strategy declares none. The state file and every
+// checkpoint record it, and a backtest, a replay or a live session refuses bytes of another
+// version.
 template <class S>
-[[nodiscard]] constexpr std::uint32_t state_version_of(const S& s) noexcept {
+[[nodiscard]] constexpr std::uint32_t state_version_of(S& s) noexcept {
   if constexpr (requires {
                   { s.state_version() } -> std::convertible_to<std::uint32_t>;
                 }) {

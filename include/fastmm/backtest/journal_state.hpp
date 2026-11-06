@@ -90,15 +90,17 @@ void read_states(std::span<JournalReader> parts, sim::RecordedSession& out);
 // The strategy bytes of the checkpoint written at each take-over, in order. Resets the reader.
 [[nodiscard]] std::vector<std::string> take_over_states(JournalReader& reader);
 
-// Throws std::invalid_argument, its message led by `who`, when a recorded state of `bytes` bytes,
-// written with state_version `recorded` at `at`, is not for a strategy that now writes version
+// Throws std::invalid_argument, its message led by `who`, when `what` (a recorded state of `bytes`
+// bytes, written with state_version `recorded`) is not for a strategy that now writes version
 // `current`. A state of no bytes (the session's strategy kept none) passes.
 void check_state_version(std::string_view who,
+                         std::string_view what,
                          std::string_view strategy,
                          std::size_t bytes,
                          std::uint32_t recorded,
-                         std::uint32_t current,
-                         Timestamp at);
+                         std::uint32_t current);
+// "the journal's state at <ns> ns", for check_state_version.
+[[nodiscard]] std::string journal_state_at(Timestamp at);
 
 // check_state_version() over every state the journal records. Resets the reader.
 void check_state_versions(std::string_view who,

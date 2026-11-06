@@ -9,6 +9,7 @@
 #include "fastmm/backtest/journal_source.hpp"
 #include "fastmm/backtest/journal_state.hpp"
 #include "fastmm/backtest/replay.hpp"
+#include "fastmm/core/session_state.hpp"
 #include "fastmm/sim/sim_backend.hpp"
 #include "fastmm/strategies/basic_mm.hpp"
 #include "fastmm/strategies/state_codec.hpp"
@@ -268,6 +269,34 @@ TEST_CASE("strategy_state: a checkpoint of another state_version is refused") {
   b.start_at = Timestamp{};
   JournalSource plain(a.journal_out, true);
   CHECK_NOTHROW(static_cast<void>(run_backtest<Learner>(b, &plain)));
+  reset_learner();
+}
+
+TEST_CASE("strategy_state: the state file records the state_version, and another is refused") {
+  reset_learner();
+  Learner::version = 4;
+  const std::string path = tmp_path("strategy_state_v4.state");
+  BacktestConfig a = learner_config();
+  a.duration = seconds(10);
+  a.engine.state_file = path;
+  static_cast<void>(run_backtest<Learner>(a));
+  std::string bytes;
+  std::uint32_t version = 0;
+  REQUIRE(read_strategy_state(path, bytes, version));
+  CHECK(version == 4);
+  CHECK(bytes.size() == 28);
+
+  Learner::version = 5;
+  CHECK_THROWS_WITH_AS(static_cast<void>(run_backtest<Learner>(a)),
+                       doctest::Contains("the state file " + path +
+                                         " has state_version 4 of learner; this build restores "
+                                         "version 5"),
+                       std::invalid_argument);
+
+  // A file from before the head is version 0, and a strategy of version 0 takes it.
+  REQUIRE(write_file_atomic(path, bytes));
+  Learner::version = 0;
+  CHECK_NOTHROW(static_cast<void>(run_backtest<Learner>(a)));
   reset_learner();
 }
 

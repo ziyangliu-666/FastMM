@@ -448,7 +448,7 @@ class Engine {
     if constexpr (!kFeedReplaysTimers) checkpoint_wanted_ = journal_.enabled();
   }
   [[nodiscard]] static constexpr bool keeps_state() noexcept { return KeepsState<Strategy>; }
-  [[nodiscard]] std::uint32_t strategy_state_version() const noexcept {
+  [[nodiscard]] std::uint32_t strategy_state_version() noexcept {
     return state_version_of(strategy_);
   }
   [[nodiscard]] bool stopped() const noexcept { return stop_.load(std::memory_order_acquire); }
@@ -3659,6 +3659,11 @@ class Engine {
   FASTMM_NOINLINE void capture_state() noexcept {
     if constexpr (KeepsState<Strategy>) {
       const std::string_view bytes = strategy_.state();
+      // No bytes (a StateWriter that ran out of room): the file keeps the state written before.
+      if (bytes.empty()) {
+        warn_empty_state();
+        return;
+      }
       const std::lock_guard<std::mutex> lock(state_mu_);
       state_pending_.assign(bytes.data(), bytes.size());
       state_dirty_ = true;
@@ -3671,7 +3676,10 @@ class Engine {
     if (!journal_.enabled()) return;
     static constexpr char kNoState[] = "";
     std::string_view state{kNoState};
-    if constexpr (KeepsState<Strategy>) state = strategy_.state();
+    if constexpr (KeepsState<Strategy>) {
+      state = strategy_.state();
+      if (state.empty()) warn_empty_state();
+    }
     if (!checkpoint_fits(state.size())) return;
     journal_state(StrategyStateMsg::Kind::Snapshot, state, 0, true);
   }
@@ -3723,6 +3731,14 @@ class Engine {
                      k * sizeof(StateOrder));
     ++stats_.checkpoints;
     stats_.checkpoint_bytes = state.size() + n * sizeof(StatePosition) + k * sizeof(StateOrder);
+  }
+  FASTMM_NOINLINE void warn_empty_state() noexcept {
+    if (empty_state_warned_) return;
+    empty_state_warned_ = true;
+    FASTMM_LOG_WARN(
+        "strategy {} returned no state: the state file keeps what it had, and "
+        "checkpoints carry no strategy bytes (warned once)",
+        strategy_name());
   }
   // A periodic or requested checkpoint goes into the journal ring only when it leaves a quarter of
   // the ring free for the events behind it: a full ring trips the kill switch, a skipped checkpoint
@@ -3777,17 +3793,21 @@ class Engine {
   FASTMM_NOINLINE void restore_state() noexcept {
     if constexpr (KeepsState<Strategy>) {
       if (cfg_.initial_state.empty()) return;
+      const std::string_view from =
+          cfg_.state_file.empty() ? std::string_view("the journal") : cfg_.state_file;
       if (strategy_.restore(cfg_.initial_state)) {
         state_restored_ = true;
         FASTMM_LOG_INFO("strategy {} restored {} bytes of state from {}",
                         strategy_name(),
                         cfg_.initial_state.size(),
-                        cfg_.state_file);
+                        from);
       } else {
-        FASTMM_LOG_ERROR("strategy {} did not take the {} bytes of state in {}; starting fresh",
-                         strategy_name(),
-                         cfg_.initial_state.size(),
-                         cfg_.state_file);
+        FASTMM_LOG_ERROR(
+            "strategy {} did not take the {} bytes of state from {}; it runs on with "
+            "what restore() left",
+            strategy_name(),
+            cfg_.initial_state.size(),
+            from);
       }
       flush_out();
     }
@@ -4588,9 +4608,10 @@ class Engine {
   Cycles event_t1_{};
   Cycles strategy_t3_{};
   bool sent_in_event_ = false;
-  bool batch_end_wanted_ = false;   // ctx.request_batch_end() since the last on_batch_end
-  bool checkpoint_wanted_ = false;  // ctx.request_checkpoint() since the last batch end
-  Cycles batch_t0_{};               // the origin of the event that asked last
+  bool batch_end_wanted_ = false;    // ctx.request_batch_end() since the last on_batch_end
+  bool checkpoint_wanted_ = false;   // ctx.request_checkpoint() since the last batch end
+  bool empty_state_warned_ = false;  // warn_empty_state() has logged
+  Cycles batch_t0_{};                // the origin of the event that asked last
   Cycles batch_t1_{};
   bool fx_on_;                               // cfg_.fx converts ([accounting])
   const bool pools_on_ = cfg_.pools.active;  // a venue has pool members: new orders are routed

@@ -201,21 +201,24 @@ std::vector<std::string> take_over_states(JournalReader& reader) {
   return out;
 }
 
+std::string journal_state_at(Timestamp at) {
+  return fmt::format("the journal's state at {} ns", at.ns);
+}
+
 void check_state_version(std::string_view who,
+                         std::string_view what,
                          std::string_view strategy,
                          std::size_t bytes,
                          std::uint32_t recorded,
-                         std::uint32_t current,
-                         Timestamp at) {
+                         std::uint32_t current) {
   if (bytes == 0 || recorded == current) return;
-  throw std::invalid_argument(fmt::format(
-      "{}: the journal's state at {} ns has state_version {} of {}; this build restores "
-      "version {}",
-      who,
-      at.ns,
-      recorded,
-      strategy,
-      current));
+  throw std::invalid_argument(
+      fmt::format("{}: {} has state_version {} of {}; this build restores version {}",
+                  who,
+                  what,
+                  recorded,
+                  strategy,
+                  current));
 }
 
 void check_state_versions(std::string_view who,
@@ -231,7 +234,12 @@ void check_state_versions(std::string_view who,
   check(a.finish());
   reader.reset();
   if (other)
-    check_state_version(who, strategy, other->strategy.size(), other->version, current, other->at);
+    check_state_version(who,
+                        journal_state_at(other->at),
+                        strategy,
+                        other->strategy.size(),
+                        other->version,
+                        current);
 }
 
 }  // namespace fastmm::bt

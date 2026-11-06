@@ -111,16 +111,15 @@ class BacktestSession {
   // the strategy's state came from.
   std::vector<ReconcileMsg> start_positions_;
   std::string start_note_;
-  // The recorded state the strategy restores: its size, state_version and time.
-  bool start_has_state_ = false;
-  std::size_t start_state_bytes_ = 0;
-  std::uint32_t start_state_version_ = 0;
-  Timestamp start_state_at_{};
+  // Where the bytes the strategy restores come from, for a version mismatch's message.
+  std::string state_what_ = "the state to restore";
   // start_at: when trading starts, the venues that reconcile then (bit per venue id) and the
   // checkpoint's bytes the strategy restores then.
   Timestamp trade_at_{};
   std::uint32_t trade_venues_ = 0;
   std::string staged_state_;
+  std::uint32_t staged_version_ = 0;  // its state_version
+  bool staged_empty_ = false;         // the checkpoint has no strategy bytes
   // balances_from_journal: the session's flows of money and account refreshes after the balances
   // the accounts start from.
   std::vector<AccountFlowMsg> flows_;

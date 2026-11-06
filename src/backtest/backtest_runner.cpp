@@ -326,7 +326,8 @@ struct BacktestSession::Impl final : sim::SimObserver {
 
 BacktestConfig shared_start(BacktestConfig cfg) {
   if (cfg.initial_state == InitialState::StateFile && !cfg.engine.state_file.empty()) {
-    auto loaded = load_strategy_state(cfg.engine.state_file, cfg.engine.initial_state);
+    auto loaded = read_strategy_state(
+        cfg.engine.state_file, cfg.engine.initial_state, cfg.engine.initial_state_version);
     if (!loaded) throw std::invalid_argument("backtest: " + loaded.error());
   }
   cfg.engine.state_file.clear();
@@ -352,8 +353,10 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
     : cfg_(cfg), source_(source), schema_(schema) {
   if (cfg_.instruments.size() == 0) throw std::invalid_argument("backtest: no instruments");
   if (cfg_.initial_state == InitialState::StateFile && !cfg_.engine.state_file.empty()) {
-    auto loaded = load_strategy_state(cfg_.engine.state_file, cfg_.engine.initial_state);
+    auto loaded = read_strategy_state(
+        cfg_.engine.state_file, cfg_.engine.initial_state, cfg_.engine.initial_state_version);
     if (!loaded) throw std::invalid_argument("backtest: " + loaded.error());
+    state_what_ = "the state file " + cfg_.engine.state_file;
   }
   if (cfg_.initial_state == InitialState::None) cfg_.engine.initial_state.clear();
   const sim::RecordedSession* recorded = source != nullptr ? source->recorded() : nullptr;
@@ -372,16 +375,17 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
       // Restored when trading starts, as a warm standby's take-over does (RunTier).
       cfg_.engine.initial_state.clear();
       staged_state_ = s.strategy;
+      staged_version_ = s.version;
       trade_at_ = s.at;
+      state_what_ = journal_state_at(s.at);
+      staged_empty_ = s.has_state && s.strategy.empty();
     } else {
       cfg_.engine.initial_state = s.strategy;
+      cfg_.engine.initial_state_version = s.version;
+      state_what_ = "the journal's state at its start";
     }
     start_positions_ = s.positions;
     start_note_ = s.note;
-    start_has_state_ = s.has_state;
-    start_state_bytes_ = s.strategy.size();
-    start_state_version_ = s.version;
-    start_state_at_ = s.at;
     FASTMM_LOG_INFO("backtest: {}", start_note_);
   }
   if (cfg_.start_at.valid()) {
@@ -758,13 +762,21 @@ void BacktestSession::begin(const sim::EngineHooks& hooks,
   Loop& lp = *loop_;
   lp.wall0 = std::chrono::steady_clock::now();
   lp.runner = runner;
-  if (runner != nullptr && runner->keeps_state() && start_has_state_) {
+  if (runner != nullptr && runner->keeps_state()) {
+    const std::uint32_t v = runner->strategy_state_version();
     check_state_version("backtest",
+                        state_what_,
                         runner->strategy_name(),
-                        start_state_bytes_,
-                        start_state_version_,
-                        runner->strategy_state_version(),
-                        start_state_at_);
+                        cfg_.engine.initial_state.size(),
+                        cfg_.engine.initial_state_version,
+                        v);
+    check_state_version(
+        "backtest", state_what_, runner->strategy_name(), staged_state_.size(), staged_version_, v);
+    if (staged_empty_)
+      FASTMM_LOG_WARN(
+          "backtest: {} has no strategy bytes: the strategy keeps what it learnt in "
+          "the warm-up",
+          state_what_);
   }
   sim::SimBackend& b = *backend_;
   lp.driver = std::make_unique<sim::SimDriver>(b.clock, b.transport, b.feed, hooks);
@@ -1132,7 +1144,9 @@ BacktestResult BacktestSession::end(std::string_view strategy_name) {
   if (runner != nullptr && !cfg_.engine.state_file.empty()) {
     std::string bytes;
     if (runner->take_strategy_state(bytes)) {
-      if (auto w = write_file_atomic(cfg_.engine.state_file, bytes); !w)
+      if (auto w =
+              write_strategy_state(cfg_.engine.state_file, bytes, runner->strategy_state_version());
+          !w)
         throw std::runtime_error("backtest: strategy state: " + w.error());
     }
   }

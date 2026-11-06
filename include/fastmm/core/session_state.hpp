@@ -23,6 +23,16 @@ namespace fastmm {
 [[nodiscard]] Result<bool, std::string> load_strategy_state(const std::string& path,
                                                             std::string& out);
 
+// The [strategy] state_file as the engine's state() bytes go into it: a 16-byte head ("FMSTATE1",
+// the strategy's state_version as a little-endian u32, 4 zero bytes), then the bytes. A file
+// without the head, from before it was written, is read whole as version 0.
+[[nodiscard]] Result<void, std::string> write_strategy_state(const std::string& path,
+                                                             std::string_view bytes,
+                                                             std::uint32_t version);
+[[nodiscard]] Result<bool, std::string> read_strategy_state(const std::string& path,
+                                                            std::string& out,
+                                                            std::uint32_t& version);
+
 // The 16-bit session epoch is the high half of every ClientOrderId, so two sessions that share one
 // would let a venue's late message from the earlier session match an order of the later one.
 class SessionEpochStore {

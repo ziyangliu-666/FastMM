@@ -42,6 +42,9 @@ struct EngineConfig {
   std::string state_file;
   Duration state_interval = seconds(300);
   std::string initial_state;
+  // The state_version initial_state was written with (the state file's head, a checkpoint's
+  // record): a backtest and a live session refuse bytes of another version before they start.
+  std::uint32_t initial_state_version = 0;
   // [engine] checkpoint_s: with a journal, a checkpoint is written to it this often
   // (StrategyStateMsg Kind::Snapshot: the strategy's state() when it keeps state, the positions and
   // the open orders; zero: never). The bytes handed to restore() are written once at the start

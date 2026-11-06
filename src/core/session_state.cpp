@@ -4,12 +4,16 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 
 namespace fastmm {
 
@@ -88,6 +92,37 @@ Result<bool, std::string> load_strategy_state(const std::string& path, std::stri
   buf << in.rdbuf();
   if (in.bad()) return fail(why("cannot read strategy state file", path));
   out = buf.str();
+  return true;
+}
+
+namespace {
+constexpr std::string_view kStateMagic = "FMSTATE1";
+constexpr std::size_t kStateHead = 16;
+}  // namespace
+
+Result<void, std::string> write_strategy_state(const std::string& path,
+                                               std::string_view bytes,
+                                               std::uint32_t version) {
+  std::string out(kStateHead, '\0');
+  std::memcpy(out.data(), kStateMagic.data(), kStateMagic.size());
+  for (std::size_t i = 0; i < 4; ++i)
+    out[kStateMagic.size() + i] = static_cast<char>((version >> (8 * i)) & 0xFFU);
+  out.append(bytes);
+  return write_file_atomic(path, out);
+}
+
+Result<bool, std::string> read_strategy_state(const std::string& path,
+                                              std::string& out,
+                                              std::uint32_t& version) {
+  version = 0;
+  auto loaded = load_strategy_state(path, out);
+  if (!loaded || !*loaded) return loaded;
+  if (out.size() >= kStateHead && std::string_view(out).starts_with(kStateMagic)) {
+    for (std::size_t i = 0; i < 4; ++i)
+      version |= static_cast<std::uint32_t>(static_cast<unsigned char>(out[kStateMagic.size() + i]))
+                 << (8 * i);
+    out.erase(0, kStateHead);
+  }
   return true;
 }
 

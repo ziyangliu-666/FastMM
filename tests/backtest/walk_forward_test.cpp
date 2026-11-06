@@ -263,7 +263,8 @@ class Counts : public StrategyBase<BasicMMParams> {
 
 std::string file_text(const std::string& path) {
   std::string out;
-  REQUIRE(load_strategy_state(path, out));
+  std::uint32_t version = 0;
+  REQUIRE(read_strategy_state(path, out, version));
   return out;
 }
 

@@ -72,6 +72,22 @@ namespace fastmm::live {
 
 namespace {
 
+// Bytes from the state file written with another state_version than the strategy's: the message
+// that refuses them; empty when they are the strategy's (or there are none).
+std::string state_version_error(const IEngineRunner& runner,
+                                const std::string& path,
+                                std::size_t bytes,
+                                std::uint32_t version) {
+  if (!runner.keeps_state() || bytes == 0 || version == runner.strategy_state_version()) return {};
+  return fmt::format(
+      "the state file {} has state_version {} of {}; this build restores version {} (move the "
+      "file aside to start fresh)",
+      path,
+      version,
+      runner.strategy_name(),
+      runner.strategy_state_version());
+}
+
 // The shutdown's venue cancel-all waits this long at most for the engine to take the kill switch.
 constexpr std::int64_t kKillTakenWaitNs = 2'000'000'000;
 // After the cancel-all, the engine runs on until the venues have confirmed every cancel and
@@ -1642,7 +1658,8 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     // before it has written it last.
     // The strategy's state from the last session; no file is a first start. An unreadable one is
     // a configuration error: trading on fresh state when the operator meant otherwise is not.
-    auto loaded = load_strategy_state(cfg.strategy.state_file, deps.engine.initial_state);
+    auto loaded = read_strategy_state(
+        cfg.strategy.state_file, deps.engine.initial_state, deps.engine.initial_state_version);
     if (!loaded) {
       std::fprintf(stderr, "%s: %s\n", prog, loaded.error().c_str());
       return kExitConfig;
@@ -1891,6 +1908,14 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
                  "%s: cannot build a live runner for '%s'\n",
                  prog,
                  std::string(strategy_name).c_str());
+    return kExitConfig;
+  }
+  if (const std::string bad = state_version_error(*runner,
+                                                  cfg.strategy.state_file,
+                                                  deps.engine.initial_state.size(),
+                                                  deps.engine.initial_state_version);
+      !bad.empty()) {
+    std::fprintf(stderr, "%s: %s\n", prog, bad.c_str());
     return kExitConfig;
   }
 
@@ -2348,7 +2373,9 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   auto save_strategy_state = [&] {
     if (!owner || cfg.strategy.state_file.empty() || !runner->take_strategy_state(state_bytes))
       return;
-    if (auto w = write_file_atomic(cfg.strategy.state_file, state_bytes); !w)
+    if (auto w = write_strategy_state(
+            cfg.strategy.state_file, state_bytes, runner->strategy_state_version());
+        !w)
       FASTMM_LOG_ERROR("strategy state: {}", w.error());
   };
   const auto persist_kill = [&](const EngineLiveStats& live) {
@@ -2683,9 +2710,16 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     ++kill_state.sessions;
     if (!cfg.strategy.state_file.empty()) {
       std::string bytes;
-      auto loaded = load_strategy_state(cfg.strategy.state_file, bytes);
+      std::uint32_t version = 0;
+      auto loaded = read_strategy_state(cfg.strategy.state_file, bytes, version);
       if (!loaded) {
         FASTMM_LOG_ERROR("standby: {}", std::string_view(loaded.error()));
+        return kExitConfig;
+      }
+      if (const std::string bad =
+              state_version_error(*runner, cfg.strategy.state_file, bytes.size(), version);
+          !bad.empty()) {
+        FASTMM_LOG_ERROR("standby: {}", bad);
         return kExitConfig;
       }
       runner->stage_strategy_state(std::move(bytes));
