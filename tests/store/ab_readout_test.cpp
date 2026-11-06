@@ -1,8 +1,9 @@
 // fastmm-pnl ab (store/ab_readout.hpp) on a small store: two instruments switching arms each UTC
 // day over three days, fills with markouts, the arms' instrument-hours from the assignments.
+#include "fastmm/store/ab_readout.hpp"
+
 #include "store_test_util.hpp"
 
-#include "fastmm/store/ab_readout.hpp"
 #include "fastmm/store/sqlite_store.hpp"
 
 #include <cstring>
@@ -54,7 +55,8 @@ MarkoutRecord markout(std::uint64_t fill_seq, std::int64_t ts, std::int32_t h, s
 
 // Day d (0, 1, 2): instrument 0 is in control on days 0 and 2 and wide on day 1, instrument 1 the
 // other way round. Each instrument buys 1 at 100 each day; a wide fill is worth 0.01 more at 1 s
-// than a control fill (0.016 on day 2), plus d x 0.001 for the day's market, and twice that at 60 s.
+// than a control fill (0.016 on day 2), plus d x 0.001 for the day's market, and twice that at 60
+// s.
 std::string build_store() {
   const auto p = tmp_dir() / "ab_readout.db";
   std::error_code ec;
@@ -149,12 +151,15 @@ TEST_CASE("store.ab_readout: arms, markouts and day-clustered differences from t
     FAIL("no metric ", metric);
     return AbComparison{};
   };
-  const AbComparison pnl = find("pnl/hour 1s");
-  CHECK(pnl.diff == doctest::Approx(0.036 / 72.0));
-  // The days differ by 0.01 / 24, 0.01 / 24 and 0.016 / 24 per hour: a resample of three days
-  // spans them.
-  CHECK(pnl.lo == doctest::Approx(0.01 / 24.0));
-  CHECK(pnl.hi == doctest::Approx(0.016 / 24.0));
+  // Each instrument against itself: instrument 0 made 0.011 in its wide day against 0.002 over
+  // two control days, instrument 1 0.028 over two wide days against 0.001 in its control day.
+  CHECK(r.paired);
+  const AbComparison pnl = find("markout pnl/hour 1s");
+  CHECK(pnl.diff == doctest::Approx((0.011 / 24 - 0.002 / 48 + 0.028 / 48 - 0.001 / 24) / 2));
+  CHECK(pnl.lo <= pnl.diff);
+  CHECK(pnl.hi >= pnl.diff);
+  CHECK(pnl.hi > pnl.lo);
+  CHECK(pnl.lo > 0.0);
   CHECK(find("fills/hour").diff == doctest::Approx(0.0));
 
   // The same store gives the same readout.
@@ -162,7 +167,7 @@ TEST_CASE("store.ab_readout: arms, markouts and day-clustered differences from t
   CHECK(format_ab_readout(again, data) == format_ab_readout(r, data));
   const std::string text = format_ab_readout(r, data);
   CHECK(text.find("test     t: 1 session(s), 3 UTC day(s)") == 0);
-  CHECK(text.find("wide             pnl/hour 1s") != std::string::npos);
+  CHECK(text.find("wide             markout pnl/hour 1s") != std::string::npos);
 
   // One horizon, one day: no interval to draw.
   AbReadoutOptions one;
@@ -177,8 +182,13 @@ TEST_CASE("store.ab_readout: arms, markouts and day-clustered differences from t
   CHECK(r2.arms[0].inst_hours == doctest::Approx(24.0));
 
   const std::string csv = ab_daily_csv(r, data);
-  CHECK(csv.find("day,arm,inst_hours,fills,notional,fees,pnl_1s,pnl_1m\n") == 0);
+  CHECK(csv.find("day,arm,inst_hours,fills,notional,fees,markout_pnl_1s,markout_pnl_1m\n") == 0);
   CHECK(csv.find("2024-03-04,wide,24.000000,1,") != std::string::npos);
+
+  // A rebate paid apart from the fills: 1 bp of 300 notional per arm.
+  AbReadoutOptions rebate;
+  rebate.maker_rebate_bps = 1.0;
+  CHECK(ab_readout(data, rebate).arms[0].fees == doctest::Approx(-0.03));
 
   AbReadoutOptions missing;
   missing.horizons_ms = {5000};

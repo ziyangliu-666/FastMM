@@ -34,6 +34,10 @@ constexpr std::string_view kRawSuffix = "_raw";
 
 constexpr std::int64_t kNsPerDayReader = 86'400'000'000'000LL;
 
+std::string fmt_session(std::uint64_t id) {
+  return "session " + std::to_string(id);
+}
+
 std::int64_t floor_div_ns(std::int64_t a, std::int64_t b) {
   const std::int64_t q = a / b;
   return (a % b != 0 && ((a < 0) != (b < 0))) ? q - 1 : q;
@@ -204,6 +208,14 @@ class SqliteReader final : public Reader {
           out.arms.push_back(name);
           out.params.push_back(text(5));
           at = out.arms.end() - 1;
+        } else if (out.params[static_cast<std::size_t>(at - out.arms.begin())] != text(5)) {
+          out.warnings.push_back(
+              fmt_session(id) + " runs arm " + name + " with " +
+              (text(5).empty() ? std::string("the configured parameters") : text(5)) +
+              "; the readout pools it with the earlier sessions'");
+        }
+        if (sqlite3_column_int64(st, 3) != (at - out.arms.begin())) {
+          out.warnings.push_back(fmt_session(id) + " numbers its arms in another order");
         }
         sessions.back().arm[name] = static_cast<int>(at - out.arms.begin());
       }
@@ -241,7 +253,8 @@ class SqliteReader final : public Reader {
         while (a < b) {
           const std::int64_t day = floor_div_ns(a, kNsPerDayReader);
           const std::int64_t end = std::min(b, (day + 1) * kNsPerDayReader);
-          out.exposure.push_back({day, it->second.first, static_cast<double>(end - a) / 3.6e12});
+          out.exposure.push_back(
+              {day, it->second.first, inst[id].first, static_cast<double>(end - a) / 3.6e12});
           a = end;
         }
       };

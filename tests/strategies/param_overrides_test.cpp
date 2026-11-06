@@ -35,16 +35,15 @@ struct Wired {
   std::unique_ptr<ParamPublisher> pub;
   explicit Wired(std::size_t instruments) {
     REQUIRE_FALSE(s.configure({}).has_value());
-    pub = std::make_unique<ParamPublisher>(
-        ParamSink{this,
-                  [](void* c, const ParamUpdateMsg& m) noexcept {
-                    auto* w = static_cast<Wired*>(c);
-                    w->sent.push_back(m);
-                    w->s.apply_param_update(m);
-                    return true;
-                  }},
-        s.params(),
-        instruments);
+    pub = std::make_unique<ParamPublisher>(ParamSink{this,
+                                                     [](void* c, const ParamUpdateMsg& m) noexcept {
+                                                       auto* w = static_cast<Wired*>(c);
+                                                       w->sent.push_back(m);
+                                                       w->s.apply_param_update(m);
+                                                       return true;
+                                                     }},
+                                           s.params(),
+                                           instruments);
   }
 };
 
@@ -56,10 +55,11 @@ std::string config(std::string_view extra) {
   for (const char* v : {"x", "y"}) {
     for (const char* sym : {"AAA", "BBB"}) {
       if (std::string_view(v) == "y" && std::string_view(sym) == "BBB") continue;
-      out += fmt::format("\n[[instruments]]\nvenue = \"{}\"\nsymbol = \"{}\"\ntick = \"0.01\"\n"
-                         "lot = \"0.001\"\n",
-                         v,
-                         sym);
+      out += fmt::format(
+          "\n[[instruments]]\nvenue = \"{}\"\nsymbol = \"{}\"\ntick = \"0.01\"\n"
+          "lot = \"0.001\"\n",
+          v,
+          sym);
     }
   }
   out += "\n[strategy]\nname = \"basic_mm\"\n";
@@ -101,7 +101,8 @@ TEST_CASE("strategies.overrides: an instrument's own value outlives updates for 
   // A reset for every instrument drops each one's own value of the parameter.
   REQUIRE(w.pub->publish({{"levels", "5"}}, kA));
   REQUIRE(w.pub->publish({{"levels", "6"}}, kB));
-  REQUIRE(w.pub->reset({"levels"}, ParamPublisher::kAllInstruments, ParamUpdateMsg::Origin::Control, ""));
+  REQUIRE(w.pub->reset(
+      {"levels"}, ParamPublisher::kAllInstruments, ParamUpdateMsg::Origin::Control, ""));
   CHECK(w.s.params(kA).levels == 3);
   CHECK(w.s.params(kB).levels == 3);
   CHECK(w.pub->own(kB).empty());
@@ -110,8 +111,11 @@ TEST_CASE("strategies.overrides: an instrument's own value outlives updates for 
 TEST_CASE("strategies.overrides: an [ab] update for every instrument is a reset") {
   Wired w(2);
   REQUIRE(w.pub->publish({{"levels", "4"}}, kA));
-  REQUIRE(w.pub->publish_as(
-      {{"levels", "2"}}, ParamPublisher::kAllInstruments, ParamUpdateMsg::Origin::Experiment, "ab:x", 1));
+  REQUIRE(w.pub->publish_as({{"levels", "2"}},
+                            ParamPublisher::kAllInstruments,
+                            ParamUpdateMsg::Origin::Experiment,
+                            "ab:x",
+                            1));
   CHECK(w.s.params(kA).levels == 2);
   CHECK(w.s.own_params(kA).none());
 }
@@ -127,7 +131,8 @@ TEST_CASE("strategies.overrides: the publisher checks every instrument an update
     }
   };
   const Checked c{};
-  ParamPublisher pub(ParamSink{nullptr, [](void*, const ParamUpdateMsg&) noexcept { return true; }}, c, 2);
+  ParamPublisher pub(
+      ParamSink{nullptr, [](void*, const ParamUpdateMsg&) noexcept { return true; }}, c, 2);
   REQUIRE(pub.publish({{"hi", "2"}}, kA));
   // Instrument A keeps hi = 2, so lo = 3 fails there.
   ParamUpdateMsg m{};
@@ -161,7 +166,8 @@ levels = 3
   CHECK(again.strategy.overrides == cfg.strategy.overrides);
 }
 
-TEST_CASE("strategies.overrides: a key that names nothing, or two groups that disagree, are refused") {
+TEST_CASE(
+    "strategies.overrides: a key that names nothing, or two groups that disagree, are refused") {
   CHECK_THROWS_WITH_AS(resolve(Config::parse(config("[strategy.overrides.ZZZ]\nlevels = 2\n"))),
                        doctest::Contains("no instrument or group"),
                        ConfigError);

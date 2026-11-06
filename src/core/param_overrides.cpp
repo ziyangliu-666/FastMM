@@ -28,24 +28,25 @@ std::vector<InstrumentId> match(std::string_view key,
       out.push_back(inst.id);
   }
   if (out.size() > 1)
-    throw ConfigError(fmt::format("'{}' is on more than one venue; write it \"venue:symbol\"", key));
+    throw ConfigError(
+        fmt::format("'{}' is on more than one venue; write it \"venue:symbol\"", key));
   return out;
 }
 
 }  // namespace
 
-std::vector<InstrumentId> resolve_scope(std::string_view key,
-                                        const std::map<std::string, std::vector<std::string>>& groups,
-                                        const InstrumentTable& instruments,
-                                        std::span<const std::string> venue_names) {
+std::vector<InstrumentId> resolve_scope(
+    std::string_view key,
+    const std::map<std::string, std::vector<std::string>>& groups,
+    const InstrumentTable& instruments,
+    std::span<const std::string> venue_names) {
   const auto g = groups.find(std::string(key));
   if (g == groups.end()) return match(key, instruments, venue_names);
   std::vector<InstrumentId> out;
   for (const std::string& member : g->second) {
     const std::vector<InstrumentId> ids = match(member, instruments, venue_names);
     if (ids.empty())
-      throw ConfigError(
-          fmt::format("strategy.groups.{}: no instrument '{}'", g->first, member));
+      throw ConfigError(fmt::format("strategy.groups.{}: no instrument '{}'", g->first, member));
     if (std::find(out.begin(), out.end(), ids.front()) == out.end()) out.push_back(ids.front());
   }
   return out;
@@ -75,7 +76,8 @@ std::vector<InstrumentParams> resolve_overrides(
       if (group == own) continue;
       const std::vector<InstrumentId> ids = resolve_scope(key, groups, instruments, venue_names);
       if (ids.empty())
-        throw ConfigError(fmt::format("strategy.overrides.\"{}\": no instrument or group of that name", key));
+        throw ConfigError(
+            fmt::format("strategy.overrides.\"{}\": no instrument or group of that name", key));
       for (const InstrumentId id : ids) {
         for (const auto& [name, text] : values) {
           auto [it, fresh] = per[id.value].try_emplace(name, Value{text, own ? "" : key});

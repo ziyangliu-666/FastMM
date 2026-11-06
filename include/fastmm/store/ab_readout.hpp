@@ -4,10 +4,13 @@
 // Reader::ab_data() reads the test's fills with their arm, the mids [engine] markout_ms recorded
 // after them, and each arm's instrument-hours from the arm assignments in param_updates.
 // ab_readout() turns that into per-arm totals and, for every other arm against arm 0, the
-// difference of each rate with a 95% interval from resampling whole UTC days.
+// difference of each rate with a 95% interval from resampling whole UTC days. Where instruments
+// ran in both arms (a switchback), each instrument's rate in the arm is set against its own in
+// arm 0 and the differences are averaged, weighted by the instrument's hours.
 //
-//   pnl at h   side x (mid h after the fill - price) x qty x multiplier - fee, settlement currency
-//   rate       an arm's total over its instrument-hours, or over its notional for bps
+//   markout pnl at h   side x (mid h after the fill - price) x qty x multiplier - fee, in the
+//                      settlement currency; positive: the fill made money by then
+//   rate               a total over instrument-hours, or over marked notional for bps
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -36,24 +39,27 @@ struct AbFill {
 struct AbExposure {
   std::int64_t day = 0;  // days since 1970-01-01
   int arm = 0;
+  std::string symbol;
   double hours = 0.0;
 };
 
 struct AbData {
   std::string test;
-  std::vector<std::string> arms;      // arm 0 is the control
-  std::vector<std::string> params;    // each arm's parameters, "name=value ..."
+  std::vector<std::string> arms;          // arm 0 is the control
+  std::vector<std::string> params;        // each arm's parameters, "name=value ..."
   std::vector<std::int32_t> horizons_ms;  // recorded horizons, ascending, 0 (the fill) excluded
   std::vector<AbFill> fills;
   std::vector<AbExposure> exposure;
   std::size_t sessions = 0;
-  std::size_t inverse_fills = 0;  // fills on inverse contracts, counted but not marked
+  std::size_t inverse_fills = 0;      // fills on inverse contracts, counted but not marked
+  std::vector<std::string> warnings;  // e.g. sessions whose arms differ under one test name
 };
 
 struct AbReadoutOptions {
   std::vector<std::int32_t> horizons_ms;  // empty: every recorded horizon
   std::size_t resamples = 2000;
   std::uint64_t seed = 1;
+  double maker_rebate_bps = 0.0;  // paid apart from the fills, on maker notional
 };
 
 struct AbArmTotals {
@@ -85,8 +91,11 @@ struct AbReadout {
   std::vector<std::int32_t> horizons_ms;
   std::vector<AbArmTotals> arms;
   std::vector<AbComparison> comparisons;
-  std::size_t days = 0;  // UTC days with time in every arm: the clusters
+  std::size_t days = 0;  // UTC days with time in every arm
   std::size_t resamples = 0;
+  double maker_rebate_bps = 0.0;
+  // Some instrument ran in both arms: each instrument is compared with itself.
+  bool paired = false;
 };
 
 // Throws std::invalid_argument for a horizon the store has not recorded.

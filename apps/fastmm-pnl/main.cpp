@@ -254,6 +254,7 @@ static int run(int argc, char** argv) {
   std::string test;
   std::vector<std::int32_t> horizons;
   std::size_t resamples = 2000;
+  double maker_rebate_bps = 0.0;
   QueryFilter f;
 
   CLI::App app("What a deployment traded, read from the store.", "fastmm-pnl");
@@ -334,6 +335,10 @@ static int run(int argc, char** argv) {
       ->delimiter(',');
   app.add_option("--resamples", resamples, "ab: resamples of the days (default 2000)")
       ->option_text("<n>");
+  app.add_option("--maker-rebate-bps",
+                 maker_rebate_bps,
+                 "ab: a rebate paid apart from the fills, bps of maker notional (default 0)")
+      ->option_text("<bps>");
   if (const auto rc = fastmm::cli::parse(app, argc, argv)) return *rc;
   if (app.get_subcommands().empty()) return fastmm::cli::usage_error(app, "a command is required");
   const std::string command = app.get_subcommands().front()->get_name();
@@ -435,6 +440,7 @@ static int run(int argc, char** argv) {
     fastmm::store::AbReadoutOptions ab_opts;
     ab_opts.horizons_ms = horizons;
     ab_opts.resamples = resamples;
+    ab_opts.maker_rebate_bps = maker_rebate_bps;
     try {
       const fastmm::store::AbReadout r = fastmm::store::ab_readout(*data, ab_opts);
       fmt::print(

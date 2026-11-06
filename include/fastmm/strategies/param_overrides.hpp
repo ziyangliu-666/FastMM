@@ -40,8 +40,7 @@ void apply_param_pairs(const ParamUpdateMsg& m,
                        std::span<ParamMask> masks,
                        std::size_t fields,
                        Write&& write) noexcept {
-  const std::size_t n =
-      m.count < ParamUpdateMsg::kMaxFields ? m.count : ParamUpdateMsg::kMaxFields;
+  const std::size_t n = m.count < ParamUpdateMsg::kMaxFields ? m.count : ParamUpdateMsg::kMaxFields;
   const bool reset = m.resets();
   if (!m.all_instruments()) {
     const std::size_t k = m.hdr.instrument.value;
