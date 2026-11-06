@@ -5,7 +5,7 @@ from __future__ import annotations
 import collections.abc
 import numpy
 import typing
-__all__: list[str] = ['BacktestConfig', 'BacktestResult', 'Balance', 'BalanceView', 'BookTickerView', 'BookView', 'ConfigError', 'ConnectionView', 'Context', 'FeatureTable', 'Fees', 'FillView', 'Funding', 'Instrument', 'Margin', 'OptionTickerView', 'Order', 'OrderBook', 'OrderBudget', 'OrderRejected', 'OrderUpdateView', 'PerpStateView', 'Portfolio', 'PositionView', 'RefPrice', 'RiskHeadroom', 'RiskReject', 'StaleViewError', 'TradeView', 'VenueHealth', 'build_info', 'convert_data', 'data_sources', 'disable_logging', 'enable_logging', 'evaluate_signal', 'features', 'inspect_journal', 'run_backtest', 'strategies', 'sweep', 'walk_forward']
+__all__: list[str] = ['BacktestConfig', 'BacktestResult', 'Balance', 'BalanceView', 'BookTickerView', 'BookView', 'Capacity', 'ConfigError', 'ConnectionView', 'Context', 'FeatureTable', 'Fees', 'FillView', 'Funding', 'Instrument', 'Margin', 'OptionTickerView', 'Order', 'OrderBook', 'OrderBudget', 'OrderRejected', 'OrderUpdateView', 'PerpStateView', 'Portfolio', 'PositionView', 'RefPrice', 'RiskHeadroom', 'RiskReject', 'StaleViewError', 'TradeView', 'VenueHealth', 'build_info', 'convert_data', 'data_sources', 'disable_logging', 'enable_logging', 'evaluate_signal', 'features', 'inspect_journal', 'run_backtest', 'strategies', 'sweep', 'walk_forward']
 class ConfigError(ValueError):
     pass
 class BacktestConfig:
@@ -1305,6 +1305,10 @@ class Context:
         """
     def cancel_timer(self, timer_id: typing.SupportsInt | typing.SupportsIndex) -> bool:
         ...
+    def capacity(self, venue: typing.SupportsInt | typing.SupportsIndex = 0) -> Capacity:
+        """
+        What an order slot on that account costs now ([capacity]): a new order or a move is sent when its value covers price.
+        """
     def contains(self, inst: typing.Any) -> bool:
         ...
     def every(self, period_ns: typing.SupportsInt | typing.SupportsIndex, tag: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
@@ -1427,11 +1431,11 @@ class Context:
         """
         What each [risk] limit still admits on the instrument now; an order of exactly a room passes that limit.
         """
-    def send(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price: typing.Any, qty: typing.Any, *, post_only: bool = False, reduce_only: bool = False, ioc: bool = False, tag: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
+    def send(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price: typing.Any, qty: typing.Any, *, post_only: bool = False, reduce_only: bool = False, ioc: bool = False, tag: typing.SupportsInt | typing.SupportsIndex = 0, value: typing.Any = None) -> int:
         """
-        Send a limit order (risk-checked, journaled); returns its client order id. The price is rounded passively to the tick and the quantity down to the lot. Raises OrderRejected.
+        Send a limit order (risk-checked, journaled); returns its client order id. The price is rounded passively to the tick and the quantity down to the lot. With a value ([capacity]) it is sent only if that covers the price of its order slot. Raises OrderRejected.
         """
-    def send_raw(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price_raw: typing.Any, qty_raw: typing.Any, *, post_only: bool = False, reduce_only: bool = False, ioc: bool = False, tag: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
+    def send_raw(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price_raw: typing.Any, qty_raw: typing.Any, *, post_only: bool = False, reduce_only: bool = False, ioc: bool = False, tag: typing.SupportsInt | typing.SupportsIndex = 0, value: typing.Any = None) -> int:
         ...
     def set_funding_need(self, inst: typing.Any, quote: typing.SupportsFloat | typing.SupportsIndex) -> None:
         """
@@ -1443,7 +1447,7 @@ class Context:
         """
     def set_quotes(self, inst: typing.Any, bids: typing.Any = None, asks: typing.Any = None) -> bool:
         """
-        Desired ladder as sequences of (price, qty) floats, level 0 first (at most 8 per side). Prices are rounded to the tick passively (bids down, asks up), quantities down to the lot; a non-positive price or quantity drops the level. Returns False when quoting is disabled.
+        Desired ladder as sequences of (price, qty) floats, level 0 first (at most 8 per side); (price, qty, value) or (price, qty, value, keep) also state what the level is worth ([capacity]). Prices are rounded to the tick passively (bids down, asks up), quantities down to the lot; a non-positive price or quantity drops the level. Returns False when quoting is disabled.
         """
     def set_quotes_raw(self, inst: typing.Any, bids: typing.Any = None, asks: typing.Any = None) -> bool:
         """
@@ -1660,6 +1664,39 @@ class OrderBudget:
         ...
     @property
     def weight(self) -> tuple[int, int] | None:
+        ...
+class Capacity:
+    """
+    What an order slot on one account costs now ([capacity], a copy), in the quote currency. on is False without [capacity].
+    """
+    def __repr__(self) -> str:
+        ...
+    @property
+    def day(self) -> float:
+        ...
+    @property
+    def floor(self) -> float:
+        ...
+    @property
+    def on(self) -> bool:
+        ...
+    @property
+    def price(self) -> float:
+        ...
+    @property
+    def weight(self) -> float:
+        ...
+    @property
+    def window(self) -> float:
+        ...
+    @property
+    def window_orders(self) -> int:
+        ...
+    @property
+    def window_share(self) -> float:
+        ...
+    @property
+    def window_used(self) -> int:
         ...
 class RiskReject:
     """
@@ -2061,4 +2098,4 @@ def walk_forward(config: BacktestConfig, grid: typing.Any, folds: typing.Support
     """
 _SWEEP_SETTINGS: tuple = ('latency_fixed_us', 'latency_jitter_us', 'latency_md_us', 'latency_md_jitter_us', 'p_drop', 'queue_conservatism', 'maker_fee_bps', 'taker_fee_bps')
 __version__: str = '0.10.1'
-_store_schema_version: int = 14
+_store_schema_version: int = 15

@@ -131,6 +131,9 @@ struct VenueHealthInfo {
 struct OrderBudgetInfo {
   OrderBudget b;
 };
+struct CapacityInfo {
+  CapacityQuote q;
+};
 // on_risk_reject's argument: a copy, so it may be kept.
 struct RiskRejectInfo {
   RiskReject r;
@@ -588,7 +591,18 @@ double float_value(PyObject* o, const char* what, Py_ssize_t i, const char* fiel
   return d;
 }
 
-// bids / asks: a sequence of (price, qty) pairs, level 0 first.
+// A level's value or keep value ([capacity]): a float, or None for not stated.
+float value_arg(PyObject* o, const char* what, Py_ssize_t i, const char* field) {
+  if (o == nullptr || o == Py_None) return kNoValue;
+  const double d = PyFloat_Check(o) != 0 ? PyFloat_AS_DOUBLE(o) : PyFloat_AsDouble(o);
+  if (d == -1.0 && PyErr_Occurred() != nullptr) throw py::error_already_set();
+  if (std::isnan(d))
+    throw py::value_error(where(what, i, field) + " must not be NaN; None: not stated");
+  return static_cast<float>(d);
+}
+
+// bids / asks: a sequence of (price, qty) pairs, level 0 first; (price, qty, value) or (price,
+// qty, value, keep) state what the level is worth ([capacity]).
 void parse_levels(py::handle seq,
                   Side side,
                   const Instrument& inst,
@@ -610,6 +624,8 @@ void parse_levels(py::handle seq,
     PyObject* item = items[i];
     PyObject* px_obj = nullptr;
     PyObject* qty_obj = nullptr;
+    PyObject* value_obj = nullptr;
+    PyObject* keep_obj = nullptr;
     py::object pair_keep;
     if (PyTuple_Check(item) != 0 && PyTuple_GET_SIZE(item) == 2) {
       px_obj = PyTuple_GET_ITEM(item, 0);
@@ -619,16 +635,21 @@ void parse_levels(py::handle seq,
       qty_obj = PyList_GET_ITEM(item, 1);
     } else {
       PyObject* p = PySequence_Check(item) != 0 ? PySequence_Fast(item, "") : nullptr;
-      if (p == nullptr || PySequence_Fast_GET_SIZE(p) != 2) {
+      const Py_ssize_t len = p == nullptr ? 0 : PySequence_Fast_GET_SIZE(p);
+      if (p == nullptr || len < 2 || len > 4) {
         Py_XDECREF(p);
         PyErr_Clear();
         throw py::type_error(std::string("fastmm: ") + what + "[" + std::to_string(i) +
-                             "] must be a (price, qty) pair");
+                             "] must be a (price, qty) pair, or (price, qty, value[, keep])");
       }
       pair_keep = py::reinterpret_steal<py::object>(p);
       px_obj = PySequence_Fast_GET_ITEM(p, 0);
       qty_obj = PySequence_Fast_GET_ITEM(p, 1);
+      if (len > 2) value_obj = PySequence_Fast_GET_ITEM(p, 2);
+      if (len > 3) keep_obj = PySequence_Fast_GET_ITEM(p, 3);
     }
+    const float value = value_arg(value_obj, what, i, "value");
+    const float keep = value_arg(keep_obj, what, i, "keep");
     Price px;
     Qty qty;
     if (raw) {
@@ -644,9 +665,9 @@ void parse_levels(py::handle seq,
     if (qty.raw < 0) throw py::value_error(where(what, i, "qty") + " is negative");
     // Like DesiredQuotes::bid/ask in C++: a non-positive price or quantity drops the level.
     if (side == Side::Buy) {
-      static_cast<void>(q.bid(px, qty));
+      static_cast<void>(q.bid(px, qty, value, keep));
     } else {
-      static_cast<void>(q.ask(px, qty));
+      static_cast<void>(q.ask(px, qty, value, keep));
     }
   }
 }
@@ -683,12 +704,14 @@ std::uint64_t send(const ContextHandle& c,
                    bool reduce_only,
                    bool ioc,
                    std::uint32_t tag,
+                   py::handle value,
                    bool raw) {
   PySimEngine& e = c.engine();
   const InstrumentId id = c.run->resolve(inst);
   const Instrument& in = e.instrument(id);
   const Side s = side_from(side);
   LimitOrder o = NewOrderRequest::limit(id, s, price_arg(in, s, price, raw), qty_arg(in, qty, raw));
+  o = o.value(value_arg(value.ptr(), "order", 0, "value"));
   if (post_only) o = o.post_only();
   if (reduce_only) o = o.reduce_only();
   if (ioc) o = o.ioc();
@@ -1198,10 +1221,11 @@ void bind_strategy_api(py::module_& m) {
           py::arg("inst"),
           py::arg("bids") = py::none(),
           py::arg("asks") = py::none(),
-          "Desired ladder as sequences of (price, qty) floats, level 0 first (at most 8 per side). "
-          "Prices are rounded to the tick passively (bids down, asks up), quantities down to the "
-          "lot; a non-positive price or quantity drops the level. Returns False when quoting is "
-          "disabled.")
+          "Desired ladder as sequences of (price, qty) floats, level 0 first (at most 8 per side); "
+          "(price, qty, value) or (price, qty, value, keep) also state what the level is worth "
+          "([capacity]). Prices are rounded to the tick passively (bids down, asks up), quantities "
+          "down to the lot; a non-positive price or quantity drops the level. Returns False when "
+          "quoting is disabled.")
       .def(
           "set_quotes_raw",
           [](const ContextHandle& c, py::handle inst, py::handle bids, py::handle asks) {
@@ -1241,8 +1265,9 @@ void bind_strategy_api(py::module_& m) {
              bool post_only,
              bool reduce_only,
              bool ioc,
-             std::uint32_t tag) {
-            return send(c, inst, side, price, qty, post_only, reduce_only, ioc, tag, false);
+             std::uint32_t tag,
+             py::handle value) {
+            return send(c, inst, side, price, qty, post_only, reduce_only, ioc, tag, value, false);
           },
           py::arg("inst"),
           py::arg("side"),
@@ -1253,8 +1278,11 @@ void bind_strategy_api(py::module_& m) {
           py::arg("reduce_only") = false,
           py::arg("ioc") = false,
           py::arg("tag") = 0,
+          py::arg("value") = py::none(),
           "Send a limit order (risk-checked, journaled); returns its client order id. The price is "
-          "rounded passively to the tick and the quantity down to the lot. Raises OrderRejected.")
+          "rounded passively to the tick and the quantity down to the lot. With a value "
+          "([capacity]) it is sent only if that covers the price of its order slot. Raises "
+          "OrderRejected.")
       .def(
           "send_raw",
           [](const ContextHandle& c,
@@ -1265,8 +1293,9 @@ void bind_strategy_api(py::module_& m) {
              bool post_only,
              bool reduce_only,
              bool ioc,
-             std::uint32_t tag) {
-            return send(c, inst, side, price, qty, post_only, reduce_only, ioc, tag, true);
+             std::uint32_t tag,
+             py::handle value) {
+            return send(c, inst, side, price, qty, post_only, reduce_only, ioc, tag, value, true);
           },
           py::arg("inst"),
           py::arg("side"),
@@ -1276,7 +1305,8 @@ void bind_strategy_api(py::module_& m) {
           py::arg("post_only") = false,
           py::arg("reduce_only") = false,
           py::arg("ioc") = false,
-          py::arg("tag") = 0)
+          py::arg("tag") = 0,
+          py::arg("value") = py::none())
       .def(
           "cancel",
           [](const ContextHandle& c, std::uint64_t order_id) {
@@ -1683,6 +1713,28 @@ void bind_strategy_api(py::module_& m) {
                (x.b.venue_paused ? ", paused>" : ">");
       });
 
+  py::class_<CapacityInfo>(m,
+                           "Capacity",
+                           "What an order slot on one account costs now ([capacity], a copy), in "
+                           "the quote currency. on is False without [capacity].",
+                           py::is_final())
+      .def_property_readonly("on", [](const CapacityInfo& x) { return x.q.on; })
+      .def_property_readonly("price", [](const CapacityInfo& x) { return x.q.price; })
+      .def_property_readonly("floor", [](const CapacityInfo& x) { return x.q.floor; })
+      .def_property_readonly("window", [](const CapacityInfo& x) { return x.q.window; })
+      .def_property_readonly("weight", [](const CapacityInfo& x) { return x.q.weight; })
+      .def_property_readonly("day", [](const CapacityInfo& x) { return x.q.day; })
+      .def_property_readonly("window_share", [](const CapacityInfo& x) { return x.q.window_share; })
+      .def_property_readonly("window_used", [](const CapacityInfo& x) { return x.q.window_used; })
+      .def_property_readonly("window_orders",
+                             [](const CapacityInfo& x) { return x.q.window_orders; })
+      .def("__repr__", [](const CapacityInfo& x) {
+        return "<Capacity " + (x.q.on ? "price " + std::to_string(x.q.price) + ", window " +
+                                            std::to_string(x.q.window_used) + "/" +
+                                            std::to_string(x.q.window_orders) + ">"
+                                      : std::string("off>"));
+      });
+
   py::class_<RiskRejectInfo> reject_cls(
       m,
       "RiskReject",
@@ -1827,6 +1879,14 @@ void bind_strategy_api(py::module_& m) {
           py::arg("venue") = 0,
           "What the [risk] rate limit and the venue's own limits still admit now; a backtest "
           "knows only the local token bucket.")
+      .def(
+          "capacity",
+          [](const ContextHandle& c, std::uint32_t venue) {
+            return CapacityInfo{c.engine().context().capacity(venue_arg(venue))};
+          },
+          py::arg("venue") = 0,
+          "What an order slot on that account costs now ([capacity]): a new order or a move is "
+          "sent when its value covers price.")
       .def(
           "mark",
           [](const ContextHandle& c, py::handle inst) {

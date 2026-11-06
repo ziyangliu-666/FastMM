@@ -476,6 +476,48 @@ def test_on_risk_reject_and_order_budget(example_config):
     assert "venue unknown" in repr(b)
 
 
+def test_capacity_prices_levels_and_orders_that_state_a_value():
+    from conftest import EXAMPLE_TOML
+
+    text = EXAMPLE_TOML.read_text() + '\n[capacity]\nmode = "enforce"\norders_10s = 10\n'
+    cfg = fastmm.BacktestConfig.from_toml_string(text)
+    cfg.clear_params()
+    cfg.duration_s = 10
+
+    class Probe(Strategy):
+        def on_book(self, ctx, inst, book):
+            if hasattr(self, "cap") or not book.valid:
+                return
+            self.cap = ctx.capacity()
+            floor = self.cap.floor
+            bid = book.best_bid[0] - 1.0
+            # Worth half a minimum-notional order: priced out, nothing rests.
+            ctx.set_quotes(inst, [(bid, 0.002, 0.5 * floor)], None)
+            self.quoted = ctx.working_quote(inst, BUY)
+            with pytest.raises(fastmm.OrderRejected, match="PricedOut"):
+                ctx.send(inst, BUY, bid, 0.002, post_only=True, value=0.5 * floor)
+            self.sent = ctx.send(inst, BUY, bid - 1.0, 0.002, post_only=True, value=10.0 * floor)
+
+    s = Probe()
+    fastmm.run_backtest(cfg, data=FIXTURE_FMJ, strategy=s)
+    assert s.cap.on and s.cap.floor > 0.0
+    assert s.cap.price == pytest.approx(s.cap.floor)
+    assert s.cap.window_orders == 10 and s.cap.window_used == 0
+    assert "price" in repr(s.cap)
+    assert s.quoted is None
+    assert s.sent > 0
+
+
+def test_capacity_is_off_without_the_table(example_config):
+    class Probe(Strategy):
+        def on_start(self, ctx):
+            self.cap = ctx.capacity()
+
+    s = Probe()
+    fastmm.run_backtest(_cfg(example_config, 1), data=FIXTURE_FMJ, strategy=s)
+    assert not s.cap.on and s.cap.price == 0.0 and repr(s.cap) == "<Capacity off>"
+
+
 def test_state_is_written_at_the_end_and_restored_after_on_start(example_config, tmp_path):
     class Counter(Strategy):
         def on_start(self, ctx):
