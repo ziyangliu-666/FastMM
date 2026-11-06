@@ -221,7 +221,7 @@ AbPlan::AbPlan(const AbSection& section,
         if (s_.arms[a].name == arm_name) arm = a;
       }
       if (arm == arms)
-        throw ConfigError("[ab.assign]: " + key + ": no arm named '" + arm_name + "'");
+        throw ConfigError(fmt::format("[ab.assign]: {}: no arm named '{}'", key, arm_name));
       if (slot_[found] != kOut)
         throw ConfigError("[ab.assign]: " + names_[found] + " is assigned twice");
       slot_[found] = static_cast<std::uint8_t>(arm);

@@ -721,8 +721,10 @@ void BacktestSession::enable_ab(
     const std::string symbol(cfg_.instruments.get(o.instrument).symbol.view());
     for (const auto& [name, value] : o.values) {
       if (run->controller && run->controller->owns(name))
-        throw std::invalid_argument("backtest: [strategy.overrides] sets " + name + " for " +
-                                    symbol + ", which the [ab] arms set");
+        throw std::invalid_argument(
+            fmt::format("backtest: [strategy.overrides] sets {} for {}, which the [ab] arms set",
+                        name,
+                        symbol));
     }
     ParamUpdateMsg m{};
     if (auto err = run->publisher->build(o.values, o.instrument, m))

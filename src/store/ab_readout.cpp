@@ -285,7 +285,8 @@ AbReadout ab_readout(const AbData& data, const AbReadoutOptions& opts) {
         std::sort(draws.begin(), draws.end());
         if (draws.empty()) draws.push_back(c.diff);
         const auto at = [&](double q) {
-          const auto k = static_cast<std::size_t>(q * static_cast<double>(draws.size() - 1) + 0.5);
+          const auto k =
+              static_cast<std::size_t>(std::lround(q * static_cast<double>(draws.size() - 1)));
           return draws[std::min(k, draws.size() - 1)];
         };
         c.lo = at(0.025);
