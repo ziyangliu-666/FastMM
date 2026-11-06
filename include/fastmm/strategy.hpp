@@ -26,4 +26,5 @@
 #include "fastmm/strategies/hooks.hpp"
 #include "fastmm/strategies/params.hpp"
 #include "fastmm/strategies/quoting.hpp"
+#include "fastmm/strategies/state_codec.hpp"
 #include "fastmm/strategies/strategy.hpp"
