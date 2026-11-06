@@ -430,6 +430,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   b.engine.latency_publish_interval = milliseconds(cfg.engine.latency_publish_ms);
   b.engine.spin_mode = SpinMode::Busy;
   b.engine.risk = cfg.risk_limits();
+  b.engine.fill_cluster = cfg.fill_cluster_config();
   b.engine.reduce_only = cfg.risk.reduce_only;
   b.engine.reduce_only_venues = cfg.reduce_only_venues();
   b.engine.quotes = cfg.quote_params();

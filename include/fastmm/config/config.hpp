@@ -14,6 +14,7 @@
 #include "fastmm/core/balance_book.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fees.hpp"
+#include "fastmm/core/fill_cluster.hpp"
 #include "fastmm/core/fx.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/perp_book.hpp"
@@ -304,7 +305,11 @@ struct RiskSection {
   int orders_per_sec = 0;
   int burst = 0;
   bool stp = true;
-  int max_feed_lag_ms = 0;    // 0 = off
+  int max_feed_lag_ms = 0;  // 0 = off
+  // The fill-cluster guard (core/fill_cluster.hpp): names 0 = off.
+  int fill_cluster_names = 0;
+  int fill_cluster_window_ms = 500;
+  int fill_cluster_hold_ms = 500;
   bool check_balance = true;  // refuse what the venue's balance cannot cover
   // A keyed fastmm-live session starts without max_position (or max_order_notional) and
   // max_loss only with this set.
@@ -447,6 +452,7 @@ class Config {
 
   // Typed views used to wire the engine.
   [[nodiscard]] RiskLimits risk_limits() const;
+  [[nodiscard]] FillClusterConfig fill_cluster_config() const;
   // Why fastmm-live refuses this [risk] for a session that trades with real keys: neither
   // max_position nor max_order_notional, or no max_loss, and no allow_unlimited. Empty when it
   // starts.

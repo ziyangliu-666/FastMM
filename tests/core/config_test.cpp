@@ -971,6 +971,30 @@ TEST_CASE("core.config: [risk] max_loss_period is total or utc_day") {
                        ConfigError);
 }
 
+TEST_CASE("core.config: [risk] fill_cluster keys, their range and the effective configuration") {
+  const Config none = Config::parse(kMinimal);
+  CHECK_FALSE(none.fill_cluster_config().enabled());
+  CHECK(none.effective_toml().find("fill_cluster") == std::string::npos);
+  CHECK(none.redacted().find("fill_cluster") == std::string::npos);
+  const Config on = Config::parse(
+      "[risk]\nfill_cluster_names = 3\nfill_cluster_window_ms = 250\nfill_cluster_hold_ms = 800\n");
+  const FillClusterConfig c = on.fill_cluster_config();
+  CHECK(c.names == 3);
+  CHECK(c.window == milliseconds(250));
+  CHECK(c.hold == milliseconds(800));
+  const FillClusterConfig back = Config::parse(on.effective_toml()).fill_cluster_config();
+  CHECK(back.names == 3);
+  CHECK(back.window == milliseconds(250));
+  CHECK(back.hold == milliseconds(800));
+  CHECK(on.redacted().find("fill_cluster_names = 3") != std::string::npos);
+  CHECK(Config::parse("[risk]\nfill_cluster_names = 2\n").fill_cluster_config().hold ==
+        milliseconds(500));
+  CHECK_THROWS_WITH_AS(Config::parse("[risk]\nfill_cluster_names = 17\n"),
+                       doctest::Contains("fill_cluster_names must be"),
+                       ConfigError);
+  CHECK_THROWS_AS(Config::parse("[risk]\nfill_cluster_hold_ms = -1\n"), ConfigError);
+}
+
 TEST_CASE("core.config: reduce_only in [risk] and per venue survives the effective configuration") {
   const Config off = Config::parse(pool_toml(""));
   CHECK_FALSE(off.risk.reduce_only);

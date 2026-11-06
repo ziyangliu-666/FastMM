@@ -1677,6 +1677,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   deps.engine.cpu = cfg.engine.cpu;
   deps.engine.spin_mode = cfg.spin_mode();
   deps.engine.risk = cfg.risk_limits();
+  deps.engine.fill_cluster = cfg.fill_cluster_config();
   deps.engine.reduce_only = cfg.risk.reduce_only;
   deps.engine.reduce_only_venues = cfg.reduce_only_venues();
   deps.engine.quotes = cfg.quote_params();

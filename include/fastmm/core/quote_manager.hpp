@@ -45,6 +45,11 @@
 //     instrument joins a queue the engine re-applies (retry_priced()) when the price falls. A move
 //     towards the touch buys its gain (the level's value less its keep value); a move away from it
 //     cancels for free and buys its New as a new order;
+//   * hold_side() (the engine's fill-cluster guard, core/fill_cluster.hpp) holds one side on every
+//     instrument: pull_side() cancels what rests there, reconcile() and every retry treat the
+//     side's levels as empty while the desired quotes keep them, a target recorded for a pending
+//     order on the side is not placed, and reapply() puts the last desired quotes back when the
+//     hold ends;
 //   * a New or Replace the placer holds back for want of an order token (QuoteAction::rate_limited)
 //     is neither a reject nor a backoff: the instrument joins a FIFO of starved instruments, and
 //     the engine re-applies their last desired quotes (retry()) in that order as tokens come back,
@@ -275,7 +280,7 @@ class QuoteManager {
       std::uint32_t used = 0;
       for (std::uint32_t lvl = 0; lvl < n; ++lvl) {
         Slot& slot = st.slots[s][lvl];
-        const bool has_want = lvl < want.size() && want[lvl].qty.is_positive();
+        const bool has_want = !side_held_[s] && lvl < want.size() && want[lvl].qty.is_positive();
         actions += reconcile_slot(inst,
                                   st,
                                   oms,
@@ -353,6 +358,44 @@ class QuoteManager {
   }
   [[nodiscard]] bool resumable(InstrumentId id) const noexcept {
     return state_[id.value].resumable;
+  }
+
+  // Holds `side` on every instrument (on) or ends the hold (off). While it holds, the side's levels
+  // count as empty wherever quotes are reconciled; the desired quotes keep them for reapply().
+  void hold_side(Side side, bool on) noexcept { side_held_[static_cast<std::size_t>(side)] = on; }
+  [[nodiscard]] bool side_held(Side side) const noexcept {
+    return side_held_[static_cast<std::size_t>(side)];
+  }
+  // Cancels the instrument's working quotes on `side`, now; one still pending is cancelled when its
+  // ack arrives. The other side and the desired quotes stay as they are. Returns the actions
+  // placed.
+  template <class Placer>
+  std::uint32_t pull_side(
+      const Instrument& inst, Side side, const Oms& oms, Timestamp now, Placer&& place) noexcept {
+    InstState& st = state_[inst.id.value];
+    const auto s = static_cast<std::size_t>(side);
+    std::uint32_t actions = 0;
+    std::uint32_t used = 0;
+    for (std::uint32_t lvl = 0; lvl < st.used[s]; ++lvl) {
+      Slot& slot = st.slots[s][lvl];
+      actions += reconcile_slot(
+          inst, st, oms, side, lvl, slot, Level{}, VenueId{}, kNoValue, kNoValue, now, place);
+      if (!slot.empty()) used = lvl + 1;
+    }
+    st.used[s] = used;
+    return actions;
+  }
+  // Re-applies the instrument's last desired quotes (a hold ended); one pulled or paused stays as
+  // it is.
+  template <class Placer>
+  std::uint32_t reapply(const Instrument& inst,
+                        const Oms& oms,
+                        Timestamp now,
+                        Placer&& place) noexcept {
+    InstState& st = state_[inst.id.value];
+    if (st.pulled || st.paused || st.desired.empty()) return 0;
+    const DesiredQuotes desired = st.desired;
+    return reconcile(inst, desired, oms, now, place);
   }
 
   // Instruments whose quotes were held back for want of an order token, oldest first.
@@ -474,18 +517,19 @@ class QuoteManager {
       if (slot.apply_want &&
           (u.prev == OrderState::PendingNew || u.prev == OrderState::PendingReplace)) {
         slot.apply_want = false;
-        static_cast<void>(reconcile_slot(inst,
-                                         st,
-                                         oms,
-                                         side,
-                                         lvl,
-                                         slot,
-                                         slot.want,
-                                         slot.want_account,
-                                         slot.want_value,
-                                         slot.want_keep,
-                                         now,
-                                         place));
+        static_cast<void>(
+            reconcile_slot(inst,
+                           st,
+                           oms,
+                           side,
+                           lvl,
+                           slot,
+                           side_held_[static_cast<std::size_t>(side)] ? Level{} : slot.want,
+                           slot.want_account,
+                           slot.want_value,
+                           slot.want_keep,
+                           now,
+                           place));
       }
       return;
     }
@@ -498,7 +542,7 @@ class QuoteManager {
     slot.awaiting_terminal = false;
     if (st.pulled || st.paused || !slot.apply_want) return;
     slot.apply_want = false;
-    if (!slot.want.qty.is_positive()) return;
+    if (!slot.want.qty.is_positive() || side_held_[static_cast<std::size_t>(side)]) return;
     if (backing_off(st, side, now)) {
       kept_backoff(st, inst.id, side);
       return;
@@ -868,6 +912,7 @@ class QuoteManager {
   // earliest retry_at among them.
   RingBuffer<std::uint16_t, kMaxInstruments> backed_off_;
   Timestamp backoff_due_{kNever};
+  bool side_held_[2] = {};  // hold_side()
 };
 
 }  // namespace fastmm

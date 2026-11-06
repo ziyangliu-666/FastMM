@@ -740,6 +740,9 @@ Every limit is off when it is `0` or omitted. A `fastmm-live` session that trade
 | `burst` | integer |  | token-bucket capacity, orders (default orders_per_sec) |
 | `stp` | boolean |  | self-trade prevention against our own resting orders (default true) |
 | `max_feed_lag_ms` | integer |  | pull a venue's quotes and refuse orders that could rest there without reducing the position while its market data arrives this much later than its baseline, ms; resumes 100 ms after the last message over it (default 0: off) |
+| `fill_cluster_names` | integer |  | the fill-cluster guard: when maker fills of our quotes on one side cover this many distinct instruments within fill_cluster_window_ms, that side's quotes are pulled on every instrument for fill_cluster_hold_ms, then put back (0 to 16; default 0: off) |
+| `fill_cluster_window_ms` | integer |  | the fill-cluster guard's window, ms (default 500) |
+| `fill_cluster_hold_ms` | integer |  | how long the fill-cluster guard holds the side after the last fill that completed a cluster, ms (default 500) |
 | `check_balance` | boolean |  | refuse an order the venue's reported balance, less this session's orders and fills since, cannot cover; off for a venue until it reports balances (default true) |
 | `reduce_only` | boolean |  | start in reduce-only mode for every instrument: orders that would take a position further from zero are refused until fastmm-ctl reduce-only off (default false) |
 | `allow_unlimited` | boolean |  | let fastmm-live trade with real keys without max_position (or max_order_notional) and max_loss; without it such a session refuses to start, exit code 3 (default false) |

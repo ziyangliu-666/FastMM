@@ -56,6 +56,7 @@
 #include "fastmm/core/containers/static_vector.hpp"
 #include "fastmm/core/engine_config.hpp"
 #include "fastmm/core/engine_runner.hpp"
+#include "fastmm/core/fill_cluster.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/latency.hpp"
@@ -239,6 +240,7 @@ class Engine {
       if (!venue_replace && qp.replace_all_venues) qp.supports_replace = false;
     }
     quotes_.set_params(qp);
+    cluster_.configure(cfg_.fill_cluster);
     if (records_.enabled()) {
       for (const std::int64_t ms : cfg.markout_ms) {
         if (ms <= 0 || markouts_.size() == kMaxMarkoutHorizons) continue;
@@ -668,6 +670,7 @@ class Engine {
   [[nodiscard]] VenueHealthView venue_health(VenueId v) const noexcept {
     return health_.view(v, now());
   }
+  [[nodiscard]] FillClusterView fill_cluster() const noexcept { return cluster_.view(); }
   // ctx.order_budget: the [risk] bucket's whole tokens, and the venue's windows where the transport
   // carries them (LiveTransport: the connector's publication; a backtest has none). The windows
   // count the new orders and replaces sent to the account that the publication had not seen yet
@@ -1262,6 +1265,7 @@ class Engine {
     // requote can take the token.
     if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
     if (FASTMM_UNLIKELY(quotes_.backoff_due(now_))) retry_backed_off();
+    if (FASTMM_UNLIKELY(cluster_on_) && cluster_.lift_due(now_)) lift_fill_cluster();
     if (FASTMM_UNLIKELY(capacity_on_)) capacity_clock();
     dispatch(h);
     after_hooks(quoting_before);
@@ -1502,6 +1506,40 @@ class Engine {
     flush_out();
   }
 
+  // ---- the fill-cluster guard (core/fill_cluster.hpp) ----------------------------------------
+  // Quote fills on `side` reached [risk] fill_cluster_names instruments within the window: the side
+  // is held on every instrument, its resting quotes cancelled now, until the hold runs out.
+  FASTMM_NOINLINE void on_fill_cluster(Side side) noexcept {
+    const FillClusterConfig& c = cluster_.config();
+    FASTMM_LOG_INFO("fill cluster: {} fills on {} instruments within {} ms; {} pulled for {} ms",
+                    side == Side::Buy ? "buy" : "sell",
+                    c.names,
+                    c.window.millis(),
+                    side == Side::Buy ? "bids" : "asks",
+                    c.hold.millis());
+    quotes_.hold_side(side, true);
+    enter_api();
+    Placer place{this};
+    for (const Instrument& inst : instruments_) quotes_.pull_side(inst, side, oms_, now_, place);
+    flush_out();
+  }
+  // A held side's hold ran out: the strategy's last quotes go back on every instrument that quotes.
+  FASTMM_NOINLINE void lift_fill_cluster() noexcept {
+    bool lifted = false;
+    for (const Side side : {Side::Buy, Side::Sell}) {
+      if (!cluster_.lift(side, now_)) continue;
+      quotes_.hold_side(side, false);
+      lifted = true;
+    }
+    if (!lifted) return;
+    enter_api();
+    Placer place{this};
+    for (const Instrument& inst : instruments_) {
+      if (quoting_enabled(inst.id)) quotes_.reapply(inst, oms_, now_, place);
+    }
+    flush_out();
+  }
+
   // An FX source's mid ([accounting]): its currency's rate, for the PnL totals from now on and for
   // the orders it prices. A book that stops being valid leaves the totals at the last rate (a loss
   // already booked stays measured) and refuses new exposure in that currency until it is back.
@@ -1713,6 +1751,7 @@ class Engine {
     if (inst_pulled_[id.value] || quotes_.pulled(id) || venue_is_pulled(inst.venue))
       return QuoteBlock::Pulled;
     if (health_.gated(inst.venue, now_)) return QuoteBlock::FeedLag;
+    if (quotes_.side_held(side)) return QuoteBlock::FillCluster;
     // The QuoteManager keeps an order whose leaves cover min_qty_bps of the target.
     if (static_cast<Int128>(working_qty) * 10'000 >=
         static_cast<Int128>(t.asked_qty_raw) * quotes_.params().min_qty_bps)
@@ -2452,6 +2491,11 @@ class Engine {
                            now_.ns);
       }
       if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
+      // The fill-cluster guard counts the maker fills of quotes (orders the QuoteManager placed).
+      if (FASTMM_UNLIKELY(cluster_on_) && f.liquidity == Liquidity::Maker && u.known &&
+          (f.flags & OrderFillMsg::kReplayed) == 0 &&
+          QuoteManager::is_quote_tag(u.order.user_tag) && cluster_.on_fill(id, side, now_))
+        on_fill_cluster(side);
     } else if (stats_.unknown_instrument_fills++ == 0) {
       FASTMM_LOG_WARN("fill on instrument {} outside the instrument table is not booked", id.value);
     }
@@ -3467,6 +3511,7 @@ class Engine {
       check_markouts();
       if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
       if (FASTMM_UNLIKELY(quotes_.backoff_due(now_))) retry_backed_off();
+      if (FASTMM_UNLIKELY(cluster_on_) && cluster_.lift_due(now_)) lift_fill_cluster();
       if (FASTMM_UNLIKELY(capacity_on_)) capacity_clock();
       call_batch_end();
       after_hooks(quoting_before);
@@ -3540,6 +3585,7 @@ class Engine {
     // As process() does for the journaled timer a replay reads back.
     if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
     if (FASTMM_UNLIKELY(quotes_.backoff_due(now_))) retry_backed_off();
+    if (FASTMM_UNLIKELY(cluster_on_) && cluster_.lift_due(now_)) lift_fill_cluster();
     if (FASTMM_UNLIKELY(capacity_on_)) capacity_clock();
     if (ack_timer) {
       sweep_acks();
@@ -5394,6 +5440,9 @@ class Engine {
   RiskEngine risk_;
   VenueHealth health_;  // feed lag and ack RTT per venue, and the feed-lag gate
   Duration feed_lag_limit_ = milliseconds(cfg_.risk.max_feed_lag_ms);  // [risk] max_feed_lag_ms
+  // [risk] fill_cluster_names: the fill-cluster guard (core/fill_cluster.hpp).
+  FillCluster cluster_;
+  bool cluster_on_ = cfg_.fill_cluster.enabled();
   QuoteManager quotes_;
   QuotePresence presence_;
   TimerWheel<> timers_;

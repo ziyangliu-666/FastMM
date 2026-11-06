@@ -90,6 +90,7 @@ The obstacles, in the order the engine checks them:
 | `venue_killed` | the venue's kill switch is engaged |
 | `pulled` | `fastmm-ctl pull` |
 | `feed_lag` | the feed-lag gate |
+| `fill_cluster` | the fill-cluster guard holds the side ([risk] `fill_cluster_names`) |
 | `quoting` | the working orders cover what was asked |
 | `backoff` | a venue refusal put the side in reject backoff |
 | `starved` | waiting for a `[risk] orders_per_sec` token |

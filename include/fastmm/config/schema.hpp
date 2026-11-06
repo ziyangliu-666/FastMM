@@ -841,6 +841,24 @@ inline constexpr KeySpec kConfigSchema[] = {
      "position while its market data arrives this much later than its baseline, ms; resumes "
      "100 ms after the last message over it (default 0: off)"},
     {"risk",
+     "fill_cluster_names",
+     KeyType::Int,
+     false,
+     "the fill-cluster guard: when maker fills of our quotes on one side cover this many distinct "
+     "instruments within fill_cluster_window_ms, that side's quotes are pulled on every instrument "
+     "for fill_cluster_hold_ms, then put back (0 to 16; default 0: off)"},
+    {"risk",
+     "fill_cluster_window_ms",
+     KeyType::Int,
+     false,
+     "the fill-cluster guard's window, ms (default 500)"},
+    {"risk",
+     "fill_cluster_hold_ms",
+     KeyType::Int,
+     false,
+     "how long the fill-cluster guard holds the side after the last fill that completed a cluster, "
+     "ms (default 500)"},
+    {"risk",
      "check_balance",
      KeyType::Bool,
      false,

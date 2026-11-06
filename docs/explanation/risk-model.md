@@ -78,6 +78,16 @@ The first message 100 ms after the last late one releases the gate, and the stra
 | Replay | gates at the same events, from the journaled headers and engine clock |
 | Backtest over a live journal | gates only with `[backtest] md_arrival = "recorded"` |
 
+## Fill-cluster guard
+
+A taker that sweeps one side of many books at once fills our quotes on several instruments within a few hundred milliseconds, and the books it reaches last are the ones it has priced best. Each instrument's own checks see one ordinary fill. The fill-cluster guard looks across instruments instead.
+
+With `[risk] fill_cluster_names` set to N, the engine remembers, per side, the instruments on which a quote last filled as maker and when. A fill that brings the instruments filled within `fill_cluster_window_ms` to N engages the guard on that side. The side's quotes are cancelled on every instrument at once, and the quote manager places nothing on it for `fill_cluster_hold_ms`. A later fill that still completes a cluster extends the hold. When the hold runs out, the engine puts the strategy's last quotes back on every instrument that quotes. The strategy does not have to requote for that, and the other side is never touched.
+
+Only fills of orders placed through `set_quotes` count, and only those orders are pulled. Orders sent with `ctx.send`, such as a hedge, are neither counted nor held. `ctx.fill_cluster()` reports which sides are held, until when, and how often the guard has engaged. `fastmm-top` shows a held side as `fill_cluster`. With N = 1 every quote fill holds its side everywhere, which is a cooldown rather than a sweep detector.
+
+The inputs are the fills the engine consumes and its clock, both journaled, so a replay holds the same side at the same events and sends the same cancels. The guard keeps its last 16 instruments per side in fixed arrays and allocates nothing.
+
 ## Balance check
 
 Check 22 refuses an order that the account's free balance on its venue does not cover. The engine keeps one balance row per venue and asset: the base and quote of each spot instrument, the settlement asset of each derivative, and an account row for venues that report account-wide margin.

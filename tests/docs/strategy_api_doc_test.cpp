@@ -195,6 +195,7 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().fees(InstrumentId{})), const F
 static_assert(std::same_as<decltype(lvalue<Ctx>().risk_headroom(InstrumentId{})), RiskHeadroom>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().venue_health(VenueId{})), VenueHealthView>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().order_budget(VenueId{})), OrderBudget>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().fill_cluster()), FillClusterView>);
 // [end:venue_state]
 
 // ---- the capacity price ------------------------------------------------------------------------

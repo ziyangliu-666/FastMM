@@ -273,6 +273,7 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().fees(InstrumentId{})), const F
 static_assert(std::same_as<decltype(lvalue<Ctx>().risk_headroom(InstrumentId{})), RiskHeadroom>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().venue_health(VenueId{})), VenueHealthView>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().order_budget(VenueId{})), OrderBudget>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().fill_cluster()), FillClusterView>);
 ```
 
 | Method | Returns | Journaled |
@@ -281,6 +282,7 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().order_budget(VenueId{})), Orde
 | `risk_headroom(id)` | `RiskHeadroom`: what each `[risk]` limit still admits on the instrument | yes |
 | `venue_health(venue)` | `VenueHealthView`: feed lag and order round trip | yes |
 | `order_budget(venue)` | `OrderBudget`: the local rate limiter and the venue's own order counts | only `local_tokens` |
+| `fill_cluster()` | `FillClusterView`: the sides the [fill-cluster guard](../explanation/risk-model.md#fill-cluster-guard) holds | yes |
 
 `fees(id)` is the instrument's `maker_bps` / `taker_bps`, else its venue's `[venues.<x>.fees]`. With `fetch_fees` it is the account's own rates ([Binance Spot](venues/binance-spot.md#fee-rates)). A backtest charges these; a live venue reports each fill's commission itself.
 
@@ -316,6 +318,13 @@ On the side that reduces the position, `exposure_*_notional` adds the close at t
 | `gate_engagements`, `gated` | the [feed-lag gate](../explanation/risk-model.md#feed-lag-gate); while it holds a venue, `set_quotes` on its instruments returns false |
 
 All fields are zero before the first sample. `venue_health` costs one lookup; `risk_headroom` costs a risk check.
+
+| `FillClusterView` field | Meaning |
+|---|---|
+| `enabled` | `[risk] fill_cluster_names` is set |
+| `held[0]`, `held[1]` | the guard holds the bids, the asks: `set_quotes` places nothing on that side until the hold ends, then the engine puts the last quotes back |
+| `held_until[0]`, `held_until[1]` | engine time the hold ends, unless a fill extends it |
+| `engagements[0]`, `engagements[1]` | times the guard engaged on each side |
 
 | `OrderBudget` field | Meaning |
 |---|---|

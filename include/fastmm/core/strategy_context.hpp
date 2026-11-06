@@ -9,6 +9,7 @@
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fees.hpp"
+#include "fastmm/core/fill_cluster.hpp"
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/oms.hpp"
@@ -234,6 +235,10 @@ class StrategyContext {
   [[nodiscard]] VenueHealthView venue_health(VenueId v) const noexcept {
     return e_->venue_health(v);
   }
+  // The fill-cluster guard ([risk] fill_cluster_names, core/fill_cluster.hpp): which sides it holds
+  // now, until when, and how often it has engaged. While a side is held, set_quotes places nothing
+  // on it; the engine puts the last quotes back when the hold ends.
+  [[nodiscard]] FillClusterView fill_cluster() const noexcept { return e_->fill_cluster(); }
   // What the [risk] rate limit and the venue's own limits still admit (core/order_budget.hpp):
   // the local token bucket, and the venue's order counts and request weight by window as its
   // connector last published them (live only; venue_known is false elsewhere).

@@ -5,6 +5,7 @@
 #include "fastmm/core/balance_book.hpp"
 #include "fastmm/core/capacity_price.hpp"
 #include "fastmm/core/fees.hpp"
+#include "fastmm/core/fill_cluster.hpp"
 #include "fastmm/core/fx.hpp"
 #include "fastmm/core/perp_book.hpp"
 #include "fastmm/core/pool_homes.hpp"
@@ -96,6 +97,10 @@ struct EngineConfig {
   int cpu = -1;
   SpinMode spin_mode = SpinMode::Busy;
   RiskLimits risk;
+  // [risk] fill_cluster_names, fill_cluster_window_ms, fill_cluster_hold_ms: quote fills on one
+  // side over that many instruments within the window hold the side everywhere for the hold
+  // (core/fill_cluster.hpp; names 0: off).
+  FillClusterConfig fill_cluster;
   QuoteParams quotes;
   // [accounting]: the settlement currencies and their FX sources (inactive: nothing converted).
   FxPlan fx;

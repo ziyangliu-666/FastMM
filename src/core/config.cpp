@@ -1107,6 +1107,15 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "stp", r.stp);
     get(*t, "max_feed_lag_ms", r.max_feed_lag_ms);
     if (r.max_feed_lag_ms < 0) throw ConfigError("risk.max_feed_lag_ms must be >= 0");
+    get(*t, "fill_cluster_names", r.fill_cluster_names);
+    get(*t, "fill_cluster_window_ms", r.fill_cluster_window_ms);
+    get(*t, "fill_cluster_hold_ms", r.fill_cluster_hold_ms);
+    if (r.fill_cluster_names < 0 ||
+        r.fill_cluster_names > static_cast<int>(FillClusterConfig::kMaxNames))
+      throw ConfigError(fmt::format("risk.fill_cluster_names must be 0 (off) to {}",
+                                    FillClusterConfig::kMaxNames));
+    if (r.fill_cluster_window_ms < 0 || r.fill_cluster_hold_ms < 0)
+      throw ConfigError("risk.fill_cluster_window_ms and fill_cluster_hold_ms must be >= 0");
     get(*t, "check_balance", r.check_balance);
     get(*t, "allow_unlimited", r.allow_unlimited);
     get(*t, "reduce_only", r.reduce_only);
@@ -1410,6 +1419,14 @@ RiskLimits Config::risk_limits() const {
   return l;
 }
 
+FillClusterConfig Config::fill_cluster_config() const {
+  FillClusterConfig c;
+  c.names = static_cast<std::uint32_t>(risk.fill_cluster_names);
+  c.window = milliseconds(risk.fill_cluster_window_ms);
+  c.hold = milliseconds(risk.fill_cluster_hold_ms);
+  return c;
+}
+
 std::string Config::unlimited_risk() const {
   if (risk.allow_unlimited) return {};
   const RiskLimits l = risk_limits();
@@ -1660,6 +1677,11 @@ std::string Config::redacted() const {
   kv("burst", risk.burst);
   kv("stp", risk.stp);
   if (risk.max_feed_lag_ms != 0) kv("max_feed_lag_ms", risk.max_feed_lag_ms);
+  if (risk.fill_cluster_names != 0) {
+    kv("fill_cluster_names", risk.fill_cluster_names);
+    kv("fill_cluster_window_ms", risk.fill_cluster_window_ms);
+    kv("fill_cluster_hold_ms", risk.fill_cluster_hold_ms);
+  }
   if (!risk.check_balance) kv("check_balance", risk.check_balance);
   if (risk.allow_unlimited) kv("allow_unlimited", risk.allow_unlimited);
   if (risk.reduce_only) kv("reduce_only", risk.reduce_only);
@@ -2036,6 +2058,11 @@ std::string Config::effective_toml() const {
   // Only when set, so a configuration without it keeps its effective text and hash.
   if (risk.max_feed_lag_ms != 0)
     r.insert("max_feed_lag_ms", static_cast<std::int64_t>(risk.max_feed_lag_ms));
+  if (risk.fill_cluster_names != 0) {
+    r.insert("fill_cluster_names", static_cast<std::int64_t>(risk.fill_cluster_names));
+    r.insert("fill_cluster_window_ms", static_cast<std::int64_t>(risk.fill_cluster_window_ms));
+    r.insert("fill_cluster_hold_ms", static_cast<std::int64_t>(risk.fill_cluster_hold_ms));
+  }
   if (!risk.check_balance) r.insert("check_balance", false);
   if (risk.allow_unlimited) r.insert("allow_unlimited", true);
   if (risk.reduce_only) r.insert("reduce_only", true);
