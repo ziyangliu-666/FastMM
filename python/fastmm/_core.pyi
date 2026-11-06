@@ -2019,4 +2019,4 @@ def walk_forward(config: BacktestConfig, grid: typing.Any, folds: typing.Support
     """
 _SWEEP_SETTINGS: tuple = ('latency_fixed_us', 'latency_jitter_us', 'latency_md_us', 'latency_md_jitter_us', 'p_drop', 'queue_conservatism', 'maker_fee_bps', 'taker_fee_bps')
 __version__: str = '0.10.1'
-_store_schema_version: int = 12
+_store_schema_version: int = 14
