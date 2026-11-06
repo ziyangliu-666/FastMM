@@ -6,6 +6,7 @@
 // raw fixed-point columns are rendered as exact decimals (Fixed::to_string).
 #include "fastmm/core/fill_audit.hpp"
 #include "fastmm/core/result.hpp"
+#include "fastmm/store/ab_readout.hpp"
 #include "fastmm/store/backend.hpp"
 
 #include <cstdint>
@@ -238,6 +239,12 @@ class Reader {
   // The engine's day roll-up of its own position records, as it booked them: one row per UTC day,
   // account and symbol. The default is pnl().
   [[nodiscard]] virtual Result<Rows, std::string> books_pnl(const QueryFilter& f) { return pnl(f); }
+  // fastmm-pnl ab: the fills, markouts and arm assignments of the [ab] test `test` (empty: the
+  // newest session's) in the sessions and days `f` names (ab_readout.hpp).
+  [[nodiscard]] virtual Result<AbData, std::string> ab_data(const QueryFilter& /*f*/,
+                                                            const std::string& /*test*/) {
+    return fail(std::string("this storage backend does not read [ab] tests"));
+  }
   // One row per funding payment. The default has none (a backend without the table).
   [[nodiscard]] virtual Result<Rows, std::string> funding(const QueryFilter& /*f*/) {
     return Rows{};

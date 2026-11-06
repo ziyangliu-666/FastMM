@@ -14,6 +14,7 @@
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fill_audit.hpp"
 #include "fastmm/core/fixed_point.hpp"
+#include "fastmm/store/ab_readout.hpp"
 #include "fastmm/store/fill_audit_file.hpp"
 #include "fastmm/store/registry.hpp"
 #include "fastmm/store/sqlite_store.hpp"
@@ -250,6 +251,9 @@ static int run(int argc, char** argv) {
   bool summary = false;
   bool raw = false;
   bool books = false;
+  std::string test;
+  std::vector<std::int32_t> horizons;
+  std::size_t resamples = 2000;
   QueryFilter f;
 
   CLI::App app("What a deployment traded, read from the store.", "fastmm-pnl");
@@ -283,6 +287,9 @@ static int run(int argc, char** argv) {
        "one row per execution however many sessions stored it, with its flags; --raw lists "
        "every stored copy"},
       {"order", "everything stored about one order (--order <id>), in time order"},
+      {"ab",
+       "an [ab] test per arm: fills, notional, markouts and pnl at each [engine] markout_ms "
+       "horizon, and each arm against the first with 95% intervals over whole UTC days"},
   };
   for (const auto& [name, description] : commands)
     app.add_subcommand(name, description)->fallthrough();
@@ -320,6 +327,13 @@ static int run(int argc, char** argv) {
   app.add_flag(
       "--books", books, "pnl: the engine's own day roll-up of its positions, as it booked them");
   app.add_option("--order", f.order, "order: the client order id")->option_text("<id>");
+  app.add_option("--test", test, "ab: the [ab] name (default: the newest session's)")
+      ->option_text("<name>");
+  app.add_option("--horizons-ms", horizons, "ab: recorded horizons to show (default: all)")
+      ->option_text("<ms,...>")
+      ->delimiter(',');
+  app.add_option("--resamples", resamples, "ab: resamples of the days (default 2000)")
+      ->option_text("<n>");
   if (const auto rc = fastmm::cli::parse(app, argc, argv)) return *rc;
   if (app.get_subcommands().empty()) return fastmm::cli::usage_error(app, "a command is required");
   const std::string command = app.get_subcommands().front()->get_name();
@@ -415,6 +429,22 @@ static int run(int argc, char** argv) {
 
   if (command == "audit")
     return audit_command(*reader, f, exchange_file, venue, from_ms, to_ms, csv);
+  if (command == "ab") {
+    auto data = reader->ab_data(f, test);
+    if (!data) return bad_usage(data.error());
+    fastmm::store::AbReadoutOptions ab_opts;
+    ab_opts.horizons_ms = horizons;
+    ab_opts.resamples = resamples;
+    try {
+      const fastmm::store::AbReadout r = fastmm::store::ab_readout(*data, ab_opts);
+      fmt::print(
+          "{}",
+          csv ? fastmm::store::ab_daily_csv(r, *data) : fastmm::store::format_ab_readout(r, *data));
+    } catch (const std::invalid_argument& e) {
+      return bad_usage(e.what());
+    }
+    return kOk;
+  }
 
   fastmm::store::ParamQuery pq;
   pq.engine = f.engine;

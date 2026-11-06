@@ -632,7 +632,35 @@ ALTER TABLE orders ADD COLUMN arm TEXT;
 ALTER TABLE param_updates ADD COLUMN arm TEXT;
 )SQL";
 
-constexpr std::array<Migration, 12> kMigrations{Migration{1, kV1},
+// Version 13: per-instrument parameter values (strategies/param_overrides.hpp). `reset` is 1 for
+// an update that gives instruments the shared values back; an update for every instrument that is
+// not one leaves the instruments' own values. NULL: recorded before, when every update for every
+// instrument replaced them.
+constexpr std::string_view kV13 = R"SQL(
+ALTER TABLE param_updates ADD COLUMN reset INTEGER;
+DROP VIEW param_history;
+CREATE VIEW param_history AS
+  SELECT u.session_id, u.seq, u.ts_ns, u.day, u.instrument_id, u.symbol, u.origin, u.source,
+         u.publish_seq, v.name, v.value, v.changed, u.reset
+  FROM param_updates u JOIN param_values v ON v.session_id = u.session_id AND v.seq = u.seq;
+)SQL";
+
+// Version 14: the mid at each fill and at the [engine] markout_ms horizons after it, keyed by the
+// fill's row (fills.seq). horizon_ms 0 is the fill's own time; ts_ns is when the engine read it.
+constexpr std::string_view kV14 = R"SQL(
+CREATE TABLE markouts (
+  session_id    INTEGER NOT NULL,
+  fill_seq      INTEGER NOT NULL,
+  horizon_ms    INTEGER NOT NULL,
+  instrument_id INTEGER NOT NULL,
+  fill_ns       INTEGER NOT NULL,
+  ts_ns         INTEGER NOT NULL,
+  mid_raw       INTEGER NOT NULL,
+  PRIMARY KEY (session_id, fill_seq, horizon_ms)
+);
+)SQL";
+
+constexpr std::array<Migration, 14> kMigrations{Migration{1, kV1},
                                                 Migration{2, kV2},
                                                 Migration{3, kV3},
                                                 Migration{4, kV4},
@@ -643,7 +671,9 @@ constexpr std::array<Migration, 12> kMigrations{Migration{1, kV1},
                                                 Migration{9, kV9},
                                                 Migration{10, kV10},
                                                 Migration{11, kV11},
-                                                Migration{12, kV12}};
+                                                Migration{12, kV12},
+                                                Migration{13, kV13},
+                                                Migration{14, kV14}};
 
 // days since 1970-01-01 -> y/m/d (Howard Hinnant's civil_from_days).
 void civil_from_days(std::int64_t z, int& y, unsigned& m, unsigned& d) {

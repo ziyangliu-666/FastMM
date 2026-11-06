@@ -118,7 +118,7 @@ TEST_CASE("store.params: the starting set, each update with its source, and the 
     REQUIRE(b->open(o));
     // Session 1 starts at 5 bps; a drain widens it at +10 min; ETHUSDT gets its own quote_qty at
     // +20; the strategy's own publisher refreshes levels unchanged (counted, no rows) and then
-    // changes it at +30; at +40 an update to every instrument replaces ETHUSDT's own quote_qty.
+    // changes it at +30; at +40 an update to every instrument leaves ETHUSDT's own quote_qty.
     REQUIRE(b->session_open(session(1, kDay1Ns, "5")));
     REQUIRE(b->instruments(1, std::span<const Instrument>(table.data(), table.size())));
     b->begin();
@@ -178,13 +178,14 @@ TEST_CASE("store.params: the starting set, each update with its source, and the 
   CHECK(values_of(*eth).count("quote_qty/*") == 0);
   CHECK(values_of(*eth).at("quote_qty/ETHUSDT") == "0.002");
   q.instrument.clear();
-  // At the end: the update to every instrument replaced ETHUSDT's own value.
+  // At the end: ETHUSDT keeps its own value through the update to every instrument.
   q.at_ns = 0;
   auto end = reader->params(q);
   REQUIRE(end);
   CHECK(values_of(*end) == std::map<std::string, std::string>{{"half_spread_bps/*", "9"},
                                                               {"levels/*", "3"},
-                                                              {"quote_qty/*", "0.003"}});
+                                                              {"quote_qty/*", "0.003"},
+                                                              {"quote_qty/ETHUSDT", "0.002"}});
 
   // Without a session: the newest of the engine that had started by then.
   ParamQuery by_time;
@@ -219,7 +220,8 @@ TEST_CASE("store.params: the starting set, each update with its source, and the 
   CHECK(d == std::map<std::string, std::pair<std::string, std::string>>{
                  {"half_spread_bps/*", {"9", "5"}},
                  {"levels/*", {"3", "1"}},
-                 {"quote_qty/*", {"0.003", "0.001"}}});
+                 {"quote_qty/*", {"0.003", "0.001"}},
+                 {"quote_qty/ETHUSDT", {"0.002", "-"}}});
   CHECK_FALSE(reader->param_diff(0, 1));  // no earlier session
 
   ParamQuery cfg;

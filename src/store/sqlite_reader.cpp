@@ -8,8 +8,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
@@ -29,6 +31,29 @@ using sqlite::utc_stamp;
 // Raw fixed-point columns are rendered as exact decimals; a column whose name ends in _raw loses
 // the suffix. Everything else is copied as text.
 constexpr std::string_view kRawSuffix = "_raw";
+
+constexpr std::int64_t kNsPerDayReader = 86'400'000'000'000LL;
+
+std::int64_t floor_div_ns(std::int64_t a, std::int64_t b) {
+  const std::int64_t q = a / b;
+  return (a % b != 0 && ((a < 0) != (b < 0))) ? q - 1 : q;
+}
+
+// "YYYY-MM-DD" -> ns at 00:00 UTC (days_from_civil); 0 for anything else.
+std::int64_t day_start_ns(const std::string& day) {
+  int y = 0;
+  unsigned m = 0;
+  unsigned d = 0;
+  if (std::sscanf(day.c_str(), "%d-%u-%u", &y, &m, &d) != 3 || m < 1 || m > 12 || d < 1 || d > 31)
+    return 0;
+  std::int64_t yy = y;
+  yy -= m <= 2 ? 1 : 0;
+  const std::int64_t era = (yy >= 0 ? yy : yy - 399) / 400;
+  const std::int64_t yoe = yy - era * 400;
+  const std::int64_t doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+  const std::int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return (era * 146097 + doe - 719468) * kNsPerDayReader;
+}
 
 bool is_raw(std::string_view name) {
   return name.size() > kRawSuffix.size() &&
@@ -99,6 +124,224 @@ class SqliteReader final : public Reader {
                           v.origin,
                           v.source,
                           std::to_string(*sid)});
+    }
+    return out;
+  }
+
+  [[nodiscard]] Result<AbData, std::string> ab_data(const QueryFilter& f,
+                                                    const std::string& test) override {
+    if (version_ < 12)
+      return fail(path_ + " predates [ab] tests (schema 12): its sessions recorded no arms");
+    AbData out;
+    sqlite3_stmt* st = nullptr;
+    const auto prepare = [&](const std::string& sql) -> Result<void, std::string> {
+      if (st != nullptr) sqlite3_finalize(st);
+      st = nullptr;
+      if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr) != SQLITE_OK)
+        return fail(error_of(db_, sql));
+      return {};
+    };
+    const auto text = [&](int i) {
+      const auto* p = reinterpret_cast<const char*>(sqlite3_column_text(st, i));
+      return p == nullptr ? std::string() : std::string(p);
+    };
+    const auto bind_text = [&](int i, const std::string& s) {
+      sqlite3_bind_text(st, i, s.c_str(), static_cast<int>(s.size()), SQLITE_TRANSIENT);
+    };
+    struct Finalize {
+      sqlite3_stmt** st;
+      ~Finalize() {
+        if (*st != nullptr) sqlite3_finalize(*st);
+      }
+    } const finalize{&st};
+
+    // The test: the one named, else the newest session's.
+    out.test = test;
+    if (out.test.empty()) {
+      std::string sql =
+          "SELECT a.test FROM ab_arms a JOIN sessions s ON s.session_id = a.session_id WHERE 1 = 1";
+      if (!f.engine.empty()) sql += " AND s.engine = ?1";
+      if (f.session_id != 0)
+        sql += f.engine.empty() ? " AND s.session_id = ?1" : " AND s.session_id = ?2";
+      sql += " ORDER BY s.started_ns DESC LIMIT 1";
+      if (auto r = prepare(sql); !r) return fail(r.error());
+      int n = 0;
+      if (!f.engine.empty()) bind_text(++n, f.engine);
+      if (f.session_id != 0) sqlite3_bind_int64(st, ++n, static_cast<std::int64_t>(f.session_id));
+      if (sqlite3_step(st) == SQLITE_ROW) out.test = text(0);
+      if (out.test.empty()) return fail("no session in " + path_ + " ran an [ab] test");
+    }
+    // Its sessions, oldest first, and their arms.
+    struct Session {
+      std::uint64_t id = 0;
+      std::int64_t start = 0;
+      std::int64_t stop = 0;
+      std::map<std::string, int> arm;  // name -> AbData::arms index
+    };
+    std::vector<Session> sessions;
+    {
+      std::string sql =
+          "SELECT s.session_id, s.started_ns, COALESCE(s.stopped_ns, (SELECT MAX(ts_ns) FROM fills"
+          " x WHERE x.session_id = s.session_id), s.started_ns), a.arm, a.name, a.params"
+          " FROM sessions s JOIN ab_arms a ON a.session_id = s.session_id WHERE a.test = ?1";
+      if (!f.engine.empty()) sql += " AND s.engine = ?2";
+      if (f.session_id != 0)
+        sql += f.engine.empty() ? " AND s.session_id = ?2" : " AND s.session_id = ?3";
+      sql += " ORDER BY s.started_ns, a.arm";
+      if (auto r = prepare(sql); !r) return fail(r.error());
+      int n = 0;
+      bind_text(++n, out.test);
+      if (!f.engine.empty()) bind_text(++n, f.engine);
+      if (f.session_id != 0) sqlite3_bind_int64(st, ++n, static_cast<std::int64_t>(f.session_id));
+      int rc = 0;
+      while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        const auto id = static_cast<std::uint64_t>(sqlite3_column_int64(st, 0));
+        if (sessions.empty() || sessions.back().id != id)
+          sessions.push_back({id, sqlite3_column_int64(st, 1), sqlite3_column_int64(st, 2), {}});
+        const std::string name = text(4);
+        auto at = std::find(out.arms.begin(), out.arms.end(), name);
+        if (at == out.arms.end()) {
+          out.arms.push_back(name);
+          out.params.push_back(text(5));
+          at = out.arms.end() - 1;
+        }
+        sessions.back().arm[name] = static_cast<int>(at - out.arms.begin());
+      }
+      if (rc != SQLITE_DONE) return fail(error_of(db_, "ab_arms"));
+    }
+    out.sessions = sessions.size();
+    if (sessions.empty()) return fail("no session ran the [ab] test '" + out.test + "'");
+
+    const std::int64_t from_ns =
+        f.from.empty() ? std::numeric_limits<std::int64_t>::min() : day_start_ns(f.from);
+    const std::int64_t to_ns = f.to.empty() ? std::numeric_limits<std::int64_t>::max()
+                                            : day_start_ns(f.to) + kNsPerDayReader;
+    std::set<std::int32_t> horizons;
+    for (const Session& s : sessions) {
+      // Instruments: symbol and contract.
+      std::map<std::int64_t, std::pair<std::string, std::pair<double, bool>>> inst;
+      if (auto r = prepare("SELECT instrument_id, symbol, multiplier_raw, inverse FROM instruments"
+                           " WHERE session_id = ?1");
+          !r)
+        return fail(r.error());
+      sqlite3_bind_int64(st, 1, static_cast<std::int64_t>(s.id));
+      while (sqlite3_step(st) == SQLITE_ROW) {
+        const std::int64_t m = sqlite3_column_int64(st, 2);
+        inst[sqlite3_column_int64(st, 0)] = {
+            text(1), {m > 0 ? static_cast<double>(m) * 1e-8 : 1.0, sqlite3_column_int(st, 3) != 0}};
+      }
+      // Each instrument's arm over time, from the arm assignments.
+      std::map<std::int64_t, std::pair<int, std::int64_t>> current;  // instrument -> arm, since
+      const auto close = [&](std::int64_t id, std::int64_t until) {
+        const auto it = current.find(id);
+        if (it == current.end() || it->second.first < 0) return;
+        if (!f.instrument.empty() && inst[id].first != f.instrument) return;
+        std::int64_t a = std::max(it->second.second, from_ns);
+        const std::int64_t b = std::min(until, to_ns);
+        while (a < b) {
+          const std::int64_t day = floor_div_ns(a, kNsPerDayReader);
+          const std::int64_t end = std::min(b, (day + 1) * kNsPerDayReader);
+          out.exposure.push_back({day, it->second.first, static_cast<double>(end - a) / 3.6e12});
+          a = end;
+        }
+      };
+      if (auto r =
+              prepare("SELECT ts_ns, instrument_id, arm FROM param_updates WHERE session_id = ?1"
+                      " AND origin = 'ab' AND arm IS NOT NULL ORDER BY seq");
+          !r)
+        return fail(r.error());
+      sqlite3_bind_int64(st, 1, static_cast<std::int64_t>(s.id));
+      while (sqlite3_step(st) == SQLITE_ROW) {
+        const std::int64_t ts = sqlite3_column_int64(st, 0);
+        const std::string name = text(2);
+        const auto a = s.arm.find(name);
+        const int arm = a == s.arm.end() ? -1 : a->second;
+        std::vector<std::int64_t> ids;
+        if (sqlite3_column_type(st, 1) == SQLITE_NULL) {
+          for (const auto& [id, info] : inst) ids.push_back(id);
+        } else {
+          ids.push_back(sqlite3_column_int64(st, 1));
+        }
+        for (const std::int64_t id : ids) {
+          close(id, ts);
+          current[id] = {arm, ts};
+        }
+      }
+      for (const auto& [id, state] : current) close(id, s.stop);
+
+      // The fills, and their markouts.
+      std::map<std::uint64_t, std::vector<std::pair<std::int32_t, double>>> mids;
+      if (version_ >= 14) {
+        if (auto r =
+                prepare("SELECT fill_seq, horizon_ms, mid_raw FROM markouts WHERE session_id = ?1"
+                        " AND horizon_ms > 0");
+            !r)
+          return fail(r.error());
+        sqlite3_bind_int64(st, 1, static_cast<std::int64_t>(s.id));
+        while (sqlite3_step(st) == SQLITE_ROW) {
+          const auto h = static_cast<std::int32_t>(sqlite3_column_int64(st, 1));
+          horizons.insert(h);
+          mids[static_cast<std::uint64_t>(sqlite3_column_int64(st, 0))].emplace_back(
+              h, static_cast<double>(sqlite3_column_int64(st, 2)) * 1e-8);
+        }
+      }
+      std::string sql =
+          "SELECT seq, ts_ns, arm, instrument_id, side, liquidity, price_raw,"
+          " CASE WHEN synthetic = 0 THEN qty_raw ELSE qty_raw - COALESCE(named_qty_raw, 0) END,"
+          " fee_raw FROM fills WHERE session_id = ?1 AND arm IS NOT NULL AND arm != ''"
+          " AND ts_ns >= ?2 AND ts_ns < ?3";
+      if (!f.instrument.empty()) sql += " AND symbol = ?4";
+      sql += " ORDER BY seq";
+      if (auto r = prepare(sql); !r) return fail(r.error());
+      sqlite3_bind_int64(st, 1, static_cast<std::int64_t>(s.id));
+      sqlite3_bind_int64(st, 2, from_ns);
+      sqlite3_bind_int64(st, 3, to_ns);
+      if (!f.instrument.empty()) bind_text(4, f.instrument);
+      int rc = 0;
+      while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+        AbFill x;
+        x.session_id = s.id;
+        x.seq = static_cast<std::uint64_t>(sqlite3_column_int64(st, 0));
+        x.ts_ns = sqlite3_column_int64(st, 1);
+        const auto a = s.arm.find(text(2));
+        x.arm = a == s.arm.end() ? -1 : a->second;
+        const auto& info = inst[sqlite3_column_int64(st, 3)];
+        x.symbol = info.first;
+        x.multiplier = info.second.first;
+        x.inverse = info.second.second;
+        x.side = text(4) == "Buy" ? 1 : -1;
+        x.maker = text(5) == "Maker";
+        x.price = static_cast<double>(sqlite3_column_int64(st, 6)) * 1e-8;
+        x.qty = static_cast<double>(sqlite3_column_int64(st, 7)) * 1e-8;
+        x.fee = static_cast<double>(sqlite3_column_int64(st, 8)) * 1e-8;
+        if (x.qty <= 0.0) continue;
+        if (x.inverse) ++out.inverse_fills;
+        out.fills.push_back(std::move(x));
+      }
+      if (rc != SQLITE_DONE) return fail(error_of(db_, "fills"));
+      // The markouts by recorded horizon, in AbData::horizons_ms order once all are known.
+      for (AbFill& x : out.fills) {
+        if (x.session_id != s.id) continue;
+        const auto m = mids.find(x.seq);
+        if (m == mids.end()) continue;
+        x.mid.reserve(m->second.size() * 2);
+        for (const auto& hm : m->second) {
+          x.mid.push_back(static_cast<double>(hm.first));
+          x.mid.push_back(hm.second);
+        }
+      }
+    }
+    // (horizon, mid) pairs -> one mid per AbData::horizons_ms entry.
+    out.horizons_ms.assign(horizons.begin(), horizons.end());
+    for (AbFill& x : out.fills) {
+      std::vector<double> by(out.horizons_ms.size(), 0.0);
+      for (std::size_t k = 0; k + 1 < x.mid.size(); k += 2) {
+        const auto h = static_cast<std::int32_t>(x.mid[k]);
+        const auto it = std::find(out.horizons_ms.begin(), out.horizons_ms.end(), h);
+        if (it != out.horizons_ms.end())
+          by[static_cast<std::size_t>(it - out.horizons_ms.begin())] = x.mid[k + 1];
+      }
+      x.mid = std::move(by);
     }
     return out;
   }
@@ -1613,14 +1856,15 @@ class SqliteReader final : public Reader {
   }
 
   // Every parameter's value per scope in `session` at `at_ns` (0: after its last update), or only
-  // the starting set. An update to every instrument replaces what single instruments had.
+  // the starting set. A reset for every instrument replaces what single instruments had.
   [[nodiscard]] Result<ParamMapState, std::string> param_state(std::uint64_t session,
                                                                std::int64_t at_ns,
                                                                bool initial_only) {
     if (auto r = need_params(); !r) return fail(r.error());
-    std::string sql =
-        "SELECT name, symbol, value, ts_ns, origin, source FROM param_history"
-        " WHERE session_id = ?1";
+    std::string sql = std::string("SELECT name, symbol, value, ts_ns, origin, source, ") +
+                      (version_ >= 13 ? "reset" : "NULL") +
+                      " FROM param_history"
+                      " WHERE session_id = ?1";
     if (initial_only) sql += " AND seq = 0";
     if (at_ns != 0) sql += " AND ts_ns <= ?2";
     sql += " ORDER BY seq";
@@ -1643,8 +1887,15 @@ class SqliteReader final : public Reader {
       v.ts_ns = sqlite3_column_int64(st, 3);
       v.origin = text(4);
       v.source = text(5);
-      if (v.instrument.empty())
+      // NULL: recorded before schema 13, when every update for every instrument was a reset.
+      const bool reset =
+          sqlite3_column_type(st, 6) == SQLITE_NULL || sqlite3_column_int(st, 6) != 0;
+      if (v.instrument.empty() && reset)
         std::erase_if(out, [&](const auto& e) { return e.first.first == name; });
+      if (!v.instrument.empty() && reset) {
+        out.erase({name, v.instrument});
+        continue;
+      }
       out[{name, v.instrument}] = std::move(v);
     }
     const bool ok = rc == SQLITE_DONE;

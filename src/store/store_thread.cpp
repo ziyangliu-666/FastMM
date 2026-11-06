@@ -123,6 +123,12 @@ std::size_t StoreThread::drain(bool force_commit) {
         backend_->limits(r);
         break;
       }
+      case RecordType::Markout: {
+        MarkoutRecord r;
+        std::memcpy(&r, p, sizeof r);
+        backend_->markout(r);
+        break;
+      }
       default:
         unknown_.fetch_add(1, std::memory_order_relaxed);
         break;

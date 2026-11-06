@@ -45,6 +45,7 @@ enum class RecordType : std::uint8_t {
   Param = 7,
   Reject = 8,
   Limits = 9,
+  Markout = 10,
 };
 [[nodiscard]] constexpr std::string_view to_string(RecordType t) noexcept {
   switch (t) {
@@ -66,6 +67,8 @@ enum class RecordType : std::uint8_t {
       return "Reject";
     case RecordType::Limits:
       return "Limits";
+    case RecordType::Markout:
+      return "Markout";
   }
   return "?";
 }
@@ -338,6 +341,18 @@ struct RejectRecord {
   std::uint8_t pad_[31];           // -> 256
 };
 static_assert(sizeof(RejectRecord) == 256 && std::is_trivially_copyable_v<RejectRecord>);
+
+// The instrument's mid `horizon_ms` after one of its fills, 0 at the fill ([engine] markout_ms).
+// hdr.engine_ts is when the engine read the mid: at the first event or timer from the horizon on.
+struct MarkoutRecord {
+  RecordHeader hdr;
+  std::uint64_t fill_seq;   // 64 the FillRecord's hdr.seq
+  Timestamp fill_ts;        // 72 the fill's engine time
+  Price mid;                // 80
+  std::int32_t horizon_ms;  // 88
+  std::uint8_t pad_[36];    // -> 128
+};
+static_assert(sizeof(MarkoutRecord) == 128 && std::is_trivially_copyable_v<MarkoutRecord>);
 
 // Engine-side producer. Every method is allocation-free, wait-free and safe to call from the
 // trading thread; a full ring increments dropped() and returns false.

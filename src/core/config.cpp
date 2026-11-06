@@ -650,6 +650,14 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "handoff_timeout_ms", e.handoff_timeout_ms);
     if (e.handoff_timeout_ms <= 0)
       fail_at(*t->get("handoff_timeout_ms"), "handoff_timeout_ms must be > 0");
+    if (const auto* arr = t->get_as<toml::array>("markout_ms")) {
+      for (const toml::node& n : *arr) {
+        const std::int64_t ms = n.value_or<std::int64_t>(0);
+        if (ms <= 0 || ms > 86'400'000) fail_at(n, "markout_ms: each horizon is 1 to 86400000 ms");
+        e.markout_ms.push_back(ms);
+      }
+      if (e.markout_ms.size() > 4) fail_at(*arr, "markout_ms: at most 4 horizons");
+    }
     get(*t, "stall_ms", e.stall_ms);
     if (e.stall_ms < 0) fail_at(*t->get("stall_ms"), "stall_ms must be >= 0 (0 disables)");
     get(*t, "rng_seed", e.rng_seed);
@@ -1313,6 +1321,12 @@ std::string Config::redacted() const {
   kv("instance_lock", engine.instance_lock);
   kq("lock_file", engine.lock_file);
   kv("handoff_timeout_ms", engine.handoff_timeout_ms);
+  if (!engine.markout_ms.empty()) {
+    std::string list;
+    for (const std::int64_t ms : engine.markout_ms)
+      list += (list.empty() ? "" : ", ") + std::to_string(ms);
+    out += "markout_ms = [" + list + "]\n";
+  }
   kv("stall_ms", engine.stall_ms);
   kv("rng_seed", engine.rng_seed);
   kv("max_events_per_step", engine.max_events_per_step);
@@ -1599,6 +1613,12 @@ std::string Config::effective_toml() const {
   e.insert("instance_lock", engine.instance_lock);
   e.insert("lock_file", engine.lock_file);
   e.insert("handoff_timeout_ms", static_cast<std::int64_t>(engine.handoff_timeout_ms));
+  // Only when set, so a configuration without it keeps its effective text and hash.
+  if (!engine.markout_ms.empty()) {
+    toml::array horizons;
+    for (const std::int64_t ms : engine.markout_ms) horizons.push_back(ms);
+    e.insert("markout_ms", std::move(horizons));
+  }
   e.insert("stall_ms", static_cast<std::int64_t>(engine.stall_ms));
   e.insert("rng_seed", static_cast<std::int64_t>(engine.rng_seed));
   e.insert("md_ring_bytes", static_cast<std::int64_t>(engine.md_ring_bytes));

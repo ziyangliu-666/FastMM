@@ -96,6 +96,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace fastmm {
 
@@ -113,8 +114,9 @@ struct EngineStats {
   std::uint64_t venue_rejects = 0;                // OrderReject messages that changed an order
   std::uint64_t risk_reject_notices_dropped = 0;  // on_risk_reject calls lost to a full queue
   std::uint64_t journal_overflows = 0;
-  std::uint64_t records_written = 0;  // records handed to the store ring (core/record_stream.hpp)
-  std::uint64_t records_dropped = 0;  // ... and dropped because it was full
+  std::uint64_t records_written = 0;   // records handed to the store ring (core/record_stream.hpp)
+  std::uint64_t records_dropped = 0;   // ... and dropped because it was full
+  std::uint64_t markouts_dropped = 0;  // [engine] markout_ms: fills a full horizon queue skipped
   std::uint64_t transport_full = 0;
   std::uint64_t timers_fired = 0;
   std::uint64_t batch_ends = 0;  // on_batch_end calls (ctx.request_batch_end)
@@ -229,6 +231,14 @@ class Engine {
       if (!venue_replace && qp.replace_all_venues) qp.supports_replace = false;
     }
     quotes_.set_params(qp);
+    if (records_.enabled()) {
+      for (const std::int64_t ms : cfg.markout_ms) {
+        if (ms <= 0 || markouts_.size() == kMaxMarkoutHorizons) continue;
+        MarkoutQueue& q = markouts_.emplace_back();
+        q.horizon_ms = static_cast<std::int32_t>(std::min<std::int64_t>(ms, 86'400'000));
+        q.ring.resize(kMarkoutQueue);
+      }
+    }
     positions_.set_accounting(cfg.fx);
     risk_.set_fx(cfg.fx);
     // Our quantity in the feed is followed only for venues whose feed shows our orders (a pool
@@ -1085,6 +1095,7 @@ class Engine {
     const bool quoting_before = quoting_enabled();
     if (!renews_params) check_param_age();
     check_reconcile_hold();
+    check_markouts();
     // Quotes held back for want of an order token go first, oldest first, before this event's own
     // requote can take the token.
     if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
@@ -1843,8 +1854,54 @@ class Engine {
       r.exec_id = msg->exec_id;
       r.hdr.exch_ts = msg->hdr.exch_ts;
     }
-    account_record(records_.put(r.hdr));
+    const bool put = records_.put(r.hdr);
+    account_record(put);
+    if (put && !markouts_.empty()) start_markouts(id, records_.written());
     emit_position(id);
+  }
+
+  // [engine] markout_ms: the mid now, and the fill queued for each horizon.
+  void start_markouts(InstrumentId id, std::uint64_t fill_seq) noexcept {
+    emit_markout(id, fill_seq, now_.ns, 0);
+    for (MarkoutQueue& q : markouts_) {
+      if (q.size == q.ring.size()) {
+        ++stats_.markouts_dropped;
+        continue;
+      }
+      const std::int64_t due = now_.ns + std::int64_t{q.horizon_ms} * 1'000'000;
+      q.ring[(q.head + q.size) % q.ring.size()] = {due, now_.ns, fill_seq, id};
+      ++q.size;
+      if (due < markout_next_ns_) markout_next_ns_ = due;
+    }
+  }
+  void emit_markout(InstrumentId id,
+                    std::uint64_t fill_seq,
+                    std::int64_t fill_ns,
+                    std::int32_t horizon_ms) noexcept {
+    const Price mid = books_[id.value].mid();
+    if (!mid.is_positive()) return;
+    MarkoutRecord r;
+    records_.init(r, RecordType::Markout, id, instruments_.get(id).venue, now_, now_);
+    r.fill_seq = fill_seq;
+    r.fill_ts = Timestamp{fill_ns};
+    r.mid = mid;
+    r.horizon_ms = horizon_ms;
+    account_record(records_.put(r.hdr));
+  }
+  // The markouts that have come due, before each event and timer.
+  FASTMM_FORCE_INLINE void check_markouts() noexcept {
+    if (FASTMM_LIKELY(now_.ns < markout_next_ns_)) return;
+    std::int64_t next = std::numeric_limits<std::int64_t>::max();
+    for (MarkoutQueue& q : markouts_) {
+      while (q.size != 0 && q.ring[q.head].due_ns <= now_.ns) {
+        const PendingMarkout& p = q.ring[q.head];
+        emit_markout(p.instrument, p.fill_seq, p.fill_ns, q.horizon_ms);
+        q.head = (q.head + 1) % q.ring.size();
+        --q.size;
+      }
+      if (q.size != 0 && q.ring[q.head].due_ns < next) next = q.ring[q.head].due_ns;
+    }
+    markout_next_ns_ = next;
   }
 
   void emit_funding(const FundingMsg& m) noexcept {
@@ -3131,6 +3188,7 @@ class Engine {
       const bool quoting_before = quoting_enabled();
       check_param_age();
       check_reconcile_hold();
+      check_markouts();
       if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
       if (FASTMM_UNLIKELY(quotes_.backoff_due(now_))) retry_backed_off();
       call_batch_end();
@@ -3201,6 +3259,7 @@ class Engine {
     }
     check_param_age();
     check_reconcile_hold();
+    check_markouts();
     // As process() does for the journaled timer a replay reads back.
     if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
     if (FASTMM_UNLIKELY(quotes_.backoff_due(now_))) retry_backed_off();
@@ -4602,6 +4661,26 @@ class Engine {
   // [ab]: the arm each instrument is in (ParamUpdateMsg::arm), 0 none, k + 1 arm k. A new order
   // or replace takes its instrument's (Order::arm).
   std::array<std::uint8_t, kMaxInstruments> ab_arm_{};
+  // The parameters each instrument holds values of its own for (strategies/param_overrides.hpp).
+  std::array<ParamMask, kMaxInstruments> param_own_{};
+  // [engine] markout_ms: per horizon, a ring of the fills whose mid is still to be read, in fill
+  // order; markout_next_ns_ is the earliest one due (INT64_MAX: none).
+  struct PendingMarkout {
+    std::int64_t due_ns;
+    std::int64_t fill_ns;
+    std::uint64_t fill_seq;
+    InstrumentId instrument;
+  };
+  static constexpr std::size_t kMaxMarkoutHorizons = 4;
+  static constexpr std::size_t kMarkoutQueue = 4096;  // fills in one horizon's wait
+  struct MarkoutQueue {
+    std::int32_t horizon_ms = 0;
+    std::vector<PendingMarkout> ring;  // kMarkoutQueue entries, sized at construction
+    std::size_t head = 0;
+    std::size_t size = 0;
+  };
+  std::vector<MarkoutQueue> markouts_;
+  std::int64_t markout_next_ns_ = std::numeric_limits<std::int64_t>::max();
   Timestamp now_{};  // valid while latched_
 
   // heartbeat(): on a line of its own, which the watching thread reads now and then.

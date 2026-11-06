@@ -155,7 +155,7 @@ TEST_CASE("store.ab: a store at schema 11 is copied, then migrated to 12, once")
   }
   REQUIRE(std::filesystem::exists(copy));
   CHECK(text(copy, "SELECT version FROM schema_version") == "11");
-  CHECK(text(path, "SELECT version FROM schema_version") == "12");
+  CHECK(text(path, "SELECT version FROM schema_version") == std::to_string(kSqliteSchemaVersion));
   CHECK(text(path, "SELECT count(*) FROM pragma_table_info('fills') WHERE name = 'arm'") == "1");
   // A store already at the newest version is not copied again.
   std::filesystem::remove(copy);

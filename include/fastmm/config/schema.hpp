@@ -128,6 +128,12 @@ inline constexpr KeySpec kConfigSchema[] = {
      "fastmm-live --takeover: how long to wait for the running session to release the instance "
      "lock once it accepted the handoff, ms (default 75000)"},
     {"engine",
+     "markout_ms",
+     KeyType::IntArray,
+     false,
+     "with a store, the mid at each fill and this many ms after it, up to 4 horizons, in the "
+     "store's markouts table (fastmm-pnl ab); e.g. [1000, 10000, 60000] (default: none)"},
+    {"engine",
      "stall_ms",
      KeyType::Int,
      false,

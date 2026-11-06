@@ -86,7 +86,7 @@ struct Fixture {
   BasicMM strategy;
   std::unique_ptr<TestEngine> engine;
 
-  Fixture() {
+  explicit Fixture(std::vector<std::int64_t> markout_ms = {}) {
     REQUIRE_FALSE(strategy.configure({{"half_spread_bps", "10"},
                                       {"quote_qty", "0.01"},
                                       {"max_inventory", "0.05"},
@@ -101,6 +101,7 @@ struct Fixture {
     cfg.risk.stale_md = seconds(5);
     cfg.risk.price_collar_bps = 500;
     cfg.quotes.min_requote_interval = Duration{};
+    cfg.markout_ms = std::move(markout_ms);
     engine = std::make_unique<TestEngine>(
         cfg, table, clock, transport, feed, strategy, nullptr, &record_ring);
     engine->warm_up();
@@ -199,6 +200,66 @@ TEST_CASE("core.records: a fill produces a fill record and the position it left 
   const OrderRecord& orr = r.first<OrderRecord>(RecordType::Order);
   CHECK(orr.order.cl_ord_id == id);
   CHECK(orr.hdr.aux[0] == static_cast<std::uint8_t>(OrderState::PendingNew));
+}
+
+TEST_CASE("core.records: markout_ms records the mid at a fill and at each horizon after it") {
+  Fixture f({1000, 5000});
+  f.push_book("100.00", "100.02", 1);
+  f.drain();
+  const ClientOrderId id = f.first_order();
+  REQUIRE(id.valid());
+  OrderFillMsg fill{};
+  init_header(fill, EventType::OrderFill, InstrumentId{0}, VenueId{0});
+  fill.cl_ord_id = id;
+  fill.side = Side::Buy;
+  fill.price = px("100.00");
+  fill.qty = qt("0.01");
+  fill.cum_qty = qt("0.01");
+  fill.liquidity = Liquidity::Maker;
+  fill.exec_id = "E1";
+  f.push(fill);
+  f.drain();
+  // The book moves at 0.5 s; the 1 s horizon is read at the next event, at 1.5 s, before it
+  // applies; the 5 s one is not due.
+  f.clock.advance(milliseconds(500));
+  f.push_book("100.10", "100.12", 2);
+  f.drain();
+  f.clock.advance(milliseconds(1000));
+  f.push_book("100.20", "100.22", 3);
+  f.drain();
+  Records r;
+  r.drain(f.record_ring);
+  REQUIRE(r.count(RecordType::Fill) == 1);
+  const std::uint64_t fill_seq = r.first<FillRecord>(RecordType::Fill).hdr.seq;
+  std::vector<std::pair<std::int32_t, Price>> got;
+  for (const auto& [type, bytes] : r.all) {
+    if (type != RecordType::Markout) continue;
+    const auto* m = reinterpret_cast<const MarkoutRecord*>(bytes.data());
+    CHECK(m->fill_seq == fill_seq);
+    got.emplace_back(m->horizon_ms, m->mid);
+  }
+  CHECK(got ==
+        std::vector<std::pair<std::int32_t, Price>>{{0, px("100.01")}, {1000, px("100.11")}});
+}
+
+TEST_CASE("core.records: without markout_ms a fill records no markout") {
+  Fixture f;
+  f.push_book("100.00", "100.02", 1);
+  f.drain();
+  OrderFillMsg fill{};
+  init_header(fill, EventType::OrderFill, InstrumentId{0}, VenueId{0});
+  fill.cl_ord_id = f.first_order();
+  fill.side = Side::Buy;
+  fill.price = px("100.00");
+  fill.qty = qt("0.01");
+  fill.cum_qty = qt("0.01");
+  fill.exec_id = "E1";
+  f.push(fill);
+  f.drain();
+  Records r;
+  r.drain(f.record_ring);
+  CHECK(r.count(RecordType::Fill) == 1);
+  CHECK(r.count(RecordType::Markout) == 0);
 }
 
 TEST_CASE("core.records: a fill after the cancel ack updates the ended order, booked once") {

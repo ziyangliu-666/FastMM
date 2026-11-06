@@ -1651,6 +1651,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   deps.engine.cancel_unknown_own = cfg.engine.cancel_unknown == "own";
   deps.engine.queue_conservatism_bps = std::llround(cfg.engine.queue_conservatism * 10'000.0);
   deps.engine.max_param_age = milliseconds(cfg.strategy.max_param_age_ms);
+  deps.engine.markout_ms = cfg.engine.markout_ms;
   deps.engine.state_file = cfg.strategy.state_file;
   deps.engine.state_interval = seconds(cfg.strategy.state_interval_s);
   deps.engine.checkpoint_interval = seconds(cfg.engine.checkpoint_s);

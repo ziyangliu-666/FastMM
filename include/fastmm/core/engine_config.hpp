@@ -50,6 +50,9 @@ struct EngineConfig {
   // the open orders; zero: never). The bytes handed to restore() are written once at the start
   // whenever there are some.
   Duration checkpoint_interval{};
+  // [engine] markout_ms: after each fill the record stream gets the instrument's mid at the fill
+  // and at each of these horizons (MarkoutRecord), at most kMaxMarkoutHorizons; empty: none.
+  std::vector<std::int64_t> markout_ms;
   // [engine] ack_timeout_ms: an order still waiting for its ack this long is force-cancelled, so a
   // lost request cannot hold a pool slot, a max_open_orders slot and max_position exposure for
   // good (zero: off).

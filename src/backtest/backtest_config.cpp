@@ -409,6 +409,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   b.engine.max_events_per_step = cfg.engine.max_events_per_step;
   b.engine.crossed_grace = milliseconds(cfg.engine.crossed_grace_ms);
   b.engine.max_param_age = milliseconds(cfg.strategy.max_param_age_ms);
+  b.engine.markout_ms = cfg.engine.markout_ms;
   b.engine.state_file = cfg.strategy.state_file;
   b.engine.state_interval = seconds(cfg.strategy.state_interval_s);
   b.engine.checkpoint_interval = seconds(cfg.engine.checkpoint_s);

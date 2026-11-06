@@ -138,6 +138,8 @@ class Backend {
   virtual void reject(const RejectRecord& /*r*/) {}
   // An operator's risk limit change the engine applied. The default drops it.
   virtual void limits(const LimitsRecord& /*r*/) {}
+  // The mid at or after a fill ([engine] markout_ms).
+  virtual void markout(const MarkoutRecord& /*r*/) {}
   virtual void commit() = 0;
 
   [[nodiscard]] virtual Result<void, std::string> session_close(const SessionClose& s) = 0;

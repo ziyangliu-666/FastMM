@@ -421,8 +421,7 @@ class SqliteBackend final : public Backend {
   void param(const ParamRecord& r) override {
     if (db_ == nullptr) return;
     // An [ab] update is kept whole too: it is the record of the arms' assignment.
-    const bool control = r.origin == ParamUpdateMsg::Origin::Control ||
-                         r.origin == ParamUpdateMsg::Origin::Experiment;
+    const bool control = r.origin != ParamUpdateMsg::Origin::Strategy;
     const std::size_t n = std::min<std::size_t>(r.count, ParamUpdateMsg::kMaxFields);
     const bool all = !r.hdr.instrument.valid();
     const std::uint32_t inst = all ? kAllInstruments : r.hdr.instrument.value;
@@ -459,6 +458,9 @@ class SqliteBackend final : public Backend {
     } else {
       bind_arm(b, r.arm);
     }
+    const bool reset =
+        (r.flags & ParamUpdateMsg::kReset) != 0 || (all && r.arm != ParamUpdateMsg::kArmKeep);
+    b.b(reset);
     step(ins_param_update_.get(), "insert parameter update");
     for (std::size_t k = 0; k < n; ++k) {
       if (control || differs[k]) {
@@ -470,8 +472,21 @@ class SqliteBackend final : public Backend {
                            true,
                            differs[k]);
       }
-      remember(inst, r.field[k], r.value[k]);
+      remember(inst, r.field[k], r.value[k], reset);
     }
+  }
+
+  void markout(const MarkoutRecord& r) override {
+    if (db_ == nullptr) return;
+    Bind b(ins_markout_.get());
+    b.u(r.hdr.session_id);
+    b.u(r.fill_seq);
+    b.i(r.horizon_ms);
+    b.i(r.hdr.instrument.value);
+    b.i(r.fill_ts.ns);
+    b.i(r.hdr.engine_ts.ns);
+    b.i(r.mid.raw);
+    step(ins_markout_.get(), "insert markout");
   }
 
   // One row per key the command changed. The values are as [risk] writes them; a command that
@@ -628,6 +643,7 @@ class SqliteBackend final : public Backend {
     ins_param_value_.reset();
     ins_reject_.reset();
     ins_limit_.reset();
+    ins_markout_.reset();
     ins_ab_arm_.reset();
     ins_funding_.reset();
     ins_pnl_.reset();
@@ -716,7 +732,7 @@ class SqliteBackend final : public Backend {
                          v.has_raw,
                          true,
                          v.name);
-      if (known && v.has_raw) remember(kAllInstruments, field, v.raw);
+      if (known && v.has_raw) remember(kAllInstruments, field, v.raw, true);
     }
     if (auto r = exec(db_, "COMMIT"); !r) return fail(r.error());
     return {};
@@ -768,12 +784,17 @@ class SqliteBackend final : public Backend {
       it = param_last_.find(key(kAllInstruments, field));
     return it != param_last_.end() && it->second == raw;
   }
-  void remember(std::uint32_t inst, std::uint16_t field, std::int64_t raw) {
-    if (inst == kAllInstruments) {
-      // An update for every instrument replaces what single instruments had.
+  // The engine's rule (strategies/param_overrides.hpp): an update for every instrument leaves
+  // the instruments' own values unless it is a reset; a reset of one instrument drops its own.
+  void remember(std::uint32_t inst, std::uint16_t field, std::int64_t raw, bool reset) {
+    if (inst == kAllInstruments && reset) {
       std::erase_if(param_last_, [&](const auto& e) {
         return static_cast<std::uint16_t>(e.first & 0xFFFFU) == field;
       });
+    }
+    if (inst != kAllInstruments && reset) {
+      param_last_.erase(key(inst, field));
+      return;
     }
     param_last_[key(inst, field)] = raw;
   }
@@ -974,13 +995,14 @@ class SqliteBackend final : public Backend {
         {&ins_kill_, "INSERT OR IGNORE INTO kill_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"},
         {&ins_param_field_, "INSERT OR REPLACE INTO param_schema VALUES (?,?,?,?)"},
         {&ins_param_update_,
-         "INSERT OR IGNORE INTO param_updates VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"},
+         "INSERT OR IGNORE INTO param_updates VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"},
         {&ins_ab_arm_, "INSERT OR REPLACE INTO ab_arms VALUES (?,?,?,?,?)"},
         {&ins_param_value_, "INSERT OR IGNORE INTO param_values VALUES (?,?,?,?,?,?)"},
         {&ins_reject_,
          "INSERT OR IGNORE INTO rejects VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
          "?,?,?,?,?,?,?,?)"},
         {&ins_limit_, "INSERT OR IGNORE INTO limit_changes VALUES (?,?,?,?,?,?,?,?)"},
+        {&ins_markout_, "INSERT OR IGNORE INTO markouts VALUES (?,?,?,?,?,?,?)"},
         {&ins_funding_,
          "INSERT OR IGNORE INTO funding (session_id, seq, ts_ns, day, exch_ns, instrument_id,"
          " venue_id, symbol, funding_id, asset, amount_raw, position_qty_raw,"
@@ -1032,6 +1054,7 @@ class SqliteBackend final : public Backend {
   Stmt ins_param_value_;
   Stmt ins_reject_;
   Stmt ins_limit_;
+  Stmt ins_markout_;
   Stmt ins_ab_arm_;
   std::vector<std::string> venue_names_;  // the session's [venues.<name>] by VenueId
   std::vector<std::string> arm_names_;    // the session's [ab] arms, in order
