@@ -199,6 +199,13 @@ class JournalWriter {
   [[nodiscard]] std::uint64_t next_seq() const noexcept { return next_seq_; }
   [[nodiscard]] std::uint64_t overflows() const noexcept { return overflows_; }
   [[nodiscard]] std::uint64_t recorded() const noexcept { return next_seq_ - 1; }
+  // The ring's size, and the bytes free in it as the writer last saw it (0 without a ring).
+  [[nodiscard]] std::size_t capacity() const noexcept {
+    return ring_ != nullptr ? ring_->capacity() : 0;
+  }
+  [[nodiscard]] std::size_t room() const noexcept {
+    return ring_ != nullptr ? ring_->capacity() - ring_->bytes_used_approx() : 0;
+  }
 
   // Copies `msg` (hdr.len bytes) with hdr.seq assigned and no engine time (market-data journals,
   // latency samples). Returns the seq.

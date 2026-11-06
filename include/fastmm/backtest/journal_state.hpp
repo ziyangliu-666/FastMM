@@ -18,6 +18,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fastmm::bt {
@@ -27,6 +28,7 @@ struct RecordedState {
   std::uint64_t id = 0;
   StrategyStateMsg::Kind kind = StrategyStateMsg::Kind::Restored;
   std::uint8_t flags = 0;
+  std::uint32_t version = 0;  // StrategyStateMsg::version
   Timestamp at;
   bool take_over = false;  // its records follow a TakeOver control record
   std::string strategy;
@@ -87,5 +89,21 @@ void read_states(std::span<JournalReader> parts, sim::RecordedSession& out);
 
 // The strategy bytes of the checkpoint written at each take-over, in order. Resets the reader.
 [[nodiscard]] std::vector<std::string> take_over_states(JournalReader& reader);
+
+// Throws std::invalid_argument, its message led by `who`, when a recorded state of `bytes` bytes,
+// written with state_version `recorded` at `at`, is not for a strategy that now writes version
+// `current`. A state of no bytes (the session's strategy kept none) passes.
+void check_state_version(std::string_view who,
+                         std::string_view strategy,
+                         std::size_t bytes,
+                         std::uint32_t recorded,
+                         std::uint32_t current,
+                         Timestamp at);
+
+// check_state_version() over every state the journal records. Resets the reader.
+void check_state_versions(std::string_view who,
+                          JournalReader& reader,
+                          std::string_view strategy,
+                          std::uint32_t current);
 
 }  // namespace fastmm::bt

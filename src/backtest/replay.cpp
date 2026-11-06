@@ -256,6 +256,8 @@ ReplayResult replay_impl(const std::string& path,
     if (runner == nullptr)
       throw std::invalid_argument("replay: strategy '" + res.strategy + "' has no replay factory");
   }
+  if (runner->keeps_state())
+    check_state_versions("replay", reader, res.strategy, runner->strategy_state_version());
 
   // A warm standby's take-over restores the state staged for it, which the journal holds as the
   // checkpoint written right after the TakeOver record: each is staged as its record comes up.

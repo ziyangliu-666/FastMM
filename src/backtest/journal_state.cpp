@@ -2,7 +2,10 @@
 
 #include "fastmm/core/messages.hpp"
 
+#include <fmt/format.h>
+
 #include <cstring>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -30,6 +33,7 @@ std::vector<T> entries(const std::string& bytes) {
 sim::Checkpoint checkpoint_of(const RecordedState& s) {
   sim::Checkpoint c;
   c.at = s.at;
+  c.version = s.version;
   c.accepted = (s.flags & StrategyStateMsg::kAccepted) != 0;
   c.strategy = s.strategy;
   for (const StatePosition& p : s.positions) c.positions.push_back(position_msg(p, s.at));
@@ -59,6 +63,7 @@ const RecordedState* StateAssembler::add(const EventHeader& h) {
     cur_.id = m.id;
     cur_.kind = m.kind;
     cur_.flags = m.flags;
+    cur_.version = m.version;
     cur_.at = h.recv_ts;
     cur_.take_over = after_take_over_;
     for (Part& p : parts_) p = Part{};
@@ -194,6 +199,39 @@ std::vector<std::string> take_over_states(JournalReader& reader) {
   take(a.finish());
   reader.reset();
   return out;
+}
+
+void check_state_version(std::string_view who,
+                         std::string_view strategy,
+                         std::size_t bytes,
+                         std::uint32_t recorded,
+                         std::uint32_t current,
+                         Timestamp at) {
+  if (bytes == 0 || recorded == current) return;
+  throw std::invalid_argument(fmt::format(
+      "{}: the journal's state at {} ns has state_version {} of {}; this build restores "
+      "version {}",
+      who,
+      at.ns,
+      recorded,
+      strategy,
+      current));
+}
+
+void check_state_versions(std::string_view who,
+                          JournalReader& reader,
+                          std::string_view strategy,
+                          std::uint32_t current) {
+  StateAssembler a;
+  std::optional<RecordedState> other;  // the first of another version
+  const auto check = [&](const RecordedState* s) {
+    if (s != nullptr && !other && !s->strategy.empty() && s->version != current) other = *s;
+  };
+  reader.for_each([&](const EventHeader* h) { check(a.add(*h)); });
+  check(a.finish());
+  reader.reset();
+  if (other)
+    check_state_version(who, strategy, other->strategy.size(), other->version, current, other->at);
 }
 
 }  // namespace fastmm::bt

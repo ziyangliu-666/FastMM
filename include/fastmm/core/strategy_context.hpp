@@ -207,6 +207,10 @@ class StrategyContext {
   // each trigger (a requote after every balance report) is done once, after the burst. Repeated
   // requests before the call make one call.
   void request_batch_end() noexcept { e_->request_batch_end(); }
+  // Asks for a checkpoint in the journal once the events waiting now are handled: state(), the
+  // positions and the open orders, as [engine] checkpoint_s writes. A backtest or a replay can
+  // start from it. No allocation; nothing without a journal.
+  void request_checkpoint() noexcept { e_->request_checkpoint(); }
   // Trips the global kill switch: quoting stops, quotes are pulled and every working order is
   // cancelled. The adapter for Python hot hooks uses KillReason::StrategyError.
   void trip_kill(KillReason reason) noexcept { e_->trip_kill(reason); }

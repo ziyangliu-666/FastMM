@@ -25,6 +25,7 @@ namespace fastmm::sim {
 // the account whose report would set them, `orders` the open orders (format v4).
 struct Checkpoint {
   Timestamp at;                // the engine time it was written at
+  std::uint32_t version = 0;   // the strategy's state_version when it wrote the bytes
   bool accepted = false;       // a restored state the strategy took
   bool before_orders = false;  // written before the session's first order
   std::string strategy;        // the strategy's bytes (none for a strategy that keeps no state)
@@ -39,6 +40,7 @@ struct Checkpoint {
 struct SessionStart {
   bool has_state = false;  // `strategy` holds a recorded state (possibly empty)
   std::string strategy;
+  std::uint32_t version = 0;  // its state_version
   std::vector<ReconcileMsg> positions;
   Timestamp at{};
   std::string note;

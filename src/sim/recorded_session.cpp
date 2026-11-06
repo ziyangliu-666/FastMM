@@ -49,6 +49,7 @@ SessionStart RecordedSession::start(Timestamp at) const {
   if (use != nullptr) {
     out.has_state = true;
     out.strategy = use->strategy;
+    out.version = use->version;
   }
   if (use != nullptr && !from_restored) {
     out.positions = use->positions;

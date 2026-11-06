@@ -19,6 +19,8 @@
 #include "fastmm/strategies/module.hpp"
 #include "fastmm/strategies/registry.hpp"
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <string_view>
@@ -109,6 +111,11 @@ class BacktestSession {
   // the strategy's state came from.
   std::vector<ReconcileMsg> start_positions_;
   std::string start_note_;
+  // The recorded state the strategy restores: its size, state_version and time.
+  bool start_has_state_ = false;
+  std::size_t start_state_bytes_ = 0;
+  std::uint32_t start_state_version_ = 0;
+  Timestamp start_state_at_{};
   // start_at: when trading starts, the venues that reconcile then (bit per venue id) and the
   // checkpoint's bytes the strategy restores then.
   Timestamp trade_at_{};

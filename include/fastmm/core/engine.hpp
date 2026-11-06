@@ -117,6 +117,11 @@ struct EngineStats {
   std::uint64_t transport_full = 0;
   std::uint64_t timers_fired = 0;
   std::uint64_t batch_ends = 0;  // on_batch_end calls (ctx.request_batch_end)
+  // Checkpoints written to the journal, those skipped because the journal ring lacked the room,
+  // and the bytes of the last one written.
+  std::uint64_t checkpoints = 0;
+  std::uint64_t checkpoints_skipped = 0;
+  std::uint64_t checkpoint_bytes = 0;
   std::uint64_t crossed_pulls = 0;
   std::uint64_t unknown_order_cancels = 0;
   std::uint64_t unknown_orders_kept = 0;  // not FastMM's, left alone ([engine] cancel_unknown)
@@ -436,6 +441,15 @@ class Engine {
       batch_t0_ = event_t0_;
       batch_t1_ = event_t1_;
     }
+  }
+  // ctx.request_checkpoint(): a checkpoint once the events waiting now are handled, journaled
+  // like the checkpoint timer so a replay writes it after the same event.
+  void request_checkpoint() noexcept {
+    if constexpr (!kFeedReplaysTimers) checkpoint_wanted_ = journal_.enabled();
+  }
+  [[nodiscard]] static constexpr bool keeps_state() noexcept { return KeepsState<Strategy>; }
+  [[nodiscard]] std::uint32_t strategy_state_version() const noexcept {
+    return state_version_of(strategy_);
   }
   [[nodiscard]] bool stopped() const noexcept { return stop_.load(std::memory_order_acquire); }
 
@@ -813,6 +827,9 @@ class Engine {
     r.records_dropped = stats_.records_dropped;
     r.transport_full = stats_.transport_full;
     r.timers_fired = stats_.timers_fired;
+    r.checkpoints = stats_.checkpoints;
+    r.checkpoints_skipped = stats_.checkpoints_skipped;
+    r.checkpoint_bytes = stats_.checkpoint_bytes;
     r.realized_pnl_raw = positions_.total_realized().raw;
     r.unrealized_pnl_raw = positions_.total_unrealized().raw;
     r.fees_raw = positions_.total_fees().raw;
@@ -3085,6 +3102,10 @@ class Engine {
   // After a step's events and after its timers: the on_batch_end the strategy asked for, journaled
   // like a fired timer.
   void batch_end() noexcept {
+    batch_end_hook();
+    if (FASTMM_UNLIKELY(checkpoint_wanted_)) requested_checkpoint();
+  }
+  void batch_end_hook() noexcept {
     if constexpr (has_hook(Hook::BatchEnd) && !kFeedReplaysBatches) {
       if (FASTMM_LIKELY(!batch_end_wanted_)) return;
       latch_clock();
@@ -3110,6 +3131,21 @@ class Engine {
       after_hooks(quoting_before);
       unlatch_clock();
     }
+  }
+  FASTMM_NOINLINE void requested_checkpoint() noexcept {
+    checkpoint_wanted_ = false;
+    latch_clock();
+    TimerMsg t{};
+    init_header(t, EventType::Timer);
+    t.engine = kCheckpointTimer;
+    t.fire_ts = now_;
+    t.hdr.flags |= EventHeader::kSynthetic;
+    if (!journal_.record_at(t.hdr, now_)) {
+      ++stats_.journal_overflows;
+      on_journal_overflow();
+    }
+    journal_checkpoint();
+    unlatch_clock();
   }
   void call_batch_end() noexcept {
     if constexpr (has_hook(Hook::BatchEnd)) {
@@ -3636,6 +3672,7 @@ class Engine {
     static constexpr char kNoState[] = "";
     std::string_view state{kNoState};
     if constexpr (KeepsState<Strategy>) state = strategy_.state();
+    if (!checkpoint_fits(state.size())) return;
     journal_state(StrategyStateMsg::Kind::Snapshot, state, 0, true);
   }
   // One state as StrategyStateMsg records: the strategy's bytes, then with `checkpoint` every
@@ -3684,6 +3721,26 @@ class Engine {
                      flags,
                      reinterpret_cast<const std::byte*>(order_buf_.get()),
                      k * sizeof(StateOrder));
+    ++stats_.checkpoints;
+    stats_.checkpoint_bytes = state.size() + n * sizeof(StatePosition) + k * sizeof(StateOrder);
+  }
+  // A periodic or requested checkpoint goes into the journal ring only when it leaves a quarter of
+  // the ring free for the events behind it: a full ring trips the kill switch, a skipped checkpoint
+  // costs only itself. A take-over's is always written: its replay restores from it.
+  [[nodiscard]] bool checkpoint_fits(std::size_t state_bytes) noexcept {
+    const std::size_t bytes = state_bytes + instruments_.size() * sizeof(StatePosition) +
+                              oms_.open_count() * sizeof(StateOrder);
+    // Each record: the 128-byte head and up to 63 bytes of padding.
+    const std::size_t need = bytes + (bytes / StrategyStateMsg::kChunkBytes + 3) * 192;
+    const std::size_t room = journal_.room();
+    if (need + journal_.capacity() / 4 <= room) return true;
+    ++stats_.checkpoints_skipped;
+    FASTMM_LOG_WARN(
+        "checkpoint skipped: {} bytes of state, {} bytes free in the journal ring of {}",
+        state_bytes,
+        room,
+        journal_.capacity());
+    return false;
   }
   void write_state_part(std::uint64_t id,
                         StrategyStateMsg::Kind kind,
@@ -3700,6 +3757,7 @@ class Engine {
     m.kind = kind;
     m.part = part;
     m.flags = flags;
+    m.version = state_version_of(strategy_);
     std::size_t off = 0;
     do {
       const std::size_t n = std::min<std::size_t>(total - off, StrategyStateMsg::kChunkBytes);
@@ -4530,8 +4588,9 @@ class Engine {
   Cycles event_t1_{};
   Cycles strategy_t3_{};
   bool sent_in_event_ = false;
-  bool batch_end_wanted_ = false;  // ctx.request_batch_end() since the last on_batch_end
-  Cycles batch_t0_{};              // the origin of the event that asked last
+  bool batch_end_wanted_ = false;   // ctx.request_batch_end() since the last on_batch_end
+  bool checkpoint_wanted_ = false;  // ctx.request_checkpoint() since the last batch end
+  Cycles batch_t0_{};               // the origin of the event that asked last
   Cycles batch_t1_{};
   bool fx_on_;                               // cfg_.fx converts ([accounting])
   const bool pools_on_ = cfg_.pools.active;  // a venue has pool members: new orders are routed

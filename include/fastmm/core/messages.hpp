@@ -635,8 +635,9 @@ static_assert(sizeof(LatencySampleMsg) == 128);
 // open orders. One state is written as records of at most kChunkBytes each: `id` numbers the
 // states of the session, `part` says what the bytes are (kStatePart: the strategy's state;
 // kPositionsPart: StatePosition entries; kOrdersPart: StateOrder entries, format v4), and
-// `offset` / `total` place them in it. A record is the 128-byte head and its bytes padded to 64.
-// Never dispatched.
+// `offset` / `total` place them in it. `version` is the strategy's state_version
+// (strategies/hooks.hpp) when it wrote the bytes; 0 in journals from before it was recorded. A
+// record is the 128-byte head and its bytes padded to 64. Never dispatched.
 struct StrategyStateMsg {
   enum class Kind : std::uint8_t { Restored = 0, Snapshot = 1 };
   static constexpr std::uint8_t kStatePart = 0;
@@ -652,7 +653,9 @@ struct StrategyStateMsg {
   Kind kind;
   std::uint8_t part;
   std::uint8_t flags;
-  std::uint8_t pad_[37];
+  std::uint8_t pad0_;
+  std::uint32_t version;
+  std::uint8_t pad_[36];
   [[nodiscard]] static constexpr std::uint32_t size_for(std::uint32_t n) noexcept {
     return 128 + (n + 63) / 64 * 64;
   }
@@ -660,7 +663,7 @@ struct StrategyStateMsg {
     return reinterpret_cast<const std::byte*>(this) + 128;
   }
 };
-static_assert(sizeof(StrategyStateMsg) == 128);
+static_assert(sizeof(StrategyStateMsg) == 128 && offsetof(StrategyStateMsg, version) == 88);
 
 // One instrument's position in a StrategyStateMsg's kPositionsPart: on the account (venue) whose
 // Reconcile Position would set it.

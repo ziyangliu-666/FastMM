@@ -3,6 +3,7 @@
 #include "fastmm/backtest/csv_source.hpp"
 #include "fastmm/backtest/data_registry.hpp"
 #include "fastmm/backtest/journal_source.hpp"
+#include "fastmm/backtest/journal_state.hpp"
 #include "fastmm/backtest/pnl.hpp"
 #include "fastmm/backtest/registrations.hpp"
 #include "fastmm/core/journal.hpp"
@@ -377,6 +378,10 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
     }
     start_positions_ = s.positions;
     start_note_ = s.note;
+    start_has_state_ = s.has_state;
+    start_state_bytes_ = s.strategy.size();
+    start_state_version_ = s.version;
+    start_state_at_ = s.at;
     FASTMM_LOG_INFO("backtest: {}", start_note_);
   }
   if (cfg_.start_at.valid()) {
@@ -753,6 +758,14 @@ void BacktestSession::begin(const sim::EngineHooks& hooks,
   Loop& lp = *loop_;
   lp.wall0 = std::chrono::steady_clock::now();
   lp.runner = runner;
+  if (runner != nullptr && runner->keeps_state() && start_has_state_) {
+    check_state_version("backtest",
+                        runner->strategy_name(),
+                        start_state_bytes_,
+                        start_state_version_,
+                        runner->strategy_state_version(),
+                        start_state_at_);
+  }
   sim::SimBackend& b = *backend_;
   lp.driver = std::make_unique<sim::SimDriver>(b.clock, b.transport, b.feed, hooks);
   sim::SimDriver& driver = *lp.driver;

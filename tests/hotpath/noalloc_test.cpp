@@ -14,11 +14,13 @@
 #include "fastmm/core/risk.hpp"
 #include "fastmm/strategies/basic_mm.hpp"
 #include "fastmm/strategies/param_publisher.hpp"
+#include "fastmm/strategies/state_codec.hpp"
 
 #include <array>
 #include <charconv>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -991,4 +993,73 @@ TEST_CASE("hotpath.noalloc: engine step with reduce-only mode switched on and of
   CHECK(engine->stats().risk_rejects_by_reason[RejectReason::ReduceOnly] >= 4);
   CHECK(engine->stats().orders_sent >= 2);
   CHECK(engine->reduce_only(InstrumentId{0}));
+}
+
+namespace {
+// Asks for a checkpoint at every book, with 64 KiB of state from StateWriter.
+class Checkpointing : public StrategyBase<BasicMMParams> {
+ public:
+  static constexpr std::string_view name() noexcept { return "checkpointing"; }
+  static constexpr std::uint32_t state_version = 3;
+  template <class Ctx, class Book>
+  void on_book(Ctx& ctx, InstrumentId, const Book&) noexcept {
+    ++books_;
+    ctx.request_checkpoint();
+  }
+  std::string_view state() noexcept {
+    StateWriter w(buf_);
+    w.put(books_);
+    w.put_array(std::span<const std::byte>(model_));
+    return w.view();
+  }
+  bool restore(std::string_view) noexcept { return true; }
+
+ private:
+  std::uint64_t books_ = 0;
+  std::vector<std::byte> model_ = std::vector<std::byte>(64 << 10, std::byte{1});
+  std::vector<std::byte> buf_ = std::vector<std::byte>((64 << 10) + 64);
+};
+}  // namespace
+
+TEST_CASE("hotpath.noalloc: checkpoints with the strategy's state, asked for and on the timer") {
+  InstrumentTable table;
+  REQUIRE(table.add(make_inst()));
+  SimClock clock{Timestamp{seconds(1000).ns}};
+  NullTransport transport;
+  InlineFeed feed{1 << 20};
+  MsgRing journal_ring{1 << 22};
+  Checkpointing strategy;
+  EngineConfig cfg;
+  cfg.checkpoint_interval = seconds(1);
+  using E = Engine<Checkpointing, SimClock, NullTransport, InlineFeed>;
+  auto engine = std::make_unique<E>(cfg, table, clock, transport, feed, strategy, &journal_ring);
+  engine->warm_up();
+  engine->start();
+  for (std::uint64_t seq = 1; seq <= 3; ++seq) {
+    std::byte* p = feed.reserve(BookDeltaMsg::size_for(1, 1));
+    REQUIRE(p != nullptr);
+    auto* d = reinterpret_cast<BookDeltaMsg*>(p);
+    init_header(*d,
+                seq == 1 ? EventType::BookSnapshot : EventType::BookDelta,
+                InstrumentId{0},
+                VenueId{0},
+                BookDeltaMsg::size_for(1, 1));
+    if (seq == 1) d->hdr.flags |= EventHeader::kSnapshot;
+    d->hdr.recv_ts = clock.now();
+    d->bid_count = d->ask_count = 1;
+    d->last_update_id = seq;
+    d->levels()[0] = Level{px("100.00"), qt("5")};
+    d->levels()[1] = Level{px("100.02"), qt("5")};
+    feed.commit();
+  }
+  {
+    NoAllocScope guard(true);
+    while (engine->step() > 0) {
+    }
+    clock.advance(seconds(2));  // the checkpoint timer
+    engine->step();
+  }
+  CHECK(engine->stats().checkpoints >= 2);
+  CHECK(engine->stats().checkpoint_bytes >= 64U << 10);
+  CHECK(engine->stats().journal_overflows == 0);
 }

@@ -179,6 +179,24 @@ concept KeepsState = requires(S& s, std::string_view bytes) {
   { s.restore(bytes) } -> std::same_as<bool>;
 };
 
+// The layout of the bytes state() returns: `static constexpr std::uint32_t state_version`, or a
+// `state_version()` member; 0 when the strategy declares none. Every checkpoint records it, and a
+// backtest or a replay refuses to hand restore() a checkpoint of another version.
+template <class S>
+[[nodiscard]] constexpr std::uint32_t state_version_of(const S& s) noexcept {
+  if constexpr (requires {
+                  { s.state_version() } -> std::convertible_to<std::uint32_t>;
+                }) {
+    return static_cast<std::uint32_t>(s.state_version());
+  } else if constexpr (requires {
+                         { S::state_version } -> std::convertible_to<std::uint32_t>;
+                       }) {
+    return static_cast<std::uint32_t>(S::state_version);
+  } else {
+    return 0;
+  }
+}
+
 // Y(misspelling, hook): names that produce a "did you mean" warning.
 #define FASTMM_STRATEGY_HOOK_NEAR_MISSES(Y) \
   Y(on_fills, on_fill)                      \

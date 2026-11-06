@@ -30,6 +30,11 @@ struct RunnerStats {
   std::uint64_t records_dropped = 0;  // store records the ring could not take
   std::uint64_t transport_full = 0;
   std::uint64_t timers_fired = 0;
+  // Journal checkpoints written, skipped for want of room in the journal ring, and the bytes of
+  // the last one written (EngineStats).
+  std::uint64_t checkpoints = 0;
+  std::uint64_t checkpoints_skipped = 0;
+  std::uint64_t checkpoint_bytes = 0;
   std::int64_t realized_pnl_raw = 0;  // Notional raw (1e-8)
   std::int64_t unrealized_pnl_raw = 0;
   std::int64_t fees_raw = 0;
@@ -227,6 +232,9 @@ class IEngineRunner {
   // state file, read once it holds the instance lock). Any thread, before the message is pushed.
   // NOLINTNEXTLINE(performance-unnecessary-value-param): by value, an override keeps it
   virtual void stage_strategy_state(std::string /*bytes*/) {}
+  // The strategy keeps state (strategies/hooks.hpp KeepsState), and the version of its layout.
+  [[nodiscard]] virtual bool keeps_state() const noexcept { return false; }
+  [[nodiscard]] virtual std::uint32_t strategy_state_version() const noexcept { return 0; }
 };
 
 // Owns a strategy + engine pair and exposes them through IEngineRunner.
@@ -253,6 +261,10 @@ class EngineRunner final : public IEngineRunner {
   bool take_strategy_state(std::string& out) override { return engine_->take_strategy_state(out); }
   void stage_strategy_state(std::string bytes) override {
     engine_->stage_strategy_state(std::move(bytes));
+  }
+  [[nodiscard]] bool keeps_state() const noexcept override { return engine_->keeps_state(); }
+  [[nodiscard]] std::uint32_t strategy_state_version() const noexcept override {
+    return engine_->strategy_state_version();
   }
   [[nodiscard]] Engine& engine() noexcept { return *engine_; }
   [[nodiscard]] Strategy& strategy() noexcept { return *strategy_; }
