@@ -795,3 +795,45 @@ def test_reduce_only_refuses_an_order_that_adds(example_config):
     assert s.held == (True, True)
     assert "ReduceOnly" in s.refused  # flat: every order adds
     assert len(r.fills["ts"]) == 0
+
+
+def _pool_config(placement, seconds=10):
+    from conftest import EXAMPLE_TOML
+
+    text = EXAMPLE_TOML.read_text().replace(
+        "[[instruments]]",
+        '[venues.sim_b]\nkind = "sim"\npool_of = "sim"\n\n'
+        f'[venues.sim.pool]\nplacement = "{placement}"\n\n[[instruments]]',
+        1,
+    )
+    cfg = fastmm.BacktestConfig.from_toml_string(text)
+    cfg.clear_params()
+    cfg.duration_s = seconds
+    return cfg
+
+
+def test_home_placement_sends_buys_to_the_home(example_config):
+    class Probe(Strategy):
+        def on_start(self, ctx):
+            (inst,) = ctx.instruments
+            self.start = (ctx.home(inst), ctx.placement(0))
+            self.accounts = [ctx.venue_name(v) for v in ctx.pool(0)]
+            self.usable = ctx.account_usable(0)
+            self.after = None
+
+        def on_book(self, ctx, inst, book):
+            if self.after is not None or not book.valid:
+                return
+            ctx.send(inst, BUY, book.best_bid[0] - 5.0, 0.001, post_only=True)
+            self.after = (ctx.home(inst), ctx.pieces(inst), ctx.holding(inst, 1), ctx.set_home(inst, 1),
+                          ctx.home(inst), ctx.set_home(inst, 7))
+
+    s = Probe()
+    fastmm.run_backtest(_cfg(example_config), data=FIXTURE_FMJ, strategy=s)
+    assert s.start == (None, "balance")
+    assert s.after[0] is None and s.after[3] is False
+    s = Probe()
+    fastmm.run_backtest(_pool_config("home"), data=FIXTURE_FMJ, strategy=s)
+    assert s.start == (None, "home")
+    assert s.accounts == ["sim", "sim_b"] and s.usable
+    assert s.after == (0, 0, 0.0, True, 1, False)

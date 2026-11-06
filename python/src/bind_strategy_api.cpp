@@ -1435,6 +1435,82 @@ void bind_strategy_api(py::module_& m) {
           "Reduce-only mode holds the instrument: an order that would take its position further "
           "from zero is refused (fastmm-ctl reduce-only, [risk] reduce_only).")
       .def(
+          "pool",
+          [](const ContextHandle& c, std::uint32_t venue) {
+            std::vector<std::uint32_t> out;
+            for (const VenueId v : c.engine().context().pool(venue_arg(venue)))
+              out.push_back(v.value);
+            return out;
+          },
+          py::arg("venue") = 0,
+          "The venue ids of the accounts that take orders for a venue's instruments ([venues.<x>] "
+          "pool_of), its primary first; the venue alone without a pool.")
+      .def(
+          "venue_name",
+          [](const ContextHandle& c, std::uint32_t venue) {
+            return std::string(c.engine().context().venue_name(venue_arg(venue)));
+          },
+          py::arg("venue"),
+          "The [venues.<name>] of a venue id.")
+      .def(
+          "account_usable",
+          [](const ContextHandle& c, std::uint32_t venue) {
+            return c.engine().context().account_usable(venue_arg(venue));
+          },
+          py::arg("venue"),
+          "The account's order link is live and its kill switch is not engaged.")
+      .def(
+          "home",
+          [](const ContextHandle& c, py::handle inst) -> std::optional<std::uint32_t> {
+            const VenueId v = c.engine().context().home(c.run->resolve(inst));
+            if (!v.valid()) return std::nullopt;
+            return v.value;
+          },
+          py::arg("inst"),
+          "The venue id of the account the instrument's position lives on in its account pool "
+          "([venues.<primary>.pool]); None without the table or before it has a home.")
+      .def(
+          "placement",
+          [](const ContextHandle& c, std::uint32_t venue) {
+            return std::string(to_string(c.engine().context().placement(venue_arg(venue))));
+          },
+          py::arg("venue") = 0,
+          "The pool's placement: \"home\" (adding orders to the home, reducing orders to the "
+          "accounts holding the instrument) or \"balance\" (the default).")
+      .def(
+          "holding",
+          [](const ContextHandle& c, py::handle inst, std::uint32_t venue) {
+            return to_f(c.engine().context().holding(c.run->resolve(inst), venue_arg(venue)).raw);
+          },
+          py::arg("inst"),
+          py::arg("venue"),
+          "What one account of the pool holds of the instrument: a spot instrument's base "
+          "balance there, a derivative's position on that account.")
+      .def(
+          "holding_raw",
+          [](const ContextHandle& c, py::handle inst, std::uint32_t venue) {
+            return c.engine().context().holding(c.run->resolve(inst), venue_arg(venue)).raw;
+          },
+          py::arg("inst"),
+          py::arg("venue"))
+      .def(
+          "pieces",
+          [](const ContextHandle& c, py::handle inst) {
+            return c.engine().context().pieces(c.run->resolve(inst));
+          },
+          py::arg("inst"),
+          "Accounts other than the home that hold a tradable amount of the instrument.")
+      .def(
+          "set_home",
+          [](const ContextHandle& c, py::handle inst, std::uint32_t venue) {
+            return c.engine().context().set_home(c.run->resolve(inst), venue_arg(venue));
+          },
+          py::arg("inst"),
+          py::arg("venue"),
+          "Move the instrument's home to that account of its pool (journaled). With placement = "
+          "\"home\" its adding orders on other accounts are cancelled. False when its pool keeps "
+          "no homes or the venue is not of the pool.")
+      .def(
           "request_stop",
           [](const ContextHandle& c) { c.engine().context().request_stop(); },
           "End the backtest after the current event.")

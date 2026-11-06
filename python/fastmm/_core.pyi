@@ -1271,6 +1271,10 @@ class Context:
     """
     What a Python strategy sees (mirrors the C++ StrategyContext). Usable only inside a hook.
     """
+    def account_usable(self, venue: typing.SupportsInt | typing.SupportsIndex) -> bool:
+        """
+        The account's order link is live and its kill switch is not engaged.
+        """
     def balance(self, venue: typing.SupportsInt | typing.SupportsIndex, asset: str) -> Balance:
         """
         One asset of a venue's account: the venue's last report (on_balance) moved by this engine's orders and fills since. known is False until the venue reports it.
@@ -1315,6 +1319,16 @@ class Context:
         """
         The venue's funding of a perpetual (on_perp_state), with its age.
         """
+    def holding(self, inst: typing.Any, venue: typing.SupportsInt | typing.SupportsIndex) -> float:
+        """
+        What one account of the pool holds of the instrument: a spot instrument's base balance there, a derivative's position on that account.
+        """
+    def holding_raw(self, inst: typing.Any, venue: typing.SupportsInt | typing.SupportsIndex) -> int:
+        ...
+    def home(self, inst: typing.Any) -> int | None:
+        """
+        The venue id of the account the instrument's position lives on in its account pool ([venues.<primary>.pool]); None without the table or before it has a home.
+        """
     def index(self, inst: typing.Any) -> RefPrice:
         """
         The venue's index price of a derivative (on_perp_state), with its age.
@@ -1351,6 +1365,18 @@ class Context:
         """
     def own_qty_raw(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price_raw: typing.SupportsInt | typing.SupportsIndex, at_ns: typing.Any = None) -> int:
         ...
+    def pieces(self, inst: typing.Any) -> int:
+        """
+        Accounts other than the home that hold a tradable amount of the instrument.
+        """
+    def placement(self, venue: typing.SupportsInt | typing.SupportsIndex = 0) -> str:
+        """
+        The pool's placement: "home" (adding orders to the home, reducing orders to the accounts holding the instrument) or "balance" (the default).
+        """
+    def pool(self, venue: typing.SupportsInt | typing.SupportsIndex = 0) -> list[int]:
+        """
+        The venue ids of the accounts that take orders for a venue's instruments ([venues.<x>] pool_of), its primary first; the venue alone without a pool.
+        """
     def portfolio(self) -> Portfolio:
         """
         PnL totals over every instrument.
@@ -1403,6 +1429,10 @@ class Context:
         """
     def send_raw(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price_raw: typing.Any, qty_raw: typing.Any, *, post_only: bool = False, reduce_only: bool = False, ioc: bool = False, tag: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
         ...
+    def set_home(self, inst: typing.Any, venue: typing.SupportsInt | typing.SupportsIndex) -> bool:
+        """
+        Move the instrument's home to that account of its pool (journaled). With placement = "home" its adding orders on other accounts are cancelled. False when its pool keeps no homes or the venue is not of the pool.
+        """
     def set_quotes(self, inst: typing.Any, bids: typing.Any = None, asks: typing.Any = None) -> bool:
         """
         Desired ladder as sequences of (price, qty) floats, level 0 first (at most 8 per side). Prices are rounded to the tick passively (bids down, asks up), quantities down to the lot; a non-positive price or quantity drops the level. Returns False when quoting is disabled.
@@ -1414,6 +1444,10 @@ class Context:
     def venue_health(self, venue: typing.SupportsInt | typing.SupportsIndex = 0) -> VenueHealth:
         """
         Feed lag, order round trip and the feed-lag gate of a venue.
+        """
+    def venue_name(self, venue: typing.SupportsInt | typing.SupportsIndex) -> str:
+        """
+        The [venues.<name>] of a venue id.
         """
     def working_quote(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, level: typing.SupportsInt | typing.SupportsIndex = 0) -> typing.Any:
         """

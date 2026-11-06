@@ -66,6 +66,8 @@ CTX_DTYPE = np.dtype(
         ("quiet_lo_raw", "i8"),
         ("quiet_hi_raw", "i8"),
         ("reduce_only", "u1"),
+        ("home", "u1"),
+        ("pieces", "u1"),
     ],
     align=True,
 )

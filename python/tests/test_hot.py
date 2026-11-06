@@ -693,6 +693,24 @@ def test_hot_ctx_reads_reduce_only(example_config):
         assert ei.value.fail_code == code
 
 
+def test_hot_ctx_reads_the_home(example_config):
+    class Reads(Strategy):
+        @fastmm.hot
+        def on_book(self, ctx, book):
+            ctx.fail(1 + ctx.home + 1000 * ctx.pieces)
+
+    text = EXAMPLE_TOML.read_text().replace(
+        "[[instruments]]",
+        '[venues.sim_b]\nkind = "sim"\npool_of = "sim"\n\n'
+        '[venues.sim.pool]\nhomes = { BTCUSDT = "sim_b" }\n\n[[instruments]]',
+        1,
+    )
+    for cfg, code in ((example_config, 256), (fastmm.BacktestConfig.from_toml_string(text), 2)):
+        with pytest.raises(fastmm.StrategyError) as ei:
+            fastmm.run_backtest(_synthetic(cfg, 2), data="synthetic", strategy=Reads)
+        assert ei.value.fail_code == code
+
+
 def test_strategy_overrides_reach_a_hot_strategy_as_they_reach_cpp(tmp_path):
     # [strategy.overrides] gives the instrument its own half spread in both engines.
     text = EXAMPLE_TOML.read_text() + '\n[strategy.overrides.BTCUSDT]\nhalf_spread_bps = 0.02\n'
