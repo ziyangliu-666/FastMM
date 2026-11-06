@@ -127,7 +127,8 @@ py:SkewMM: parameter 'levels': cannot parse '2.5' as int (a whole number)
 | Execution view | `own_qty(inst, side, price, at_ns=None)`, `best_ex_self(inst, side)` -> `(price, qty)`, `queue_ahead(order_id)` -> float or `None` ([Execution view](strategy-api.md#execution-view)) |
 | Portfolio | `position(inst)` -> `PositionView`, `portfolio()` -> `Portfolio` (`realized`, `unrealized`, `fees`, `net`) |
 | Quoting | `set_quotes(inst, bids, asks) -> bool`, `pull_quotes(inst)`, `pull_all_quotes()`, `working_quote(inst, side, level=0) -> Order or None` |
-| Direct orders | `send(inst, side, price, qty, *, post_only=False, reduce_only=False, ioc=False, tag=0) -> int`, `cancel(order_id) -> bool`, `replace(order_id, price, qty)`, `order(order_id) -> Order or None`, `open_qty(inst, side)` |
+| Direct orders | `send(inst, side, price, qty, *, post_only=False, reduce_only=False, ioc=False, tag=0, value=None) -> int`, `cancel(order_id) -> bool`, `replace(order_id, price, qty)`, `order(order_id) -> Order or None`, `open_qty(inst, side)` |
+| Order capacity | `capacity(venue=0)` -> `Capacity` (`price`, `floor`, `window`, `weight`, `day`, `window_share`, `window_used`, `window_orders`, `on`); a level `(price, qty, value)` or `(price, qty, value, keep)` and `send(..., value=)` state what an order is worth ([Order capacity](strategy-api.md#order-capacity)) |
 | Timers | `every(period_ns, tag=0) -> int`, `once(delay_ns, tag=0) -> int`, `cancel_timer(timer_id) -> bool` |
 | Control | `quoting_enabled`, `killed`, `reduce_only(inst)` ([reduce-only mode](../how-to/operations/operate-a-running-session.md#reduce-only-mode)), `request_stop()`: the run ends after the current event, `request_checkpoint()` |
 | Venue state | `fees(inst)` -> `Fees`, `risk_headroom(inst)` -> `RiskHeadroom`, `venue_health(venue=0)` -> `VenueHealth`, `order_budget(venue=0)` -> `OrderBudget` |

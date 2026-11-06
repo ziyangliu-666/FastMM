@@ -58,6 +58,7 @@ The engine copies each record into the ring without allocating, calling the kern
 | `RejectRecord` | every refused order, repeats folded ([rejects](#rejects)) | account, instrument, side, reason, what refused it, the budget then |
 | `LimitsRecord` | every `fastmm-ctl limits` applied | the `[risk]` limits before and after, and whether `--force` turned one off |
 | `MarkoutRecord` | with `[engine] markout_ms`, each fill and each horizon after it | the instrument's mid then ([markouts](#markouts)) |
+| `CapacityRecord` | with `[capacity]`, each minute an account priced or sent an order | what was priced and refused, and the price ([capacity](#capacity)) |
 | `ParamRecord` | every strategy parameter update applied | target, origin, source, publisher sequence and the (field, raw value) pairs ([Journal format](journal-format.md#parameter-updates)) |
 
 The record layouts are in `include/fastmm/core/record_stream.hpp`.
@@ -98,7 +99,7 @@ The SQLite backend opens the file with `journal_mode=WAL` and `synchronous=NORMA
 
 ## Schema
 
-The schema is version 14, in `src/store/sqlite_schema.cpp`. An older store is migrated in place when opened, after a copy to `<path>.v<version>.bak`. A store from a newer FastMM is refused with the version it holds.
+The schema is version 15, in `src/store/sqlite_schema.cpp`. An older store is migrated in place when opened, after a copy to `<path>.v<version>.bak`. A store from a newer FastMM is refused with the version it holds.
 
 ### sessions
 
@@ -300,6 +301,7 @@ One row per refused order, keyed `(session_id, seq)` (version 9).
 | `account_orders_10s`, `account_orders_1m`, `account_orders_1d` | the account's order window at the connector's cap ([account pools](configuration.md#account-pools)) |
 | `venue_local` | the connector's own limiter; `text` names the window |
 | `venue` | the venue |
+| `capacity` | worth less than the price of its order slot, `reason` `PricedOut` ([capacity](#capacity)) |
 
 Refusals with the same instrument, side, account, reason, source and flags within a hold of the row are folded into it. The hold is 100 ms after the first row and doubles with each row of the same refusal, up to 60 s; a minute without that refusal, or a different one, starts it again at 100 ms. A strategy that resends a refused order on every tick therefore writes about one row a minute once the run has lasted a few minutes. A pending count is written at the next once-a-second publication after its hold, or at the session's end.
 
@@ -326,6 +328,21 @@ The mid of an instrument at each of its fills and at each `[engine] markout_ms` 
 | `mid_raw` | the book's mid, raw fixed point; no row while the book has no two sides |
 
 The engine holds up to 4096 fills per horizon waiting for their mid; a fill past that gets no row at the horizon. Pending markouts end with the session.
+
+### capacity
+
+One row per account and minute in which it priced or sent an order under `[capacity]`, keyed `(session_id, seq)` (version 15). `ts_ns` is the end of the minute.
+
+| Column | Meaning |
+|---|---|
+| `ts_ns`, `day`, `account`, `venue_id` | the minute and the account |
+| `mode` | `observe`, `new` or `enforce` |
+| `decided`, `sent` | actions priced; new orders and replaces sent |
+| `priced_out_new`, `priced_out_move` | new orders refused, moves not made |
+| `observed_new`, `observed_move` | those the price would have refused but did not: observe mode, and moves under `new` |
+| `peak_used` | the most orders the account had in one window |
+| `price_min`, `price_max`, `price_mean` | the price an action had to reach, quote currency |
+| `floor`, `day_price` | `L` and the day prices at the end of the minute, quote currency |
 
 ### limit_changes
 

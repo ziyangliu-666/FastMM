@@ -373,6 +373,12 @@ void engine_metrics(Exposition& e, const StatusSnapshot& s) {
       "fastmm_quotes_withheld_balance_total",
       "quote orders held back after their old order ended: the balance no longer covered them",
       s.balance_withheld);
+  e.counter("fastmm_capacity_priced_out_total",
+            "orders and moves refused below the price of the order slot they take ([capacity])",
+            s.capacity_priced_out);
+  e.counter("fastmm_capacity_observed_total",
+            "orders and moves the capacity price would have refused (observe)",
+            s.capacity_observed);
   e.counter("fastmm_estimated_fills_total",
             "fills booked from a cumulative quantity no fill message reported, at the order's "
             "price with no fee",

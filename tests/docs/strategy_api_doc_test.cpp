@@ -197,6 +197,42 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().venue_health(VenueId{})), Venu
 static_assert(std::same_as<decltype(lvalue<Ctx>().order_budget(VenueId{})), OrderBudget>);
 // [end:venue_state]
 
+// ---- the capacity price ------------------------------------------------------------------------
+
+// [start:capacity]
+static_assert(std::same_as<decltype(lvalue<Ctx>().capacity(VenueId{})), CapacityQuote>);
+static_assert(std::same_as<decltype(CapacityQuote::price), double>);
+// A level worth `value` placed, and its resting order worth `keep` where it rests:
+static_assert(
+    std::same_as<decltype(lvalue<DesiredQuotes>().bid(Price{}, Qty{}, 0.0F, 0.0F)), bool>);
+static_assert(
+    std::same_as<decltype(lvalue<DesiredQuotes>().set_value(Side::Buy, 0, 0.0F, 0.0F)), void>);
+// A direct order worth `value`:
+static_assert(
+    std::same_as<
+        decltype(NewOrderRequest::limit(InstrumentId{}, Side::Buy, Price{}, Qty{}).value(0.0F)),
+        LimitOrder>);
+// [end:capacity]
+
+// [start:capacity_quote]
+// One bid worth `value` where it is asked for, its resting order worth `keep` where it rests (both
+// in the quote currency, from the strategy's own model). Priced out, the level stays empty and the
+// engine applies it again when the price falls.
+[[maybe_unused]] void quote_with_values(
+    Ctx& ctx, InstrumentId id, Price bid, Qty qty, float value, float keep) {
+  DesiredQuotes q;
+  q.bid(bid, qty, value, keep);
+  ctx.set_quotes(id, q);
+}
+// A direct order worth `value`: refused with PricedOut below the price, which the strategy reads.
+[[maybe_unused]] bool send_if_worth(Ctx& ctx, InstrumentId id, Price px, Qty qty, float value) {
+  auto sent = ctx.send(NewOrderRequest::limit(id, Side::Sell, px, qty).value(value));
+  if (!sent && sent.error() == RejectReason::PricedOut)
+    return ctx.capacity(ctx.instrument(id).venue).price > static_cast<double>(value);
+  return sent.has_value();
+}
+// [end:capacity_quote]
+
 // ---- balances ----------------------------------------------------------------------------------
 
 // [start:balances]

@@ -765,6 +765,44 @@ max_net = 0.5
 | `max_net` | any | yes | refuse an order that would take the net position in this base asset, open orders on the order's side included, further past this; base units (contracts times contract_multiplier, inverse contracts at the mark), decimal; 0: tracked, no limit |
 <!-- END config-keys -->
 
+## `[capacity]`
+
+The price of an order slot: a new order or a move of a resting one is sent when what it is worth covers what its slot costs at that moment ([Price order capacity](../how-to/strategies/price-order-capacity.md)). Cancels are never priced. Without the table, or with `mode = "off"`, nothing is priced.
+
+```toml
+[capacity]
+mode = "observe"
+value = "learned"
+orders_10s = 100
+fill_credit = true
+orders_1d = 200000
+```
+
+| Quantity | Value |
+|---|---|
+| the floor `L` | the smallest `min_notional` of the instruments x the session's filled per placed notional (0.02 until learnt) x `margin_bps` / 10,000 |
+| `R`, the price of a full window over `L` | `[risk] max_order_notional` over that minimum; 100 without `max_order_notional` |
+| the price | `L` up to `R x L` as the account's window fills, plus the day prices ([Order capacity](../explanation/order-capacity.md)) |
+
+- Prices and values are in the quote currency of the instruments; give the instruments of one quote currency in `venues`.
+- `orders_10s` is the venue's limit, not the connector's cap below it.
+
+<!-- BEGIN config-keys capacity -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `mode` | string |  | off \| observe (price every new order and move, count and record what it would refuse, refuse nothing) \| new (refuse new orders below their price, observe moves) \| enforce (refuse both) (default off) |
+| `value` | string |  | the value of a quote level whose strategy states none: off (worth any price) \| learned (notional x the filled per placed notional of its instrument, side and size class x margin_bps) (default off) |
+| `orders_10s` | integer |  | orders each account's window admits; the window's price rises as its share is used (Binance Spot 100) (default 0: the window is not priced) |
+| `venues` | string array |  | the [venues.<name>] whose accounts are priced, with their pools' members; the others' orders are neither priced nor counted (default []: every venue) |
+| `window_ms` | integer |  | the account window's length, ms; windows start at multiples of it since 1970-01-01 UTC (default 10000) |
+| `fill_credit` | boolean |  | an order's first fill gives its slot back to its window, as Binance's unfilled order count does (default false) |
+| `orders_1d` | integer |  | orders each account may send per UTC day; a day price keeps the day's demand within it (Binance Spot 200000) (default 0: no day price per account) |
+| `orders_per_day` | integer |  | the strategy's orders per UTC day over every account; a day price keeps the day's demand within it (default 0: no budget) |
+| `weight_1m` | integer |  | request weight per minute shared by a pool's accounts (one IP); a new order, a replace and a cancel count 1 each (default 0: not priced) |
+| `margin_bps` | number |  | what a filled unit of notional earns, rebate plus edge, bps; scales the learned values and the price floor (default 1) |
+| `full_move_bps` | number |  | a move towards the touch of this many bps is worth a whole new order when the strategy states no keep value; a smaller move buys that share of the level's value (default 10) |
+<!-- END config-keys -->
+
 ## `[gateway]`
 
 Read by `fastmm-gateway` only: account guards over every attached strategy, checked before an order reaches the connector ([Run behind a gateway](../how-to/operations/run-behind-a-gateway.md#account-guards)). The rate and `max_open_notional` are per venue; `max_loss`, `max_gross_notional` and `max_net_notional` are over the account's positions on every venue, which the gateway books from the fills that pass through it and marks at the mids of its books. `max_loss` is carried in the gateway's kill file (`[engine] kill_file`, default `<journal_dir>/<name>.kill`) and latches like `[risk] max_loss`. Each strategy keeps its own `[risk]`.

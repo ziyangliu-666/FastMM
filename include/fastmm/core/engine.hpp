@@ -161,6 +161,7 @@ struct EngineStats {
   std::uint64_t reduce_only_switches = 0;  // ControlCommand::ReduceOnly applied
   std::uint64_t home_changes = 0;          // pool homes changed (ControlCommand::PoolHome)
   std::uint64_t home_unavailable = 0;      // orders refused HomeUnavailable
+  std::uint64_t priced_out = 0;            // orders and moves refused PricedOut ([capacity])
   std::uint64_t treasury_records = 0;  // pool treasury transfer steps (ControlCommand::Transfer)
   std::uint64_t flatten_orders = 0;    // reduce-only orders a flatten sent
   std::uint64_t steps = 0;
@@ -273,6 +274,20 @@ class Engine {
     ro_venues_ = cfg.reduce_only_venues;
     refresh_reduce_only();
     if (pools_on_) held_ = std::make_unique<HeldTable>();
+    if (cfg.capacity.on()) {
+      CapacityConfig cc = cfg.capacity;
+      double min_n = 0.0;
+      for (const Instrument& inst : instruments_) {
+        const double m = inst.min_notional.to_double();
+        if (m > 0.0 && (min_n == 0.0 || m < min_n)) min_n = m;
+      }
+      cc.min_notional = min_n;
+      if (cfg.risk.max_order_notional.is_positive())
+        cc.max_notional = cfg.risk.max_order_notional.to_double();
+      capacity_ = std::make_unique<CapacityPrice>();
+      capacity_->configure(cc);
+      capacity_on_ = true;
+    }
     for (std::atomic<std::uint8_t>& h : home_pub_)
       h.store(VenueId{}.value, std::memory_order_relaxed);
   }
@@ -959,6 +974,13 @@ class Engine {
   [[nodiscard]] const QueueTracker& queue() const noexcept { return queue_; }
   [[nodiscard]] const OwnQuantity* own_quantity() const noexcept { return own_.get(); }
 
+  // ctx.capacity: what an action on `account` costs now ([capacity]; on is false when off).
+  [[nodiscard]] CapacityQuote capacity(VenueId account) const noexcept {
+    if (!capacity_on_) return CapacityQuote{};
+    return capacity_->quote(account, pool_primary(account), now_.ns);
+  }
+  [[nodiscard]] const CapacityPrice* capacity_price() const noexcept { return capacity_.get(); }
+
   [[nodiscard]] RunnerStats runner_stats() const noexcept {
     RunnerStats r;
     r.events = stats_.events;
@@ -986,6 +1008,11 @@ class Engine {
     r.risk_rejects_by_reason = stats_.risk_rejects_by_reason;
     r.venue_rejects_by_reason = stats_.venue_rejects_by_reason;
     r.balance_withheld = quotes_.stats().kept_balance;
+    if (capacity_on_) {
+      const CapacityMinute& c = capacity_->totals();
+      r.capacity_priced_out = c.priced_out_new + c.priced_out_move;
+      r.capacity_observed = c.observed_new + c.observed_move;
+    }
     r.estimated_fills = stats_.synthetic_fills;
     r.estimates_pending = oms_.stats().synthetic_pending;
     r.estimates_forgotten = oms_.stats().synthetic_forgotten;
@@ -1004,7 +1031,8 @@ class Engine {
 
   Result<ClientOrderId, RejectReason> send_order(const NewOrderRequest& req) noexcept {
     enter_api();
-    auto r = submit_new(req);
+    const Purchase buy{static_cast<double>(req.value), false};
+    auto r = submit_new(req, false, capacity_on_ && value_stated(req.value) ? &buy : nullptr);
     flush_out();
     return r;
   }
@@ -1234,6 +1262,7 @@ class Engine {
     // requote can take the token.
     if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
     if (FASTMM_UNLIKELY(quotes_.backoff_due(now_))) retry_backed_off();
+    if (FASTMM_UNLIKELY(capacity_on_)) capacity_clock();
     dispatch(h);
     after_hooks(quoting_before);
     unlatch_clock();
@@ -2413,6 +2442,15 @@ class Engine {
                            account);
       }
       emit_fill(id, side, f.price, f.qty, booked, exec_fee, fee_asset, u, &f, named);
+      if (FASTMM_UNLIKELY(capacity_on_) && from_order && u.known) {
+        capacity_->on_fill(u.order.venue,
+                           id,
+                           side,
+                           inst.notional(u.order.price, u.order.qty).to_double(),
+                           inst.notional(f.price, f.qty).to_double(),
+                           (u.order.cum_qty - f.qty).raw <= 0,
+                           now_.ns);
+      }
       if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
     } else if (stats_.unknown_instrument_fills++ == 0) {
       FASTMM_LOG_WARN("fill on instrument {} outside the instrument table is not booked", id.value);
@@ -3429,6 +3467,7 @@ class Engine {
       check_markouts();
       if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
       if (FASTMM_UNLIKELY(quotes_.backoff_due(now_))) retry_backed_off();
+      if (FASTMM_UNLIKELY(capacity_on_)) capacity_clock();
       call_batch_end();
       after_hooks(quoting_before);
       unlatch_clock();
@@ -3501,6 +3540,7 @@ class Engine {
     // As process() does for the journaled timer a replay reads back.
     if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
     if (FASTMM_UNLIKELY(quotes_.backoff_due(now_))) retry_backed_off();
+    if (FASTMM_UNLIKELY(capacity_on_)) capacity_clock();
     if (ack_timer) {
       sweep_acks();
     } else if (flatten_timer) {
@@ -3571,6 +3611,146 @@ class Engine {
     flush_out();
   }
 
+  // ---- the capacity price ([capacity], core/capacity_price.hpp) ---------------------------------
+
+  // What an action passes to submit_new to be priced: its value (a move's: its gain; NaN: worth
+  // any price) and whether it is a move.
+  struct Purchase {
+    double value;
+    bool move;
+  };
+
+  FASTMM_FORCE_INLINE void capacity_clock() noexcept {
+    if (FASTMM_UNLIKELY(capacity_->tick_due(now_.ns))) capacity_tick();
+    if (FASTMM_UNLIKELY(quotes_.priced_out()) && capacity_->recheck_due(now_.ns))
+      retry_priced_out();
+  }
+
+  // Re-applies the quotes of instruments with a level priced out, once a window has rolled over
+  // or a fill gave a slot back. One still priced out queues itself again.
+  FASTMM_NOINLINE void retry_priced_out() noexcept {
+    capacity_->rechecked(now_.ns);
+    Placer place{this};
+    quotes_.take_priced([&](InstrumentId id) {
+      if (quoting_enabled(id)) quotes_.retry_priced(instruments_.get(id), oms_, now_, place);
+    });
+    flush_out();
+  }
+
+  // Once a minute: the yields decay, the day prices are fitted, and each account's minute goes to
+  // the record stream; one log line when something was priced out.
+  FASTMM_NOINLINE void capacity_tick() noexcept {
+    CapacityMinute all{};
+    double lo = 0.0;
+    double hi = 0.0;
+    capacity_->tick(now_.ns, [&](VenueId v, const CapacityMinute& m) {
+      if (records_.enabled()) {
+        CapacityRecord r;
+        records_.init(r, RecordType::Capacity, InstrumentId{}, v, now_, now_);
+        r.decided = m.decided;
+        r.sent = m.sent;
+        r.priced_out_new = m.priced_out_new;
+        r.priced_out_move = m.priced_out_move;
+        r.observed_new = m.observed_new;
+        r.observed_move = m.observed_move;
+        r.peak_used = m.peak_used;
+        r.mode = capacity_->mode();
+        r.price_min = m.price_min;
+        r.price_max = m.price_max;
+        r.price_mean = m.decided != 0 ? m.price_sum / m.decided : 0.0;
+        r.floor = capacity_->floor();
+        r.day_price = capacity_->day_price(v);
+        account_record(records_.put(r.hdr));
+      }
+      if (m.decided != 0) {
+        lo = all.decided == 0 ? m.price_min : std::min(lo, m.price_min);
+        hi = all.decided == 0 ? m.price_max : std::max(hi, m.price_max);
+      }
+      all.decided += m.decided;
+      all.priced_out_new += m.priced_out_new;
+      all.priced_out_move += m.priced_out_move;
+      all.observed_new += m.observed_new;
+      all.observed_move += m.observed_move;
+    });
+    const std::uint32_t out = all.priced_out_new + all.priced_out_move;
+    const std::uint32_t seen = all.observed_new + all.observed_move;
+    if (out + seen != 0) {
+      FASTMM_LOG_INFO(
+          "capacity: {} actions priced in the last minute at {:.3g} to {:.3g}; {} priced out "
+          "({} new, {} moves), {} more would be (observed: {} new, {} moves)",
+          all.decided,
+          lo,
+          hi,
+          out,
+          all.priced_out_new,
+          all.priced_out_move,
+          seen,
+          all.observed_new,
+          all.observed_move);
+    }
+  }
+
+  // The value of a quote level of (id, side) at (px, qty): the strategy's, else the learned one
+  // ([capacity] value = "learned"), else NaN (worth any price).
+  [[nodiscard]] double level_value(
+      const Instrument& inst, Side side, Price px, Qty qty, float stated) const noexcept {
+    if (value_stated(stated)) return static_cast<double>(stated);
+    if (capacity_->config().value == CapacityValue::Learned)
+      return capacity_->learned_value(inst.id, side, inst.notional(px, qty).to_double());
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+
+  // Prices an action of `value` on `account`: whether it may go. A refusal that is enforced is
+  // counted, shown on the side and recorded; one that is only observed is counted.
+  [[nodiscard]] bool capacity_admits(const Instrument& inst,
+                                     VenueId account,
+                                     Side side,
+                                     Price px,
+                                     Qty qty,
+                                     const Purchase& buy,
+                                     bool replace) noexcept {
+    if (!capacity_->prices(account)) return true;
+    const double price = capacity_->price(account, inst.venue, now_.ns);
+    const bool enforced = capacity_->enforces(buy.move);
+    if (capacity_->decide(account, buy.value, price, buy.move, enforced, inst.id, side, now_.ns) ||
+        !enforced)
+      return true;
+    ++stats_.priced_out;
+    note_refusal(inst.id, side, RejectReason::PricedOut);
+    if (FASTMM_UNLIKELY(records_.enabled())) {
+      std::uint8_t flags = replace ? RejectRecord::kReplace : 0;
+      if (reduces(inst.id, side, qty)) flags |= RejectRecord::kReduces;
+      record_reject(
+          RejectReason::PricedOut, RejectSource::Capacity, inst.id, account, side, px, qty, flags);
+    }
+    return false;
+  }
+
+  // A move of the resting order `o` to (a.price, a.qty): towards the touch it buys its gain, the
+  // level's value less what the order is worth where it rests (the keep value; unstated, the value
+  // less the part a move of full_move_bps would gain); away from the touch it is bought as a new
+  // order. A replace that only lowers the quantity at the same price is free.
+  [[nodiscard]] bool capacity_buys_move(const Order& o,
+                                        const QuoteAction& a,
+                                        bool cancel) noexcept {
+    const Instrument& inst = instruments_.get(o.instrument);
+    if (!cancel && a.price == o.price && a.qty <= o.leaves_qty()) return true;
+    const double value = level_value(inst, o.side, a.price, a.qty, a.value);
+    const bool toward = o.side == Side::Buy ? a.price > o.price : a.price < o.price;
+    double gain = value;
+    if (toward && std::isfinite(value)) {
+      double keep = static_cast<double>(a.keep);
+      if (!value_stated(a.keep)) {
+        const double ref = o.price.to_double();
+        const double moved = ref > 0.0 ? std::fabs(a.price.to_double() - ref) / ref * 1e4 : 0.0;
+        const double d = capacity_->config().full_move_bps;
+        keep = value * (d > 0.0 ? std::max(0.0, 1.0 - (moved / d)) : 0.0);
+      }
+      gain = value - keep;
+    }
+    return capacity_admits(inst, o.venue, o.side, a.price, a.qty, Purchase{gain, true}, !cancel);
+  }
+
   // QuoteParams::room_reserve: a resting quote `o` is not moved to `target` when the move goes
   // towards the touch (a bid up, an ask down) and the account it rests on has no more than the
   // reserve left in its venue order windows (ctx.order_budget; paused: none). The resting order is
@@ -3637,9 +3817,17 @@ class Engine {
           a.rate_limited = true;
           return false;
         }
-        auto res = submit_new(r);
+        // A New after a move that was bought is not priced again.
+        Purchase buy{};
+        const Purchase* priced = nullptr;
+        if (FASTMM_UNLIKELY(capacity_on_) && !a.paid) {
+          buy = Purchase{level_value(inst, r.side, r.price, r.qty, a.value), false};
+          priced = &buy;
+        }
+        auto res = submit_new(r, false, priced);
         if (!res) {
           a.refused = res.error();
+          a.priced_out = res.error() == RejectReason::PricedOut;
           return false;
         }
         a.cl_ord_id = *res;
@@ -3647,11 +3835,22 @@ class Engine {
         return a.handle.valid();
       }
       case QuoteActionKind::Cancel:
-        // A cancel that moves the quote (it carries the target): the New after it needs room.
-        if (a.price.is_positive() && oms_.is_live(a.handle) &&
-            holds_move(oms_.get(a.handle), a.price)) {
-          a.held = true;
-          return false;
+        // A cancel that moves the quote (it carries the target): the New after it needs room, and
+        // a move towards the touch is bought here, so its New is not priced again.
+        if (a.price.is_positive() && oms_.is_live(a.handle)) {
+          const Order& o = oms_.get(a.handle);
+          if (holds_move(o, a.price)) {
+            a.held = true;
+            return false;
+          }
+          if (FASTMM_UNLIKELY(capacity_on_) &&
+              (o.side == Side::Buy ? a.price > o.price : a.price < o.price)) {
+            if (!capacity_buys_move(o, a, true)) {
+              a.priced_out = true;
+              return false;
+            }
+            a.paid = true;
+          }
         }
         return submit_cancel(a.handle).has_value();
       case QuoteActionKind::Replace: {
@@ -3659,6 +3858,10 @@ class Engine {
         const Order& o = oms_.get(a.handle);
         if (holds_move(o, a.price)) {
           a.held = true;
+          return false;
+        }
+        if (FASTMM_UNLIKELY(capacity_on_) && !capacity_buys_move(o, a, false)) {
+          a.priced_out = true;
           return false;
         }
         if (FASTMM_UNLIKELY(
@@ -3684,8 +3887,10 @@ class Engine {
   // cross are already cancelled -- and a cancel the venue never acknowledges must not leave the
   // position on). The price collar, the fat-finger band, the size, notional and rate limits all
   // still apply.
+  // `buy`: price the order ([capacity]) on the account it goes to; refused PricedOut below it.
   Result<ClientOrderId, RejectReason> submit_new(const NewOrderRequest& req,
-                                                 bool flatten = false) noexcept {
+                                                 bool flatten = false,
+                                                 const Purchase* buy = nullptr) noexcept {
     if (FASTMM_UNLIKELY(!instruments_.contains(req.instrument)))
       return fail(RejectReason::InstrumentDisabled);
     if (FASTMM_UNLIKELY(awaiting_ != 0)) return fail(RejectReason::NotReconciled);
@@ -3719,6 +3924,9 @@ class Engine {
     } else if (FASTMM_UNLIKELY(req.account.valid() && req.account != inst.venue)) {
       return fail(RejectReason::InvalidAccount);
     }
+    if (FASTMM_UNLIKELY(buy != nullptr) &&
+        !capacity_admits(inst, account, req.side, req.price, req.qty, *buy, false))
+      return fail(RejectReason::PricedOut);
     OrderIntent oi{req.instrument, account, req.side, req.type, req.price, req.qty, req.tif};
     RiskInputs in{now,
                   flatten ? nullptr : &positions_.get(req.instrument),
@@ -3796,6 +4004,14 @@ class Engine {
     ++stats_.orders_sent;
     note_sent_order(account);
     note_inst_order(req.instrument);
+    if (FASTMM_UNLIKELY(capacity_on_)) {
+      capacity_->on_send(account,
+                         inst.venue,
+                         req.instrument,
+                         req.side,
+                         inst.notional(req.price, req.qty).to_double(),
+                         now.ns);
+    }
     // The next automatic choice of the pool starts after this account: accounts with the same
     // room take turns rather than the first in pool order taking them all.
     if (FASTMM_UNLIKELY(pools_on_) && budget_known && !req.account.valid())
@@ -4186,6 +4402,8 @@ class Engine {
     m.venue_order_id = o.venue_order_id;
     queue_out(m.hdr);
     ++stats_.cancels_sent;
+    if (FASTMM_UNLIKELY(capacity_on_) && instruments_.contains(o.instrument))
+      capacity_->on_request(instruments_.get(o.instrument).venue, now_.ns);
     return {};
   }
 
@@ -4262,6 +4480,10 @@ class Engine {
     ++stats_.replaces_sent;
     note_sent_order(o.venue);
     note_inst_order(o.instrument);
+    if (FASTMM_UNLIKELY(capacity_on_)) {
+      capacity_->on_send(
+          o.venue, inst.venue, o.instrument, o.side, inst.notional(px, qty).to_double(), now.ns);
+    }
     return {};
   }
 
@@ -5245,7 +5467,10 @@ class Engine {
   bool empty_state_warned_ = false;  // warn_empty_state() has logged
   Cycles batch_t0_{};                // the origin of the event that asked last
   Cycles batch_t1_{};
-  bool fx_on_;                               // cfg_.fx converts ([accounting])
+  bool fx_on_;  // cfg_.fx converts ([accounting])
+  // [capacity]: the price of an order slot (core/capacity_price.hpp); null when off.
+  std::unique_ptr<CapacityPrice> capacity_;
+  bool capacity_on_ = false;
   const bool pools_on_ = cfg_.pools.active;  // a venue has pool members: new orders are routed
   // A pool keeps homes ([venues.<primary>.pool]); homes_on_ implies pools_on_.
   const bool homes_on_ = cfg_.pools.active && cfg_.homes.active();

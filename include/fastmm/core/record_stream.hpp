@@ -13,6 +13,7 @@
 // Records share the MsgRing prefix (4-byte length, 1-byte non-zero type) and are a multiple of 64
 // bytes, like the event messages, but they carry their own RecordType space and version: the store
 // format is free to change without touching the journal format.
+#include "fastmm/core/capacity_price.hpp"
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
@@ -46,6 +47,7 @@ enum class RecordType : std::uint8_t {
   Reject = 8,
   Limits = 9,
   Markout = 10,
+  Capacity = 11,
 };
 [[nodiscard]] constexpr std::string_view to_string(RecordType t) noexcept {
   switch (t) {
@@ -69,6 +71,8 @@ enum class RecordType : std::uint8_t {
       return "Limits";
     case RecordType::Markout:
       return "Markout";
+    case RecordType::Capacity:
+      return "Capacity";
   }
   return "?";
 }
@@ -273,6 +277,7 @@ enum class RejectSource : std::uint8_t {
   AccountOrders1d = 5,
   VenueLocal = 6,  // the connector's own limiter refused it before sending (OrderReject text)
   Venue = 7,       // the venue refused it (venue_code, text)
+  Capacity = 8,    // worth less than the order slot it takes ([capacity], RejectReason::PricedOut)
 };
 [[nodiscard]] constexpr std::string_view to_string(RejectSource s) noexcept {
   switch (s) {
@@ -292,6 +297,8 @@ enum class RejectSource : std::uint8_t {
       return "venue_local";
     case RejectSource::Venue:
       return "venue";
+    case RejectSource::Capacity:
+      return "capacity";
   }
   return "?";
 }
@@ -353,6 +360,29 @@ struct MarkoutRecord {
   std::uint8_t pad_[36];    // -> 128
 };
 static_assert(sizeof(MarkoutRecord) == 128 && std::is_trivially_copyable_v<MarkoutRecord>);
+
+// A minute of one account's capacity price ([capacity], core/capacity_price.hpp): the actions
+// priced, those refused below their price and those that would have been (observe), and the
+// price paid. hdr.venue is the account; hdr.engine_ts the end of the minute.
+struct CapacityRecord {
+  RecordHeader hdr;
+  std::uint32_t decided;          // 64 actions priced
+  std::uint32_t sent;             // 68 new orders and replaces sent
+  std::uint32_t priced_out_new;   // 72
+  std::uint32_t priced_out_move;  // 76
+  std::uint32_t observed_new;     // 80 would have been priced out
+  std::uint32_t observed_move;    // 84
+  std::uint32_t peak_used;        // 88 the most orders in one window
+  CapacityMode mode;              // 92
+  std::uint8_t pad0_[3];          //
+  double price_min;               // 96 quote currency
+  double price_max;               // 104
+  double price_mean;              // 112
+  double floor;                   // 120 L, the value of a minimum-notional order
+  double day_price;               // 128 the account's and the strategy's day prices
+  std::uint8_t pad_[56];          // -> 192
+};
+static_assert(sizeof(CapacityRecord) == 192 && std::is_trivially_copyable_v<CapacityRecord>);
 
 // Engine-side producer. Every method is allocation-free, wait-free and safe to call from the
 // trading thread; a full ring increments dropped() and returns false.

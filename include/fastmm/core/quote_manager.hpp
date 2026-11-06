@@ -38,6 +38,13 @@
 //     venue order windows) keeps the resting order where it is: the move would spend one of the
 //     last orders, and with cancel-then-new a New the window then refuses leaves the level empty.
 //     Moves away from the touch and pulls still go. The strategy's next quotes try the move again;
+//   * a New or a move the placer prices out (QuoteAction::priced_out: [capacity], its value is
+//   below
+//     the price of the order slot it takes, core/capacity_price.hpp) is neither a reject nor a
+//     backoff: a move keeps the resting order where it is, a New leaves the level empty, and the
+//     instrument joins a queue the engine re-applies (retry_priced()) when the price falls. A move
+//     towards the touch buys its gain (the level's value less its keep value); a move away from it
+//     cancels for free and buys its New as a new order;
 //   * a New or Replace the placer holds back for want of an order token (QuoteAction::rate_limited)
 //     is neither a reject nor a backoff: the instrument joins a FIFO of starved instruments, and
 //     the engine re-applies their last desired quotes (retry()) in that order as tokens come back,
@@ -47,6 +54,7 @@
 // Actions are executed by the caller through a Placer callable so the QuoteManager stays
 // independent of risk/OMS/transport wiring:
 //   bool place(QuoteAction& a);   // New: sets a.handle on success; returns false on reject
+#include "fastmm/core/capacity_price.hpp"
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/containers/ring_buffer.hpp"
 #include "fastmm/core/containers/static_vector.hpp"
@@ -72,14 +80,37 @@ struct DesiredQuotes {
   // automatic routing. A resting order on another account is cancelled and placed again.
   std::array<VenueId, kMaxQuoteLevels> bid_account{};
   std::array<VenueId, kMaxQuoteLevels> ask_account{};
+  // What a level's order is worth, in the quote currency ([capacity], core/capacity_price.hpp):
+  // `value` placed at the level's price, `keep` the order already resting in the slot where it
+  // rests. kNoValue: not stated ([capacity] value decides).
+  std::array<float, kMaxQuoteLevels> bid_value = no_values();
+  std::array<float, kMaxQuoteLevels> ask_value = no_values();
+  std::array<float, kMaxQuoteLevels> bid_keep = no_values();
+  std::array<float, kMaxQuoteLevels> ask_keep = no_values();
   void clear() noexcept {
     bids.clear();
     asks.clear();
     bid_account = {};
     ask_account = {};
+    bid_value = no_values();
+    ask_value = no_values();
+    bid_keep = no_values();
+    ask_keep = no_values();
   }
   [[nodiscard]] VenueId account(Side s, std::uint32_t lvl) const noexcept {
     return lvl < kMaxQuoteLevels ? (s == Side::Buy ? bid_account : ask_account)[lvl] : VenueId{};
+  }
+  // Sets the value of level `lvl` of a side and, optionally, the keep value of its resting order.
+  void set_value(Side s, std::uint32_t lvl, float value, float keep = kNoValue) noexcept {
+    if (lvl >= kMaxQuoteLevels) return;
+    (s == Side::Buy ? bid_value : ask_value)[lvl] = value;
+    (s == Side::Buy ? bid_keep : ask_keep)[lvl] = keep;
+  }
+  [[nodiscard]] float value(Side s, std::uint32_t lvl) const noexcept {
+    return lvl < kMaxQuoteLevels ? (s == Side::Buy ? bid_value : ask_value)[lvl] : kNoValue;
+  }
+  [[nodiscard]] float keep(Side s, std::uint32_t lvl) const noexcept {
+    return lvl < kMaxQuoteLevels ? (s == Side::Buy ? bid_keep : ask_keep)[lvl] : kNoValue;
   }
   [[nodiscard]] const StaticVector<Level, kMaxQuoteLevels>& side(Side s) const noexcept {
     return s == Side::Buy ? bids : asks;
@@ -93,10 +124,28 @@ struct DesiredQuotes {
   bool ask(Price px, Qty qty) noexcept {
     return px.is_positive() && qty.is_positive() && asks.push_back(Level{px, qty});
   }
+  // ... with the level's value and its resting order's keep value ([capacity]).
+  bool bid(Price px, Qty qty, float value, float keep = kNoValue) noexcept {
+    if (!bid(px, qty)) return false;
+    set_value(Side::Buy, static_cast<std::uint32_t>(bids.size() - 1), value, keep);
+    return true;
+  }
+  bool ask(Price px, Qty qty, float value, float keep = kNoValue) noexcept {
+    if (!ask(px, qty)) return false;
+    set_value(Side::Sell, static_cast<std::uint32_t>(asks.size() - 1), value, keep);
+    return true;
+  }
   // Never cross ourselves at level 0: an ask at or below the best bid moves one tick above it.
   void uncross(Price tick) noexcept {
     if (!bids.empty() && !asks.empty() && bids[0].price >= asks[0].price)
       asks[0].price = bids[0].price + tick;
+  }
+
+ private:
+  static constexpr std::array<float, kMaxQuoteLevels> no_values() noexcept {
+    std::array<float, kMaxQuoteLevels> a{};
+    for (float& v : a) v = kNoValue;
+    return a;
   }
 };
 
@@ -146,8 +195,17 @@ struct QuoteAction {
   RejectReason refused{};
   // Cancel / Replace output: not sent, the move goes towards the touch and the order's account is
   // short of order room (QuoteParams::room_reserve); the order stays as it is. A Cancel that moves
-  // a quote carries the target price in `price`; a pull carries none and is never held.
+  // a quote carries the target in `price` and `qty`; a pull carries none and is never held.
   bool held = false;
+  // New / Replace / a Cancel that moves: the level's value and the resting order's keep value
+  // (DesiredQuotes::value, keep; kNoValue: not stated).
+  float value = kNoValue;
+  float keep = kNoValue;
+  // Output: not sent, the action is worth less than the order slot it takes ([capacity]).
+  bool priced_out = false;
+  // A Cancel that moves, output: the move was bought, so the New after it is not priced again.
+  // A deferred New, input: the move that freed its slot was bought.
+  bool paid = false;
 };
 
 struct QuoteStats {
@@ -164,6 +222,8 @@ struct QuoteStats {
   std::uint64_t kept_rate_limit = 0;  // News / Replaces held back for want of an order token
   std::uint64_t kept_room = 0;        // moves towards the touch held: the account is short of room
   std::uint64_t retries = 0;          // retry() calls that re-applied a starved instrument's quotes
+  std::uint64_t priced_out = 0;  // News not sent: worth less than their order slot ([capacity])
+  std::uint64_t priced_out_moves = 0;  // moves not made, the order left where it rests
 };
 
 class QuoteManager {
@@ -224,6 +284,8 @@ class QuoteManager {
                                   slot,
                                   has_want ? want[lvl] : Level{},
                                   st.desired.account(side, lvl),
+                                  st.desired.value(side, lvl),
+                                  st.desired.keep(side, lvl),
                                   now,
                                   place);
         if (!slot.empty()) used = lvl + 1;
@@ -354,6 +416,32 @@ class QuoteManager {
     return reconcile(inst, desired, oms, now, place);
   }
 
+  // Instruments with a level priced out ([capacity]): the engine re-applies their last desired
+  // quotes (retry_priced) when the price may have fallen, a window rolling over or a fill giving a
+  // slot back.
+  [[nodiscard]] bool priced_out() const noexcept { return !priced_.empty(); }
+  // Takes every instrument queued now off the queue and calls f(InstrumentId); one priced out
+  // again during f queues itself for the next time.
+  template <class F>
+  void take_priced(F&& f) noexcept {
+    for (std::size_t n = priced_.size(); n > 0; --n) {
+      const std::uint16_t id = priced_.front();
+      priced_.pop();
+      state_[id].priced = false;
+      f(InstrumentId{id});
+    }
+  }
+  template <class Placer>
+  std::uint32_t retry_priced(const Instrument& inst,
+                             const Oms& oms,
+                             Timestamp now,
+                             Placer&& place) noexcept {
+    InstState& st = state_[inst.id.value];
+    if (st.pulled || st.paused) return 0;
+    const DesiredQuotes desired = st.desired;
+    return reconcile(inst, desired, oms, now, place);
+  }
+
   // Feed every OmsUpdate here. A terminal update frees the slot it belonged to and, if a target
   // was recorded for it (cancel-then-new, or a requote that met the order pending), places the New
   // now. The ack of an order that was pending at a requote applies the recorded target. While the
@@ -386,8 +474,18 @@ class QuoteManager {
       if (slot.apply_want &&
           (u.prev == OrderState::PendingNew || u.prev == OrderState::PendingReplace)) {
         slot.apply_want = false;
-        static_cast<void>(reconcile_slot(
-            inst, st, oms, side, lvl, slot, slot.want, slot.want_account, now, place));
+        static_cast<void>(reconcile_slot(inst,
+                                         st,
+                                         oms,
+                                         side,
+                                         lvl,
+                                         slot,
+                                         slot.want,
+                                         slot.want_account,
+                                         slot.want_value,
+                                         slot.want_keep,
+                                         now,
+                                         place));
       }
       return;
     }
@@ -405,7 +503,16 @@ class QuoteManager {
       kept_backoff(st, inst.id, side);
       return;
     }
-    submit_new(inst, side, lvl, slot, slot.want, slot.want_account, now, place, /*deferred=*/true);
+    submit_new(inst,
+               side,
+               lvl,
+               slot,
+               slot.want,
+               slot.want_account,
+               slot.want_value,
+               now,
+               place,
+               /*deferred=*/true);
   }
 
   [[nodiscard]] Handle<Order> slot_handle(InstrumentId id,
@@ -430,8 +537,11 @@ class QuoteManager {
     Handle<Order> handle{};
     ClientOrderId cl_ord_id{};
     Timestamp last_requote{};
-    Level want{};             // target to apply once the slot's pending order resolves
-    VenueId want_account{};   // ... and its account (DesiredQuotes::account)
+    Level want{};                 // target to apply once the slot's pending order resolves
+    VenueId want_account{};       // ... and its account (DesiredQuotes::account)
+    float want_value = kNoValue;  // ... and its value and keep value ([capacity])
+    float want_keep = kNoValue;
+    bool paid = false;        // the move that is freeing the slot was bought: its New is not priced
     bool apply_want = false;  // `want` is pending (qty 0: no quote on this level)
     bool awaiting_terminal = false;
     // No order and nothing to apply: reconciling the slot against no level changes nothing.
@@ -453,6 +563,7 @@ class QuoteManager {
     Duration backoff[2] = {};         // current backoff per side (0 = none)
     Timestamp blocked_until[2] = {};  // no News or Replaces on the side before this
     bool starved = false;             // queued in starved_
+    bool priced = false;              // queued in priced_
     Timestamp retry_at{kNever};       // queued in backed_off_: a held-back side's backoff ends
   };
 
@@ -502,6 +613,8 @@ class QuoteManager {
                                Slot& slot,
                                Level target,
                                VenueId account,
+                               float value,
+                               float keep,
                                Timestamp now,
                                Placer& place) noexcept {
     const bool has_want = target.qty.is_positive();
@@ -512,6 +625,8 @@ class QuoteManager {
         ++stats_.skipped_pending;
         slot.want = target;
         slot.want_account = account;
+        slot.want_value = value;
+        slot.want_keep = keep;
         slot.apply_want = true;
         return 0;
       }
@@ -521,7 +636,10 @@ class QuoteManager {
       if (account.valid() && o.venue != account) {
         slot.want = target;
         slot.want_account = account;
+        slot.want_value = value;
+        slot.want_keep = keep;
         slot.apply_want = true;
+        slot.paid = false;
         return cancel(inst, side, lvl, slot, place);
       }
       const std::int64_t dpx = (target.price - o.price).abs().raw / inst.tick.raw;
@@ -549,8 +667,17 @@ class QuoteManager {
                       false,
                       false,
                       false};
+        a.value = value;
+        a.keep = keep;
         if (!place(a)) {
-          if (a.held) {
+          if (a.priced_out) {
+            // Away from the touch the resting order is not wanted where it is: cancel it (free)
+            // and buy its New as a new order. Towards the touch it stays.
+            if (side == Side::Buy ? target.price < o.price : target.price > o.price)
+              return move(inst, side, lvl, slot, target, account, value, keep, place);
+            ++stats_.priced_out_moves;
+            queue_priced(st, inst.id);
+          } else if (a.held) {
             ++stats_.kept_room;
           } else {
             held_back(st, inst.id, a, now);
@@ -561,7 +688,7 @@ class QuoteManager {
         slot.last_requote = now;
         return 1;
       }
-      return move(inst, side, lvl, slot, target, account, place);
+      return move(inst, side, lvl, slot, target, account, value, keep, place);
     }
     // No resting order in this slot. A cancel still in flight keeps the order live (Pending*,
     // handled above), so any earlier order is final in the OMS and there is nothing left to
@@ -574,7 +701,7 @@ class QuoteManager {
       kept_backoff(st, inst.id, side);
       return 0;
     }
-    return submit_new(inst, side, lvl, slot, target, account, now, place);
+    return submit_new(inst, side, lvl, slot, target, account, value, now, place);
   }
 
   // The slot's order is live and really the slot's: order slots are reused by later orders.
@@ -597,6 +724,8 @@ class QuoteManager {
                      Slot& slot,
                      Level target,
                      VenueId account,
+                     float value,
+                     float keep,
                      Placer& place) noexcept {
     QuoteAction a{QuoteActionKind::Cancel,
                   inst.id,
@@ -605,16 +734,25 @@ class QuoteManager {
                   slot.handle,
                   ClientOrderId{},
                   target.price,
-                  Qty{},
+                  target.qty,
                   false,
                   false,
                   false,
                   false};
+    a.value = value;
+    a.keep = keep;
     slot.want = target;
     slot.want_account = account;
+    slot.want_value = value;
+    slot.want_keep = keep;
     slot.apply_want = true;
+    slot.paid = false;
     if (!place(a)) {
-      if (a.held) {
+      if (a.priced_out) {
+        slot.apply_want = false;
+        ++stats_.priced_out_moves;
+        queue_priced(state_[inst.id.value], inst.id);
+      } else if (a.held) {
         slot.apply_want = false;
         ++stats_.kept_room;
       } else {
@@ -622,6 +760,7 @@ class QuoteManager {
       }
       return 0;
     }
+    slot.paid = a.paid;
     ++stats_.cancels;
     slot.awaiting_terminal = true;
     return 1;
@@ -657,6 +796,7 @@ class QuoteManager {
                            Slot& slot,
                            Level target,
                            VenueId account,
+                           float value,
                            Timestamp now,
                            Placer& place,
                            bool deferred = false) noexcept {
@@ -673,8 +813,14 @@ class QuoteManager {
                   false,
                   false,
                   account};
+    a.value = value;
+    a.paid = deferred && slot.paid;
+    slot.paid = false;
     if (!place(a) || !a.handle.valid()) {
-      if (a.withheld) {
+      if (a.priced_out) {
+        ++stats_.priced_out;
+        queue_priced(state_[inst.id.value], inst.id);
+      } else if (a.withheld) {
         ++stats_.kept_balance;
       } else {
         held_back(state_[inst.id.value], inst.id, a, now);
@@ -704,6 +850,11 @@ class QuoteManager {
     static_cast<void>(starved_.try_push(static_cast<std::uint16_t>(id.value)));
   }
 
+  void queue_priced(InstState& st, InstrumentId id) noexcept {
+    if (st.priced) return;
+    st.priced = priced_.try_push(static_cast<std::uint16_t>(id.value));
+  }
+
   void resolve_replace() noexcept {
     for (InstState& st : state_) st.replace = params_.supports_replace && !st.venue_no_replace;
   }
@@ -712,6 +863,7 @@ class QuoteManager {
   QuoteStats stats_{};
   InstState state_[kMaxInstruments] = {};
   RingBuffer<std::uint16_t, kMaxInstruments> starved_;  // each instrument at most once
+  RingBuffer<std::uint16_t, kMaxInstruments> priced_;   // priced out, each at most once
   // Instruments with a New held back by a backoff (InstState::retry_at), each at most once, and the
   // earliest retry_at among them.
   RingBuffer<std::uint16_t, kMaxInstruments> backed_off_;

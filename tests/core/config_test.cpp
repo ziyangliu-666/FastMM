@@ -988,3 +988,39 @@ TEST_CASE("core.config: reduce_only in [risk] and per venue survives the effecti
   CHECK(back.reduce_only_venues() == 1U);
   CHECK(cfg.redacted().find("reduce_only = true") != std::string::npos);
 }
+
+TEST_CASE("core.config: [capacity] is typed, checked and survives the effective configuration") {
+  const Config off = Config::parse(pool_toml(""));
+  CHECK_FALSE(off.capacity.configured);
+  CHECK(off.capacity_config().mode == CapacityMode::Off);
+  CHECK(off.effective_toml().find("capacity") == std::string::npos);
+  const Config cfg = Config::parse(pool_toml(
+      "[capacity]\nmode = \"enforce\"\nvalue = \"learned\"\norders_10s = 100\nfill_credit = true\n"
+      "orders_1d = 200000\nmargin_bps = 0.8\n"));
+  const CapacityConfig c = cfg.capacity_config();
+  CHECK(c.mode == CapacityMode::Enforce);
+  CHECK(c.value == CapacityValue::Learned);
+  CHECK(c.orders_10s == 100);
+  CHECK(c.fill_credit);
+  CHECK(c.orders_1d == 200000);
+  CHECK(c.margin_bps == doctest::Approx(0.8));
+  CHECK(c.full_move_bps == doctest::Approx(10.0));
+  const Config back = Config::parse(cfg.effective_toml());
+  CHECK(back.capacity_config().mode == CapacityMode::Enforce);
+  CHECK(back.capacity_config().orders_1d == 200000);
+  CHECK(cfg.redacted().find("[capacity]") != std::string::npos);
+  CHECK_THROWS_AS(Config::parse(pool_toml("[capacity]\nmode = \"on\"\n")), ConfigError);
+  CHECK_THROWS_AS(Config::parse(pool_toml("[capacity]\norders_10s = -1\n")), ConfigError);
+  CHECK_THROWS_AS(Config::parse(pool_toml("[capacity]\nmargin_bps = 0\n")), ConfigError);
+  CHECK_THROWS_AS(Config::parse(pool_toml("[capacity]\nspeed = 1\n")), ConfigError);
+}
+
+TEST_CASE("core.config: [capacity] venues prices a venue's pool and leaves the others out") {
+  CHECK(Config::parse(pool_toml("")).capacity_config().accounts == ~0U);
+  std::string text = pool_toml("[capacity]\nmode = \"observe\"\nvenues = [\"binance\"]\n");
+  text.replace(text.find("[[instruments]]"), 0, "[venues.usdm]\nkind = \"sim\"\n");
+  const Config cfg = Config::parse(text);
+  CHECK(cfg.capacity_config().accounts == 3U);  // binance and its member binance_b, not usdm
+  CHECK(Config::parse(cfg.effective_toml()).capacity_config().accounts == 3U);
+  CHECK_THROWS_AS(Config::parse(pool_toml("[capacity]\nvenues = [\"nowhere\"]\n")), ConfigError);
+}

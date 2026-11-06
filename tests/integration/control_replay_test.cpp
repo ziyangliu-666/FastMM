@@ -157,3 +157,38 @@ TEST_CASE("sim_exchange replay: a reduce-only window replays to the identical ou
   CHECK(r.outbound_sha256 == r.recorded_sha256);
   CHECK(r.ok());
 }
+
+TEST_CASE(
+    "sim_exchange replay: a session under the capacity price replays to the identical "
+    "outbound stream") {
+  const std::string path = fresh_journal("capacity_enforce.fmj");
+  ServerFixture fx;
+  LiveEngineOptions opts;
+  opts.journal_path = path;
+  opts.session_epoch = kEpoch;
+  Config cfg = sim_local_config(fx, false);
+  // A window of 4 orders per 10 s: BasicMM's requotes run past it and are priced out, then
+  // re-checked as the windows roll over and fills give slots back.
+  cfg.capacity.configured = true;
+  cfg.capacity.mode = "enforce";
+  cfg.capacity.value = "learned";
+  cfg.capacity.orders_10s = 4;
+  cfg.capacity.fill_credit = true;
+  LiveEngine live(cfg, opts);
+  live.start();
+  REQUIRE(fills_at_least(fx, 2, 30000));
+  REQUIRE(wait_until([&] { return live.engine().stats().priced_out >= 3; }, 30000));
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  live.stop();
+  const EngineStats& es = live.engine().stats();
+  MESSAGE("priced out: " << es.priced_out << ", orders " << es.orders_sent << ", fills "
+                         << es.fills);
+
+  const bt::ReplayResult r = bt::replay_journal(path);
+  INFO("expected: " << r.expected_message);
+  INFO("actual:   " << r.actual_message);
+  CHECK(r.first_mismatch == -1);
+  CHECK(r.outbound_messages == r.recorded_messages);
+  CHECK(r.outbound_sha256 == r.recorded_sha256);
+  CHECK(r.ok());
+}

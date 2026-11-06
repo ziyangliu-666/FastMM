@@ -21,7 +21,7 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`.
 1. The writer makes the counter odd, writes the snapshot, then makes it even again.
 2. A reader copies the snapshot and keeps it when the counter was even and unchanged across the copy; otherwise it retries.
 
-`magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 27) sit at the same offsets in every version. The layout is internal ([Public API](public-api.md)): read it with `fastmm-top` from the same build. Another version is refused:
+`magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 28) sit at the same offsets in every version. The layout is internal ([Public API](public-api.md)): read it with `fastmm-top` from the same build. Another version is refused:
 
 ```text
 <file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)
@@ -44,6 +44,7 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`.
 | `orders_sent`, `cancels_sent`, `replaces_sent` | u64 | order messages sent |
 | `fills` | u64 | executions |
 | `risk_rejects`, `venue_rejects` | u64 | orders refused by the pre-trade checks, by a venue |
+| `capacity_priced_out`, `capacity_observed` | u64 | new orders and moves refused below the price of their order slot, and those the price would have refused in observe mode ([Price order capacity](../how-to/strategies/price-order-capacity.md)) |
 | `estimated_fills`, `estimates_pending`, `estimates_forgotten` | u64 | fills booked from a cumulative quantity no fill message reported, at the order's price with no fee; the orders whose estimate no execution has named yet; estimates whose order the OMS forgot before one did, so that an execution replayed for it later is booked again ([Execution replay](venues/connector-behaviour.md#execution-replay)) |
 | `store_enabled` | u8 | 1 while a `[storage]` backend records the session (0: `backend = "none"`, a dry run, a warm standby before it takes over) |
 | `store_rows`, `store_errors`, `store_dropped` | u64 | rows the backend wrote, writes that failed, and records the engine dropped because the ring to the store was full. Either of the last two means a restart restores from an incomplete record ([Storage](storage.md#what-a-backend-guarantees)) |

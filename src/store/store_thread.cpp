@@ -129,6 +129,12 @@ std::size_t StoreThread::drain(bool force_commit) {
         backend_->markout(r);
         break;
       }
+      case RecordType::Capacity: {
+        CapacityRecord r;
+        std::memcpy(&r, p, sizeof r);
+        backend_->capacity(r);
+        break;
+      }
       default:
         unknown_.fetch_add(1, std::memory_order_relaxed);
         break;

@@ -159,6 +159,9 @@ enum class RejectReason : std::uint8_t {
   // Reduce-only mode (fastmm-ctl reduce-only, [risk] reduce_only) holds the order's instrument, and
   // the order, with the open orders on its side, would leave the position no nearer zero.
   ReduceOnly = 24,
+  // [capacity]: the order is worth less than the price of the order slot it takes now (its
+  // account's window, the day's budget; core/capacity_price.hpp).
+  PricedOut = 25,
   // OMS / transport
   PoolExhausted = 32,
   UnknownOrder = 33,
@@ -248,6 +251,8 @@ enum class RejectReason : std::uint8_t {
       return "BalanceShort";
     case RejectReason::ReduceOnly:
       return "ReduceOnly";
+    case RejectReason::PricedOut:
+      return "PricedOut";
     case RejectReason::PoolExhausted:
       return "PoolExhausted";
     case RejectReason::UnknownOrder:

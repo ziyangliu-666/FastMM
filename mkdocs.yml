@@ -160,6 +160,7 @@ nav:
           - how-to/strategies/hedge-executor.md
           - how-to/strategies/register-a-strategy.md
           - how-to/strategies/ab-test.md
+          - how-to/strategies/price-order-capacity.md
           - how-to/strategies/live-ab-by-instrument.md
           - how-to/strategies/python-hot-hooks.md
           - how-to/strategies/python-slow-methods.md
@@ -245,6 +246,7 @@ nav:
       - explanation/event-flow.md
       - explanation/determinism.md
       - explanation/risk-model.md
+      - explanation/order-capacity.md
   - Contributing:
       - contributing/writing-docs.md
       - contributing/dependencies.md

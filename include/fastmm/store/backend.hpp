@@ -140,6 +140,8 @@ class Backend {
   virtual void limits(const LimitsRecord& /*r*/) {}
   // The mid at or after a fill ([engine] markout_ms).
   virtual void markout(const MarkoutRecord& /*r*/) {}
+  // A minute of one account's capacity price ([capacity]). The default drops it.
+  virtual void capacity(const CapacityRecord& /*r*/) {}
   virtual void commit() = 0;
 
   [[nodiscard]] virtual Result<void, std::string> session_close(const SessionClose& s) = 0;

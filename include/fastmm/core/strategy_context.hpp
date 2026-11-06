@@ -5,6 +5,7 @@
 #include "fastmm/core/account_pool.hpp"
 #include "fastmm/core/balance_book.hpp"
 #include "fastmm/core/book/l2_book.hpp"
+#include "fastmm/core/capacity_price.hpp"
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fees.hpp"
@@ -237,6 +238,9 @@ class StrategyContext {
   // the local token bucket, and the venue's order counts and request weight by window as its
   // connector last published them (live only; venue_known is false elsewhere).
   [[nodiscard]] OrderBudget order_budget(VenueId v) const noexcept { return e_->order_budget(v); }
+  // What an order slot on account `v` costs now ([capacity], core/capacity_price.hpp): a new order
+  // or a move is sent when its value covers `price`. `on` is false without [capacity].
+  [[nodiscard]] CapacityQuote capacity(VenueId v) const noexcept { return e_->capacity(v); }
 
   // ---- balances (core/balance_book.hpp) ---------------------------------------------------------
 

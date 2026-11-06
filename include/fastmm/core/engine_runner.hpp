@@ -48,6 +48,10 @@ struct RunnerStats {
   // Quote News held back after their old order ended: the balance no longer covered them
   // (QuoteStats::kept_balance). A side that stays unquoted for this shows here, not in the rejects.
   std::uint64_t balance_withheld = 0;
+  // [capacity]: orders and moves refused below the price of their order slot, and those that
+  // would have been (observe mode, or moves under mode = "new").
+  std::uint64_t capacity_priced_out = 0;
+  std::uint64_t capacity_observed = 0;
   // Fills booked as estimates, from a cum_qty no fill message reported (Engine::book_missed_fill);
   // the orders whose estimate no execution has named yet; and estimates whose order the OMS forgot
   // before one did (OmsStats::synthetic_pending, synthetic_forgotten): an execution of such an

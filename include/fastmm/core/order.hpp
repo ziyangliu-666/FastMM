@@ -6,6 +6,7 @@
 #include "fastmm/core/time.hpp"
 
 #include <cstdint>
+#include <limits>
 #include <type_traits>
 
 namespace fastmm {
@@ -60,6 +61,13 @@ struct OrderTimes {
   Timestamp local_ack;  // the ack's recv_ts: when it reached us
 };
 
+// What an order or a quote level is worth when the strategy did not say ([capacity],
+// core/capacity_price.hpp).
+inline constexpr float kNoValue = std::numeric_limits<float>::quiet_NaN();
+[[nodiscard]] constexpr bool value_stated(float v) noexcept {
+  return v == v;  // NOLINT(misc-redundant-expression): false for NaN only
+}
+
 struct LimitOrder;
 
 struct NewOrderRequest {
@@ -77,6 +85,9 @@ struct NewOrderRequest {
   Price price;
   Qty qty;
   std::uint32_t user_tag = 0;
+  // What the order is worth, in the quote currency: [capacity] sends it only if this covers the
+  // price of the order slot it takes. kNoValue: not priced.
+  float value = kNoValue;
 
   // A GTC limit order, refined with the builder's methods:
   //   ctx.send(NewOrderRequest::limit(id, Side::Buy, px, qty).post_only().tag(7));
@@ -111,6 +122,12 @@ struct LimitOrder {
   [[nodiscard]] constexpr LimitOrder tag(std::uint32_t user_tag) const noexcept {
     LimitOrder o = *this;
     o.request.user_tag = user_tag;
+    return o;
+  }
+  // What the order is worth ([capacity], NewOrderRequest::value).
+  [[nodiscard]] constexpr LimitOrder value(float v) const noexcept {
+    LimitOrder o = *this;
+    o.request.value = v;
     return o;
   }
   // The account of the instrument's pool to send from (NewOrderRequest::account).

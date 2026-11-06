@@ -689,6 +689,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
                                                         "strategy",
                                                         "ab",
                                                         "risk",
+                                                        "capacity",
                                                         "gateway",
                                                         "accounting",
                                                         "logging",
@@ -1112,6 +1113,54 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get_underlying(*t, "risk", r.underlying);
   }
 
+  // [capacity]
+  if (const auto* t = doc["capacity"].as_table()) {
+    validate_table(*t, "capacity");
+    CapacitySection& c = cfg.capacity;
+    c.configured = true;
+    get(*t, "mode", c.mode);
+    if (c.mode != "off" && c.mode != "observe" && c.mode != "new" && c.mode != "enforce")
+      fail_at(*t->get("mode"),
+              "capacity.mode must be \"off\", \"observe\", \"new\" or \"enforce\"");
+    get(*t, "value", c.value);
+    if (c.value != "off" && c.value != "learned")
+      fail_at(*t->get("value"), "capacity.value must be \"off\" or \"learned\"");
+    const auto ranged =
+        [&](std::string_view key, std::int64_t& out, std::int64_t lo, std::int64_t hi) {
+          const toml::node* n = t->get(key);
+          if (n == nullptr) return;
+          get(*t, key, out);
+          if (out < lo || out > hi)
+            fail_at(*n, fmt::format("capacity.{} must be {} to {}", key, lo, hi));
+        };
+    ranged("orders_10s", c.orders_10s, 0, 1'000'000);
+    ranged("window_ms", c.window_ms, 100, 3'600'000);
+    ranged("orders_1d", c.orders_1d, 0, 1'000'000'000);
+    ranged("orders_per_day", c.orders_per_day, 0, 1'000'000'000);
+    ranged("weight_1m", c.weight_1m, 0, 100'000'000);
+    get(*t, "fill_credit", c.fill_credit);
+    const auto positive = [&](std::string_view key, double& out) {
+      const toml::node* n = t->get(key);
+      if (n == nullptr) return;
+      const auto x = n->value<double>();
+      if (!x || !(*x > 0.0) || *x > 1e6)
+        fail_at(*n, fmt::format("capacity.{} must be a number above 0", key));
+      out = *x;
+    };
+    positive("margin_bps", c.margin_bps);
+    positive("full_move_bps", c.full_move_bps);
+    if (const auto* arr = t->get_as<toml::array>("venues")) {
+      for (const auto& n : *arr) {
+        const auto name = n.value<std::string>();
+        if (!name || cfg.venue(*name) == nullptr)
+          fail_at(n, "capacity.venues: each entry must name a [venues.<name>]");
+        c.venues.push_back(*name);
+      }
+    }
+  } else if (doc.contains("capacity")) {
+    fail_at(*doc.get("capacity"), "[capacity] must be a table");
+  }
+
   // [gateway]
   if (const auto* t = doc["gateway"].as_table()) {
     validate_table(*t, "gateway");
@@ -1374,6 +1423,36 @@ std::string Config::unlimited_risk() const {
          "to trade without";
 }
 
+CapacityConfig Config::capacity_config() const {
+  CapacityConfig c;
+  const CapacitySection& s = capacity;
+  c.mode = s.mode == "observe"   ? CapacityMode::Observe
+           : s.mode == "new"     ? CapacityMode::New
+           : s.mode == "enforce" ? CapacityMode::Enforce
+                                 : CapacityMode::Off;
+  c.value = s.value == "learned" ? CapacityValue::Learned : CapacityValue::Off;
+  c.orders_10s = s.orders_10s;
+  c.window_ms = s.window_ms;
+  c.fill_credit = s.fill_credit;
+  c.orders_1d = s.orders_1d;
+  c.orders_per_day = s.orders_per_day;
+  c.weight_1m = s.weight_1m;
+  c.margin_bps = s.margin_bps;
+  c.full_move_bps = s.full_move_bps;
+  if (!s.venues.empty()) {
+    const PoolPlan plan = pool_plan();
+    c.accounts = 0;
+    for (const std::string& name : s.venues) {
+      const VenueId v = venue_id(name);
+      if (!v.valid()) continue;
+      for (const VenueId m : plan.members(v))
+        if (m.value < 32) c.accounts |= 1U << m.value;
+      if (v.value < 32) c.accounts |= 1U << v.value;
+    }
+  }
+  return c;
+}
+
 QuoteParams Config::quote_params() const {
   QuoteParams q;
   q.min_requote_ticks = engine.min_requote_ticks;
@@ -1587,6 +1666,25 @@ std::string Config::redacted() const {
   for (const auto& [k, v] : risk.underlying.max_net) {
     fmt::format_to(std::back_inserter(out), "\n[risk.underlying.{}]\n", k);
     kq("max_net", v);
+  }
+  if (capacity.configured) {
+    out += "\n[capacity]\n";
+    kq("mode", capacity.mode);
+    kq("value", capacity.value);
+    kv("orders_10s", capacity.orders_10s);
+    kv("window_ms", capacity.window_ms);
+    kv("fill_credit", capacity.fill_credit);
+    kv("orders_1d", capacity.orders_1d);
+    kv("orders_per_day", capacity.orders_per_day);
+    kv("weight_1m", capacity.weight_1m);
+    kv("margin_bps", capacity.margin_bps);
+    kv("full_move_bps", capacity.full_move_bps);
+    if (!capacity.venues.empty()) {
+      out += "venues = [";
+      for (std::size_t k = 0; k < capacity.venues.size(); ++k)
+        out += (k == 0 ? "\"" : ", \"") + capacity.venues[k] + "\"";
+      out += "]\n";
+    }
   }
   if (gateway.any()) {
     out += "\n[gateway]\n";
@@ -1943,6 +2041,27 @@ std::string Config::effective_toml() const {
   if (risk.reduce_only) r.insert("reduce_only", true);
   if (risk.underlying.configured()) r.insert("underlying", underlying_table(risk.underlying));
   root.insert("risk", std::move(r));
+
+  // Only when present, so a configuration without it keeps its effective text and hash.
+  if (capacity.configured) {
+    toml::table c;
+    c.insert("mode", capacity.mode);
+    c.insert("value", capacity.value);
+    c.insert("orders_10s", capacity.orders_10s);
+    c.insert("window_ms", capacity.window_ms);
+    c.insert("fill_credit", capacity.fill_credit);
+    c.insert("orders_1d", capacity.orders_1d);
+    c.insert("orders_per_day", capacity.orders_per_day);
+    c.insert("weight_1m", capacity.weight_1m);
+    c.insert("margin_bps", capacity.margin_bps);
+    c.insert("full_move_bps", capacity.full_move_bps);
+    if (!capacity.venues.empty()) {
+      toml::array v;
+      for (const std::string& n : capacity.venues) v.push_back(n);
+      c.insert("venues", std::move(v));
+    }
+    root.insert("capacity", std::move(c));
+  }
 
   // Only when set, so a configuration without it keeps its effective text and hash.
   if (gateway.any()) {

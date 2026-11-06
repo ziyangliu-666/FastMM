@@ -1210,3 +1210,88 @@ TEST_CASE("hotpath.noalloc: checkpoints with the strategy's state, asked for and
   CHECK(engine->stats().checkpoint_bytes >= 64U << 10);
   CHECK(engine->stats().journal_overflows == 0);
 }
+
+// [capacity] enforced for minutes: levels priced in and out as the window fills and rolls over,
+// moves bought and refused, first fills crediting the window, the minute tick and its records.
+TEST_CASE("hotpath.noalloc: engine prices quotes and orders against the capacity price") {
+  InstrumentTable table;
+  Instrument inst = make_inst();
+  inst.venue = VenueId{0};
+  REQUIRE(table.add(inst));
+  SimClock clock{Timestamp{seconds(1000).ns}};
+  NullTransport transport;
+  InlineFeed feed{1 << 20};
+  MsgRing records{1 << 20};
+  QuietStrategy strategy;
+  EngineConfig cfg;
+  cfg.risk.max_order_qty = qt("1");
+  cfg.risk.max_open_orders = 64;
+  cfg.risk.max_order_notional = Notional::from_decimal("100").value();
+  cfg.quotes.min_requote_interval = Duration{};
+  cfg.capacity.mode = CapacityMode::Enforce;
+  cfg.capacity.value = CapacityValue::Learned;
+  cfg.capacity.orders_10s = 20;
+  cfg.capacity.fill_credit = true;
+  cfg.capacity.orders_1d = 5000;
+  cfg.capacity.orders_per_day = 5000;
+  cfg.capacity.weight_1m = 200;
+  using E = Engine<QuietStrategy, SimClock, NullTransport, InlineFeed>;
+  auto engine =
+      std::make_unique<E>(cfg, table, clock, transport, feed, strategy, nullptr, &records);
+  engine->warm_up();
+  engine->start();
+  auto& ctx = engine->context();
+  const double floor = ctx.capacity(VenueId{0}).floor;
+  REQUIRE(floor > 0.0);
+  std::uint64_t exec = 0;
+  const auto tick = px("0.01").raw;
+  {
+    NoAllocScope guard(true);
+    for (int k = 0; k < 600; ++k) {
+      DesiredQuotes q;
+      const std::int64_t step = k % 7;
+      // A large level the learned value prices, a small one, and an ask that states its value.
+      static_cast<void>(q.bid(Price::from_raw(px("99.00").raw + (step * tick)), qt("0.5")));
+      static_cast<void>(q.bid(px("98.00"), qt("0.01")));
+      static_cast<void>(q.ask(Price::from_raw(px("101.00").raw - (step * tick)),
+                              qt("0.5"),
+                              static_cast<float>(40.0 * floor),
+                              static_cast<float>(10.0 * floor)));
+      static_cast<void>(ctx.set_quotes(InstrumentId{0}, q));
+      static_cast<void>(
+          ctx.send(NewOrderRequest::limit(InstrumentId{0}, Side::Buy, px("90"), qt("0.01"))
+                       .value(static_cast<float>(0.5 * floor))));
+      // Ack the bid and fill it now and then: the window's credit and the learned yield.
+      if (const Order* o = ctx.working_quote(InstrumentId{0}, Side::Buy); o != nullptr) {
+        if (o->state == OrderState::PendingNew) {
+          OrderAckMsg a{};
+          init_header(a, EventType::OrderAck, InstrumentId{0}, VenueId{0});
+          a.hdr.recv_ts = clock.now();
+          a.cl_ord_id = o->cl_ord_id;
+          a.venue_order_id = "V";
+          REQUIRE(feed.push(a.hdr));
+        } else if (k % 11 == 0 && o->is_working()) {
+          OrderFillMsg f{};
+          init_header(f, EventType::OrderFill, InstrumentId{0}, VenueId{0});
+          f.hdr.recv_ts = clock.now();
+          f.cl_ord_id = o->cl_ord_id;
+          f.side = Side::Buy;
+          f.price = o->price;
+          f.qty = qt("0.1");
+          f.cum_qty = qt("0.1");
+          char buf[24];
+          const auto r = std::to_chars(buf, buf + sizeof buf, ++exec);
+          f.exec_id.assign(std::string_view(buf, static_cast<std::size_t>(r.ptr - buf)));
+          f.liquidity = Liquidity::Maker;
+          REQUIRE(feed.push(f.hdr));
+        }
+      }
+      while (engine->step() > 0) {
+      }
+      clock.advance(milliseconds(500));
+      while (records.try_peek() != nullptr) records.release();
+    }
+  }
+  CHECK(engine->stats().priced_out > 0);
+  CHECK(engine->stats().orders_sent > 0);
+}

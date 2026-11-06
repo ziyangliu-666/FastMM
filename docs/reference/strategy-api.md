@@ -333,6 +333,42 @@ Each window is a `RateWindow`: `window_ms`, `used`, `limit`, `cap`, `ends_ns`, `
 
 The venue fields come from the connector's thread and are not journaled. A backtest, a replay and a strategy attached to `fastmm-gateway` see `venue_known == false` and every window unlimited.
 
+### Order capacity
+
+With `[capacity]` a new order or a move is sent only when its value covers the price of its order slot ([Price order capacity](../how-to/strategies/price-order-capacity.md)).
+
+<!-- snippet: tests/docs/strategy_api_doc_test.cpp#capacity -->
+```cpp
+static_assert(std::same_as<decltype(lvalue<Ctx>().capacity(VenueId{})), CapacityQuote>);
+static_assert(std::same_as<decltype(CapacityQuote::price), double>);
+// A level worth `value` placed, and its resting order worth `keep` where it rests:
+static_assert(
+    std::same_as<decltype(lvalue<DesiredQuotes>().bid(Price{}, Qty{}, 0.0F, 0.0F)), bool>);
+static_assert(
+    std::same_as<decltype(lvalue<DesiredQuotes>().set_value(Side::Buy, 0, 0.0F, 0.0F)), void>);
+// A direct order worth `value`:
+static_assert(
+    std::same_as<
+        decltype(NewOrderRequest::limit(InstrumentId{}, Side::Buy, Price{}, Qty{}).value(0.0F)),
+        LimitOrder>);
+```
+
+| Call | Meaning |
+|---|---|
+| `DesiredQuotes::bid(px, qty, value, keep)`, `ask(...)`, `set_value(side, level, value, keep)` | what the level is worth placed, and what its resting order is worth where it rests, in the quote currency; `kNoValue` (the default): not stated |
+| `NewOrderRequest::limit(...).value(v)` | a direct order worth `v`; one with no value is not priced |
+| `capacity(account)` | `CapacityQuote`: what a slot on that account costs now |
+
+| `CapacityQuote` field | Meaning |
+|---|---|
+| `price` | what an action's value must reach: `window + weight + day` |
+| `floor` | `L`, the value of an order of the smallest minimum notional |
+| `window`, `window_share`, `window_used`, `window_orders` | the account window's part of the price, its share used, its orders and `orders_10s` |
+| `weight`, `day` | the pool's request-weight part; the account's and the strategy's day prices |
+| `on` | `[capacity]` is on |
+
+A level priced out returns no error: `set_quotes` keeps its target and the engine applies it again when the window rolls over or a fill gives a slot back. `send` returns `PricedOut`. A value of 0 or below is never sent; `kNoValue` takes `[capacity] value`, and a direct order with none is not priced. An account outside `[capacity] venues` reads `on == false`.
+
 ### Balances
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#balances -->

@@ -942,6 +942,75 @@ inline constexpr KeySpec kConfigSchema[] = {
      "order (funding, liquidation fills, executions of orders placed elsewhere); default none: "
      "the account alone books them"},
     // [accounting]
+    // [capacity]
+    {"capacity",
+     "mode",
+     KeyType::String,
+     false,
+     "off | observe (price every new order and move, count and record what it would refuse, "
+     "refuse nothing) | new (refuse new orders below their price, observe moves) | enforce "
+     "(refuse both) (default off)"},
+    {"capacity",
+     "value",
+     KeyType::String,
+     false,
+     "the value of a quote level whose strategy states none: off (worth any price) | learned "
+     "(notional x the filled per placed notional of its instrument, side and size class x "
+     "margin_bps) (default off)"},
+    {"capacity",
+     "orders_10s",
+     KeyType::Int,
+     false,
+     "orders each account's window admits; the window's price rises as its share is used "
+     "(Binance Spot 100) (default 0: the window is not priced)"},
+    {"capacity",
+     "venues",
+     KeyType::StringArray,
+     false,
+     "the [venues.<name>] whose accounts are priced, with their pools' members; the others' "
+     "orders are neither priced nor counted (default []: every venue)"},
+    {"capacity",
+     "window_ms",
+     KeyType::Int,
+     false,
+     "the account window's length, ms; windows start at multiples of it since 1970-01-01 UTC "
+     "(default 10000)"},
+    {"capacity",
+     "fill_credit",
+     KeyType::Bool,
+     false,
+     "an order's first fill gives its slot back to its window, as Binance's unfilled order count "
+     "does (default false)"},
+    {"capacity",
+     "orders_1d",
+     KeyType::Int,
+     false,
+     "orders each account may send per UTC day; a day price keeps the day's demand within it "
+     "(Binance Spot 200000) (default 0: no day price per account)"},
+    {"capacity",
+     "orders_per_day",
+     KeyType::Int,
+     false,
+     "the strategy's orders per UTC day over every account; a day price keeps the day's demand "
+     "within it (default 0: no budget)"},
+    {"capacity",
+     "weight_1m",
+     KeyType::Int,
+     false,
+     "request weight per minute shared by a pool's accounts (one IP); a new order, a replace and "
+     "a cancel count 1 each (default 0: not priced)"},
+    {"capacity",
+     "margin_bps",
+     KeyType::Float,
+     false,
+     "what a filled unit of notional earns, rebate plus edge, bps; scales the learned values and "
+     "the price floor (default 1)"},
+    {"capacity",
+     "full_move_bps",
+     KeyType::Float,
+     false,
+     "a move towards the touch of this many bps is worth a whole new order when the strategy "
+     "states no keep value; a smaller move buys that share of the level's value (default 10)"},
     {"accounting",
      "reporting_currency",
      KeyType::String,

@@ -3,6 +3,7 @@
 // the strategy registry and registration files do not parse the Engine template.
 #include "fastmm/core/account_pool.hpp"
 #include "fastmm/core/balance_book.hpp"
+#include "fastmm/core/capacity_price.hpp"
 #include "fastmm/core/fees.hpp"
 #include "fastmm/core/fx.hpp"
 #include "fastmm/core/perp_book.hpp"
@@ -117,6 +118,8 @@ struct EngineConfig {
   // [venues.<primary>.pool]: each pool's placement, its planner's settings and the pinned homes
   // (core/pool_homes.hpp). A pool without the table routes by balance and keeps no homes.
   PoolHomesPlan homes;
+  // [capacity]: the price of an order slot (core/capacity_price.hpp); mode off: none.
+  CapacityConfig capacity;
 };
 
 }  // namespace fastmm

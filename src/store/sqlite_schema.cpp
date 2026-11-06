@@ -660,7 +660,35 @@ CREATE TABLE markouts (
 );
 )SQL";
 
-constexpr std::array<Migration, 14> kMigrations{Migration{1, kV1},
+// Version 15: a minute of each account's capacity price ([capacity]): the actions priced, those
+// refused below their price and those that would have been (observe), and the price.
+constexpr std::string_view kV15 = R"SQL(
+CREATE TABLE capacity (
+  session_id      INTEGER NOT NULL,
+  seq             INTEGER NOT NULL,
+  ts_ns           INTEGER NOT NULL,
+  day             TEXT    NOT NULL,
+  account         TEXT    NOT NULL,
+  venue_id        INTEGER NOT NULL,
+  mode            TEXT    NOT NULL,
+  decided         INTEGER NOT NULL,
+  sent            INTEGER NOT NULL,
+  priced_out_new  INTEGER NOT NULL,
+  priced_out_move INTEGER NOT NULL,
+  observed_new    INTEGER NOT NULL,
+  observed_move   INTEGER NOT NULL,
+  peak_used       INTEGER NOT NULL,
+  price_min       REAL    NOT NULL,
+  price_max       REAL    NOT NULL,
+  price_mean      REAL    NOT NULL,
+  floor           REAL    NOT NULL,
+  day_price       REAL    NOT NULL,
+  PRIMARY KEY (session_id, seq)
+);
+CREATE INDEX capacity_day ON capacity(day, account);
+)SQL";
+
+constexpr std::array<Migration, 15> kMigrations{Migration{1, kV1},
                                                 Migration{2, kV2},
                                                 Migration{3, kV3},
                                                 Migration{4, kV4},
@@ -673,7 +701,8 @@ constexpr std::array<Migration, 14> kMigrations{Migration{1, kV1},
                                                 Migration{11, kV11},
                                                 Migration{12, kV12},
                                                 Migration{13, kV13},
-                                                Migration{14, kV14}};
+                                                Migration{14, kV14},
+                                                Migration{15, kV15}};
 
 // days since 1970-01-01 -> y/m/d (Howard Hinnant's civil_from_days).
 void civil_from_days(std::int64_t z, int& y, unsigned& m, unsigned& d) {

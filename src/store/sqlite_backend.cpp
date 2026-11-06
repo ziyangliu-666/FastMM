@@ -67,6 +67,7 @@ class Bind {
                       SQLITE_TRANSIENT);
   }
   void b(bool v) noexcept { sqlite3_bind_int64(st_, ++n_, v ? 1 : 0); }
+  void d(double v) noexcept { sqlite3_bind_double(st_, ++n_, v); }
   void null() noexcept { sqlite3_bind_null(st_, ++n_); }
 
  private:
@@ -489,6 +490,31 @@ class SqliteBackend final : public Backend {
     step(ins_markout_.get(), "insert markout");
   }
 
+  void capacity(const CapacityRecord& r) override {
+    if (db_ == nullptr) return;
+    Bind b(ins_capacity_.get());
+    b.u(r.hdr.session_id);
+    b.u(r.hdr.seq);
+    b.i(r.hdr.engine_ts.ns);
+    b.t(utc_day(r.hdr.engine_ts.ns));
+    b.t(venue_name(r.hdr.venue.value));
+    b.i(r.hdr.venue.value);
+    b.t(to_string(r.mode));
+    b.i(r.decided);
+    b.i(r.sent);
+    b.i(r.priced_out_new);
+    b.i(r.priced_out_move);
+    b.i(r.observed_new);
+    b.i(r.observed_move);
+    b.i(r.peak_used);
+    b.d(r.price_min);
+    b.d(r.price_max);
+    b.d(r.price_mean);
+    b.d(r.floor);
+    b.d(r.day_price);
+    step(ins_capacity_.get(), "insert capacity");
+  }
+
   // One row per key the command changed. The values are as [risk] writes them; a command that
   // changed nothing (it named the values the session had) is one row with key '' so the request
   // is still on record.
@@ -644,6 +670,7 @@ class SqliteBackend final : public Backend {
     ins_reject_.reset();
     ins_limit_.reset();
     ins_markout_.reset();
+    ins_capacity_.reset();
     ins_ab_arm_.reset();
     ins_funding_.reset();
     ins_pnl_.reset();
@@ -1003,6 +1030,8 @@ class SqliteBackend final : public Backend {
          "?,?,?,?,?,?,?,?)"},
         {&ins_limit_, "INSERT OR IGNORE INTO limit_changes VALUES (?,?,?,?,?,?,?,?)"},
         {&ins_markout_, "INSERT OR IGNORE INTO markouts VALUES (?,?,?,?,?,?,?)"},
+        {&ins_capacity_,
+         "INSERT OR IGNORE INTO capacity VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"},
         {&ins_funding_,
          "INSERT OR IGNORE INTO funding (session_id, seq, ts_ns, day, exch_ns, instrument_id,"
          " venue_id, symbol, funding_id, asset, amount_raw, position_qty_raw,"
@@ -1055,6 +1084,7 @@ class SqliteBackend final : public Backend {
   Stmt ins_reject_;
   Stmt ins_limit_;
   Stmt ins_markout_;
+  Stmt ins_capacity_;
   Stmt ins_ab_arm_;
   std::vector<std::string> venue_names_;  // the session's [venues.<name>] by VenueId
   std::vector<std::string> arm_names_;    // the session's [ab] arms, in order

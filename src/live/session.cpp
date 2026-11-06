@@ -1680,6 +1680,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   deps.engine.reduce_only = cfg.risk.reduce_only;
   deps.engine.reduce_only_venues = cfg.reduce_only_venues();
   deps.engine.quotes = cfg.quote_params();
+  deps.engine.capacity = cfg.capacity_config();
   deps.engine.fx = fx_plan;
   deps.engine.fees = fees;
   deps.engine.balance = balance_config(cfg, &instruments, &venue_names);
@@ -2369,6 +2370,8 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     snap.fills = live.stats.fills;
     snap.risk_rejects = live.stats.risk_rejects;
     snap.balance_withheld = live.stats.balance_withheld;
+    snap.capacity_priced_out = live.stats.capacity_priced_out;
+    snap.capacity_observed = live.stats.capacity_observed;
     snap.estimated_fills = live.stats.estimated_fills;
     snap.estimates_pending = live.stats.estimates_pending;
     snap.estimates_forgotten = live.stats.estimates_forgotten;
@@ -3310,6 +3313,12 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   if (rs.balance_withheld > 0)
     FASTMM_LOG_INFO("fastmm-live: balance_withheld={} (quote orders the balance no longer covered)",
                     rs.balance_withheld);
+  if (rs.capacity_priced_out > 0 || rs.capacity_observed > 0)
+    FASTMM_LOG_INFO(
+        "fastmm-live: capacity priced_out={} observed={} (orders and moves below the "
+        "price of their order slot)",
+        rs.capacity_priced_out,
+        rs.capacity_observed);
   if (rs.estimated_fills > 0)
     FASTMM_LOG_WARN(
         "fastmm-live: estimated_fills={} pending={} forgotten={} (fills booked from a cumulative "

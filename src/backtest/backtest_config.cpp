@@ -433,6 +433,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   b.engine.reduce_only = cfg.risk.reduce_only;
   b.engine.reduce_only_venues = cfg.reduce_only_venues();
   b.engine.quotes = cfg.quote_params();
+  b.engine.capacity = cfg.capacity_config();
   b.instruments = load_instruments(cfg);
   if (b.instruments.size() == 0) throw ConfigError("backtest: no [[instruments]] configured");
   b.accounting = cfg.accounting;

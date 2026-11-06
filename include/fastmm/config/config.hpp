@@ -341,6 +341,23 @@ struct GatewaySection {
   }
 };
 
+// [capacity]: the price of an order slot (core/capacity_price.hpp). Config::capacity_config()
+// makes it typed.
+struct CapacitySection {
+  bool configured = false;
+  std::string mode = "off";
+  std::string value = "off";
+  std::int64_t orders_10s = 0;
+  std::int64_t window_ms = 10'000;
+  bool fill_credit = false;
+  std::int64_t orders_1d = 0;
+  std::int64_t orders_per_day = 0;
+  std::int64_t weight_1m = 0;
+  double margin_bps = 1.0;
+  double full_move_bps = 10.0;
+  std::vector<std::string> venues;  // empty: every venue
+};
+
 struct LoggingSection {
   std::string level = "info";
   std::string file;
@@ -401,6 +418,7 @@ class Config {
   StrategySection strategy;
   AbSection ab;
   RiskSection risk;
+  CapacitySection capacity;
   GatewaySection gateway;
   // [accounting]: the reporting currency and the FX source of each other settlement currency,
   // read by fastmm-live, fastmm-gateway, the backtester and replay (build_fx_plan, core/fx.hpp).
@@ -434,6 +452,8 @@ class Config {
   // starts.
   [[nodiscard]] std::string unlimited_risk() const;
   [[nodiscard]] QuoteParams quote_params() const;
+  // [capacity], typed; the engine fills in the threshold's notional range.
+  [[nodiscard]] CapacityConfig capacity_config() const;
   [[nodiscard]] LogLevel log_level() const;
   [[nodiscard]] LogLevel mirror_level() const;
   // `to_file`: the log goes to a file (--log or [logging] file), where the default is 1 s.

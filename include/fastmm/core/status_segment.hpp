@@ -55,7 +55,8 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 26: per quote row, the [ab] arm and the parameters held as the instrument's own; the test's and
 //     the arms' names.
 // 27: per quote row, the instrument's home in its account pool and its pieces.
-inline constexpr std::uint32_t kStatusVersion = 27;
+// 28: the capacity price's refusals: priced out, and observed (would have been).
+inline constexpr std::uint32_t kStatusVersion = 28;
 inline constexpr std::size_t kStatusMaxArms = 16;  // kMaxAbArms
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
@@ -403,6 +404,10 @@ struct StatusSnapshot {
   std::uint64_t estimated_fills = 0;
   std::uint64_t estimates_pending = 0;
   std::uint64_t estimates_forgotten = 0;
+  // [capacity]: orders and moves refused below the price of their order slot, and those that
+  // would have been (observe mode, or moves under mode = "new") (RunnerStats).
+  std::uint64_t capacity_priced_out = 0;
+  std::uint64_t capacity_observed = 0;
   // [storage]: store_enabled 1 when a backend records the session (0: backend = "none", a dry
   // run, a warm standby before it takes over); the rows it wrote, the writes that failed
   // (Backend::errors) and the records the engine dropped because the ring to it was full

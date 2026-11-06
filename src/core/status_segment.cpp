@@ -542,6 +542,12 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                  rejects(s.risk_rejects, s.risk_reject_reasons),
                  rejects(s.venue_rejects, s.venue_reject_reasons),
                  s.balance_withheld);
+  if (s.capacity_priced_out != 0 || s.capacity_observed != 0) {
+    fmt::format_to(std::back_inserter(out),
+                   "capacity   priced_out={} observed={}\n",
+                   s.capacity_priced_out,
+                   s.capacity_observed);
+  }
   // Only after a private-stream outage: fills booked from a cumulative quantity at the order's
   // price, until an execution names them.
   if (s.estimated_fills != 0 || s.estimates_forgotten != 0) {
@@ -1246,6 +1252,7 @@ std::string format_status_json(const StatusSnapshot& s) {
                  "\"orders_sent\": {}, \"cancels_sent\": {}, \"replaces_sent\": {}, \"fills\": {}, "
                  "\"risk_rejects\": {}, \"venue_rejects\": {}, \"balance_withheld\": {}, "
                  "\"estimates\": {{\"fills\": {}, \"pending\": {}, \"forgotten\": {}}}, "
+                 "\"capacity\": {{\"priced_out\": {}, \"observed\": {}}}, "
                  "\"store\": {{\"enabled\": {}, \"rows\": {}, \"errors\": {}, \"dropped\": {}}}, "
                  "\"kill_flags\": {}, "
                  "\"kill_reason\": \"{}\", \"kill_latched\": {}, \"pnl_carry_raw\": {}, "
@@ -1275,6 +1282,8 @@ std::string format_status_json(const StatusSnapshot& s) {
                  s.estimated_fills,
                  s.estimates_pending,
                  s.estimates_forgotten,
+                 s.capacity_priced_out,
+                 s.capacity_observed,
                  s.store_enabled != 0,
                  s.store_rows,
                  s.store_errors,
