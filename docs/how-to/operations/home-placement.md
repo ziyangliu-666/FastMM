@@ -25,7 +25,7 @@ homes = { BTCUSDT = "binance_b" }   # optional pins
 
 The other keys ([reference](../../reference/configuration.md#venuespool)) have working defaults: `reduce_accounts = 1`, `spill = "never"` and a planner that moves at most 3 homes an hour. Accounts are venue ids in the strategy API, in the order of the `[venues.*]` tables; `ctx.pool(venue)` lists a pool's, `ctx.venue_name(id)` names one.
 
-Each home buys with its own quote balance. A `[venues.<primary>.treasury]` spreads quote by fixed `weights`, so with homes a home short of quote shows as bids cut by `fit_to_balance`; set `weights` or `min_free` for the accounts that carry most instruments.
+Each home buys with its own quote balance; a treasury with `targets = "demand"` keeps each account funded for its homes ([Fund each account of a pool](fund-a-pool.md)).
 
 ## Where orders go
 

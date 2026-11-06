@@ -134,6 +134,7 @@ py:SkewMM: parameter 'levels': cannot parse '2.5' as int (a whole number)
 | Balances | `balance(venue, asset)` -> `Balance`, `margin(venue=0)` -> `Margin`, `balance_room(inst, side, price)` -> float or `None`, `balances_live()` ([Balances](strategy-api.md#balances)) |
 | Account pools | `pool(venue=0)` -> the accounts' venue ids, primary first, `venue_name(venue)`, `account_usable(venue)` ([Account pools](strategy-api.md#account-pools)) |
 | Homes | `home(inst)` -> venue id or `None`, `placement(venue=0)` -> `"home"` or `"balance"`, `holding(inst, venue)` -> float, `pieces(inst)`, `set_home(inst, venue)` -> bool ([Homes](strategy-api.md#homes)) |
+| Funding needs | `set_funding_need(inst, quote)`, `funding_need(inst)` -> float ([Funding needs](strategy-api.md#funding-needs)) |
 | Perpetuals | `mark(inst)`, `index(inst)` -> `RefPrice`, `funding(inst)` -> `Funding` ([Perpetuals](strategy-api.md#perpetuals)) |
 | Randomness | `random()` in [0, 1), `randint(lo, hi)` inclusive, from the engine's seeded RNG |
 

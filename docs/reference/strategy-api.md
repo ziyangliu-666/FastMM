@@ -438,6 +438,24 @@ With `placement = "home"` an order without `NewOrderRequest::account` goes to an
 
 A spot instrument's `holding` is the account's whole balance of the base asset: two instruments on one base asset in a pool (BTCUSDT and BTCFDUSD) share it.
 
+### Funding needs
+
+A strategy tells a pool treasury with `targets = "demand"` what quote each instrument's bids want resting; the treasury funds each account for the instruments whose home it is ([Fund each account of a pool](../how-to/operations/fund-a-pool.md)).
+
+<!-- snippet: tests/docs/strategy_api_doc_test.cpp#funding -->
+```cpp
+static_assert(
+    std::same_as<decltype(lvalue<Ctx>().set_funding_need(InstrumentId{}, Notional{})), void>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().funding_need(InstrumentId{})), Notional>);
+```
+
+| Method | Does |
+|---|---|
+| `set_funding_need(id, quote)` | declares the need in the instrument's quote asset (a derivative's settlement asset); zero or less clears it |
+| `funding_need(id)` | the need last declared |
+
+Declare it when the sizes change, for example at each re-allocation. A need follows the instrument's home when the home moves.
+
 ### Perpetuals
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#perps -->

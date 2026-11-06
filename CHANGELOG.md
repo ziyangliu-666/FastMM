@@ -5,6 +5,9 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- core: `[venues.<primary>.treasury] targets = "demand"` funds each pool account for its home instruments' needs, which strategies declare with `ctx.set_funding_need(id, quote)`; `"weights"` stays the default.
+- core: `reserve = true` has the engine hold a treasury's payout out of the payer's free balance until the transfer resolves, so no order spends it first; the holds are journaled `Transfer` controls that a replay and a backtest reproduce.
+- sim: `[backtest] transfer_p_fail`, `transfer_p_unknown` and `transfer_hang_ms` make the simulated venue refuse transfers and lose their answers.
 - core: `[venues.<primary>.pool] placement = "home"` keeps each instrument's position on one account of its pool: adding orders go to its home, reducing orders to the accounts holding it, pieces first; `"balance"` (the default) keeps today's routing and only keeps the homes.
 - core: a home planner moves at most `plan_max_moves` homes every `plan_interval_s` to spread the accounts' order load; its moves, `fastmm-ctl pool home` and `ctx.set_home` are journaled `PoolHome` controls that a replay and a backtest reproduce.
 - core: `ctx.holding(id, account)`, `ctx.home(id)`, `ctx.pieces(id)` and `ctx.placement(primary)`, in C++ and Python; the status file shows each instrument's home and pieces.
