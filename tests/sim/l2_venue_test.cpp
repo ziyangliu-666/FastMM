@@ -172,6 +172,8 @@ struct Venue {
       }
       if (h->type == EventType::OrderCancelAck) id = msg_cast<OrderCancelAckMsg>(h).cl_ord_id.value;
       if (h->type == EventType::OrderReject) id = msg_cast<OrderRejectMsg>(h).cl_ord_id.value;
+      if (h->type == EventType::OrderCancelReject)
+        id = msg_cast<OrderCancelRejectMsg>(h).cl_ord_id.value;
       if (h->type != EventType::BookDelta && h->type != EventType::BookSnapshot &&
           h->type != EventType::BookTicker && h->type != EventType::Trade)
         got.push_back(Inbound{h->type, id, in.venue, in.arrival, in.price, in.qty, in.liquidity});
@@ -334,6 +336,12 @@ TEST_CASE("sim.fill_path: a cancel that reaches the venue after the fill is reje
   REQUIRE(fill != nullptr);
   CHECK(fill->arrival == at(3200));
   CHECK(x.got.back().type == EventType::OrderFill);
+  // The refusal carries no venue time, as Binance's -2011 does not: the engine ends the order on
+  // it, and a time after the fill's would let that release outrank the fill's balance report.
+  const Inbound* refused = x.find(EventType::OrderCancelReject, 1);
+  REQUIRE(refused != nullptr);
+  CHECK(refused->arrival == at(310));
+  CHECK_FALSE(refused->venue.valid());
 }
 
 TEST_CASE("sim.recorded_latency: the live message nearest in time, the same decision first") {

@@ -1399,7 +1399,11 @@ void SimTransport::emit_fill(ClientOrderId id,
 }
 
 void SimTransport::push_order_wire(Link& l, EventHeader& h, Timestamp venue_ts) noexcept {
-  h.exch_ts = venue_ts;
+  // A cancel the venue refuses carries no venue time, as a live venue's error reply does not
+  // (Binance -2011). The engine ends the order on it and gives its hold back; stamped with the
+  // refusal's time, that release would outrank the balance report sent with the fill that ended the
+  // order, which is older, and leave the sold quantity in the estimate for good.
+  h.exch_ts = h.type == EventType::OrderCancelReject ? Timestamp{} : venue_ts;
   if (h.type == EventType::OrderFill && l.lat.own_fill()) {
     // The private stream: in order among fills and balances, apart from the acks.
     Duration d = l.lat.fill_in();

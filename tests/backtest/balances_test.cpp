@@ -1,10 +1,11 @@
 // Backtests with the simulated venues' accounts ([backtest.balances], sim/sim_account.hpp): the
 // engine's balance table, its BalanceShort check, the venue's own refusal, basic_mm's sizing and
 // xmm's side pulling as they work live; the configuration, a journal's snapshot as the start, and
-// replay.
+// replay; a cancel that reaches the venue after the fill.
 #include "backtest_test_util.hpp"
 
 #include "fastmm/backtest/backtest_runner.hpp"
+#include "fastmm/backtest/csv_source.hpp"
 #include "fastmm/backtest/journal_source.hpp"
 #include "fastmm/backtest/replay.hpp"
 #include "fastmm/backtest/synthetic_source.hpp"
@@ -405,4 +406,109 @@ TEST_CASE("backtest.balances: a journal's snapshot restores the accounts of a po
   REQUIRE(a != nullptr);
   CHECK(a->total(VenueId{0}, "USDT") == nt("1000000"));
   CHECK(a->total(VenueId{1}, "BTC") == nt("1"));
+}
+
+namespace {
+
+// A sell inside the spread that a recorded buy takes at 50 ms. The strategy cancels it when it sees
+// the print, so the cancel reaches the venue after the fill; the fill comes back on the private
+// stream 3 ms later, after the cancel's reject. The engine's estimate of the base is taken at the
+// last book update, long after both.
+constexpr const char* kRaceConfig = R"(
+[engine]
+min_requote_interval_ms = 0
+post_only = true
+supports_replace = false
+
+[venues.binance]
+kind = "sim"
+
+[[instruments]]
+venue = "binance"
+symbol = "BTCU"
+base = "BTC"
+quote = "U"
+tick = "0.01"
+lot = "0.001"
+
+[risk]
+max_order_qty = "1"
+max_order_notional = "1000"
+max_position = "1"
+max_open_orders = 8
+stale_md_ms = 0
+
+[backtest]
+latency_fixed_us = 100
+latency_jitter_us = 0
+latency_fill_us = 3000
+latency_fill_jitter_us = 0
+markout_horizons_s = ""
+)";
+
+constexpr std::int64_t kRaceT0 = 1'790'000'000'000'000'000LL;
+std::string race_ms(std::int64_t v) {
+  return std::to_string(kRaceT0 + v * 1'000'000);
+}
+
+struct RaceSeen {
+  Balance btc{};
+  bool cancelled = false;
+};
+RaceSeen g_race;
+
+class SellThenCancel : public StrategyBase<BasicMMParams> {
+ public:
+  static constexpr std::string_view name() noexcept { return "sell_then_cancel"; }
+  template <class Ctx, class Book>
+  void on_book(Ctx& ctx, InstrumentId id, const Book& b) noexcept {
+    g_race.btc = ctx.balance(VenueId{0}, "BTC");
+    if (sent_ || !ctx.balances_live() || !b.is_valid()) return;
+    sent_ = true;
+    const auto r =
+        ctx.send(NewOrderRequest::limit(id, Side::Sell, px("100.05"), qt("0.01")).post_only());
+    if (r) id_ = r.value();
+  }
+  template <class Ctx>
+  void on_trade(Ctx& ctx, InstrumentId, const TradeMsg&) noexcept {
+    if (id_.value != 0 && ctx.cancel(id_)) g_race.cancelled = true;
+  }
+
+ private:
+  bool sent_ = false;
+  ClientOrderId id_{};
+};
+
+}  // namespace
+
+TEST_CASE("backtest.balances: a cancel that loses the race to a fill gives no coin back") {
+  for (const sim::FillModel model : {sim::FillModel::L2Queue, sim::FillModel::Matching}) {
+    CAPTURE(sim::to_string(model));
+    std::string c = "ts_ns,type,inst,side,price,qty,seq\n";
+    c += race_ms(1) + ",S,0,B,100.00,1,1\n" + race_ms(1) + ",S,0,A,100.10,1,1\n";
+    // Book updates away from the touch: the venue's first report has come by the second.
+    c += race_ms(10) + ",D,0,B,99.90,1,2\n" + race_ms(20) + ",D,0,B,99.80,1,3\n";
+    c += race_ms(50) + ",T,0,B,100.05,0.01,4\n";
+    c += race_ms(200) + ",D,0,B,100.00,2,5\n";
+    BacktestConfig cfg = BacktestConfig::from_config(Config::parse(kRaceConfig));
+    cfg.measure_wall_clock = false;
+    cfg.transport.fill_model = model;
+    cfg.transport.queue_conservatism_bps = 0;
+    cfg.transport.accounts = {
+        sim::SimAccountConfig{VenueId{0},
+                              {sim::SimBalance{FixedString<8>("BTC"), nt("0.01")},
+                               sim::SimBalance{FixedString<8>("U"), nt("1000")}}}};
+    g_race = RaceSeen{};
+    CsvSource src = CsvSource::from_text(c);
+    const BacktestResult r = run_backtest<SellThenCancel>(cfg, &src);
+    REQUIRE(r.metrics.fills == 1);
+    REQUIRE(g_race.cancelled);
+    // The venue had filled the order: it refuses the cancel (Binance -2011) and acks nothing.
+    CHECK(r.transport.cancel_rejects == 1);
+    CHECK(r.transport.cancel_acks == 0);
+    // The account sold its coin, and the engine's estimate says so.
+    CHECK(g_race.btc.free == nt("0"));
+    CHECK(g_race.btc.locked == nt("0"));
+    CHECK(g_race.btc.total == nt("0"));
+  }
 }

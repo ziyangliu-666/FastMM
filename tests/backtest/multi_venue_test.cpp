@@ -307,6 +307,11 @@ TEST_CASE("backtest.multi_venue: every order, ack and market-data event uses its
     const std::uint32_t inst = e->instrument.value;
     REQUIRE(inst < 2);
     CHECK(e->venue == VenueId{static_cast<std::uint8_t>(inst)});
+    // A cancel the venue refused carries no venue time to measure from (Binance -2011).
+    if (e->type == EventType::OrderCancelReject) {
+      CHECK_FALSE(e->exch_ts.valid());
+      return;
+    }
     const std::int64_t lat = e->recv_ts.ns - e->exch_ts.ns;
     if (order) {
       CHECK(lat == ack_lat[inst].ns);

@@ -33,6 +33,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - backtest: a sweep's point with `params_from_journal` keeps the parameters it sets against the journal's updates.
 
 ### Fixed
+- sim: a cancel the simulated venue refuses carries no venue time, as Binance's -2011 does not, so a cancel that lost its race with a fill no longer leaves the sold quantity in the engine's balance estimate.
 - core: a reconciliation holds the resting quotes instead of cancelling them, so the quotes still asked for are not sent again at its end; every quote of every account was cancelled and re-sent for one account's reconciliation, which on Binance follows each cancel that loses its race with a fill.
 
 ## [0.10.1] - 2026-10-29
