@@ -837,3 +837,18 @@ def test_home_placement_sends_buys_to_the_home(example_config):
     assert s.start == (None, "home")
     assert s.accounts == ["sim", "sim_b"] and s.usable
     assert s.after == (0, 0, 0.0, True, 1, False)
+
+
+def test_funding_need_is_declared_per_instrument(example_config):
+    class Probe(Strategy):
+        def on_start(self, ctx):
+            (inst,) = ctx.instruments
+            self.before = ctx.funding_need(inst)
+            ctx.set_funding_need(inst, 1250.5)
+            self.after = ctx.funding_need(inst)
+            ctx.set_funding_need(inst, -3.0)
+            self.none = ctx.funding_need(inst)
+
+    s = Probe()
+    fastmm.run_backtest(_pool_config("home", seconds=1), data=FIXTURE_FMJ, strategy=s)
+    assert (s.before, s.after, s.none) == (0.0, 1250.5, 0.0)

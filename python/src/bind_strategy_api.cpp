@@ -1511,6 +1511,25 @@ void bind_strategy_api(py::module_& m) {
           "\"home\" its adding orders on other accounts are cancelled. False when its pool keeps "
           "no homes or the venue is not of the pool.")
       .def(
+          "set_funding_need",
+          [](const ContextHandle& c, py::handle inst, double quote) {
+            c.engine().context().set_funding_need(c.run->resolve(inst),
+                                                  Notional::from_double(quote));
+          },
+          py::arg("inst"),
+          py::arg("quote"),
+          "The quote the instrument's bids want resting (its quote asset; a derivative's "
+          "settlement asset); zero or less clears it. A pool treasury with targets = \"demand\" "
+          "funds each "
+          "account for the needs of the instruments whose home it is.")
+      .def(
+          "funding_need",
+          [](const ContextHandle& c, py::handle inst) {
+            return c.engine().context().funding_need(c.run->resolve(inst)).to_double();
+          },
+          py::arg("inst"),
+          "The funding need set_funding_need last declared for the instrument.")
+      .def(
           "request_stop",
           [](const ContextHandle& c) { c.engine().context().request_stop(); },
           "End the backtest after the current event.")

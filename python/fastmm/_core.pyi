@@ -1319,6 +1319,10 @@ class Context:
         """
         The venue's funding of a perpetual (on_perp_state), with its age.
         """
+    def funding_need(self, inst: typing.Any) -> float:
+        """
+        The funding need set_funding_need last declared for the instrument.
+        """
     def holding(self, inst: typing.Any, venue: typing.SupportsInt | typing.SupportsIndex) -> float:
         """
         What one account of the pool holds of the instrument: a spot instrument's base balance there, a derivative's position on that account.
@@ -1429,6 +1433,10 @@ class Context:
         """
     def send_raw(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price_raw: typing.Any, qty_raw: typing.Any, *, post_only: bool = False, reduce_only: bool = False, ioc: bool = False, tag: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
         ...
+    def set_funding_need(self, inst: typing.Any, quote: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        """
+        The quote the instrument's bids want resting (its quote asset; a derivative's settlement asset); zero or less clears it. A pool treasury with targets = "demand" funds each account for the needs of the instruments whose home it is.
+        """
     def set_home(self, inst: typing.Any, venue: typing.SupportsInt | typing.SupportsIndex) -> bool:
         """
         Move the instrument's home to that account of its pool (journaled). With placement = "home" its adding orders on other accounts are cancelled. False when its pool keeps no homes or the venue is not of the pool.
