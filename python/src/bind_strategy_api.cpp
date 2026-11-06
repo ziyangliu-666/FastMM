@@ -1442,7 +1442,8 @@ void bind_strategy_api(py::module_& m) {
           "request_checkpoint",
           [](const ContextHandle& c) { c.engine().context().request_checkpoint(); },
           "Write a checkpoint to the journal once the events waiting now are handled: state(), "
-          "the positions and the open orders. A backtest can start from it ([backtest] start_at).")
+          "the positions and the open orders. A backtest with [backtest] initial_state = "
+          "\"journal\" and start_at starts from it.")
       .def(
           "random",
           [](const ContextHandle& c) { return c.engine().context().rng().uniform01(); },

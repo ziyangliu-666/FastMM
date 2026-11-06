@@ -502,12 +502,14 @@ def test_state_is_written_at_the_end_and_restored_after_on_start(example_config,
     fastmm.run_backtest(cfg, data=FIXTURE_FMJ, strategy=first)
     assert first.restored is None  # no file yet: a first start
     saved = (tmp_path / "counter.state").read_bytes()
+    assert saved[:8] == b"FMSTATE1"  # the head: magic, state_version, 4 zero bytes
+    saved = saved[16:]
     assert saved == f"books={first.books}".encode() and first.books > 0
     second = Counter()
     fastmm.run_backtest(cfg, data=FIXTURE_FMJ, strategy=second)
     assert second.restored == saved  # after on_start reset the count
     assert second.books == 2 * first.books
-    assert (tmp_path / "counter.state").read_bytes() == f"books={second.books}".encode()
+    assert (tmp_path / "counter.state").read_bytes()[16:] == f"books={second.books}".encode()
     # Bytes the strategy does not take: it starts fresh, the run goes on.
     (tmp_path / "counter.state").write_bytes(b"garbage")
     third = Counter()

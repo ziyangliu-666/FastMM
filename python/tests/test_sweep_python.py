@@ -151,7 +151,7 @@ def test_sweep_points_start_from_the_state_file_and_none_writes_it(example_confi
     assert _KeepsState.restored == [b"s0", b"s0"]
     assert path.read_bytes() == b"s0"
     fastmm.run_backtest(cfg, data="synthetic", strategy=_KeepsState)
-    assert path.read_bytes() == b"s0+"
+    assert path.read_bytes()[16:] == b"s0+"  # after the file's 16-byte head
 
 
 def test_hot_class_points_share_passes_and_match_their_own_backtests(example_config):

@@ -1387,7 +1387,7 @@ class Context:
         ...
     def request_checkpoint(self) -> None:
         """
-        Write a checkpoint to the journal once the events waiting now are handled: state(), the positions and the open orders. A backtest can start from it ([backtest] start_at).
+        Write a checkpoint to the journal once the events waiting now are handled: state(), the positions and the open orders. A backtest with [backtest] initial_state = "journal" and start_at starts from it.
         """
     def request_stop(self) -> None:
         """

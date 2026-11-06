@@ -343,8 +343,9 @@ class Strategy:
     ``state(self) -> bytes | str`` and ``restore(self, data: bytes) -> bool`` keep what the
     strategy has learnt: in ``BacktestConfig.state_file``, and in each journal checkpoint
     (``[engine] checkpoint_s``, ``ctx.request_checkpoint()``), which a backtest with
-    ``[backtest] start_at`` restores. ``state_version = <int>`` names the layout of those bytes; a
-    checkpoint of another version is refused.
+    ``[backtest] initial_state = "journal"`` and ``start_at`` restores. ``state_version = <int>``
+    names the layout of those bytes (0 when absent); a state file or checkpoint of another version
+    is refused.
     """
 
     def __init__(self) -> None:
