@@ -10,9 +10,13 @@
 //                     ControlTransferMsg on the treasury ring, which the journal records.
 //   TreasuryThread    looks at every treasury once a second with the engine's balance table
 //                     (EngineLiveStats::balances, the engine's estimate: free less what its own
-//                     orders hold) and publishes their counters for the status file.
+//                     orders hold) and publishes their counters for the status file. It also runs
+//                     the pools' home planners (core/pool_homes.hpp): each reads the engine's
+//                     orders by instrument (Engine::pool_load) and its moves reach the engine as
+//                     ControlCommand::PoolHome on the same ring, which the journal records.
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/msg_ring.hpp"
+#include "fastmm/core/pool_homes.hpp"
 #include "fastmm/core/result.hpp"
 #include "fastmm/core/seqlock.hpp"
 #include "fastmm/core/status_segment.hpp"
@@ -82,6 +86,18 @@ class TreasuryThread {
   };
 
   TreasuryThread(std::vector<Pool> pools, Balances balances, Clock clock = {});
+
+  // The engine's view of a pool (IEngineRunner::pool_load), and where a planner's moves go (the
+  // treasury ring). Both called on the thread.
+  using Load = std::function<bool(VenueId primary, PoolLoad& out)>;
+  using Emit = std::function<bool(const ControlMsg& m)>;
+  // Before start(): the planners this thread runs on wall-clock time.
+  void set_planners(std::vector<std::unique_ptr<HomePlanner>> planners, Load load, Emit emit);
+  [[nodiscard]] std::size_t planners() const noexcept { return planners_.size(); }
+  // Homes the planners have moved or given (any thread).
+  [[nodiscard]] std::uint64_t home_moves() const noexcept {
+    return home_moves_.load(std::memory_order_relaxed);
+  }
   ~TreasuryThread();
   TreasuryThread(const TreasuryThread&) = delete;
   TreasuryThread& operator=(const TreasuryThread&) = delete;
@@ -106,6 +122,11 @@ class TreasuryThread {
   void publish();
 
   std::vector<Pool> pools_;
+  std::vector<std::unique_ptr<HomePlanner>> planners_;
+  Load load_;
+  Emit emit_;
+  std::unique_ptr<PoolLoad> pool_load_;
+  std::atomic<std::uint64_t> home_moves_{0};
   Balances balances_;
   Clock clock_;
   std::vector<TreasuryBalance> rows_;

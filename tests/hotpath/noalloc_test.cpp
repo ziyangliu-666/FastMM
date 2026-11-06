@@ -995,6 +995,118 @@ TEST_CASE("hotpath.noalloc: engine step with reduce-only mode switched on and of
   CHECK(engine->reduce_only(InstrumentId{0}));
 }
 
+TEST_CASE("hotpath.noalloc: engine step with home placement on an account pool") {
+  InstrumentTable table;
+  Instrument btc = make_inst();
+  btc.base = "BTC";
+  btc.quote = "USDT";
+  btc.venue = VenueId{0};  // the pool's primary
+  REQUIRE(table.add(btc));
+  SimClock clock{Timestamp{seconds(1000).ns}};
+  NullTransport transport;
+  InlineFeed feed{1 << 20};
+  MsgRing journal_ring{1 << 20};
+  BasicMM strategy;
+  REQUIRE_FALSE(strategy.configure({{"half_spread_bps", "10"},
+                                    {"quote_qty", "0.01"},
+                                    {"max_inventory", "0.05"},
+                                    {"levels", "2"}}));
+  EngineConfig cfg;
+  cfg.risk.max_order_qty = qt("1");
+  cfg.risk.max_open_orders = 16;
+  cfg.quotes.min_requote_interval = Duration{};
+  REQUIRE(cfg.pools.add(VenueId{1}, VenueId{0}));
+  REQUIRE(cfg.pools.add(VenueId{2}, VenueId{0}));
+  cfg.homes.pool[0].configured = true;
+  cfg.homes.pool[0].placement = Placement::Home;
+  using E = Engine<BasicMM, SimClock, NullTransport, InlineFeed>;
+  auto engine = std::make_unique<E>(cfg, table, clock, transport, feed, strategy, &journal_ring);
+  engine->warm_up();
+  engine->start();
+  std::int64_t venue_ms = 1'789'000'000'000;
+  auto push_balance = [&](VenueId v, const char* asset, const char* free, std::uint8_t flags) {
+    BalanceMsg m{};
+    init_header(m, EventType::Balance, InstrumentId::invalid(), v);
+    m.asset.assign(asset);
+    m.free = Notional::from_decimal(free).value();
+    m.total = m.free;
+    m.equity = m.free;
+    m.flags = flags;
+    m.hdr.exch_ts = Timestamp{++venue_ms * 1'000'000};
+    m.hdr.recv_ts = clock.now();
+    REQUIRE(feed.push(m.hdr));
+  };
+  auto push_book = [&](const char* bid, const char* ask, std::uint64_t seq) {
+    std::byte* p = feed.reserve(BookDeltaMsg::size_for(1, 1));
+    REQUIRE(p != nullptr);
+    auto* d = reinterpret_cast<BookDeltaMsg*>(p);
+    init_header(*d,
+                seq == 1 ? EventType::BookSnapshot : EventType::BookDelta,
+                InstrumentId{0},
+                VenueId{0},
+                BookDeltaMsg::size_for(1, 1));
+    if (seq == 1) d->hdr.flags |= EventHeader::kSnapshot;
+    d->hdr.recv_ts = clock.now();
+    d->hdr.t0_cycles = clock.cycles();
+    d->bid_count = d->ask_count = 1;
+    d->last_update_id = seq;
+    d->levels()[0] = Level{px(bid), qt("5")};
+    d->levels()[1] = Level{px(ask), qt("5")};
+    feed.commit();
+  };
+  auto push_fill = [&](VenueId v, std::uint64_t n) {
+    OrderFillMsg f{};
+    init_header(f, EventType::OrderFill, InstrumentId{0}, v);
+    f.cl_ord_id = ClientOrderId{0xBEEF};
+    f.exec_id.assign("x");
+    f.exec_id.push_back(static_cast<char>('a' + n % 26));
+    f.side = n % 2 == 0 ? Side::Buy : Side::Sell;
+    f.price = px("100.00");
+    f.qty = qt("0.001");
+    f.fee_asset = FeeAsset::Quote;
+    f.hdr.exch_ts = Timestamp{++venue_ms * 1'000'000};
+    f.hdr.recv_ts = clock.now();
+    REQUIRE(feed.push(f.hdr));
+  };
+  auto push_home = [&](VenueId to) {
+    ControlMsg m{};
+    init_header(m, EventType::Control, InstrumentId{0}, VenueId{0});
+    m.command = ControlCommand::PoolHome;
+    m.arg = pool_home_arg(to, HomeSource::Planner);
+    m.hdr.recv_ts = clock.now();
+    REQUIRE(feed.push(m.hdr));
+  };
+  // A piece on account 1, the rest on account 2: the reconciliation makes 2 the home.
+  for (std::uint8_t v = 0; v < 3; ++v) {
+    push_balance(VenueId{v}, "USDT", "50", BalanceMsg::kSnapshot);
+    push_balance(VenueId{v},
+                 "BTC",
+                 v == 0 ? "0" : (v == 1 ? "0.01" : "0.03"),
+                 BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd);
+  }
+  push_book("100.00", "100.02", 1);
+  {
+    NoAllocScope guard(true);
+    std::size_t n = 0;
+    while (engine->step() > 0) ++n;
+    for (std::uint64_t i = 0; i < 20; ++i) {
+      push_book(i % 2 == 0 ? "100.10" : "100.00", i % 2 == 0 ? "100.12" : "100.02", 2 + i);
+      push_fill(VenueId{static_cast<std::uint8_t>(1 + i % 2)}, i);
+      if (i == 10) push_home(VenueId{0});
+      while (engine->step() > 0) ++n;
+      static_cast<void>(engine->context().holding(InstrumentId{0}, VenueId{1}));
+      static_cast<void>(engine->context().pieces(InstrumentId{0}));
+    }
+    PoolLoad load;
+    engine->pool_load(VenueId{0}, load);
+    CHECK(load.count == 1);
+    CHECK(n > 0);
+  }
+  CHECK(engine->stats().home_changes == 2);  // the reconciliation's, then the planner's
+  CHECK(engine->context().home(InstrumentId{0}) == VenueId{0});
+  CHECK(engine->stats().orders_sent >= 2);
+}
+
 namespace {
 // Asks for a checkpoint at every book, with 64 KiB of state from StateWriter.
 class Checkpointing : public StrategyBase<BasicMMParams> {

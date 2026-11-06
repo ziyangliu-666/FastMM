@@ -103,6 +103,10 @@ struct SimVenueConfig {
   // fill holds up no ack and an ack no fill; else behind the acks, on ack_in.
   bool fill_latency = false;
   LatencyParams fill_in{};
+  // An order's first fill takes one off the count of the current window of each interval (never
+  // below zero), as Binance Spot's unfilled order count does: an account that fills sends more
+  // than the limit.
+  bool orders_credit_fills = false;
 };
 
 struct SimTransportConfig {
@@ -127,7 +131,8 @@ struct SimTransportConfig {
   Duration order_service{};
   bool fill_latency = false;  // SimVenueConfig::fill_latency, fill_in
   LatencyParams fill_in{};
-  MdAggregatorConfig md{};  // coupled-generator mode
+  bool orders_credit_fills = false;  // SimVenueConfig::orders_credit_fills
+  MdAggregatorConfig md{};           // coupled-generator mode
   // SHA-256 over every outbound message (outbound_hash()), used by the determinism and replay
   // checks. It costs about 70 ns per order, more than the engine work that produced it, so a
   // benchmark that times send() turns it off; backtests and tests leave it on.
@@ -175,7 +180,8 @@ struct SimTransportConfig {
                           cancel_out,
                           order_service,
                           fill_latency,
-                          fill_in};
+                          fill_in,
+                          orders_credit_fills};
   }
   // Bit v set: venue v uses cancel-replace (the journal header's replace_venues).
   [[nodiscard]] std::uint64_t replace_mask() const noexcept {
@@ -573,6 +579,12 @@ class SimTransport final : public MatchingSink {
       roll(now);
       ++count;
     }
+    // An order's first fill (SimVenueConfig::orders_credit_fills).
+    void credit(Timestamp now) noexcept {
+      if (limit <= 0) return;
+      roll(now);
+      if (count > 0) --count;
+    }
     void roll(Timestamp now) noexcept {
       const std::int64_t i = now.ns / width_ns;
       if (i != index) {
@@ -600,6 +612,7 @@ class SimTransport final : public MatchingSink {
           orders_10s{seconds(10).ns, c.orders_10s},
           orders_1d{seconds(86'400).ns, c.orders_1d},
           md_recorded_arrival(c.md_recorded_arrival),
+          credit_fills(c.orders_credit_fills),
           order_service(c.order_service) {
       if (c.fill_latency) lat.set_fill_in(c.fill_in);
     }
@@ -617,6 +630,7 @@ class SimTransport final : public MatchingSink {
     std::uint64_t taken = 0;     // new orders and replaces sent (OrderBudget::orders_taken)
     ClientOrderId last_taken{};  // the last new or replacement order that reached the venue
     bool md_recorded_arrival;
+    bool credit_fills;               // SimVenueConfig::orders_credit_fills
     std::uint8_t index = 0;          // in links_
     Duration order_service;          // SimVenueConfig::order_service
     Timestamp last_order_processed;  // venue time the last order message was taken in

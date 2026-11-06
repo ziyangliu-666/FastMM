@@ -535,6 +535,54 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "the transfers in flight, the id counter and the limiter across restarts (default "
      "<journal_dir>/<engine name>.<primary>.treasury)"},
+    {"venues.*",
+     "pool",
+     KeyType::Table,
+     false,
+     "[venues.<primary>.pool] table: where the pool this venue is the primary of keeps each "
+     "instrument's position (home placement) and the planner that spreads the homes"},
+    {"venues.*.pool",
+     "placement",
+     KeyType::String,
+     false,
+     "\"balance\": each new order to the account whose balance covers it with the most order "
+     "window left; \"home\": each instrument's position on one account, its home: an order goes "
+     "there unless it takes a piece on another account towards zero (default \"balance\")"},
+    {"venues.*.pool",
+     "reduce_accounts",
+     KeyType::Int,
+     false,
+     "accounts that may carry reducing orders of one instrument and side at once; 1 offers a "
+     "piece alone until it is gone (default 1)"},
+    {"venues.*.pool",
+     "spill",
+     KeyType::String,
+     false,
+     "\"never\": an order for a home that is down is refused HomeUnavailable; \"flat\": an "
+     "instrument flat over the pool and not pinned moves to the usable account with the most "
+     "order window first (default \"never\")"},
+    {"venues.*.pool",
+     "plan_interval_s",
+     KeyType::Int,
+     false,
+     "how often the planner moves homes to spread the accounts' order load, s; 0 = no planner "
+     "(default 3600)"},
+    {"venues.*.pool",
+     "plan_lookback_h",
+     KeyType::Float,
+     false,
+     "hours of the engine's own orders the planner plans from (default 3)"},
+    {"venues.*.pool",
+     "plan_max_moves",
+     KeyType::Int,
+     false,
+     "instruments the planner moves at most per plan (default 3)"},
+    {"venues.*.pool",
+     "homes",
+     KeyType::Table,
+     false,
+     "{ <symbol> = \"<account>\", ... }: pinned homes the planner and a spill never move "
+     "(default none)"},
     // [[instruments]]
     {"instruments[]", "venue", KeyType::String, true, "name of a [venues.<name>] table"},
     {"instruments[]", "symbol", KeyType::String, true, "venue symbol, for example BTCUSDT"},

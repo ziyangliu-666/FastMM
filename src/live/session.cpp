@@ -1476,17 +1476,21 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   static_cast<void>(feed.add_ring(&control_ring));
   // Pool treasuries ([venues.<primary>.treasury]): their records reach the engine (and so the
   // journal) on a ring of their own, whose only producer is fm-treasury.
+  // The home planners ([venues.<primary>.pool] plan_interval_s) run on the same thread and ring.
   std::vector<std::string> treasury_pools;
+  std::vector<std::string> planner_pools;
   for (const VenueSection& v : cfg.venues) {
     if (v.treasury.enabled) treasury_pools.push_back(v.name);
+    if (v.pool.configured && v.pool.plan_interval_s > 0) planner_pools.push_back(v.name);
   }
   std::unique_ptr<MsgRing> treasury_ring;
-  if (!treasury_pools.empty()) {
+  if (!treasury_pools.empty() || !planner_pools.empty()) {
     if (via_gateway || opts.dry_run) {
-      FASTMM_LOG_WARN("[venues.*.treasury]: not run {}",
+      FASTMM_LOG_WARN("[venues.*.treasury], [venues.*.pool] planner: not run {}",
                       via_gateway ? "by a strategy attached to a gateway"
                                   : "in a dry run (no private sessions, no balances)");
       treasury_pools.clear();
+      planner_pools.clear();
     } else {
       treasury_ring = std::make_unique<MsgRing>(1U << 16);
       if (!feed.add_ring(treasury_ring.get())) {
@@ -1687,6 +1691,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   deps.engine.quoting_enabled = !(opts.dry_run && via_gateway);
   deps.engine.await_reconcile = await_venues;
   deps.engine.pools = cfg.pool_plan();
+  deps.engine.homes = pool_homes(cfg, instruments);
   for (const VenueSection& v : cfg.venues) {
     if (!v.pool_of.empty())
       FASTMM_LOG_INFO("venue {} is an account of pool {}: orders, no market data of its own",
@@ -1926,7 +1931,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   // (live/treasury_thread.hpp). The ledger of each is read now: a transfer an earlier process left
   // in flight is asked for before anything new is planned.
   std::unique_ptr<TreasuryThread> treasury;
-  if (!treasury_pools.empty()) {
+  if (!treasury_pools.empty() || !planner_pools.empty()) {
     std::vector<TreasuryThread::Pool> pools;
     const auto venue_of = [&slots](VenueId v) -> venues::Venue* {
       return v.value < slots.size() ? slots[v.value]->venue.get() : nullptr;
@@ -1986,6 +1991,29 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
             out.push_back(row);
           }
         });
+    if (!planner_pools.empty()) {
+      std::vector<std::unique_ptr<HomePlanner>> planners;
+      for (const std::string& name : planner_pools) {
+        const VenueId primary = cfg.venue_id(name);
+        const PoolPlacement& p = deps.engine.homes.of(primary);
+        FASTMM_LOG_INFO("[pool {}] placement={} planner every {} s over {} h, at most {} moves",
+                        name,
+                        to_string(p.placement),
+                        p.plan_interval.ns / 1'000'000'000,
+                        static_cast<double>(p.plan_lookback.ns) / 3600e9,
+                        p.plan_max_moves);
+        planners.push_back(std::make_unique<HomePlanner>(primary, p, deps.engine.homes.pin));
+      }
+      MsgRing* ring = treasury_ring.get();
+      treasury->set_planners(
+          std::move(planners),
+          [&runner](VenueId primary, PoolLoad& out) { return runner->pool_load(primary, out); },
+          [ring, &feed](const ControlMsg& m) {
+            if (!ring->try_push(&m, m.hdr.len)) return false;
+            feed.notify();
+            return true;
+          });
+    }
   }
 
   const bool single = cfg.single_threaded();
@@ -2592,6 +2620,14 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     if (!control_ring.try_push(&h, h.len)) return false;
     feed.notify();
     return true;
+  };
+  plane.home_refusal = [&](InstrumentId id, VenueId account) -> std::string {
+    const PoolPlan pools = cfg.pool_plan();
+    const VenueId primary = instruments.get(id).venue;
+    if (!pools.pooled(primary) || !deps.engine.homes.of(primary).configured)
+      return "the instrument's venue has no [venues.<primary>.pool] table";
+    if (!pools.admits(primary, account)) return "that account is not in the instrument's pool";
+    return {};
   };
   plane.venue = [&](std::string_view name, VenueId& out) {
     for (std::size_t i = 0; i < venue_names.size(); ++i) {

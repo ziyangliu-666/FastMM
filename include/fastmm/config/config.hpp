@@ -17,6 +17,7 @@
 #include "fastmm/core/fx.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/perp_book.hpp"
+#include "fastmm/core/pool_homes.hpp"
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/risk.hpp"
 #include "fastmm/core/thread_utils.hpp"
@@ -161,6 +162,19 @@ struct TreasurySection {
   std::string state_file;  // empty: <journal_dir>/<engine name>.<primary>.treasury
 };
 
+// [venues.<primary>.pool]: how the pool whose primary this venue is places each instrument's
+// position (core/pool_homes.hpp). Config::pool_homes() makes it typed.
+struct PoolSection {
+  bool configured = false;  // the table is present
+  std::string placement = "balance";
+  std::int64_t reduce_accounts = 1;
+  std::string spill = "never";
+  std::int64_t plan_interval_s = 3600;
+  double plan_lookback_h = 3.0;
+  std::int64_t plan_max_moves = 3;
+  std::map<std::string, std::string> homes;  // symbol -> pool account
+};
+
 struct VenueSection {
   std::string name;
   std::string kind;
@@ -198,6 +212,7 @@ struct VenueSection {
   std::string fill_audit_mode = "report";
   FeesSection fees;
   TreasurySection treasury;
+  PoolSection pool;
   // Every key the generic parser does not interpret, stringified. The venue `kind` names owns
   // them: it declares them, validates them and reports an unknown one
   // (fastmm::venues::validate_venues, include/fastmm/venues/registry.hpp), which is why the
@@ -440,6 +455,10 @@ class Config {
 
 // Builds the dense instrument table (src/core/instrument_loader.cpp). Throws ConfigError.
 InstrumentTable load_instruments(const Config& cfg);
+
+// [venues.<primary>.pool] of every pool, and the pinned homes (`homes`) by the id each instrument
+// has in `table`.
+PoolHomesPlan pool_homes(const Config& cfg, const InstrumentTable& table);
 
 // The fee rates of each instrument: its [[instruments]] maker_bps / taker_bps, else its venue's
 // [venues.<x>.fees]; the first venue's are the default for ids outside the configuration. Without

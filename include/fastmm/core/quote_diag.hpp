@@ -95,6 +95,9 @@ struct LiveQuoteInstrument {
   std::uint8_t reduce_only = 0;  // reduce-only mode holds the instrument
   std::uint8_t arm = 0;          // the [ab] arm it is in: 0 none, k + 1 arm k
   std::uint8_t own_params = 0;   // parameters it holds values of its own for
+  std::uint8_t home = 0xFF;      // its home's venue id in its account pool (0xFF: none)
+  std::uint8_t pieces = 0;       // accounts other than the home that hold it
+  std::uint8_t pad_[6] = {};
   std::int64_t position_raw = 0;
   std::int64_t avg_px_raw = 0;
   std::int64_t realized_raw = 0;

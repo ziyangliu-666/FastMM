@@ -90,6 +90,8 @@ typedef struct fastmm_hot_ctx {
   int64_t quiet_hi_raw; /* one of these, or the book is invalid */
   /* input */
   uint8_t reduce_only; /* reduce-only mode holds the instrument: quote only the side that reduces */
+  uint8_t home;        /* the instrument's home account in its pool, a venue id (255: none) */
+  uint8_t pieces;      /* accounts other than the home that hold the instrument */
 } fastmm_hot_ctx;
 
 typedef struct fastmm_hot_book {
@@ -140,6 +142,7 @@ FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, quiet_lo_raw) == 664,
                          "fastmm_hot_ctx.quiet_lo_raw");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, reduce_only) == 680,
                          "fastmm_hot_ctx.reduce_only");
+FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, pieces) == 682, "fastmm_hot_ctx.pieces");
 FASTMM_HOT_STATIC_ASSERT(sizeof(fastmm_hot_book) == 744, "fastmm_hot_book size");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_book, n_bids) == 12, "fastmm_hot_book.n_bids");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_book, mid) == 24, "fastmm_hot_book.mid");

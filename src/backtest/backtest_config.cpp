@@ -111,7 +111,7 @@ void read_latency(const GenericSection& bt, const std::string& prefix, sim::SimV
 }
 
 // Keys of [backtest.venues.<name>] (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 21> kVenueKeys = {"latency_fixed_us",
+constexpr std::array<std::string_view, 22> kVenueKeys = {"latency_fixed_us",
                                                          "latency_fill_us",
                                                          "latency_fill_jitter_us",
                                                          "latency_fill_sigma",
@@ -131,7 +131,8 @@ constexpr std::array<std::string_view, 21> kVenueKeys = {"latency_fixed_us",
                                                          "supports_replace",
                                                          "stp",
                                                          "orders_10s",
-                                                         "orders_1d"};
+                                                         "orders_1d",
+                                                         "orders_credit_fills"};
 constexpr std::string_view kVenuesPrefix = "venues.";
 constexpr std::string_view kBalancesPrefix = "balances.";
 constexpr std::string_view kPositionsPrefix = "positions.";
@@ -214,7 +215,7 @@ std::vector<sim::SimVenueConfig> read_venues(const Config& cfg,
                       "latency_md_jitter_us, latency_cancel_us, latency_cancel_jitter_us, "
                       "latency_fill_us, latency_fill_jitter_us, latency_fill_sigma, "
                       "order_service_us, md_arrival, p_drop, supports_replace, stp, "
-                      "orders_10s, orders_1d, balances.<ASSET>){}",
+                      "orders_10s, orders_1d, orders_credit_fills, balances.<ASSET>){}",
                       key,
                       where));
     }
@@ -232,6 +233,8 @@ std::vector<sim::SimVenueConfig> read_venues(const Config& cfg,
     }
     v.orders_10s = non_negative(bt, prefix + "orders_10s", defaults.orders_10s);
     v.orders_1d = non_negative(bt, prefix + "orders_1d", defaults.orders_1d);
+    v.orders_credit_fills =
+        bt.get_bool(prefix + "orders_credit_fills", defaults.orders_credit_fills);
     out.push_back(v);
   }
   std::sort(out.begin(), out.end(), [](const sim::SimVenueConfig& a, const sim::SimVenueConfig& b) {
@@ -348,7 +351,7 @@ std::vector<Duration> parse_horizons(const std::string& text) {
 }
 
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 41> kBacktestKeys = {"start_at",
+constexpr std::array<std::string_view, 42> kBacktestKeys = {"start_at",
                                                             "controls_from_journal",
                                                             "latency_from_journal",
                                                             "latency_fill_us",
@@ -363,6 +366,7 @@ constexpr std::array<std::string_view, 41> kBacktestKeys = {"start_at",
                                                             "params_pinned",
                                                             "orders_10s",
                                                             "orders_1d",
+                                                            "orders_credit_fills",
                                                             "source",
                                                             "path",
                                                             "seed",
@@ -482,12 +486,15 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   defaults.stp = t.stp;
   t.orders_10s = non_negative(bt, "orders_10s", 0);
   t.orders_1d = non_negative(bt, "orders_1d", 0);
+  t.orders_credit_fills = bt.get_bool("orders_credit_fills", false);
   defaults.orders_10s = t.orders_10s;
   defaults.orders_1d = t.orders_1d;
+  defaults.orders_credit_fills = t.orders_credit_fills;
   t.venues = read_venues(cfg, bt, defaults);
   t.accounts = read_accounts(cfg, bt);
   t.pools = cfg.pool_plan();
   b.engine.pools = t.pools;
+  b.engine.homes = pool_homes(cfg, b.instruments);
   for (const VenueSection& v : cfg.venues) {
     if (!v.treasury.enabled) continue;
     TreasuryConfig tc = cfg.treasury_config(v.name);

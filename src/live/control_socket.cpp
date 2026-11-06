@@ -2,6 +2,7 @@
 
 #include "fastmm/core/fx.hpp"
 #include "fastmm/core/log.hpp"
+#include "fastmm/core/pool_homes.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/underlying.hpp"
 
@@ -46,6 +47,9 @@ constexpr std::string_view kUsage =
     "                                           refuse orders that add to a position:\n"
     "                                           everywhere, or in that scope; off without\n"
     "                                           a scope clears every scope\n"
+    "  pool home SYM ACCOUNT [--free]           move the instrument's home to that account\n"
+    "                                           of its pool ([venues.<primary>.pool]) and pin\n"
+    "                                           it there; --free leaves it to the planner\n"
     "  flatten [--instrument SYM] [--max-slippage-bps N]  work the position off, reduce-only\n"
     "  kill                                     trip the kill switch (quotes pulled, all\n"
     "                                           orders cancelled; the position stays)\n"
@@ -312,6 +316,29 @@ std::string control_command(std::string_view request, ControlPlane& plane) {
         scope,
         0,
         std::string(verb) + " queued");
+  }
+  if (verb == "pool") {
+    const bool unpinned = args.size() == 4 && args[3] == "--free";
+    if ((args.size() != 3 && !unpinned) || args[0] != "home")
+      return error("pool takes home SYM ACCOUNT [--free]");
+    Scope scope;
+    std::string err;
+    if (!find_instrument(plane, args[1], scope.instrument, err)) return error(err);
+    VenueId account = VenueId::invalid();
+    if (!plane.venue || !plane.venue(args[2], account))
+      return error("no venue named '" + std::string(args[2]) + "'");
+    if (plane.home_refusal) {
+      if (const std::string why = plane.home_refusal(scope.instrument, account); !why.empty())
+        return error(why);
+    }
+    const Instrument& inst = plane.instruments->get(scope.instrument);
+    scope.venue = inst.venue;
+    return submit_control(
+        plane,
+        ControlCommand::PoolHome,
+        scope,
+        pool_home_arg(account, HomeSource::Operator) | (unpinned ? kPoolHomeFree : 0),
+        "pool home " + std::string(args[2]) + (unpinned ? " (free)" : " (pinned)") + " queued");
   }
   if (verb == "reduce-only") {
     if (args.empty() || (args[0] != "on" && args[0] != "off"))

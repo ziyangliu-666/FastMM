@@ -140,7 +140,8 @@ void SessionRecorder::add(const EventHeader& h) {
       return;
     case EventType::Control:
       if (h.len >= sizeof(ControlMsg) &&
-          sim::replayable_control(msg_cast<ControlMsg>(&h).command)) {
+          sim::replayable_control(msg_cast<ControlMsg>(&h).command) &&
+          (h.flags & EventHeader::kSynthetic) == 0) {
         std::vector<std::uint64_t> bytes((h.len + 7) / 8);
         std::memcpy(bytes.data(), &h, h.len);
         out_.controls.push_back(std::move(bytes));

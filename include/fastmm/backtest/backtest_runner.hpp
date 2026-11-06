@@ -138,6 +138,10 @@ class BacktestSession {
   [[nodiscard]] bool journal_param(ParamUpdateMsg& m) const noexcept;
   [[nodiscard]] bool flow_applies(VenueId v, Timestamp t) const;
   [[nodiscard]] bool refresh_applies(VenueId v, Timestamp t) const;
+  // A recorded Control the run takes as input (controls_from_journal): an operator command
+  // (sim::replayable_control), not the engine's own record, and no planner move of a pool the run
+  // plans itself.
+  [[nodiscard]] bool replays_control(const EventHeader& h) const;
   void wake_slow_tier();
   std::vector<int> param_map_;  // recorded field index -> this schema's, -1: none
   // balances_from_journal: each venue's first snapshot, what its account starts from.

@@ -1365,6 +1365,10 @@ void SimTransport::emit_fill(ClientOrderId id,
                              bool queue_known) noexcept {
   ++stats_.fills;
   Link& l = order_link(id, inst);
+  if (l.credit_fills && cum == qty) {
+    l.orders_10s.credit(ts);
+    l.orders_1d.credit(ts);
+  }
   OrderFillMsg m{};
   init_header(m, EventType::OrderFill, inst, l.id);
   m.cl_ord_id = id;

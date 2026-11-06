@@ -96,7 +96,7 @@ TreasuryThread::~TreasuryThread() {
 }
 
 void TreasuryThread::start() {
-  if (pools_.empty() || thread_.joinable()) return;
+  if ((pools_.empty() && planners_.empty()) || thread_.joinable()) return;
   thread_ = std::thread([this] { run(); });
 }
 
@@ -127,7 +127,32 @@ void TreasuryThread::step() {
     if (stop_.load(std::memory_order_relaxed)) break;
     p.treasury->step(now, rows_, *p.port);
   }
+  for (const std::unique_ptr<HomePlanner>& p : planners_) {
+    if (stop_.load(std::memory_order_relaxed)) break;
+    if (!load_ || !load_(p->primary(), *pool_load_)) continue;
+    for (const HomeMove& mv : p->step(now, *pool_load_)) {
+      ControlMsg m{};
+      init_header(m, EventType::Control, mv.instrument, p->primary());
+      m.command = ControlCommand::PoolHome;
+      m.arg = pool_home_arg(mv.to, HomeSource::Planner, mv.from);
+      m.hdr.recv_ts = Timestamp{now};
+      if (!emit_ || !emit_(m)) {
+        FASTMM_LOG_ERROR("home planner: the treasury ring is full; a home move is not sent");
+        continue;
+      }
+      home_moves_.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
   publish();
+}
+
+void TreasuryThread::set_planners(std::vector<std::unique_ptr<HomePlanner>> planners,
+                                  Load load,
+                                  Emit emit) {
+  planners_ = std::move(planners);
+  load_ = std::move(load);
+  emit_ = std::move(emit);
+  pool_load_ = std::make_unique<PoolLoad>();
 }
 
 void TreasuryThread::run() {

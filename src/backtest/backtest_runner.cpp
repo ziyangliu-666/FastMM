@@ -8,6 +8,7 @@
 #include "fastmm/backtest/registrations.hpp"
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/log.hpp"
+#include "fastmm/core/pool_homes.hpp"
 #include "fastmm/core/session_state.hpp"
 #include "fastmm/sim/recorded_session.hpp"
 #include "fastmm/sim/sim_treasury.hpp"
@@ -66,6 +67,30 @@ struct RunTier {
   std::size_t next_control = 0;
   sim::SlowHooks user{};
   Timestamp user_next = Timestamp::max();
+  // The pools' home planners ([venues.<primary>.pool] plan_interval_s), on simulated time: every
+  // 10 s each reads the engine's orders by instrument, and its moves reach the engine as
+  // ControlCommand::PoolHome, as the planner thread's do live.
+  std::vector<std::unique_ptr<HomePlanner>> planners;
+  const IEngineRunner* runner = nullptr;
+  std::unique_ptr<PoolLoad> load;
+  Timestamp next_plan = Timestamp::max();
+
+  void plan_homes(Timestamp now) {
+    std::int64_t next = std::numeric_limits<std::int64_t>::max();
+    for (const std::unique_ptr<HomePlanner>& p : planners) {
+      if (runner == nullptr || !runner->pool_load(p->primary(), *load)) continue;
+      for (const HomeMove& mv : p->step(now.ns, *load)) {
+        ControlMsg m{};
+        init_header(m, EventType::Control, mv.instrument, p->primary());
+        m.command = ControlCommand::PoolHome;
+        m.arg = pool_home_arg(mv.to, HomeSource::Planner, mv.from);
+        m.hdr.recv_ts = now;
+        if (!feed->push(m.hdr)) throw std::runtime_error("backtest: the engine's feed is full");
+      }
+      next = std::min({next, p->next_sample_ns(), p->next_plan_ns()});
+    }
+    next_plan = Timestamp{next};
+  }
 
   void look(Timestamp now) {
     const sim::SimAccounts* accounts = transport->accounts();
@@ -126,6 +151,7 @@ struct RunTier {
         next_control < controls.size() ? control_time(controls[next_control]) : Timestamp::max();
     return std::min({user_next,
                      next_look,
+                     next_plan,
                      port ? port->next_due() : Timestamp::max(),
                      trade_at,
                      flow,
@@ -144,6 +170,7 @@ struct RunTier {
       tier.look(now);
       tier.next_look = now + tier.interval;
     }
+    if (now >= tier.next_plan) tier.plan_homes(now);
     return tier.next();
   }
 };
@@ -537,7 +564,9 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
       throw std::invalid_argument(
           "backtest: controls_from_journal needs a journal as the data source");
     }
-    controls_ = recorded->controls;
+    for (const std::vector<std::uint64_t>& c : recorded->controls) {
+      if (replays_control(*reinterpret_cast<const EventHeader*>(c.data()))) controls_.push_back(c);
+    }
     std::stable_sort(controls_.begin(), controls_.end(), [](const auto& x, const auto& y) {
       return RunTier::control_time(x) < RunTier::control_time(y);
     });
@@ -626,6 +655,15 @@ bool BacktestSession::journal_param(ParamUpdateMsg& m) const noexcept {
 }
 
 // A flow after the balances its account starts from, on an account of a venue traded here.
+bool BacktestSession::replays_control(const EventHeader& h) const {
+  if (h.len < sizeof(ControlMsg) || (h.flags & EventHeader::kSynthetic) != 0) return false;
+  const auto& m = msg_cast<ControlMsg>(&h);
+  if (!sim::replayable_control(m.command)) return false;
+  if (m.command != ControlCommand::PoolHome || pool_home_source(m.arg) != HomeSource::Planner)
+    return true;
+  return !cfg_.engine.homes.of(cfg_.engine.pools.primary(h.venue)).planner();
+}
+
 bool BacktestSession::flow_applies(VenueId v, Timestamp t) const {
   const bool traded =
       std::any_of(cfg_.instruments.begin(), cfg_.instruments.end(), [&](const Instrument& i) {
@@ -854,8 +892,11 @@ void BacktestSession::begin(const sim::EngineHooks& hooks,
   driver.set_param_schedule(schedule);
   lp.schedule = schedule;
   std::unique_ptr<RunTier>& tier = lp.tier;
+  const bool plans = std::any_of(cfg_.engine.homes.pool.begin(),
+                                 cfg_.engine.homes.pool.end(),
+                                 [](const PoolPlacement& p) { return p.planner(); });
   if (!cfg_.treasuries.empty() || trade_at_.valid() || !flows_.empty() || !refreshes_.empty() ||
-      !controls_.empty() || following_) {
+      !controls_.empty() || following_ || plans) {
     tier = std::make_unique<RunTier>();
     tier->transport = &b.transport;
     tier->feed = &b.feed;
@@ -897,6 +938,17 @@ void BacktestSession::begin(const sim::EngineHooks& hooks,
       ++tier->next_control;
     tier->user = slow_;
     tier->user_next = slow_.run != nullptr ? slow_.first : Timestamp::max();
+    if (plans) {
+      for (std::size_t v = 0; v < cfg_.engine.homes.pool.size(); ++v) {
+        const PoolPlacement& p = cfg_.engine.homes.pool[v];
+        if (!p.planner()) continue;
+        tier->planners.push_back(std::make_unique<HomePlanner>(
+            VenueId{static_cast<std::uint8_t>(v)}, p, cfg_.engine.homes.pin));
+      }
+      tier->runner = runner;
+      tier->load = std::make_unique<PoolLoad>();
+      tier->next_plan = b.clock.now();
+    }
     sim::SlowHooks tier_hooks;
     tier_hooks.ctx = tier.get();
     tier_hooks.run = &RunTier::run;
@@ -1063,7 +1115,7 @@ void BacktestSession::take_record(const EventHeader& record) {
       return;
     }
     case EventType::Control: {
-      if (!cfg_.controls_from_journal) return;
+      if (!cfg_.controls_from_journal || !replays_control(record)) return;
       std::vector<std::uint64_t> bytes((record.len + 7) / 8);
       std::memcpy(bytes.data(), &record, record.len);
       insert(controls_, lp.tier->next_control, std::move(bytes), RunTier::control_time);

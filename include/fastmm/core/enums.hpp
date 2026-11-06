@@ -173,6 +173,10 @@ enum class RejectReason : std::uint8_t {
   // NewOrderRequest::account names a venue that is neither the instrument's nor a member of its
   // pool (core/account_pool.hpp); refused locally.
   InvalidAccount = 40,
+  // [venues.<primary>.pool] placement = "home": the order goes to the instrument's home, whose
+  // order link is down or whose kill switch is engaged (core/pool_homes.hpp; spill = "flat"
+  // re-homes a flat instrument instead).
+  HomeUnavailable = 41,
   // fastmm-gateway's account guards ([gateway]), refused before the order reached the connector
   GatewayRateLimit = 48,      // the venue's order rate, shared by every attached strategy
   GatewayOpenNotional = 49,   // the notional working at the venue, over every attached strategy
@@ -262,6 +266,8 @@ enum class RejectReason : std::uint8_t {
       return "OrderTableFull";
     case RejectReason::InvalidAccount:
       return "InvalidAccount";
+    case RejectReason::HomeUnavailable:
+      return "HomeUnavailable";
     case RejectReason::GatewayRateLimit:
       return "GatewayRateLimit";
     case RejectReason::GatewayOpenNotional:
@@ -501,6 +507,10 @@ enum class ControlCommand : std::uint8_t {
   // position further from zero are refused (RejectReason::ReduceOnly), and turning it on cancels
   // the working orders on each instrument's adding side. An off without a scope clears every scope.
   ReduceOnly = 16,
+  // An instrument's home in its account pool (core/pool_homes.hpp): hdr.instrument, arg
+  // pool_home_arg(to, source, from). From the planner and the operator; the engine journals its
+  // own (kSynthetic), which a replay does not take as input.
+  PoolHome = 17,
 };
 [[nodiscard]] constexpr std::string_view to_string(ControlCommand c) noexcept {
   switch (c) {
@@ -538,6 +548,8 @@ enum class ControlCommand : std::uint8_t {
       return "ResetLossBudget";
     case ControlCommand::ReduceOnly:
       return "ReduceOnly";
+    case ControlCommand::PoolHome:
+      return "PoolHome";
   }
   return "?";
 }

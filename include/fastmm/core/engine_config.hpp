@@ -6,6 +6,7 @@
 #include "fastmm/core/fees.hpp"
 #include "fastmm/core/fx.hpp"
 #include "fastmm/core/perp_book.hpp"
+#include "fastmm/core/pool_homes.hpp"
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/risk.hpp"
 #include "fastmm/core/thread_utils.hpp"
@@ -113,6 +114,9 @@ struct EngineConfig {
   // an instrument whose venue has members goes to one of them (NewOrderRequest::account, else by
   // balance and remaining order window), and the order keeps it.
   PoolPlan pools;
+  // [venues.<primary>.pool]: each pool's placement, its planner's settings and the pinned homes
+  // (core/pool_homes.hpp). A pool without the table routes by balance and keeps no homes.
+  PoolHomesPlan homes;
 };
 
 }  // namespace fastmm

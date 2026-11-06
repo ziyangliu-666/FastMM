@@ -86,6 +86,9 @@ struct ControlPlane {
   std::function<bool()> clear_kill;
   // Venue name -> id, false when no venue has that name.
   std::function<bool(std::string_view, VenueId&)> venue;
+  // `pool home`: why `account` cannot be the instrument's home (empty: it can). Unset: the
+  // engine alone decides.
+  std::function<std::string(InstrumentId, VenueId)> home_refusal;
   const InstrumentTable* instruments = nullptr;
   // The limits the session runs with. `limits` edits this copy and sends the whole struct, so the
   // keys a command does not name keep the values the session started with.

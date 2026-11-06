@@ -14,6 +14,7 @@
 #include "fastmm/core/order.hpp"
 #include "fastmm/core/order_budget.hpp"
 #include "fastmm/core/perp_book.hpp"
+#include "fastmm/core/pool_homes.hpp"
 #include "fastmm/core/position.hpp"
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/result.hpp"
@@ -276,6 +277,32 @@ class StrategyContext {
   // The automatic routing would send to `v` now: its order link is live and its kill switch is
   // not engaged (its balance and window are the order's to decide).
   [[nodiscard]] bool account_usable(VenueId v) const noexcept { return e_->account_usable(v); }
+
+  // ---- homes (core/pool_homes.hpp, [venues.<primary>.pool]) ----------------------------------
+
+  // The account the instrument's position lives on; invalid when its pool has no
+  // [venues.<primary>.pool] table, or before it has a home.
+  [[nodiscard]] VenueId home(InstrumentId id) const noexcept { return e_->home(id); }
+  // The pool's placement: Placement::Home sends adding orders to the home and reducing orders to
+  // the accounts holding the instrument; Placement::Balance (the default) routes by balance and
+  // window, and the homes are only kept.
+  [[nodiscard]] Placement placement(VenueId primary) const noexcept {
+    return e_->placement(primary);
+  }
+  // What one account of the pool holds of the instrument: a spot instrument's base balance there,
+  // a derivative's position on that account. Without a pool, the position.
+  [[nodiscard]] Qty holding(InstrumentId id, VenueId account) const noexcept {
+    return e_->holding(id, account);
+  }
+  // Accounts other than the home that hold a tradable amount of the instrument.
+  [[nodiscard]] std::uint32_t pieces(InstrumentId id) const noexcept { return e_->pieces(id); }
+  // Moves the instrument's home to `account` (journaled). With placement = "home" its adding
+  // orders on other accounts are cancelled; the quotes go to the new home at the next requote.
+  // False when its pool keeps no homes or `account` is not of the pool.
+  bool set_home(InstrumentId id, VenueId account) noexcept {
+    e_->mark_decision();
+    return e_->set_home(id, account);
+  }
 
   // ---- perpetuals (core/perp_book.hpp)
   // -----------------------------------------------------------

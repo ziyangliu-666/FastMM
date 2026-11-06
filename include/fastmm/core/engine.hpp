@@ -38,7 +38,10 @@
 // (NewOrderRequest::account) or to the member whose balance covers it and whose order-count window
 // has the most room left, and keeps that member in Order::venue, so its cancels, replaces and
 // events carry the member's id. Balances are per member (ctx.balance(member, asset)); a member
-// whose order link is not live, or whose kill switch is engaged, is routed around.
+// whose order link is not live, or whose kill switch is engaged, is routed around. With
+// [venues.<primary>.pool] placement = "home" each instrument has a home account instead
+// (core/pool_homes.hpp): an order that adds to the position goes to the home, one that reduces it
+// to the accounts holding it, the pieces away from home first.
 //
 // Parameters (ADR-0013): a ParamUpdate event assigns new parameter values to the strategy
 // (apply_param_update), then on_params runs. With EngineConfig::max_param_age, quoting is disabled
@@ -63,6 +66,7 @@
 #include "fastmm/core/order_budget.hpp"
 #include "fastmm/core/own_quantity.hpp"
 #include "fastmm/core/perp_book.hpp"
+#include "fastmm/core/pool_homes.hpp"
 #include "fastmm/core/position.hpp"
 #include "fastmm/core/queue_tracker.hpp"
 #include "fastmm/core/quote_diag.hpp"
@@ -154,6 +158,8 @@ struct EngineStats {
   std::uint64_t ack_timeouts = 0;          // PendingNew orders force-cancelled by the ack sweep
   std::uint64_t flattens = 0;              // operator flattens started (ControlCommand::Flatten)
   std::uint64_t reduce_only_switches = 0;  // ControlCommand::ReduceOnly applied
+  std::uint64_t home_changes = 0;          // pool homes changed (ControlCommand::PoolHome)
+  std::uint64_t home_unavailable = 0;      // orders refused HomeUnavailable
   std::uint64_t treasury_records = 0;  // pool treasury transfer steps (ControlCommand::Transfer)
   std::uint64_t flatten_orders = 0;    // reduce-only orders a flatten sent
   std::uint64_t steps = 0;
@@ -265,6 +271,9 @@ class Engine {
     ro_session_ = cfg.reduce_only;
     ro_venues_ = cfg.reduce_only_venues;
     refresh_reduce_only();
+    if (pools_on_) held_ = std::make_unique<HeldTable>();
+    for (std::atomic<std::uint8_t>& h : home_pub_)
+      h.store(VenueId{}.value, std::memory_order_relaxed);
   }
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
@@ -373,6 +382,8 @@ class Engine {
     risk_.bucket().rebase(now_);
     if (journal_.enabled() && !journal_.record_clock(EngineTimeMsg::Kind::Start, now_))
       ++stats_.journal_overflows;
+    if (homes_on_) apply_pins();
+    publish_pool();
     FASTMM_LOG_INFO(
         "strategy {} hooks: {}", strategy_name(), implemented_hooks<Strategy, Context, Book>());
     if (cfg_.ack_timeout.ns > 0) ack_timer_ = timers_.add(now_, cfg_.ack_timeout, /*repeat=*/true);
@@ -721,6 +732,21 @@ class Engine {
     const Instrument& inst = instruments_.get(id);
     if (FASTMM_LIKELY(!pools_on_) || !cfg_.pools.pooled(inst.venue))
       return balances_->room(id, inst, side, px);
+    // With placement = "home": what the one account the next order on the side goes to holds,
+    // a piece's part at most (a piece's order never takes it through zero).
+    const bool homed = homes_on_ && cfg_.homes.of(inst.venue).homes();
+    VenueId target{};
+    Qty cap = Qty::max();
+    if (homed) {
+      target = reduce_route(inst, side, px, Qty{}, /*sizing=*/true);
+      if (target.valid() && target != home_[id.value]) {
+        const Qty held = holding(id, target);
+        cap = Qty::from_raw(side == Side::Sell ? held.raw : -held.raw);
+      } else if (!target.valid()) {
+        target = add_target(inst);
+        if (!target.valid()) return Qty{};
+      }
+    }
     // The largest order one account can hold is its room plus what its open orders on the side
     // already hold (sent or resting: both are in its balance's holds and in open_qty); returned
     // net of the pool's open quantity, so room + open_qty (fit_to_balance) is that order.
@@ -733,10 +759,11 @@ class Engine {
     });
     Qty most{};
     for (const VenueId v : cfg_.pools.members(inst.venue)) {
-      if (!account_usable(v)) continue;
+      if (!account_usable(v) || (homed && v != target)) continue;
       const Qty room = balances_->room(id, inst, side, px, v);
-      if (room == Qty::max()) return room;
-      const Qty holds = room + open_on[v.value];
+      if (room == Qty::max() && cap == Qty::max()) return room;
+      Qty holds = room == Qty::max() ? cap : room + open_on[v.value];
+      if (holds > cap) holds = cap;
       if (holds > most) most = holds;
     }
     const Qty open = oms_.open_qty(id, side);
@@ -768,6 +795,77 @@ class Engine {
   // automatic routing sees them now.
   [[nodiscard]] bool account_usable(VenueId v) const noexcept {
     return (order_link_down_ & venue_mask(v)) == 0 && !risk_.venue_killed(v);
+  }
+
+  // ---- homes (core/pool_homes.hpp) -------------------------------------------------------------
+
+  // The instrument's home account; invalid without a [venues.<primary>.pool] table or before it
+  // has one.
+  [[nodiscard]] VenueId home(InstrumentId id) const noexcept {
+    return id.value < kMaxInstruments ? home_[id.value] : VenueId{};
+  }
+  // The pool's placement ([venues.<primary>.pool] placement; "balance" without the table).
+  [[nodiscard]] Placement placement(VenueId primary) const noexcept {
+    return homes_on_ ? cfg_.homes.of(cfg_.pools.primary(primary)).placement : Placement::Balance;
+  }
+  // What `account` holds of the instrument: a spot instrument's base balance there (the estimate:
+  // the last report moved by the engine's own orders and fills since), else the account's position
+  // from its own fills and position reports. Without a pool, the position on the instrument's
+  // venue; zero on an account outside its pool.
+  [[nodiscard]] Qty holding(InstrumentId id, VenueId account) const noexcept {
+    if (!instruments_.contains(id)) return Qty{};
+    const Instrument& inst = instruments_.get(id);
+    if (!cfg_.pools.admits(inst.venue, account)) return Qty{};
+    if (!inst.is_derivative() && balances_live_) {
+      const std::int64_t total = balances_->base_total(id, account);
+      if (total != BalanceBook::kUnreported) return Qty::from_raw(total);
+    }
+    if (held_ == nullptr || !cfg_.pools.pooled(inst.venue))
+      return account == inst.venue ? positions_.get(id).qty : Qty{};
+    return (*held_)[id.value][pool_index(inst.venue, account)];
+  }
+  // Accounts other than the home that hold a tradable amount of the instrument (at least the lot,
+  // min_qty and, at the mid, min_notional): the pieces its reducing orders work off first.
+  [[nodiscard]] std::uint32_t pieces(InstrumentId id) const noexcept {
+    if (!homes_on_ || !instruments_.contains(id)) return 0;
+    const Instrument& inst = instruments_.get(id);
+    if (!cfg_.pools.pooled(inst.venue)) return 0;
+    const Price mid = books_[id.value].mid();
+    std::uint32_t n = 0;
+    for (const VenueId v : cfg_.pools.members(inst.venue)) {
+      if (v != home_[id.value] && tradable(inst, holding(id, v), mid)) ++n;
+    }
+    return n;
+  }
+  // ctx.set_home: the instrument's home becomes `account` (a ControlCommand::PoolHome of the
+  // strategy, journaled). With placement = "home" the adding orders working on other accounts are
+  // cancelled. False when the instrument's venue keeps no homes or `account` is not of its pool.
+  bool set_home(InstrumentId id, VenueId account) noexcept {
+    enter_api();
+    const bool ok = apply_home(id, account, HomeSource::Strategy);
+    flush_out();
+    return ok;
+  }
+  // The planner's view of `primary`'s pool (core/pool_homes.hpp PoolLoad). Any thread: it reads
+  // only what the engine thread publishes for it.
+  void pool_load(VenueId primary, PoolLoad& out) const noexcept {
+    out.count = 0;
+    out.members = cfg_.pools.members(primary);
+    const std::uint32_t unusable = unusable_pub_.load(std::memory_order_relaxed);
+    for (std::size_t k = 0; k < out.members.size(); ++k) {
+      const VenueId v = out.members[k];
+      out.limit_10s[k] =
+          v.value < kMaxVenues ? limit_pub_[v.value].load(std::memory_order_relaxed) : 0;
+      out.usable[k] = (unusable & venue_mask(v)) == 0;
+    }
+    for (const Instrument& inst : instruments_) {
+      if (inst.venue != primary || inst.id.value >= kMaxInstruments) continue;
+      const std::size_t j = out.count++;
+      out.instrument[j] = inst.id;
+      out.orders[j] = inst_orders_[inst.id.value].load(std::memory_order_relaxed);
+      out.home[j] = VenueId{home_pub_[inst.id.value].load(std::memory_order_relaxed)};
+      out.pinned[j] = pinned_pub_[inst.id.value].load(std::memory_order_relaxed);
+    }
   }
 
   // ---- perpetuals (core/perp_book.hpp) ---------------------------------------------------------
@@ -1577,6 +1675,8 @@ class Engine {
       q.reduce_only = reduce_only_[inst.id.value] ? 1 : 0;
       q.arm = ab_arm_[inst.id.value];
       q.own_params = static_cast<std::uint8_t>(param_own_[inst.id.value].count());
+      q.home = home_[inst.id.value].value;
+      q.pieces = static_cast<std::uint8_t>(pieces(inst.id));
       for (const Side side : {Side::Buy, Side::Sell}) {
         QuoteTrack& t = quote_track_[track_index(inst.id, side)];
         LiveQuoteSide& out = q.sides[static_cast<std::size_t>(side)];
@@ -1952,6 +2052,7 @@ class Engine {
     const std::int64_t pos_before = positions_.get(u.order.instrument).qty.raw;
     positions_.on_fill(
         u.order.instrument, u.order.side, u.order.price, u.missed_qty, Notional{}, inst);
+    note_held(u.order.instrument, u.order.venue, u.order.side, u.missed_qty);
     if (balances_live_)
       balances_->on_fill(u.order.instrument,
                          inst,
@@ -2255,6 +2356,8 @@ class Engine {
       }
       const std::int64_t pos_before = positions_.get(id).qty.raw;
       if (booked.is_positive()) positions_.on_fill(id, side, f.price, booked, fee, inst);
+      if (FASTMM_UNLIKELY(pools_on_) && booked.is_positive())
+        note_held(id, from_order ? u.order.venue : f.hdr.venue, side, booked);
       if (FASTMM_UNLIKELY(balances_live_)) {
         // The same for the assets: the quantity the synthetic fill moved already is only repriced,
         // the rest of the execution moves them (with the whole fee).
@@ -2385,6 +2488,7 @@ class Engine {
     }
     if (pool_pos_ == nullptr) pool_pos_ = std::make_unique<PoolPositions>();
     PoolPosition& mine = (*pool_pos_)[id.value][k];
+    if (held_ != nullptr) (*held_)[id.value][k] = qty;
     mine.qty = qty;
     mine.avg_px = avg_px;
     mine.reported = true;
@@ -2411,6 +2515,8 @@ class Engine {
   FASTMM_NOINLINE void on_balance(const BalanceMsg& m) noexcept {
     if (!balances_live_) start_balances();
     balances_->on_report(m);
+    if (FASTMM_UNLIKELY(homes_on_) && (m.flags & BalanceMsg::kSnapshotEnd) != 0)
+      note_snapshot(m.hdr.venue);
     if constexpr (has_hook(Hook::Balance)) strategy_.on_balance(ctx_, m);
     flush_out();
   }
@@ -2592,6 +2698,23 @@ class Engine {
       case ControlCommand::ReduceOnly:
         set_reduce_only(c.hdr.instrument, c.hdr.venue, c.arg != 0);
         break;
+      case ControlCommand::PoolHome:
+        // The engine's own changes are in the journal as a record, not an input: a replay makes
+        // them again.
+        if ((c.hdr.flags & EventHeader::kSynthetic) != 0) break;
+        enter_api();
+        if (apply_home(c.hdr.instrument, pool_home_to(c.arg), pool_home_source(c.arg))) {
+          if (pool_home_source(c.arg) == HomeSource::Operator)
+            pin_home(c.hdr.instrument, (c.arg & kPoolHomeFree) == 0);
+        } else {
+          FASTMM_LOG_WARN(
+              "pool home of instrument {} to venue {} ignored: not an account of its pool, or the "
+              "pool has no [venues.<primary>.pool] table",
+              c.hdr.instrument.value,
+              pool_home_to(c.arg).value);
+        }
+        flush_out();
+        break;
       case ControlCommand::SetLimits:
         // The payload sits past the ControlMsg prefix; a short record (another producer, an older
         // journal) is ignored rather than read out of bounds.
@@ -2749,7 +2872,9 @@ class Engine {
     // orders until it is back.
     if (m.channel == 1 && !one) {
       if (m.state == ConnState::Live) {
+        const bool was_down = (order_link_down_ & venue_mask(venue)) != 0;
         order_link_down_ &= ~venue_mask(venue);
+        if (FASTMM_UNLIKELY(homes_on_) && was_down) account_back(venue);
       } else {
         order_link_down_ |= venue_mask(venue);
       }
@@ -3048,6 +3173,18 @@ class Engine {
     Qty qty = p.qty.abs();
     if (risk_.limits().max_order_qty.is_positive() && qty > risk_.limits().max_order_qty)
       qty = risk_.limits().max_order_qty;  // one slice per tick until the rest is gone
+    // With placement = "home" each slice goes to one holder, no more than it holds.
+    VenueId account{};
+    if (FASTMM_UNLIKELY(homes_on_) && cfg_.homes.of(inst.venue).homes()) {
+      for (const VenueId v : cfg_.pools.members(inst.venue)) {
+        const Qty held = holding(inst.id, v);
+        const Qty dir = Qty::from_raw(side == Side::Sell ? held.raw : -held.raw);
+        if (!account_usable(v) || !inst.valid_qty(inst.round_qty(dir))) continue;
+        account = v;
+        if (dir < qty) qty = dir;
+        break;
+      }
+    }
     qty = inst.round_qty(qty);
     if (!inst.valid_qty(qty)) {
       // Less than one lot (or than the venue's minimum) is left: no order can move it.
@@ -3067,6 +3204,7 @@ class Engine {
     r.reduce_only = true;
     r.price = px;
     r.qty = qty;
+    r.account = account;
     if (const auto id = submit_new(r, /*flatten=*/true)) {
       flatten_order_[inst.id.value] = *id;
       ++stats_.flatten_orders;
@@ -3383,7 +3521,7 @@ class Engine {
         // decided against is gone. Withheld, not refused; the strategy's next quotes decide.
         if (FASTMM_UNLIKELY(a.deferred && balances_live_) && balances_->check_enabled() &&
             !balance_covers(inst,
-                            pools_on_ ? choose_account(r, inst) : inst.venue,
+                            pools_on_ ? route(r, inst).account : inst.venue,
                             r.side,
                             r.type,
                             r.price,
@@ -3460,8 +3598,16 @@ class Engine {
     bool budget_known = false;
     RejectSource window_source = RejectSource::RiskBucket;
     if (FASTMM_UNLIKELY(pools_on_)) {
-      account = choose_account(req, inst);
+      const Route rt = route(req, inst);
+      if (FASTMM_UNLIKELY(rt.refused != RejectReason::None)) {
+        ++stats_.home_unavailable;
+        note_refusal(req.instrument, req.side, rt.refused);
+        return fail(rt.refused);
+      }
+      account = rt.account;
       if (!account.valid()) return fail(RejectReason::InvalidAccount);
+      if (FASTMM_UNLIKELY(rt.assigns))
+        static_cast<void>(apply_home(req.instrument, account, rt.source));
       // The account's order window is full up to its connector's cap, or the connector is paused
       // (the one named, or the fallback when no account with room covers the order): refused
       // by the risk check with RateLimit, as the connector would refuse it, without reaching it
@@ -3549,6 +3695,7 @@ class Engine {
     queue_out(m.hdr);
     ++stats_.orders_sent;
     note_sent_order(account);
+    note_inst_order(req.instrument);
     // The next automatic choice of the pool starts after this account: accounts with the same
     // room take turns rather than the first in pool order taking them all.
     if (FASTMM_UNLIKELY(pools_on_) && budget_known && !req.account.valid())
@@ -3586,6 +3733,304 @@ class Engine {
         now_,
         [this](InstrumentId j) { return positions_.get(j).qty; },
         [this, side](InstrumentId j) { return oms_.open_qty(j, side); });
+  }
+
+  // ---- homes (core/pool_homes.hpp) -------------------------------------------------------------
+
+  // Where a new order goes: an account and, with placement = "home", the reason it goes nowhere
+  // (HomeUnavailable) and the first home or spill it makes.
+  struct Route {
+    VenueId account{};
+    RejectReason refused = RejectReason::None;
+    bool assigns = false;  // the order gives the instrument this home (source)
+    HomeSource source = HomeSource::First;
+  };
+  [[nodiscard]] Route route(const NewOrderRequest& req, const Instrument& inst) const noexcept {
+    if (FASTMM_LIKELY(!homes_on_) || req.account.valid() || !cfg_.homes.of(inst.venue).homes() ||
+        !cfg_.pools.pooled(inst.venue))
+      return Route{choose_account(req, inst)};
+    // A holder this order takes towards zero, a piece first; else the home.
+    const VenueId holder = reduce_route(inst, req.side, req.price, req.qty, /*sizing=*/false);
+    if (holder.valid()) return Route{holder};
+    if (!inst.is_derivative() && req.side == Side::Sell) return Route{sell_fallback(inst)};
+    const VenueId h = home_[inst.id.value];
+    if (!h.valid()) {
+      const VenueId first = first_home(inst);
+      if (!first.valid()) return Route{{}, RejectReason::HomeUnavailable};
+      return Route{first, RejectReason::None, true, HomeSource::First};
+    }
+    if (account_usable(h)) return Route{h};
+    if (spills(inst)) {
+      const VenueId to = roomiest_account(inst.venue);
+      if (to.valid()) return Route{to, RejectReason::None, true, HomeSource::Spill};
+    }
+    return Route{h, RejectReason::HomeUnavailable};
+  }
+  // spill = "flat" moves this instrument off an unusable home: it is flat over the pool and not
+  // pinned.
+  [[nodiscard]] bool spills(const Instrument& inst) const noexcept {
+    return cfg_.homes.of(inst.venue).spill == HomeSpill::Flat &&
+           positions_.get(inst.id).qty.is_zero() && !pinned_[inst.id.value];
+  }
+  // Where the next adding order goes for balance_room: the home, a first home, or the spill's
+  // account; invalid when none would take it.
+  [[nodiscard]] VenueId add_target(const Instrument& inst) const noexcept {
+    const VenueId h = home_[inst.id.value];
+    if (!h.valid()) return first_home(inst);
+    if (account_usable(h)) return h;
+    return spills(inst) ? roomiest_account(inst.venue) : VenueId{};
+  }
+  // A spot sell no holder takes: an account already carrying a sell, else the home (whose
+  // balance check refuses it), else the primary.
+  [[nodiscard]] VenueId sell_fallback(const Instrument& inst) const noexcept {
+    VenueId carrier{};
+    oms_.for_each_open_order(inst.id, [&](Handle<Order>, const Order& o) {
+      if (o.side == Side::Sell && !carrier.valid()) carrier = o.venue;
+    });
+    if (carrier.valid()) return carrier;
+    return home_[inst.id.value].valid() ? home_[inst.id.value] : inst.venue;
+  }
+  // At least a lot, min_qty and (at `px`, when known) min_notional of the instrument.
+  [[nodiscard]] static bool tradable(const Instrument& inst, Qty q, Price px) noexcept {
+    const std::int64_t a = q.raw < 0 ? -q.raw : q.raw;
+    if (a <= 0 || a < inst.min_qty.raw || a < inst.lot.raw) return false;
+    return !inst.min_notional.is_positive() || !px.is_positive() ||
+           inst.notional(px, Qty::from_raw(a)) >= inst.min_notional;
+  }
+  // The account an order on `side` of `qty` takes towards zero: of the usable accounts whose own
+  // part of the position that side reduces (a tradable amount), the pieces in pool order, then
+  // the home. At most reduce_accounts of them carry orders on the side at once, except that a
+  // piece may join while only the home carries one. A piece takes an order only if what its open
+  // orders on the side leave of its part covers all of it, so a piece never goes through zero.
+  // `sizing` (balance_room): the first account allowed, whatever it has left. Invalid: no holder,
+  // or a derivative order that no piece takes whole.
+  [[nodiscard]] VenueId reduce_route(
+      const Instrument& inst, Side side, Price px, Qty qty, bool sizing) const noexcept {
+    const InstrumentId id = inst.id;
+    const PoolMembers m = cfg_.pools.members(inst.venue);
+    const std::size_t n = m.size();
+    const VenueId h = home_[id.value];
+    std::array<std::int64_t, PoolMembers::kMax> open_on{};
+    std::uint32_t carrying = 0;
+    oms_.for_each_open_order(id, [&](Handle<Order>, const Order& o) {
+      if (o.side != side) return;
+      const std::size_t k = pool_index(inst.venue, o.venue);
+      open_on[k] += o.leaves_qty().raw;
+      carrying |= 1U << k;
+    });
+    const auto carriers = static_cast<std::uint32_t>(std::popcount(carrying));
+    const std::uint32_t limit = cfg_.homes.of(inst.venue).reduce_accounts;
+    const std::uint32_t home_bit = h.valid() ? 1U << pool_index(inst.venue, h) : 0;
+    const bool only_home_carries = carrying != 0 && carrying == home_bit;
+    VenueId first{};
+    for (int pass = 0; pass < 2; ++pass) {
+      for (std::size_t k = 0; k < n; ++k) {
+        const VenueId v = m[k];
+        if ((pass == 0) == (v == h) || !account_usable(v)) continue;
+        const Qty held = holding(id, v);
+        const std::int64_t dir = side == Side::Sell ? held.raw : -held.raw;
+        if (dir <= 0 || !tradable(inst, Qty::from_raw(dir), px)) continue;
+        const bool allowed =
+            (carrying & (1U << k)) != 0 || carriers < limit || (pass == 0 && only_home_carries);
+        if (!allowed) continue;
+        if (sizing) return v;
+        if (!first.valid()) first = v;
+        if (pass == 0 && dir - open_on[k] < qty.raw) continue;
+        return v;
+      }
+    }
+    // A derivative order no piece takes whole is the home's, adding or not (route).
+    return inst.is_derivative() ? VenueId{} : first;
+  }
+  // The home an instrument without one takes at its first adding order: the usable account that
+  // holds the most of it, else the usable account at its id's turn round the pool.
+  [[nodiscard]] VenueId first_home(const Instrument& inst) const noexcept {
+    const PoolMembers m = cfg_.pools.members(inst.venue);
+    const Price mid = books_[inst.id.value].mid();
+    VenueId best{};
+    std::int64_t most = 0;
+    for (const VenueId v : m) {
+      if (!account_usable(v)) continue;
+      const Qty q = holding(inst.id, v);
+      const std::int64_t a = q.raw < 0 ? -q.raw : q.raw;
+      if (a > most && tradable(inst, q, mid)) {
+        best = v;
+        most = a;
+      }
+    }
+    if (best.valid()) return best;
+    const std::size_t n = m.size();
+    for (std::size_t k = 0; k < n; ++k) {
+      const VenueId v = m[(inst.id.value + k) % n];
+      if (account_usable(v)) return v;
+    }
+    return {};
+  }
+  // The usable account of the pool whose connector would take an order now with the most of its
+  // 10 s window left (pool order on a tie).
+  [[nodiscard]] VenueId roomiest_account(VenueId primary) const noexcept {
+    VenueId best{};
+    std::int64_t left = -1;
+    for (const VenueId v : cfg_.pools.members(primary)) {
+      if (!account_usable(v)) continue;
+      const OrderBudget b = order_budget(v);
+      if (no_order_room(b)) continue;
+      if (b.orders_10s.remaining() > left) {
+        best = v;
+        left = b.orders_10s.remaining();
+      }
+    }
+    return best;
+  }
+  // The instrument's home becomes `to`. The engine's own changes are journaled here; the planner's
+  // and the operator's reached it as input and are journaled with it. With placement = "home" a
+  // change by the operator, the planner, the strategy or the reconciliation cancels the adding
+  // orders working on other accounts (a first home has none, a spill's old home cannot be
+  // reached).
+  bool apply_home(InstrumentId id, VenueId to, HomeSource source) noexcept {
+    if (!homes_on_ || !instruments_.contains(id)) return false;
+    const Instrument& inst = instruments_.get(id);
+    const PoolPlacement& pp = cfg_.homes.of(inst.venue);
+    if (!pp.configured || !cfg_.pools.pooled(inst.venue) || !cfg_.pools.admits(inst.venue, to))
+      return false;
+    const VenueId from = home_[id.value];
+    if (from == to) return true;
+    home_[id.value] = to;
+    home_pub_[id.value].store(to.value, std::memory_order_relaxed);
+    ++stats_.home_changes;
+    FASTMM_LOG_INFO("{}:{} home {} -> {} ({})",
+                    venue_name(inst.venue),
+                    inst.symbol,
+                    from.valid() ? venue_name(from) : std::string_view("none"),
+                    venue_name(to),
+                    to_string(source));
+    if (source != HomeSource::Operator && source != HomeSource::Planner && journal_.enabled()) {
+      ControlMsg m{};
+      init_header(m, EventType::Control, id, inst.venue);
+      m.hdr.flags |= EventHeader::kSynthetic;
+      m.hdr.recv_ts = now_;
+      m.command = ControlCommand::PoolHome;
+      m.arg = pool_home_arg(to, source, from);
+      if (!journal_.record(m.hdr)) ++stats_.journal_overflows;
+    }
+    if (pp.homes() && source != HomeSource::First && source != HomeSource::Spill)
+      cancel_adding_off_home(id);
+    return true;
+  }
+  // The adding orders of the instrument working on an account other than its home: cancelled.
+  void cancel_adding_off_home(InstrumentId id) noexcept {
+    const Instrument& inst = instruments_.get(id);
+    const VenueId h = home_[id.value];
+    StaticVector<Handle<Order>, kMaxOpenOrders> handles;
+    oms_.for_each_open_order(id, [&](Handle<Order> hd, const Order& o) {
+      if (!o.is_working() || o.venue == h) return;
+      const bool adding = inst.is_derivative() ? !o.has(Order::kReduceOnly) && adds(id, o.side)
+                                               : o.side == Side::Buy;
+      if (adding) static_cast<void>(handles.push_back(hd));
+    });
+    for (const Handle<Order> hd : handles) static_cast<void>(submit_cancel(hd));
+  }
+  void pin_home(InstrumentId id, bool on) noexcept {
+    if (id.value >= kMaxInstruments) return;
+    pinned_[id.value] = on;
+    pinned_pub_[id.value].store(on, std::memory_order_relaxed);
+  }
+  // An account's order link is back: with placement = "home", the adding orders resting on it
+  // for instruments it is not home to (a spill moved them off while it was down) are cancelled.
+  FASTMM_NOINLINE void account_back(VenueId v) noexcept {
+    const VenueId primary = cfg_.pools.primary(v);
+    if (!cfg_.homes.of(primary).homes()) return;
+    enter_api();
+    for (const Instrument& inst : instruments_) {
+      if (inst.venue == primary && inst.id.value < kMaxInstruments &&
+          home_[inst.id.value].valid() && home_[inst.id.value] != v)
+        cancel_adding_off_home(inst.id);
+    }
+    flush_out();
+  }
+  // [venues.<primary>.pool] homes, at the start.
+  void apply_pins() noexcept {
+    for (const Instrument& inst : instruments_) {
+      if (inst.id.value >= kMaxInstruments) continue;
+      const VenueId pin = cfg_.homes.pin[inst.id.value];
+      if (pin.valid() && apply_home(inst.id, pin, HomeSource::Pin)) pin_home(inst.id, true);
+    }
+  }
+  // A venue ended a balance snapshot. Once every account of a pool has, its homes are checked
+  // against what each account holds, once: an instrument held on one account only gets that
+  // account, one held on several keeps its home (else the largest holder becomes it) and the
+  // others are its pieces; a pinned instrument keeps its pin. With placement = "home" the adding
+  // orders working off the home are cancelled.
+  FASTMM_NOINLINE void note_snapshot(VenueId v) noexcept {
+    snapshot_seen_ |= venue_mask(v);
+    const VenueId primary = cfg_.pools.primary(v);
+    if (!cfg_.homes.of(primary).configured || (homes_reconciled_ & venue_mask(primary)) != 0)
+      return;
+    for (const VenueId a : cfg_.pools.members(primary)) {
+      if ((snapshot_seen_ & venue_mask(a)) == 0) return;
+    }
+    homes_reconciled_ |= venue_mask(primary);
+    enter_api();
+    for (const Instrument& inst : instruments_) {
+      if (inst.venue != primary || inst.id.value >= kMaxInstruments) continue;
+      const InstrumentId id = inst.id;
+      const Price mid = books_[id.value].mid();
+      VenueId only{};
+      VenueId largest{};
+      std::int64_t most = 0;
+      std::uint32_t holders = 0;
+      for (const VenueId a : cfg_.pools.members(primary)) {
+        const Qty q = holding(id, a);
+        if (!tradable(inst, q, mid)) continue;
+        ++holders;
+        only = a;
+        const std::int64_t abs = q.raw < 0 ? -q.raw : q.raw;
+        if (abs > most) {
+          largest = a;
+          most = abs;
+        }
+      }
+      VenueId to = home_[id.value];
+      if (pinned_[id.value]) {
+        // a pin stays: the other holders are its pieces
+      } else if (holders == 1 && account_usable(only)) {
+        to = only;
+      } else if (holders > 1 && !to.valid() && account_usable(largest)) {
+        to = largest;
+      }
+      if (to.valid()) static_cast<void>(apply_home(id, to, HomeSource::Reconcile));
+      if (cfg_.homes.of(primary).homes() && home_[id.value].valid()) cancel_adding_off_home(id);
+    }
+    flush_out();
+  }
+  // An account's fill moved its part of the position (held_).
+  FASTMM_FORCE_INLINE void note_held(InstrumentId id,
+                                     VenueId account,
+                                     Side side,
+                                     Qty qty) noexcept {
+    if (FASTMM_LIKELY(held_ == nullptr) || !instruments_.contains(id)) return;
+    const VenueId primary = instruments_.get(id).venue;
+    if (!cfg_.pools.pooled(primary)) return;
+    Qty& h = (*held_)[id.value][pool_index(primary, account)];
+    h = side == Side::Buy ? h + qty : h - qty;
+  }
+  // One more new order or replace of the instrument (pool_load).
+  FASTMM_FORCE_INLINE void note_inst_order(InstrumentId id) noexcept {
+    if (FASTMM_LIKELY(!homes_on_) || id.value >= kMaxInstruments) return;
+    std::atomic<std::uint64_t>& c = inst_orders_[id.value];
+    c.store(c.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+  }
+  // What pool_load reads of the accounts: each one's 10 s order limit and whether it is usable.
+  void publish_pool() noexcept {
+    if (!homes_on_) return;
+    std::uint32_t unusable = 0;
+    for (std::uint32_t v = 0; v < kMaxVenues; ++v) {
+      const VenueId id{static_cast<std::uint8_t>(v)};
+      if (!account_usable(id)) unusable |= venue_mask(id);
+      const OrderBudget b = order_budget(id);
+      limit_pub_[v].store(b.venue_known ? b.orders_10s.limit : 0, std::memory_order_relaxed);
+    }
+    unusable_pub_.store(unusable, std::memory_order_relaxed);
   }
 
   // The pool account a new order on `inst` goes from (EngineConfig::pools). The request's own
@@ -3716,6 +4161,7 @@ class Engine {
     queue_out(m.hdr);
     ++stats_.replaces_sent;
     note_sent_order(o.venue);
+    note_inst_order(o.instrument);
     return {};
   }
 
@@ -4096,6 +4542,7 @@ class Engine {
   void publish_latency(Timestamp now) noexcept {
     last_publish_ = now;
     flush_stale_reject_folds(now);
+    publish_pool();
     if (!cfg_.publish_live && !journal_.enabled()) return;
     const LatencySnapshot s = latency_.snapshot(now.ns);
     latency_pub_.store(s);
@@ -4700,6 +5147,8 @@ class Engine {
   Cycles batch_t1_{};
   bool fx_on_;                               // cfg_.fx converts ([accounting])
   const bool pools_on_ = cfg_.pools.active;  // a venue has pool members: new orders are routed
+  // A pool keeps homes ([venues.<primary>.pool]); homes_on_ implies pools_on_.
+  const bool homes_on_ = cfg_.pools.active && cfg_.homes.active();
   bool latched_ = false;
   bool in_engine_ = false;  // inside step(), drain(), start() or finish()
   bool quoting_enabled_;
@@ -4785,6 +5234,27 @@ class Engine {
   };
   using PoolPositions = std::array<std::array<PoolPosition, PoolMembers::kMax>, kMaxInstruments>;
   std::unique_ptr<PoolPositions> pool_pos_;
+  // With pools: each account's part of each instrument's position, from its own fills and its
+  // position reports, by index in the pool (holding(); a spot instrument's is its base balance
+  // once the account has reported it).
+  using HeldTable = std::array<std::array<Qty, PoolMembers::kMax>, kMaxInstruments>;
+  std::unique_ptr<HeldTable> held_;
+  // Homes (core/pool_homes.hpp) by instrument, and a copy any thread reads (pool_load).
+  std::array<VenueId, kMaxInstruments> home_{};
+  std::array<std::atomic<std::uint8_t>, kMaxInstruments> home_pub_{};
+  // Homes the planner and a spill leave alone: [venues.<primary>.pool] homes and the operator's
+  // moves (fastmm-ctl pool home without --free); and the copy pool_load reads.
+  std::array<bool, kMaxInstruments> pinned_{};
+  std::array<std::atomic<bool>, kMaxInstruments> pinned_pub_{};
+  // New orders and replaces by instrument since the start, for the planner (any thread).
+  std::array<std::atomic<std::uint64_t>, kMaxInstruments> inst_orders_{};
+  // By venue id: its 10 s order limit and whether it is usable, as publish_pool() last saw them.
+  std::array<std::atomic<std::int64_t>, kMaxVenues> limit_pub_{};
+  std::atomic<std::uint32_t> unusable_pub_{0};
+  // Venues that have ended a balance snapshot, and the pools whose homes were reconciled once
+  // every account of theirs had (bit per primary).
+  std::uint32_t snapshot_seen_ = 0;
+  std::uint32_t homes_reconciled_ = 0;
   // Venues whose feed shows our orders (bit v), and our quantity there; null when there are none.
   std::uint32_t own_venues_ = 0;
   std::unique_ptr<OwnQuantity> own_;

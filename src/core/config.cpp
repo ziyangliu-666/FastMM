@@ -395,6 +395,87 @@ void parse_treasury(const toml::table& t, VenueSection& v) {
   if (s.asset.size() > 8) fail_at(*t.get("asset"), at + ".asset: at most 8 characters");
 }
 
+// [venues.<primary>.pool]: the keys and their ranges; the venue being a pool's primary and the
+// accounts and symbols named are checked once everything is read (check_pools).
+void parse_pool(const toml::table& t, VenueSection& v) {
+  validate_table(t, "venues.*.pool");
+  PoolSection& s = v.pool;
+  s.configured = true;
+  const std::string at = fmt::format("venues.{}.pool", v.name);
+  get(t, "placement", s.placement);
+  if (s.placement != "balance" && s.placement != "home")
+    fail_at(*t.get("placement"), at + ".placement must be \"balance\" or \"home\"");
+  get(t, "spill", s.spill);
+  if (s.spill != "never" && s.spill != "flat")
+    fail_at(*t.get("spill"), at + ".spill must be \"never\" or \"flat\"");
+  const auto ranged =
+      [&](std::string_view key, std::int64_t& out, std::int64_t lo, std::int64_t hi) {
+        const toml::node* n = t.get(key);
+        if (n == nullptr) return;
+        get(t, key, out);
+        if (out < lo || out > hi)
+          fail_at(*n, fmt::format("{}.{} must be {} to {}", at, key, lo, hi));
+      };
+  ranged("reduce_accounts", s.reduce_accounts, 1, static_cast<std::int64_t>(PoolMembers::kMax));
+  ranged("plan_interval_s", s.plan_interval_s, 0, 604800);  // a week
+  ranged("plan_max_moves", s.plan_max_moves, 0, 256);
+  if (const toml::node* n = t.get("plan_lookback_h")) {
+    const auto x = n->value<double>();
+    if (!x || !(*x >= 1.0 / 360.0) || *x > 168.0)
+      fail_at(*n, at + ".plan_lookback_h must be a number of hours from 10 s to 168");
+    s.plan_lookback_h = *x;
+  }
+  if (const auto* h = t.get_as<toml::table>("homes")) {
+    for (const auto& [k, val] : *h) {
+      const auto name = val.value<std::string>();
+      if (!name) fail_at(val, fmt::format("{}.homes.{} must be an account name", at, k.str()));
+      s.homes[std::string(k.str())] = *name;
+    }
+  }
+}
+
+// A pool table belongs to a pool's primary; its pins name the pool's accounts and the primary's
+// instruments.
+void check_pools(const toml::table& doc, const Config& cfg) {
+  const PoolPlan plan = cfg.pool_plan();
+  for (const VenueSection& v : cfg.venues) {
+    if (!v.pool.configured) continue;
+    const toml::node* node = doc["venues"][v.name]["pool"].node();
+    const auto fail_here = [&](const std::string& msg) {
+      if (node != nullptr) fail_at(*node, msg);
+      throw ConfigError(msg);
+    };
+    if (!v.pool_of.empty())
+      fail_here(
+          fmt::format("venues.{}.pool: {} is a member of pool '{}'; the table goes on the primary",
+                      v.name,
+                      v.name,
+                      v.pool_of));
+    const VenueId id = cfg.venue_id(v.name);
+    if (!plan.pooled(id))
+      fail_here(fmt::format("venues.{}.pool: {} has no pool (no [venues.<name>] pool_of = \"{}\")",
+                            v.name,
+                            v.name,
+                            v.name));
+    const PoolMembers members = plan.members(id);
+    for (const auto& [symbol, account] : v.pool.homes) {
+      const VenueId a = cfg.venue_id(account);
+      if (!a.valid() || !members.contains(a))
+        fail_here(fmt::format("venues.{}.pool.homes.{}: '{}' is not an account of the pool",
+                              v.name,
+                              symbol,
+                              account));
+      const bool listed = std::any_of(
+          cfg.instruments.begin(), cfg.instruments.end(), [&](const InstrumentSection& i) {
+            return i.venue == v.name && i.symbol == symbol;
+          });
+      if (!listed)
+        fail_here(fmt::format(
+            "venues.{}.pool.homes: {} is not an instrument of {}", v.name, symbol, v.name));
+    }
+  }
+}
+
 // A treasury belongs to a pool's primary, and names only the pool's accounts.
 void check_treasuries(const toml::table& doc, const Config& cfg) {
   const PoolPlan plan = cfg.pool_plan();
@@ -822,6 +903,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
         get(*fees, "taker_bps", v.fees.taker_bps);
       }
       if (const auto* tr = t->get_as<toml::table>("treasury")) parse_treasury(*tr, v);
+      if (const auto* pl = t->get_as<toml::table>("pool")) parse_pool(*pl, v);
       // Everything the generic parser did not read belongs to the connector: keep it verbatim,
       // with its line, for the venue that owns it (venues/registry.hpp).
       for (const auto& [k, val] : *t) {
@@ -926,6 +1008,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     }
   }
   check_treasuries(doc, cfg);
+  check_pools(doc, cfg);
 
   // [strategy]
   if (const auto* t = doc["strategy"].as_table()) {
@@ -1384,6 +1467,19 @@ std::string Config::redacted() const {
                      v.treasury.dry_run,
                      v.treasury.asset);
     }
+    if (v.pool.configured) {
+      fmt::format_to(
+          std::back_inserter(out),
+          "pool = {{ placement = \"{}\", reduce_accounts = {}, spill = \"{}\", "
+          "plan_interval_s = {}, plan_lookback_h = {}, plan_max_moves = {} }} ({} pinned)\n",
+          v.pool.placement,
+          v.pool.reduce_accounts,
+          v.pool.spill,
+          v.pool.plan_interval_s,
+          v.pool.plan_lookback_h,
+          v.pool.plan_max_moves,
+          v.pool.homes.size());
+    }
   }
   for (const auto& i : instruments) {
     out += "\n[[instruments]]\n";
@@ -1581,6 +1677,21 @@ toml::table treasury_table(const TreasurySection& s) {
   return t;
 }
 
+// [venues.<primary>.pool], every key with its value.
+toml::table pool_table(const PoolSection& s) {
+  toml::table t;
+  t.insert("placement", s.placement);
+  t.insert("reduce_accounts", s.reduce_accounts);
+  t.insert("spill", s.spill);
+  t.insert("plan_interval_s", s.plan_interval_s);
+  t.insert("plan_lookback_h", s.plan_lookback_h);
+  t.insert("plan_max_moves", s.plan_max_moves);
+  toml::table h;
+  for (const auto& [k, v] : s.homes) h.insert(k, v);
+  t.insert("homes", std::move(h));
+  return t;
+}
+
 toml::table generic_table(const GenericSection& g) {
   toml::table t;
   for (const auto& [k, v] : g.values)
@@ -1685,6 +1796,7 @@ std::string Config::effective_toml() const {
       fees.insert("taker_bps", v.fees.taker_bps);
       t.insert("fees", std::move(fees));
       if (v.treasury.configured) t.insert("treasury", treasury_table(v.treasury));
+      if (v.pool.configured) t.insert("pool", pool_table(v.pool));
       for (const auto& [k, val] : v.extra) insert_typed(t, k, val);
       vs.insert(v.name, std::move(t));
     }
@@ -1908,6 +2020,31 @@ std::string Config::effective_toml() const {
   std::ostringstream ss;
   ss << root << "\n";
   return ss.str();
+}
+
+PoolHomesPlan pool_homes(const Config& cfg, const InstrumentTable& table) {
+  PoolHomesPlan plan;
+  for (const VenueSection& v : cfg.venues) {
+    if (!v.pool.configured) continue;
+    const VenueId primary = cfg.venue_id(v.name);
+    if (!primary.valid() || primary.value >= plan.pool.size()) continue;
+    PoolPlacement& p = plan.pool[primary.value];
+    p.configured = true;
+    p.placement = v.pool.placement == "home" ? Placement::Home : Placement::Balance;
+    p.reduce_accounts = static_cast<std::uint8_t>(v.pool.reduce_accounts);
+    p.spill = v.pool.spill == "flat" ? HomeSpill::Flat : HomeSpill::Never;
+    p.plan_interval = seconds(v.pool.plan_interval_s);
+    p.plan_lookback = Duration{static_cast<std::int64_t>(v.pool.plan_lookback_h * 3600e9)};
+    p.plan_max_moves = static_cast<std::uint32_t>(v.pool.plan_max_moves);
+    for (const auto& [symbol, account] : v.pool.homes) {
+      for (const Instrument& inst : table) {
+        if (inst.venue == primary && inst.symbol.view() == symbol &&
+            inst.id.value < plan.pin.size())
+          plan.pin[inst.id.value] = cfg.venue_id(account);
+      }
+    }
+  }
+  return plan;
 }
 
 }  // namespace fastmm

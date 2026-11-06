@@ -425,6 +425,16 @@ class BalanceBook {
     return Qty::from_raw(q);
   }
 
+  static constexpr std::int64_t kUnreported = std::numeric_limits<std::int64_t>::min();
+  // The base asset's total (free plus locked, raw) of spot instrument `id` on `account` (invalid:
+  // its own venue); kUnreported for a derivative and while the row is not reported.
+  [[nodiscard]] std::int64_t base_total(InstrumentId id, VenueId account = {}) const noexcept {
+    if (id.value >= kMaxInstruments) return kUnreported;
+    const Inst& in = slot(id, account);
+    if (in.derivative || in.base == kNone || !rows_[in.base].reported) return kUnreported;
+    return rows_[in.base].total;
+  }
+
   // One asset of a venue; unknown for an asset the table does not keep or the venue has not
   // reported.
   [[nodiscard]] Balance balance(VenueId venue, std::string_view asset) const noexcept {

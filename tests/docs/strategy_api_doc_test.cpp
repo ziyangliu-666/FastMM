@@ -224,6 +224,14 @@ static_assert(std::same_as<decltype(lvalue<const PoolMembers>()[0]), VenueId>);
 static_assert(std::same_as<decltype(NewOrderRequest::account), VenueId>);
 // [end:pool]
 
+// [start:homes]
+static_assert(std::same_as<decltype(lvalue<Ctx>().home(InstrumentId{})), VenueId>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().placement(VenueId{})), Placement>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().holding(InstrumentId{}, VenueId{})), Qty>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().pieces(InstrumentId{})), std::uint32_t>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().set_home(InstrumentId{}, VenueId{})), bool>);
+// [end:homes]
+
 // ---- perpetuals: the venue's mark, index and funding
 // ----------------------------------------------
 

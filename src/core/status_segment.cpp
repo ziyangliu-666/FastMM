@@ -1178,7 +1178,8 @@ void json_quotes(std::string& out, const StatusSnapshot& s) {
     fmt::format_to(it,
                    "{{\"symbol\": {}, \"venue\": {}, \"position\": \"{}\", \"avg_px\": \"{}\", "
                    "\"realized\": \"{}\", \"unrealized\": \"{}\", \"mid\": \"{}\", "
-                   "\"reduce_only\": {}, \"arm\": {}, \"own_params\": {}",
+                   "\"reduce_only\": {}, \"arm\": {}, \"own_params\": {}, \"home\": {}, "
+                   "\"pieces\": {}",
                    json_string(name_of(sq.symbol, sizeof sq.symbol)),
                    q.venue,
                    money(q.position_raw),
@@ -1190,7 +1191,9 @@ void json_quotes(std::string& out, const StatusSnapshot& s) {
                    q.arm == 0 || q.arm > kStatusMaxArms
                        ? std::string("null")
                        : json_string(name_of(s.ab_arms[q.arm - 1], sizeof s.ab_arms[q.arm - 1])),
-                   q.own_params);
+                   q.own_params,
+                   q.home == 0xFF ? std::string("null") : std::to_string(q.home),
+                   q.pieces);
     for (std::size_t sd = 0; sd < 2; ++sd) {
       const LiveQuoteSide& x = q.sides[sd];
       fmt::format_to(

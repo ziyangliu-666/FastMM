@@ -104,7 +104,9 @@ FEE_ASSETS = ("quote", "base", "other")
 CONTROL_COMMANDS = ("Stop", "PullQuotes", "ResumeQuotes", "TripKill", "ResetKill", "Reload",
                     "FlushStats", "RecalibrateTsc", "TripVenueKill", "Flatten", "SetLimits",
                     "Reconcile", "SetUnderlyingLimit", "TakeOver", "Transfer", "ResetLossBudget",
-                    "ReduceOnly")
+                    "ReduceOnly", "PoolHome")
+# HomeSource (include/fastmm/core/pool_homes.hpp).
+HOME_SOURCES = ("operator", "planner", "strategy", "reconcile", "pin", "first", "spill")
 # ControlTransferMsg (include/fastmm/core/messages.hpp): TreasuryEventKind and TransferState.
 TREASURY_EVENTS = ("planned", "sent", "done", "failed", "timed_out")
 TRANSFER_STATES = ("pending", "done", "failed", "not_found", "unknown")
@@ -225,6 +227,12 @@ def decode_body(type_name: str, body: bytes, params=()) -> str:
         if cmd == "SetUnderlyingLimit" and len(body) >= 25:  # ControlUnderlyingMsg
             name = body[16:16 + min(body[24], 8)].decode("utf-8", "replace")
             out = f"command={cmd} underlying={body[1]} ({name}) max_net={dec(q(8))}"
+        if cmd == "PoolHome":
+            arg = u64(8)
+            src = (arg >> 8) & 0xFF
+            frm = (arg >> 16) & 0xFF
+            out = (f"command={cmd} to={arg & 0xFF} from={'none' if frm == 0xFF else frm} "
+                   f"source={HOME_SOURCES[src] if src < len(HOME_SOURCES) else src}")
         if cmd == "ReduceOnly":
             out = f"command={cmd} {'on' if u64(8) else 'off'}"
         if cmd == "Transfer" and len(body) >= 81:  # ControlTransferMsg

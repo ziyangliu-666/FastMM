@@ -54,7 +54,8 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 25: reduce-only mode (the session, the venues, the instruments it holds; per quote row).
 // 26: per quote row, the [ab] arm and the parameters held as the instrument's own; the test's and
 //     the arms' names.
-inline constexpr std::uint32_t kStatusVersion = 26;
+// 27: per quote row, the instrument's home in its account pool and its pieces.
+inline constexpr std::uint32_t kStatusVersion = 27;
 inline constexpr std::size_t kStatusMaxArms = 16;  // kMaxAbArms
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)

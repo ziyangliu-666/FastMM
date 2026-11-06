@@ -6,6 +6,7 @@
 #include "fastmm/core/latency.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/perp_book.hpp"
+#include "fastmm/core/pool_homes.hpp"
 #include "fastmm/core/quote_diag.hpp"
 #include "fastmm/core/reject_counters.hpp"
 #include "fastmm/core/underlying.hpp"
@@ -235,6 +236,9 @@ class IEngineRunner {
   // The strategy keeps state (strategies/hooks.hpp KeepsState), and the version of its layout.
   [[nodiscard]] virtual bool keeps_state() const noexcept { return false; }
   [[nodiscard]] virtual std::uint32_t strategy_state_version() const noexcept { return 0; }
+  // The planner's view of the pool whose primary is `primary` (Engine::pool_load). Any thread.
+  // False for a runner without one.
+  virtual bool pool_load(VenueId /*primary*/, PoolLoad& /*out*/) const { return false; }
 };
 
 // Owns a strategy + engine pair and exposes them through IEngineRunner.
@@ -265,6 +269,10 @@ class EngineRunner final : public IEngineRunner {
   [[nodiscard]] bool keeps_state() const noexcept override { return engine_->keeps_state(); }
   [[nodiscard]] std::uint32_t strategy_state_version() const noexcept override {
     return engine_->strategy_state_version();
+  }
+  bool pool_load(VenueId primary, PoolLoad& out) const override {
+    engine_->pool_load(primary, out);
+    return true;
   }
   [[nodiscard]] Engine& engine() noexcept { return *engine_; }
   [[nodiscard]] Strategy& strategy() noexcept { return *strategy_; }
