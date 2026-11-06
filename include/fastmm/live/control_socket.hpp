@@ -43,11 +43,15 @@ struct ControlPlane {
 
   // Puts one message (hdr.len bytes) on the engine's control ring. False: the ring is full.
   std::function<bool(const EventHeader&)> submit;
-  // `param`: the values, the instrument (invalid: every instrument) and who asked for it
-  // (`--source`, at most ParamUpdateMsg::kSourceLen - 1 bytes; empty when not given).
+  // `param`: the values, the instrument (invalid: every instrument) or group of [strategy.groups]
+  // (`--group`), and who asked for it (`--source`, at most ParamUpdateMsg::kSourceLen - 1 bytes;
+  // empty when not given). `reset` (`--reset`) names parameters that go back to the shared value
+  // instead; a request has values or resets.
   struct ParamRequest {
     ParamValues values;
     InstrumentId instrument{};
+    std::string group;
+    std::vector<std::string> reset;
     std::string source;
   };
   // The error message (empty on success) and the update's publish_seq, which the engine reports

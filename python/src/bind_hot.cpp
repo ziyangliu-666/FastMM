@@ -212,6 +212,10 @@ struct HotRun {
   // GIL released; takes it for the slow tier's start.
   void build(const bt::BacktestConfig& cfg, sim::MdSource* source) {
     session = std::make_unique<bt::BacktestSession>(cfg, source, &table->schema(), meta);
+    // [strategy.overrides] and [ab].
+    session->enable_ab([&](ParamSink sink) {
+      return table->publisher(sink, program.record, cfg.instruments.size());
+    });
     runner = session->backend().template make_runner<HotStrategy>(session->deps());
     auto* er = static_cast<EngineRunner<HotSimEngine, HotStrategy>*>(runner.get());
     strategy = &er->strategy();

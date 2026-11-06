@@ -38,6 +38,7 @@
 #include "fastmm/strategies/hooks.hpp"
 #include "fastmm/strategies/hot_abi.h"
 #include "fastmm/strategies/hot_params.hpp"
+#include "fastmm/strategies/param_overrides.hpp"
 #include "fastmm/strategies/params.hpp"
 #include "fastmm/strategies/quoting.hpp"
 #include "fastmm/strategies/slow_channel.hpp"
@@ -53,6 +54,7 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -168,6 +170,7 @@ class HotStrategy {
     error_ = HotError{};
     calls_ = 0;
     param_ts_.assign(n, 0);
+    own_.assign(n, ParamMask{});
     param_seq_.assign(n, 0);
     last_top_.assign(n, TopOfBook{});
     update_first_ = update_last_ = 0;
@@ -304,8 +307,9 @@ class HotStrategy {
   }
 
   // Engine thread: writes the message's (field, raw value) pairs into the parameter block of its
-  // instrument, or of every instrument. A field without a HotProgram::params entry is skipped.
-  // on_params follows at the same event.
+  // instrument, or of every instrument that does not hold the field as its own
+  // (apply_param_pairs). A field without a HotProgram::params entry is skipped. on_params follows
+  // at the same event.
   void apply_param_update(const ParamUpdateMsg& m) noexcept {
     const std::size_t n_inst = inst_f_.size();
     std::size_t first = 0;
@@ -315,15 +319,12 @@ class HotStrategy {
       first = m.hdr.instrument.value;
       last = first + 1;
     }
-    const std::size_t count = std::min<std::size_t>(m.count, ParamUpdateMsg::kMaxFields);
     const std::vector<HotParamSlot>& slots = program_.params;
     if (param_bytes_ > 0) {
-      for (std::size_t k = first; k < last; ++k) {
-        std::uint8_t* const block = params_.data() + (k * param_bytes_);
-        for (std::size_t i = 0; i < count; ++i) {
-          if (m.field[i] < slots.size()) hot_write_param(slots[m.field[i]], block, m.value[i]);
-        }
-      }
+      apply_param_pairs(
+          m, std::span<ParamMask>(own_), slots.size(), [&](std::size_t k, std::size_t i) {
+            hot_write_param(slots[m.field[i]], params_.data() + (k * param_bytes_), m.value[i]);
+          });
     }
     update_first_ = first;
     update_last_ = last;
@@ -699,6 +700,7 @@ class HotStrategy {
   // parameter updates and the slow tier
   SlowChannel* slow_ = nullptr;
   std::vector<std::int64_t> param_ts_;
+  std::vector<ParamMask> own_;  // per instrument: the parameters it holds as its own
   std::vector<std::uint64_t> param_seq_;
   std::vector<TopOfBook> last_top_;
   std::size_t update_first_ = 0;

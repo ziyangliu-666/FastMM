@@ -691,3 +691,19 @@ def test_hot_ctx_reads_reduce_only(example_config):
         with pytest.raises(fastmm.StrategyError) as ei:
             fastmm.run_backtest(_synthetic(cfg, 2), data="synthetic", strategy=Reads)
         assert ei.value.fail_code == code
+
+
+def test_strategy_overrides_reach_a_hot_strategy_as_they_reach_cpp(tmp_path):
+    # [strategy.overrides] gives the instrument its own half spread in both engines.
+    text = EXAMPLE_TOML.read_text() + '\n[strategy.overrides.BTCUSDT]\nhalf_spread_bps = 0.02\n'
+    path = tmp_path / "overrides.toml"
+    path.write_text(text)
+    cfg = fastmm.BacktestConfig.from_toml(path)
+    cfg.duration_s = 20
+    plain = fastmm.BacktestConfig.from_toml(EXAMPLE_TOML)
+    plain.duration_s = 20
+    cpp = fastmm.run_backtest(cfg, data="synthetic", strategy="basic_mm")
+    hot = fastmm.run_backtest(cfg, data="synthetic", strategy=BasicMMHot)
+    assert hot.outbound_sha256 == cpp.outbound_sha256
+    base = fastmm.run_backtest(plain, data="synthetic", strategy="basic_mm")
+    assert base.outbound_sha256 != cpp.outbound_sha256

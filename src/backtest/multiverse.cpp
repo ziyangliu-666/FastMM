@@ -1108,7 +1108,7 @@ MultiverseFactory registry_factory(const StrategyEntry& entry) {
   return [&entry](std::size_t, const BacktestConfig& cfg, MdSource& source) {
     MultiverseRun r;
     r.session = std::make_unique<BacktestSession>(cfg, &source, entry.schema);
-    if (cfg.ab.enabled()) r.session->enable_ab(entry.publisher);
+    if (cfg.publishes_params()) r.session->enable_ab(entry.publisher);
     r.runner = StrategyRegistry::instance().make(entry.name, TransportKind::Sim, r.session->deps());
     if (r.runner == nullptr) {
       throw std::invalid_argument("multiverse: strategy '" + std::string(entry.name) +

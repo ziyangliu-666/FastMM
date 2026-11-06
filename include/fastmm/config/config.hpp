@@ -233,6 +233,11 @@ struct InstrumentSection {
 struct StrategySection {
   std::string name;
   ParamMap params;
+  // [strategy.groups]: named lists of instruments ("symbol" or "venue:symbol").
+  std::map<std::string, std::vector<std::string>> groups;
+  // [strategy.overrides]: parameters of one instrument or group on top of params
+  // (strategies/param_overrides.hpp).
+  std::map<std::string, ParamMap> overrides;
   std::int64_t max_param_age_ms = 0;  // 0 = off
   std::string state_file;             // the strategy's state across sessions; empty: none
   std::int64_t state_interval_s = 300;
@@ -253,6 +258,11 @@ struct AbSection {
   // instrument, crossover: the weight of each instrument ("venue:symbol" or "symbol") the split
   // balances the arms on; empty: every instrument weighs the same.
   std::map<std::string, double> weights;
+  // instrument, crossover: the arm of each instrument ("venue:symbol" or "symbol" = arm name)
+  // instead of a drawn split; an instrument not listed stays out of the test.
+  std::map<std::string, std::string> assign;
+  // time, crossover: blocks start this many seconds after multiples of block_s since the epoch.
+  std::int64_t block_offset_s = 0;
   std::vector<AbArmSection> arms;
   [[nodiscard]] bool enabled() const noexcept { return !arms.empty(); }
 };

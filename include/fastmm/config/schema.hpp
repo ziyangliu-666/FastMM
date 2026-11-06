@@ -605,6 +605,22 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "[strategy.params] table: the strategy's parameters"},
     {"strategy.params", "*", KeyType::Any, false, "strategy parameters (validated by the schema)"},
+    {"strategy",
+     "groups",
+     KeyType::Table,
+     false,
+     "[strategy.groups] table: name = [\"symbol\" or \"venue:symbol\", ...], instruments that "
+     "[strategy.overrides] and fastmm-ctl param --group name together"},
+    {"strategy.groups", "*", KeyType::Any, false, "the instruments of one group"},
+    {"strategy",
+     "overrides",
+     KeyType::Table,
+     false,
+     "[strategy.overrides.<key>] tables: parameters of one instrument (\"symbol\" or "
+     "\"venue:symbol\") or group on top of [strategy.params]; an instrument's own table wins over "
+     "its groups' (a strategy with a parameter set per instrument)"},
+    {"strategy.overrides", "*", KeyType::Table, false, "the parameters of one instrument or group"},
+    {"strategy.overrides.*", "*", KeyType::Any, false, "one strategy parameter"},
     // [ab]
     {"ab",
      "name",
@@ -653,6 +669,20 @@ inline constexpr KeySpec kConfigSchema[] = {
      "or \"symbol\" = number >= 0, e.g. its daily volume), every instrument or none; instruments "
      "of similar weight go to different arms (default: equal weights)"},
     {"ab.weights", "*", KeyType::Float, false, "weight of one instrument"},
+    {"ab",
+     "assign",
+     KeyType::Table,
+     false,
+     "[ab.assign] table: instrument, crossover: the arm of each instrument (\"venue:symbol\" or "
+     "\"symbol\" = arm name) instead of a drawn split; an instrument not listed stays out of the "
+     "test (default: drawn, balanced on weights)"},
+    {"ab.assign", "*", KeyType::String, false, "arm of one instrument"},
+    {"ab",
+     "block_offset_s",
+     KeyType::Int,
+     false,
+     "time, crossover: blocks start this many seconds after the multiples of block_s, 0 to "
+     "block_s - 1; with block_s = 86400, 79200 starts each day at 22:00 UTC (default 0)"},
     {"ab",
      "arms",
      KeyType::Any,

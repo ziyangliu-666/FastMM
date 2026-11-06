@@ -431,6 +431,8 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   for (const VenueSection& v : cfg.venues) b.venue_names.push_back(v.name);
   b.strategy = cfg.strategy.name;
   b.params = cfg.strategy.params;
+  b.param_groups = cfg.strategy.groups;
+  b.param_overrides = cfg.strategy.overrides;
   b.config_toml = cfg.effective_toml();
 
   const GenericSection& bt = cfg.backtest;

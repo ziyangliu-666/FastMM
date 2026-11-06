@@ -724,13 +724,19 @@ struct ParamUpdateMsg {
     Strategy = 0,    // the strategy's own publisher (a slow tier, a model), or not recorded
     Control = 1,     // the control socket (fastmm-ctl param)
     Experiment = 2,  // the [ab] test: an arm's parameters at a block boundary, a stop, a promote
+    Config = 3,      // [strategy.overrides], at the start of the session
   };
+  // `flags`. kReset: the named parameters stop being the instrument's own and take the shared
+  // value again, which `value` carries; for every instrument, each instrument's own value of them
+  // is dropped. An update for every instrument with an arm is a reset as well.
+  static constexpr std::uint8_t kReset = 1U << 0;
 
   EventHeader hdr;
   std::uint32_t count;              // pairs used
   Origin origin;                    //
   std::uint8_t arm;                 // kArmKeep, kArmNone or arm + 1
-  std::uint8_t pad0_[2];            //
+  std::uint8_t flags;               // kReset
+  std::uint8_t pad0_[1];            //
   std::uint64_t publish_seq;        // the publisher's sequence number, from 1
   std::uint16_t field[kMaxFields];  // schema index of each pair
   char source[kSourceLen];          // who asked for it, e.g. "manual", "scheduled:drain"
@@ -738,6 +744,10 @@ struct ParamUpdateMsg {
   std::int64_t value[kMaxFields];   // raw value of each pair
 
   [[nodiscard]] bool all_instruments() const noexcept { return !hdr.instrument.valid(); }
+  // The update drops the instruments' own values of the parameters it names (kReset).
+  [[nodiscard]] bool resets() const noexcept {
+    return (flags & kReset) != 0 || (all_instruments() && arm != kArmKeep);
+  }
   [[nodiscard]] std::string_view source_view() const noexcept {
     std::size_t n = 0;
     while (n < kSourceLen && source[n] != '\0') ++n;
@@ -749,10 +759,25 @@ struct ParamUpdateMsg {
     for (std::size_t i = 0; i < kSourceLen; ++i) source[i] = i < n ? s[i] : '\0';
   }
 };
+// "strategy", "control", "ab", "config": the store's param_updates.origin.
+[[nodiscard]] constexpr std::string_view to_string(ParamUpdateMsg::Origin o) noexcept {
+  switch (o) {
+    case ParamUpdateMsg::Origin::Control:
+      return "control";
+    case ParamUpdateMsg::Origin::Experiment:
+      return "ab";
+    case ParamUpdateMsg::Origin::Config:
+      return "config";
+    case ParamUpdateMsg::Origin::Strategy:
+      break;
+  }
+  return "strategy";
+}
 static_assert(sizeof(ParamUpdateMsg) == 448 && std::is_trivially_copyable_v<ParamUpdateMsg>);
 static_assert(offsetof(ParamUpdateMsg, count) == 64 && offsetof(ParamUpdateMsg, origin) == 68 &&
-              offsetof(ParamUpdateMsg, arm) == 69 && offsetof(ParamUpdateMsg, field) == 80 &&
-              offsetof(ParamUpdateMsg, source) == 144 && offsetof(ParamUpdateMsg, value) == 192);
+              offsetof(ParamUpdateMsg, arm) == 69 && offsetof(ParamUpdateMsg, flags) == 70 &&
+              offsetof(ParamUpdateMsg, field) == 80 && offsetof(ParamUpdateMsg, source) == 144 &&
+              offsetof(ParamUpdateMsg, value) == 192);
 
 // ---- outbound (engine -> venue) --------------------------------------------------------
 

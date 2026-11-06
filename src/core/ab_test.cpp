@@ -166,6 +166,9 @@ AbPlan::AbPlan(const AbSection& section,
     if (s_.block_s <= 0 || s_.block_s > std::numeric_limits<std::int64_t>::max() / kNsPerSec / 4)
       throw ConfigError("ab.block_s must be > 0");
     block_ns_ = s_.block_s * kNsPerSec;
+    if (s_.block_offset_s < 0 || s_.block_offset_s >= s_.block_s)
+      throw ConfigError("ab.block_offset_s must be >= 0 and below block_s");
+    offset_ns_ = s_.block_offset_s * kNsPerSec;
   }
   if (!s_.start.empty()) {
     const std::optional<std::int64_t> t = parse_utc_time(s_.start);
@@ -188,7 +191,47 @@ AbPlan::AbPlan(const AbSection& section,
   }
   slot_.assign(n, 0);
   stratum_.assign(n, 0);
-  if (kind_ == AbAssignment::Time || kind_ == AbAssignment::Branch) return;
+  if (kind_ == AbAssignment::Time || kind_ == AbAssignment::Branch) {
+    if (!s_.assign.empty())
+      throw ConfigError("ab.assign: assignment = \"" + s_.assignment +
+                        "\" puts every instrument in the same arm");
+    return;
+  }
+  if (!s_.assign.empty()) {
+    // [ab.assign]: the arms by name; every arm needs an instrument.
+    slot_.assign(n, kOut);
+    for (const auto& [key, arm_name] : s_.assign) {
+      std::size_t found = n;
+      std::size_t matches = 0;
+      for (std::size_t i = 0; i < n; ++i) {
+        const bool hit =
+            key.find(':') != std::string::npos
+                ? names_[i] == key
+                : instruments.get(InstrumentId{static_cast<std::uint32_t>(i)}).symbol.view() == key;
+        if (!hit) continue;
+        found = i;
+        ++matches;
+      }
+      if (matches == 0) throw ConfigError("[ab.assign]: no instrument '" + key + "'");
+      if (matches > 1)
+        throw ConfigError("[ab.assign]: '" + key +
+                          "' is on more than one venue; write it \"venue:symbol\"");
+      std::size_t arm = arms;
+      for (std::size_t a = 0; a < arms; ++a) {
+        if (s_.arms[a].name == arm_name) arm = a;
+      }
+      if (arm == arms)
+        throw ConfigError("[ab.assign]: " + key + ": no arm named '" + arm_name + "'");
+      if (slot_[found] != kOut)
+        throw ConfigError("[ab.assign]: " + names_[found] + " is assigned twice");
+      slot_[found] = static_cast<std::uint8_t>(arm);
+    }
+    for (std::size_t a = 0; a < arms; ++a) {
+      if (std::find(slot_.begin(), slot_.end(), static_cast<std::uint8_t>(a)) == slot_.end())
+        throw ConfigError("[ab.assign] puts no instrument in arm '" + s_.arms[a].name + "'");
+    }
+    return;
+  }
   if (n < arms) {
     throw ConfigError(fmt::format(
         "[ab] assignment = \"{}\" splits {} instrument(s) over {} arms; it needs at least one "
@@ -249,7 +292,7 @@ std::size_t AbPlan::block_draw(std::int64_t block) const noexcept {
 }
 
 int AbPlan::arm_at(std::size_t inst, std::int64_t t) const noexcept {
-  if (t < start_ns_ || t >= end_ns_ || inst >= slot_.size()) return kNoArm;
+  if (t < start_ns_ || t >= end_ns_ || !in_test(inst)) return kNoArm;
   switch (kind_) {
     case AbAssignment::Instrument:
       return slot_[inst];
@@ -264,7 +307,7 @@ int AbPlan::arm_at(std::size_t inst, std::int64_t t) const noexcept {
 }
 
 std::int64_t AbPlan::block_of(std::int64_t t) const noexcept {
-  return block_ns_ > 0 ? floor_div(t, block_ns_) : 0;
+  return block_ns_ > 0 ? floor_div(t - offset_ns_, block_ns_) : 0;
 }
 
 std::int64_t AbPlan::round_of(std::int64_t t) const noexcept {
@@ -277,8 +320,8 @@ std::int64_t AbPlan::next_change(std::int64_t t) const noexcept {
   if (t < end_ns_ && end_ns_ < next) next = end_ns_;
   if (block_ns_ > 0 && t < end_ns_) {
     const std::int64_t k = block_of(t);
-    if (k < std::numeric_limits<std::int64_t>::max() / block_ns_ - 1) {
-      const std::int64_t boundary = (k + 1) * block_ns_;
+    if (k < std::numeric_limits<std::int64_t>::max() / block_ns_ - 2) {
+      const std::int64_t boundary = block_end(k);
       if (boundary > start_ns_ && boundary < next) next = boundary;
     }
   }
@@ -340,8 +383,12 @@ const std::vector<AbController::ParamValue>& AbController::values(int arm) const
 
 bool AbController::publish(InstrumentId inst, int values, std::uint8_t arm) {
   try {
+    // An instrument leaving the test takes the shared values again.
+    const std::uint8_t flags =
+        inst.valid() && values == AbPlan::kNoArm ? ParamUpdateMsg::kReset : std::uint8_t{0};
     if (pub_->publish_as(
-            this->values(values), inst, ParamUpdateMsg::Origin::Experiment, source_, arm) == 0)
+            this->values(values), inst, ParamUpdateMsg::Origin::Experiment, source_, arm, flags) ==
+        0)
       return false;
   } catch (const std::invalid_argument& e) {
     // The instrument's parameters no longer take the arm's (validate() across a value an
@@ -429,6 +476,8 @@ std::string AbController::status(Timestamp now) const {
                  plan_.arms(),
                  s.seed);
   if (plan_.block_ns() > 0) fmt::format_to(it, ", block {} s", s.block_s);
+  if (s.block_offset_s != 0) fmt::format_to(it, " from +{} s", s.block_offset_s);
+  if (!s.assign.empty()) fmt::format_to(it, ", arms assigned by name");
   out += '\n';
   for (std::size_t a = 0; a < plan_.arms(); ++a) {
     const auto in_arm = std::count(current_.begin(), current_.end(), static_cast<int>(a));
@@ -452,7 +501,7 @@ std::string AbController::status(Timestamp now) const {
                    span_text(plan_.start_ns() - now.ns));
   } else if (st == State::Running && plan_.block_ns() > 0) {
     const std::int64_t k = plan_.block_of(now.ns);
-    const std::int64_t until = (k + 1) * plan_.block_ns();
+    const std::int64_t until = plan_.block_end(k);
     fmt::format_to(it,
                    "block      {} until {} (in {})\n",
                    k,

@@ -5,6 +5,7 @@
 //   fastmm-pnl sessions                       what has run
 //   fastmm-pnl audit --exchange trades.json   the stored fills against the venue's export
 //   fastmm-pnl params --at "2026-10-09 14:00"  the strategy parameters in effect then
+//   fastmm-pnl ab --since 2026-11-01          an [ab] test's arms against each other
 //
 // The journal answers "what exactly happened, byte for byte" (fastmm-replay); this answers the
 // daily questions. docs/how-to/operations/query-trading-records.md.

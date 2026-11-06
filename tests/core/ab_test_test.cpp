@@ -418,3 +418,69 @@ TEST_CASE("core.ab: the controller refuses arms the strategy cannot run") {
                        std::invalid_argument);
   CHECK(out.sent.empty());
 }
+
+TEST_CASE("core.ab: [ab.assign] names each instrument's arm, and leaves the others out") {
+  const Config cfg = parse(R"(
+[ab]
+name = "listed"
+assignment = "crossover"
+block_s = 86400
+block_offset_s = 79200
+
+[ab.assign]
+AAA = "control"
+"sim:BBB" = "wide"
+CCC = "wide"
+
+[[ab.arms]]
+name = "control"
+
+[[ab.arms]]
+name = "wide"
+params = { half_spread_bps = 8 }
+)");
+  const AbPlan plan = plan_of(cfg);
+  // A block runs from 22:00 UTC to 22:00 UTC.
+  const std::int64_t day = *parse_utc_time("2026-11-02T22:00:00Z");
+  CHECK(plan.block_of(day) == plan.block_of(day + 86'399 * kSec));
+  CHECK(plan.block_of(day) + 1 == plan.block_of(day + 86'400 * kSec));
+  CHECK(plan.next_change(day + kSec) == day + 86'400 * kSec);
+  for (const std::int64_t t : {day, day + 86'400 * kSec}) {
+    const int a = plan.arm_at(0, t);
+    REQUIRE(a != AbPlan::kNoArm);
+    // Switchback: the listed instruments change arm together each block.
+    CHECK(plan.arm_at(1, t) == 1 - a);
+    CHECK(plan.arm_at(2, t) == 1 - a);
+    CHECK(plan.arm_at(3, t) == AbPlan::kNoArm);
+    CHECK_FALSE(plan.in_test(5));
+  }
+  CHECK(plan.arm_at(0, day) != plan.arm_at(0, day + 86'400 * kSec));
+  // The same configuration gives the same schedule.
+  const AbPlan again = plan_of(cfg);
+  for (int k = 0; k < 10; ++k) {
+    const std::int64_t t = day + k * 86'400 * kSec;
+    for (std::size_t i = 0; i < 6; ++i) CHECK(again.arm_at(i, t) == plan.arm_at(i, t));
+  }
+  // The effective configuration carries the list and the offset.
+  const Config back = Config::parse(cfg.effective_toml());
+  CHECK(back.ab.assign == cfg.ab.assign);
+  CHECK(back.ab.block_offset_s == 79200);
+}
+
+TEST_CASE("core.ab: a bad [ab.assign] is refused") {
+  const auto with = [](std::string_view assign) {
+    return std::string("\n[ab]\nname = \"x\"\nassignment = \"instrument\"\n") +
+           std::string(assign) +
+           "\n[[ab.arms]]\nname = \"control\"\n\n[[ab.arms]]\nname = \"wide\"\n";
+  };
+  CHECK_THROWS_WITH_AS(plan_of(parse(with("[ab.assign]\nZZZ = \"wide\"\nAAA = \"control\"\n"))),
+                       doctest::Contains("no instrument 'ZZZ'"),
+                       ConfigError);
+  CHECK_THROWS_WITH_AS(plan_of(parse(with("[ab.assign]\nAAA = \"nope\"\n"))),
+                       doctest::Contains("no arm named 'nope'"),
+                       ConfigError);
+  CHECK_THROWS_WITH_AS(plan_of(parse(with("[ab.assign]\nAAA = \"wide\"\n"))),
+                       doctest::Contains("no instrument in arm 'control'"),
+                       ConfigError);
+  CHECK_THROWS_AS(parse(with("[ab.assign]\nAAA = \"wide\"\n[ab.weights]\nAAA = 1\n")), ConfigError);
+}

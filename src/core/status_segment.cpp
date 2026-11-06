@@ -60,8 +60,7 @@ std::string_view name_of(const char* buf, std::size_t cap) {
 
 // StatusSnapshot::param_last_origin (ParamUpdateMsg::Origin).
 std::string_view param_origin_name(std::uint8_t origin) {
-  return origin == static_cast<std::uint8_t>(ParamUpdateMsg::Origin::Control) ? "control"
-                                                                              : "strategy";
+  return to_string(static_cast<ParamUpdateMsg::Origin>(origin));
 }
 
 const char* paint(bool color, std::string_view state) {
@@ -121,6 +120,33 @@ void append_quotes(std::string& out, const StatusSnapshot& s, std::int64_t now_n
           budget,
           stuck ? reset(color) : "");
     }
+  }
+  // The instruments in an [ab] arm or with parameters of their own.
+  header = false;
+  for (std::uint32_t k = 0; k < s.quote_count && k < kStatusMaxQuotes; ++k) {
+    const LiveQuoteInstrument& q = s.quotes[k].q;
+    if (q.arm == 0 && q.own_params == 0) continue;
+    if (!header) {
+      header = true;
+      fmt::format_to(std::back_inserter(out),
+                     "\n{:<14} {:<16} {:>10}{}\n",
+                     "params",
+                     "arm",
+                     "own",
+                     s.ab_test[0] == 0
+                         ? std::string()
+                         : "   test " + std::string(name_of(s.ab_test, sizeof s.ab_test)));
+    }
+    std::string arm = "-";
+    if (q.arm != 0 && q.arm <= kStatusMaxArms) {
+      arm = std::string(name_of(s.ab_arms[q.arm - 1], sizeof s.ab_arms[q.arm - 1]));
+      if (arm.empty()) arm = "#" + std::to_string(q.arm - 1);
+    }
+    fmt::format_to(std::back_inserter(out),
+                   "{:<14} {:<16} {:>10}\n",
+                   name_of(s.quotes[k].symbol, sizeof s.quotes[k].symbol),
+                   arm,
+                   q.own_params);
   }
   if (s.metric_count != 0) {
     out += "\nmetrics   ";
@@ -1152,7 +1178,7 @@ void json_quotes(std::string& out, const StatusSnapshot& s) {
     fmt::format_to(it,
                    "{{\"symbol\": {}, \"venue\": {}, \"position\": \"{}\", \"avg_px\": \"{}\", "
                    "\"realized\": \"{}\", \"unrealized\": \"{}\", \"mid\": \"{}\", "
-                   "\"reduce_only\": {}",
+                   "\"reduce_only\": {}, \"arm\": {}, \"own_params\": {}",
                    json_string(name_of(sq.symbol, sizeof sq.symbol)),
                    q.venue,
                    money(q.position_raw),
@@ -1160,7 +1186,11 @@ void json_quotes(std::string& out, const StatusSnapshot& s) {
                    money(q.realized_raw),
                    money(q.unrealized_raw),
                    money(q.mid_raw),
-                   q.reduce_only != 0);
+                   q.reduce_only != 0,
+                   q.arm == 0 || q.arm > kStatusMaxArms
+                       ? std::string("null")
+                       : json_string(name_of(s.ab_arms[q.arm - 1], sizeof s.ab_arms[q.arm - 1])),
+                   q.own_params);
     for (std::size_t sd = 0; sd < 2; ++sd) {
       const LiveQuoteSide& x = q.sides[sd];
       fmt::format_to(

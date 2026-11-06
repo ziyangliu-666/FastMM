@@ -670,17 +670,7 @@ class SqliteBackend final : public Backend {
     const std::size_t k = arm - 1U;
     b.t(k < arm_names_.size() ? arm_names_[k] : "#" + std::to_string(k));
   }
-  static std::string_view origin_name(ParamUpdateMsg::Origin o) noexcept {
-    switch (o) {
-      case ParamUpdateMsg::Origin::Control:
-        return "control";
-      case ParamUpdateMsg::Origin::Experiment:
-        return "ab";
-      case ParamUpdateMsg::Origin::Strategy:
-        break;
-    }
-    return "strategy";
-  }
+  static std::string_view origin_name(ParamUpdateMsg::Origin o) noexcept { return to_string(o); }
 
   // The parameter table and the starting values (seq 0, origin 'initial').
   [[nodiscard]] Result<void, std::string> session_params(const SessionOpen& s) {

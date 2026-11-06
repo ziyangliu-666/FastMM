@@ -80,6 +80,7 @@
 #include "fastmm/core/transport.hpp"
 #include "fastmm/core/venue_health.hpp"
 #include "fastmm/strategies/hooks.hpp"
+#include "fastmm/strategies/param_overrides.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1563,6 +1564,8 @@ class Engine {
       q.unrealized_raw = p.unrealized.raw;
       q.mid_raw = books_[inst.id.value].mid().raw;
       q.reduce_only = reduce_only_[inst.id.value] ? 1 : 0;
+      q.arm = ab_arm_[inst.id.value];
+      q.own_params = static_cast<std::uint8_t>(param_own_[inst.id.value].count());
       for (const Side side : {Side::Buy, Side::Sell}) {
         QuoteTrack& t = quote_track_[track_index(inst.id, side)];
         LiveQuoteSide& out = q.sides[static_cast<std::size_t>(side)];
@@ -2441,6 +2444,9 @@ class Engine {
         ab_arm_[m.hdr.instrument.value] = arm;
       }
     }
+    // The instruments' own values, for the status file; the strategy keeps its own copy.
+    apply_param_pairs(
+        m, std::span<ParamMask>(param_own_), kMaxParams, [](std::size_t, std::size_t) {});
     emit_param(m);
     if constexpr (requires { strategy_.apply_param_update(m); }) strategy_.apply_param_update(m);
     if (cfg_.max_param_age.ns > 0) {

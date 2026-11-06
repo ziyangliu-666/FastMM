@@ -189,6 +189,14 @@ void parse_ab(const toml::table& t, AbSection& ab) {
     if (const auto* n = t.get("block_s")) fail_at(*n, "ab.block_s must be > 0");
     fail_at(t, fmt::format("ab.assignment = \"{}\" needs block_s", ab.assignment));
   }
+  get(t, "block_offset_s", ab.block_offset_s);
+  if (t.contains("block_offset_s") &&
+      (!by_time || ab.block_offset_s < 0 || ab.block_offset_s >= ab.block_s)) {
+    fail_at(*t.get("block_offset_s"),
+            by_time ? "ab.block_offset_s must be >= 0 and below block_s"
+                    : fmt::format("ab.block_offset_s: assignment = \"{}\" has no blocks",
+                                  ab.assignment));
+  }
   if (!by_time && t.contains("block_s")) {
     fail_at(*t.get("block_s"),
             fmt::format("ab.block_s: assignment = \"{}\" has no blocks", ab.assignment));
@@ -219,6 +227,19 @@ void parse_ab(const toml::table& t, AbSection& ab) {
       if (!(x >= 0.0) || !std::isfinite(x))
         fail_at(v, fmt::format("ab.weights.\"{}\" must be a number >= 0", k.str()));
       ab.weights[std::string(k.str())] = x;
+    }
+  }
+  if (const auto* a = t.get_as<toml::table>("assign")) {
+    if (ab.assignment == "time" || ab.assignment == "branch") {
+      fail_at(*a,
+              fmt::format("ab.assign: assignment = \"{}\" puts every instrument in the same arm",
+                          ab.assignment));
+    }
+    if (t.contains("weights")) fail_at(*a, "ab.assign and ab.weights: give one of them");
+    for (const auto& [k, v] : *a) {
+      const std::optional<std::string> arm = v.value<std::string>();
+      if (!arm) fail_at(v, fmt::format("ab.assign.\"{}\" must be an arm's name", k.str()));
+      ab.assign[std::string(k.str())] = *arm;
     }
   }
   const toml::node* arms = t.get("arms");
@@ -916,6 +937,38 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
         cfg.strategy.params[std::string(k.str())] = stringify(v);
       }
     }
+    if (const auto* g = t->get_as<toml::table>("groups")) {
+      for (const auto& [k, v] : *g) {
+        const std::string name(k.str());
+        if (!plain_name(name, 32, "_-."))
+          fail_at(v, "strategy.groups: a group name is 1 to 32 letters, digits, '_', '-' or '.'");
+        const toml::array* list = v.as_array();
+        if (list == nullptr || list->empty())
+          fail_at(v, fmt::format("strategy.groups.{} must be a list of instruments", name));
+        std::vector<std::string>& members = cfg.strategy.groups[name];
+        for (const toml::node& m : *list) {
+          const std::optional<std::string> sym = m.value<std::string>();
+          if (!sym || sym->empty())
+            fail_at(m, fmt::format("strategy.groups.{}: \"symbol\" or \"venue:symbol\"", name));
+          members.push_back(*sym);
+        }
+      }
+    }
+    if (const auto* o = t->get_as<toml::table>("overrides")) {
+      for (const auto& [k, v] : *o) {
+        const toml::table* table = v.as_table();
+        if (table == nullptr)
+          fail_at(v, fmt::format("strategy.overrides.\"{}\" must be a table", k.str()));
+        ParamMap& values = cfg.strategy.overrides[std::string(k.str())];
+        for (const auto& [name, value] : *table) {
+          if (value.is_table() || value.is_array())
+            fail_at(
+                value,
+                fmt::format("strategy.overrides.\"{}\".{} must be a scalar", k.str(), name.str()));
+          values[std::string(name.str())] = stringify(value);
+        }
+      }
+    }
   } else if (doc.contains("strategy")) {
     fail_at(*doc.get("strategy"), "[strategy] must be a table");
   }
@@ -1343,17 +1396,37 @@ std::string Config::redacted() const {
     out += "\n[strategy.params]\n";
     for (const auto& [k, v] : strategy.params) kq(k, v);
   }
+  if (!strategy.groups.empty()) {
+    out += "\n[strategy.groups]\n";
+    for (const auto& [name, members] : strategy.groups) {
+      std::string list;
+      for (const std::string& m : members) {
+        if (!list.empty()) list += ", ";
+        list += fmt::format("\"{}\"", m);
+      }
+      fmt::format_to(std::back_inserter(out), "{} = [{}]\n", name, list);
+    }
+  }
+  for (const auto& [key, values] : strategy.overrides) {
+    fmt::format_to(std::back_inserter(out), "\n[strategy.overrides.\"{}\"]\n", key);
+    for (const auto& [k, v] : values) kq(k, v);
+  }
   if (ab.enabled()) {
     out += "\n[ab]\n";
     kq("name", ab.name);
     kq("assignment", ab.assignment);
     kv("seed", ab.seed);
     if (ab.block_s != 0) kv("block_s", ab.block_s);
+    if (ab.block_offset_s != 0) kv("block_offset_s", ab.block_offset_s);
     if (!ab.start.empty()) kq("start", ab.start);
     if (!ab.end.empty()) kq("end", ab.end);
     if (!ab.weights.empty()) {
       out += "\n[ab.weights]\n";
       for (const auto& [k, v] : ab.weights) kv(fmt::format("\"{}\"", k), v);
+    }
+    if (!ab.assign.empty()) {
+      out += "\n[ab.assign]\n";
+      for (const auto& [k, v] : ab.assign) kq(fmt::format("\"{}\"", k), v);
     }
     for (const AbArmSection& a : ab.arms) {
       out += "\n[[ab.arms]]\n";
@@ -1635,6 +1708,25 @@ std::string Config::effective_toml() const {
   toml::table params;
   for (const auto& [k, v] : strategy.params) params.insert_or_assign(k, v);
   st.insert("params", std::move(params));
+  // Only when set, so a configuration without them keeps its effective text and hash.
+  if (!strategy.groups.empty()) {
+    toml::table groups;
+    for (const auto& [name, members] : strategy.groups) {
+      toml::array list;
+      for (const std::string& m : members) list.push_back(m);
+      groups.insert(name, std::move(list));
+    }
+    st.insert("groups", std::move(groups));
+  }
+  if (!strategy.overrides.empty()) {
+    toml::table overrides;
+    for (const auto& [key, values] : strategy.overrides) {
+      toml::table x;
+      for (const auto& [k, v] : values) x.insert_or_assign(k, v);
+      overrides.insert(key, std::move(x));
+    }
+    st.insert("overrides", std::move(overrides));
+  }
   root.insert("strategy", std::move(st));
 
   // Only when set, so a configuration without it keeps its effective text and hash.
@@ -1644,12 +1736,18 @@ std::string Config::effective_toml() const {
     t.insert("assignment", ab.assignment);
     t.insert("seed", static_cast<std::int64_t>(ab.seed));
     if (ab.block_s != 0) t.insert("block_s", ab.block_s);
+    if (ab.block_offset_s != 0) t.insert("block_offset_s", ab.block_offset_s);
     if (!ab.start.empty()) t.insert("start", ab.start);
     if (!ab.end.empty()) t.insert("end", ab.end);
     if (!ab.weights.empty()) {
       toml::table w;
       for (const auto& [k, v] : ab.weights) w.insert_or_assign(k, v);
       t.insert("weights", std::move(w));
+    }
+    if (!ab.assign.empty()) {
+      toml::table a;
+      for (const auto& [k, v] : ab.assign) a.insert_or_assign(k, v);
+      t.insert("assign", std::move(a));
     }
     toml::array arms;
     for (const AbArmSection& a : ab.arms) {

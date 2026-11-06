@@ -449,6 +449,8 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
   // The journal embeds the configuration the run used, command-line overrides included.
   raw.strategy.name = cfg.strategy;
   raw.strategy.params = cfg.params;
+  raw.strategy.groups = cfg.param_groups;
+  raw.strategy.overrides = cfg.param_overrides;
   if (have_seed) raw.backtest.values["seed"] = std::to_string(seed);
   if (duration_s > 0) raw.backtest.values["duration_s"] = std::to_string(duration_s);
   cfg.config_toml = raw.effective_toml();

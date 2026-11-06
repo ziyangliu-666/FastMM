@@ -280,6 +280,26 @@ TEST_CASE("integration.control: param is validated on the control thread, never 
   CHECK(f.run("param").starts_with("error"));
 }
 
+TEST_CASE("integration.control: param takes a group, and --reset names") {
+  Fake f;
+  CHECK(f.run("param half_spread_bps=8 --group majors") ==
+        "ok param queued seq=1 (group majors)\n");
+  REQUIRE(f.params.size() == 1);
+  CHECK(f.params[0].group == "majors");
+  CHECK(f.params[0].reset.empty());
+  CHECK(f.run("param --reset half_spread_bps --reset levels --instrument ETHUSDT") ==
+        "ok param queued seq=2 (instrument ETHUSDT)\n");
+  REQUIRE(f.params.size() == 2);
+  CHECK(f.params[1].values.empty());
+  CHECK(f.params[1].reset == std::vector<std::string>{"half_spread_bps", "levels"});
+  CHECK(f.params[1].instrument == InstrumentId{1});
+  CHECK(f.run("param a=1 --reset b").starts_with("error"));
+  CHECK(f.run("param a=1 --group g --instrument ETHUSDT").starts_with("error"));
+  CHECK(f.run("param --reset").starts_with("error"));
+  CHECK(f.run("pull --group g").starts_with("error"));
+  CHECK(f.params.size() == 2);
+}
+
 TEST_CASE("integration.control: params reports the sequence numbers and the values") {
   Fake f;
   CHECK(f.run("params") == "ok published=2 applied=1 pending=1\nvalues=published\nq=1\n");

@@ -157,3 +157,53 @@ name = "basic_mm"
   CHECK(off.effective_toml().find("max_param_age_ms") == std::string::npos);
   CHECK_THROWS_AS(static_cast<void>(Config::parse(base + "max_param_age_ms = -1\n")), ConfigError);
 }
+
+TEST_CASE(
+    "backtest.params: [strategy.overrides] reach the engine before the first event and replay") {
+  BacktestConfig cfg = synthetic_config(23, seconds(6));
+  cfg.strategy = "basic_mm";
+  cfg.journal_out = tmp_journal("params_overrides.fmj");
+  cfg.param_overrides = {{"BTCUSDT", {{"half_spread_bps", "0.02"}}}};
+  const BacktestResult rec = run_backtest(cfg, "basic_mm");
+  REQUIRE(rec.outbound_messages > 10);
+
+  // One update, from the configuration, for the instrument, before any order.
+  JournalReader reader;
+  REQUIRE(reader.open(cfg.journal_out));
+  std::size_t updates = 0;
+  bool order_before = false;
+  reader.for_each([&](const EventHeader* h) {
+    if (h->type == EventType::OutNewOrder && updates == 0) order_before = true;
+    if (h->type != EventType::ParamUpdate) return;
+    const auto* m = reinterpret_cast<const ParamUpdateMsg*>(h);
+    CHECK(m->origin == ParamUpdateMsg::Origin::Config);
+    CHECK(m->hdr.instrument == InstrumentId{0});
+    ++updates;
+  });
+  CHECK(updates == 1);
+  CHECK_FALSE(order_before);
+
+  const ReplayResult rp = replay_journal(cfg.journal_out, cfg);
+  CHECK(rp.ok());
+  CHECK(rp.outbound_sha256 == rec.outbound_sha256);
+
+  BacktestConfig plain = cfg;
+  plain.journal_out.clear();
+  plain.param_overrides.clear();
+  CHECK(run_backtest(plain, "basic_mm").outbound_sha256 != rec.outbound_sha256);
+
+  // The same value for every instrument through [strategy.params] sends the same orders.
+  BacktestConfig shared = plain;
+  shared.params["half_spread_bps"] = "0.02";
+  CHECK(run_backtest(shared, "basic_mm").outbound_sha256 == rec.outbound_sha256);
+}
+
+TEST_CASE("backtest.params: [strategy.overrides] on a strategy with one parameter set is refused") {
+  BacktestConfig cfg = synthetic_config(23, seconds(1));
+  cfg.strategy = "lead_mm";
+  cfg.params.clear();
+  cfg.param_overrides = {{"BTCUSDT", {{"quote_qty", "0.002"}}}};
+  CHECK_THROWS_WITH_AS(static_cast<void>(run_backtest(cfg, "lead_mm")),
+                       doctest::Contains("a parameter set per instrument"),
+                       std::invalid_argument);
+}

@@ -16,8 +16,9 @@
 // starts) and follows every update that was sent, so it equals what the engine holds once it has
 // consumed the ring. Parameters an update does not name keep their values. With `instruments` > 0
 // the publisher keeps one copy per instrument, and one of the set the updates for every instrument
-// built, and an update may name one instrument; a strategy that keeps one parameter set
-// (ParamScope::Shared) publishes to all instruments.
+// built, and an update may name one instrument, whose values then stay its own until a reset
+// (strategies/param_overrides.hpp); a strategy that keeps one parameter set (ParamScope::Shared)
+// publishes to all instruments.
 //
 // Calls may come from any thread; a mutex serialises them, so the publisher is the ring's only
 // producer. Not for the engine thread: publish allocates.
@@ -25,6 +26,7 @@
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/core/strong_id.hpp"
 #include "fastmm/core/time.hpp"
+#include "fastmm/strategies/param_overrides.hpp"
 #include "fastmm/strategies/params.hpp"
 
 #include <cstddef>
@@ -32,6 +34,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -80,6 +83,7 @@ class ParamPublisher {
     const std::size_t n = instruments == 0 ? 1 : instruments + 1;  // + the shared set, last
     blocks_.reserve(n);
     for (std::size_t i = 0; i < n; ++i) blocks_.push_back(clone(current));
+    own_.assign(instruments, ParamMask{});
   }
   ParamPublisher(const ParamPublisher&) = delete;
   ParamPublisher& operator=(const ParamPublisher&) = delete;
@@ -92,22 +96,24 @@ class ParamPublisher {
   bool publish(const std::vector<ParamValue>& values, InstrumentId inst = kAllInstruments) {
     return publish_as(values, inst, ParamUpdateMsg::Origin::Strategy, {}) != 0;
   }
-  // publish() with the update's origin, source (ParamUpdateMsg::source, cut to 39 bytes) and [ab]
-  // arm (ParamUpdateMsg::arm). The update's publish_seq, 0 when the sink refused it or the
-  // publisher is closed.
+  // publish() with the update's origin, source (ParamUpdateMsg::source, cut to 39 bytes), [ab]
+  // arm (ParamUpdateMsg::arm) and flags. With ParamUpdateMsg::kReset and an instrument, the values
+  // are ignored: the named parameters take the shared values again. The update's publish_seq, 0
+  // when the sink refused it or the publisher is closed.
   std::uint64_t publish_as(const std::vector<ParamValue>& values,
                            InstrumentId inst,
                            ParamUpdateMsg::Origin origin,
                            std::string_view source,
-                           std::uint8_t arm = ParamUpdateMsg::kArmKeep) {
+                           std::uint8_t arm = ParamUpdateMsg::kArmKeep,
+                           std::uint8_t flags = 0) {
     const std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) return 0;
     ParamUpdateMsg m{};
-    std::vector<std::pair<std::size_t, Block>> next;
-    if (auto err = build_locked(values, inst, m, &next)) throw std::invalid_argument(*err);
+    Next next;
+    if (auto err = build_locked(values, inst, arm, flags, m, &next))
+      throw std::invalid_argument(*err);
     m.publish_seq = seq_ + 1;
     m.origin = origin;
-    m.arm = arm;
     m.set_source(source);
     m.hdr.recv_ts = wall_now();
     if (!sink_.push(sink_.ctx, m)) {
@@ -115,17 +121,38 @@ class ParamPublisher {
       return 0;
     }
     ++seq_;
-    for (auto& [k, block] : next) blocks_[k] = std::move(block);
+    for (auto& [k, block] : next.blocks) blocks_[k] = std::move(block);
+    own_ = std::move(next.own);
     return seq_;
+  }
+  // The named parameters of `inst` take the shared values again; for kAllInstruments, every
+  // instrument does: publish_as() with ParamUpdateMsg::kReset.
+  std::uint64_t reset(const std::vector<std::string>& names,
+                      InstrumentId inst,
+                      ParamUpdateMsg::Origin origin,
+                      std::string_view source) {
+    std::vector<ParamValue> values;
+    values.reserve(names.size());
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      for (const std::string& name : names) {
+        const ParamDesc* d = schema_->find(name);
+        values.emplace_back(name, d == nullptr ? std::string() : d->format(blocks_.back().get()));
+      }
+    }
+    return publish_as(
+        values, inst, origin, source, ParamUpdateMsg::kArmKeep, ParamUpdateMsg::kReset);
   }
 
   // The update publish() would send, without sending it or changing the copy; the error message
   // when it is invalid. `out.publish_seq` and `out.hdr.recv_ts` stay zero.
   [[nodiscard]] std::optional<std::string> build(const std::vector<ParamValue>& values,
                                                  InstrumentId inst,
-                                                 ParamUpdateMsg& out) const {
+                                                 ParamUpdateMsg& out,
+                                                 std::uint8_t arm = ParamUpdateMsg::kArmKeep,
+                                                 std::uint8_t flags = 0) const {
     const std::lock_guard<std::mutex> lock(mutex_);
-    return build_locked(values, inst, out, nullptr);
+    return build_locked(values, inst, arm, flags, out, nullptr);
   }
 
   // Later publishes return false (the session has stopped).
@@ -170,6 +197,17 @@ class ParamPublisher {
     const std::lock_guard<std::mutex> lock(mutex_);
     return detail::describe_params(*schema_, blocks_[block_of(inst)].get());
   }
+  // The parameters the instrument holds values of its own for, in schema order; none for
+  // kAllInstruments.
+  [[nodiscard]] std::vector<std::string> own(InstrumentId inst) const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::string> out;
+    if (!inst.valid() || inst.value >= own_.size()) return out;
+    for (std::size_t f = 0; f < schema_->size(); ++f) {
+      if (own_[inst.value].test(f)) out.emplace_back(schema_->begin()[f].name);
+    }
+    return out;
+  }
 
  private:
   template <class P>
@@ -195,51 +233,83 @@ class ParamPublisher {
     return Block(ops_.clone(src), Deleter{ops_.destroy});
   }
 
+  struct Next {
+    std::vector<std::pair<std::size_t, Block>> blocks;
+    std::vector<ParamMask> own;
+  };
+
   std::optional<std::string> build_locked(const std::vector<ParamValue>& values,
                                           InstrumentId inst,
+                                          std::uint8_t arm,
+                                          std::uint8_t flags,
                                           ParamUpdateMsg& out,
-                                          std::vector<std::pair<std::size_t, Block>>* next) const {
+                                          Next* next) const {
     const ParamSchema& schema = *schema_;
     if (values.size() > ParamUpdateMsg::kMaxFields) {
       return "at most " + std::to_string(ParamUpdateMsg::kMaxFields) +
              " parameters per update, got " + std::to_string(values.size());
     }
-    std::size_t first = 0;
-    std::size_t last = blocks_.size();
+    const std::size_t shared = blocks_.size() - 1;
     if (inst.valid()) {
       if (!per_instrument_) {
         return std::string(
             "the strategy keeps one parameter set for all instruments; publish "
             "without an instrument");
       }
-      if (inst.value + 1 >= blocks_.size())
+      if (inst.value >= shared)
         return "instrument " + std::to_string(inst.value) + " is not in the instrument table";
-      first = inst.value;
-      last = first + 1;
     }
     out = ParamUpdateMsg{};
     init_header(out, EventType::ParamUpdate, inst);
     out.hdr.flags = EventHeader::kSynthetic;
     out.count = static_cast<std::uint32_t>(values.size());
-    for (std::size_t k = first; k < last; ++k) {
-      Block copy = clone(blocks_[k].get());
-      for (std::size_t i = 0; i < values.size(); ++i) {
-        const auto& [name, value] = values[i];
-        const ParamDesc* d = schema.find(name);
-        if (d == nullptr) return "unknown parameter '" + name + "'";
-        for (std::size_t j = 0; j < i; ++j) {
-          if (values[j].first == name) return "parameter '" + name + "' given twice";
-        }
-        if (auto err = d->parse(copy.get(), value)) return "parameter '" + name + "': " + *err;
-        out.field[i] = static_cast<std::uint16_t>(d - schema.begin());
-        out.value[i] = d->get_raw(copy.get());
+    out.arm = arm;
+    out.flags = flags;
+    // The pairs: parsed on a copy of the shared set, or for a reset of one instrument, the shared
+    // set's values.
+    const bool reset_one = inst.valid() && (flags & ParamUpdateMsg::kReset) != 0;
+    const Block scratch = clone(blocks_[shared].get());
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      const auto& [name, value] = values[i];
+      const ParamDesc* d = schema.find(name);
+      if (d == nullptr) return "unknown parameter '" + name + "'";
+      for (std::size_t j = 0; j < i; ++j) {
+        if (values[j].first == name) return "parameter '" + name + "' given twice";
       }
-      if (auto err = ops_.validate(copy.get())) {
-        if (per_instrument_ && k + 1 < blocks_.size())
-          return "instrument " + std::to_string(k) + ": " + *err;
+      if (!reset_one) {
+        if (auto err = d->parse(scratch.get(), value)) return "parameter '" + name + "': " + *err;
+      }
+      out.field[i] = static_cast<std::uint16_t>(d - schema.begin());
+      out.value[i] = d->get_raw(reset_one ? blocks_[shared].get() : scratch.get());
+    }
+    // The copies the update changes, by the engine's rule (apply_param_pairs).
+    std::vector<std::pair<std::size_t, Block>> changed;
+    std::vector<ParamMask> own = own_;
+    if (per_instrument_) {
+      std::vector<void*> copy(shared, nullptr);
+      apply_param_pairs(
+          out, std::span<ParamMask>(own), schema.size(), [&](std::size_t k, std::size_t i) {
+            if (copy[k] == nullptr) {
+              changed.emplace_back(k, clone(blocks_[k].get()));
+              copy[k] = changed.back().second.get();
+            }
+            schema.begin()[out.field[i]].set_raw(copy[k], out.value[i]);
+          });
+    }
+    if (!inst.valid()) {
+      changed.emplace_back(shared, clone(blocks_[shared].get()));
+      for (std::size_t i = 0; i < values.size(); ++i)
+        schema.begin()[out.field[i]].set_raw(changed.back().second.get(), out.value[i]);
+    }
+    for (const auto& [k, block] : changed) {
+      if (auto err = ops_.validate(block.get())) {
+        if (k < shared) return "instrument " + std::to_string(k) + ": " + *err;
         return err;
       }
-      if (next != nullptr) next->emplace_back(k, std::move(copy));
+    }
+    if (next != nullptr) {
+      next->blocks = std::move(changed);
+      next->own = std::move(own);
     }
     return std::nullopt;
   }
@@ -248,7 +318,8 @@ class ParamPublisher {
   const ParamSchema* schema_;
   BlockOps ops_;
   bool per_instrument_;
-  std::vector<Block> blocks_;  // one per instrument and the shared set last, or the shared set
+  std::vector<Block> blocks_;   // one per instrument and the shared set last, or the shared set
+  std::vector<ParamMask> own_;  // per instrument: the parameters it holds as its own
   mutable std::mutex mutex_;
   std::uint64_t seq_ = 0;
   std::uint64_t refused_ = 0;

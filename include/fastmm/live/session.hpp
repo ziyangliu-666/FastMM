@@ -33,6 +33,7 @@
 // process-wide SIGINT/SIGTERM handlers and restores the previous ones when it returns.
 #include "fastmm/config/config.hpp"
 #include "fastmm/core/strong_id.hpp"
+#include "fastmm/strategies/param_publisher.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -73,6 +74,10 @@ struct LiveStrategy {
   // session answers `param` with an error.
   std::function<std::string(const std::vector<std::pair<std::string, std::string>>&, InstrumentId)>
       set_params;
+  // A publisher of the strategy's parameters onto `sink`, its copy starting from the values the
+  // session starts with: [strategy.overrides], [ab] and the control socket's `param` go through
+  // it, and set_params is not used. Unset: none.
+  std::function<std::unique_ptr<ParamPublisher>(ParamSink sink)> publisher;
 };
 
 struct LiveOptions {

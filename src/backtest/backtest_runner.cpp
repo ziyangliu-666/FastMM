@@ -13,6 +13,7 @@
 #include "fastmm/sim/sim_treasury.hpp"
 #include "fastmm/sim/venue_order.hpp"
 #include "fastmm/strategies/ab_test.hpp"
+#include "fastmm/strategies/param_overrides.hpp"
 
 #include <fmt/format.h>
 
@@ -650,7 +651,8 @@ struct BacktestSession::AbRun {
   InlineFeed* feed = nullptr;  // set while the start's arms are published
   Timestamp at{};
   std::unique_ptr<ParamPublisher> publisher;
-  std::unique_ptr<AbController> controller;
+  std::unique_ptr<AbController> controller;  // null without [ab]
+  std::vector<InstrumentParams> overrides;   // [strategy.overrides]
 
   static Timestamp refill(void* ctx, Timestamp due) {
     auto* run = static_cast<AbRun*>(ctx);
@@ -661,11 +663,18 @@ struct BacktestSession::AbRun {
 };
 
 void BacktestSession::enable_ab(StrategyEntry::PublisherFactory publisher) {
-  if (!cfg_.ab.enabled()) return;
+  if (!cfg_.publishes_params()) return;
   if (publisher == nullptr) {
     throw std::invalid_argument(
-        "backtest: [ab] needs a strategy whose parameters are a FASTMM_PARAMS struct");
+        "backtest: [ab] and [strategy.overrides] need a strategy whose parameters are a "
+        "FASTMM_PARAMS struct");
   }
+  enable_ab([&](ParamSink sink) { return publisher(sink, cfg_.params, cfg_.instruments.size()); });
+}
+
+void BacktestSession::enable_ab(
+    const std::function<std::unique_ptr<ParamPublisher>(ParamSink)>& make_publisher) {
+  if (!cfg_.publishes_params()) return;
   const bool branch = cfg_.ab.assignment == "branch";
   if (branch && (cfg_.ab_arm < 0 || static_cast<std::size_t>(cfg_.ab_arm) >= cfg_.ab.arms.size())) {
     throw std::invalid_argument(
@@ -688,16 +697,40 @@ void BacktestSession::enable_ab(StrategyEntry::PublisherFactory publisher) {
                            return false;
                          }
                        }};
-  run->publisher = publisher(sink, cfg_.params, cfg_.instruments.size());
+  run->publisher = make_publisher(sink);
   try {
-    AbPlan plan(cfg_.ab, cfg_.instruments, cfg_.venue_names);
-    if (branch) {
-      plan.set_branch(cfg_.ab_arm);
-      plan.set_default_start(trade_at_.valid() ? trade_at_.ns : backend_->clock.now().ns);
+    if (cfg_.ab.enabled()) {
+      AbPlan plan(cfg_.ab, cfg_.instruments, cfg_.venue_names);
+      if (branch) {
+        plan.set_branch(cfg_.ab_arm);
+        plan.set_default_start(trade_at_.valid() ? trade_at_.ns : backend_->clock.now().ns);
+      }
+      run->controller = std::make_unique<AbController>(std::move(plan), *run->publisher);
     }
-    run->controller = std::make_unique<AbController>(std::move(plan), *run->publisher);
+    run->overrides = resolve_overrides(
+        cfg_.param_groups, cfg_.param_overrides, cfg_.instruments, cfg_.venue_names);
   } catch (const ConfigError& e) {
     throw std::invalid_argument(std::string("backtest: ") + e.what());
+  }
+  if (!run->overrides.empty() && !run->publisher->per_instrument()) {
+    throw std::invalid_argument(
+        "backtest: [strategy.overrides] needs a strategy that keeps a parameter set per "
+        "instrument (ParamScope::PerInstrument, or a Python strategy)");
+  }
+  for (const InstrumentParams& o : run->overrides) {
+    const std::string symbol(cfg_.instruments.get(o.instrument).symbol.view());
+    for (const auto& [name, value] : o.values) {
+      if (run->controller && run->controller->owns(name))
+        throw std::invalid_argument("backtest: [strategy.overrides] sets " + name + " for " +
+                                    symbol + ", which the [ab] arms set");
+    }
+    ParamUpdateMsg m{};
+    if (auto err = run->publisher->build(o.values, o.instrument, m))
+      throw std::invalid_argument("backtest: [strategy.overrides] " + symbol + ": " + *err);
+  }
+  if (!run->controller) {
+    ab_ = std::move(run);
+    return;
   }
   // The recorded updates keep the parameters the test does not own (params_from_journal).
   if (!journal_params_.empty() && schema_ != nullptr) {
@@ -806,8 +839,10 @@ void BacktestSession::begin(const sim::EngineHooks& hooks,
     }
     for (const ParamUpdateMsg& m : journal_params_) schedule->at(m.hdr.recv_ts, m);
   }
-  if (cfg_.ab.enabled()) {
-    if (!ab_) throw std::invalid_argument("backtest: [ab] needs enable_ab() before run()");
+  if (cfg_.publishes_params()) {
+    if (!ab_)
+      throw std::invalid_argument(
+          "backtest: [ab] and [strategy.overrides] need enable_ab() before run()");
     if (schedule == nullptr) {
       own_params_ = std::make_unique<sim::ParamSchedule>();
       schedule = own_params_.get();
@@ -878,11 +913,20 @@ void BacktestSession::begin(const sim::EngineHooks& hooks,
   if (ab_) {
     ab_->feed = &b.feed;
     ab_->at = start;
-    const bool all = ab_->controller->poll(start);
+    bool all = true;
+    for (const InstrumentParams& o : ab_->overrides) {
+      all = all && ab_->publisher->publish_as(
+                       o.values, o.instrument, ParamUpdateMsg::Origin::Config, "config") != 0;
+    }
+    if (ab_->controller) all = all && ab_->controller->poll(start);
     ab_->feed = nullptr;
-    if (!all)
-      throw std::runtime_error("backtest: [ab]: the engine's feed has no room for the arms");
-    schedule->set_refill(b.clock, ab_.get(), &AbRun::refill, ab_->controller->next_change(start));
+    if (!all) {
+      throw std::runtime_error(
+          "backtest: the engine's feed has no room for the overrides and the [ab] arms");
+    }
+    if (ab_->controller) {
+      schedule->set_refill(b.clock, ab_.get(), &AbRun::refill, ab_->controller->next_change(start));
+    }
   }
   lp.bar_end = start + cfg_.equity_bar;
   // The loop stops at every equity bar and at every markout horizon that has come due, and never
@@ -1224,7 +1268,7 @@ BacktestResult run_backtest(const BacktestConfig& cfg,
   if (entry == nullptr)
     throw std::invalid_argument("backtest: unknown strategy '" + std::string(strategy) + "'");
   BacktestSession session(cfg, source, entry->schema);
-  if (cfg.ab.enabled()) session.enable_ab(entry->publisher);
+  if (cfg.publishes_params()) session.enable_ab(entry->publisher);
   std::unique_ptr<IEngineRunner> runner =
       StrategyRegistry::instance().make(strategy, TransportKind::Sim, session.deps());
   if (runner == nullptr) {

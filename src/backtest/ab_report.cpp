@@ -250,7 +250,7 @@ class Reading {
         }
         for (std::int64_t t = p.start; t < p.end;) {
           const std::int64_t k = plan.block_of(t);
-          const std::int64_t until = std::min(p.end, (k + 1) * plan.block_ns());
+          const std::int64_t until = std::min(p.end, plan.block_end(k));
           cell(g, p.arm, k).ns += until - t;
           t = until;
         }

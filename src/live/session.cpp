@@ -28,6 +28,7 @@
 #include "fastmm/store/registry.hpp"
 #include "fastmm/store/store_thread.hpp"
 #include "fastmm/strategies/ab_test.hpp"
+#include "fastmm/strategies/param_overrides.hpp"
 #include "fastmm/strategies/param_publisher.hpp"
 #include "fastmm/strategies/registry.hpp"
 #include "fastmm/venues/event_sink.hpp"
@@ -1471,7 +1472,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   // Attached and adaptive: the engine sleeps on a futex in the gateway's wake page, which the
   // gateway's network threads and this process's producers all notify.
   if (gateway && cfg.spin_mode() == SpinMode::Adaptive) feed.waker().share(gateway->engine_flag());
-  MsgRing control_ring(1U << 16);
+  MsgRing control_ring(1U << 18);
   static_cast<void>(feed.add_ring(&control_ring));
   // Pool treasuries ([venues.<primary>.treasury]): their records reach the engine (and so the
   // journal) on a ring of their own, whose only producer is fm-treasury.
@@ -2092,6 +2093,12 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     } catch (const std::exception& e) {
       FASTMM_LOG_WARN("parameter updates are not available: {}", std::string_view(e.what()));
     }
+  } else if (custom != nullptr && custom->publisher) {
+    try {
+      publisher = custom->publisher(control_sink);
+    } catch (const std::exception& e) {
+      FASTMM_LOG_WARN("parameter updates are not available: {}", std::string_view(e.what()));
+    }
   }
   // [ab]: the test's arm changes go out through the control socket's publisher, from this thread.
   std::unique_ptr<AbController> ab;
@@ -2121,6 +2128,65 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
                     cfg.ab.arms.size(),
                     std::string_view(cfg.ab.assignment));
   }
+  // [strategy.overrides]: each instrument's own values, published ahead of the first event.
+  std::vector<InstrumentParams> overrides;
+  try {
+    overrides =
+        resolve_overrides(cfg.strategy.groups, cfg.strategy.overrides, instruments, venue_names);
+  } catch (const ConfigError& e) {
+    std::fprintf(stderr, "%s: %s\n", prog, e.what());
+    return kExitConfig;
+  }
+  if (!overrides.empty()) {
+    if (!publisher || !publisher->per_instrument()) {
+      std::fprintf(stderr,
+                   "%s: [strategy.overrides] needs a strategy that keeps a parameter set per "
+                   "instrument (ParamScope::PerInstrument, or a Python strategy)\n",
+                   prog);
+      return kExitConfig;
+    }
+    for (const InstrumentParams& o : overrides) {
+      const std::string_view symbol = instruments.get(o.instrument).symbol.view();
+      for (const auto& [name, value] : o.values) {
+        if (ab && ab->owns(name)) {
+          std::fprintf(stderr,
+                       "%s: [strategy.overrides] sets %s for %.*s, which the [ab] arms set\n",
+                       prog,
+                       name.c_str(),
+                       static_cast<int>(symbol.size()),
+                       symbol.data());
+          return kExitConfig;
+        }
+      }
+      ParamUpdateMsg m{};
+      if (auto err = publisher->build(o.values, o.instrument, m)) {
+        std::fprintf(stderr,
+                     "%s: [strategy.overrides] %.*s: %s\n",
+                     prog,
+                     static_cast<int>(symbol.size()),
+                     symbol.data(),
+                     err->c_str());
+        return kExitConfig;
+      }
+    }
+  }
+  // The overrides not yet published; a full control ring leaves the rest to the next turn.
+  std::size_t overrides_sent = overrides.size();
+  const auto publish_overrides = [&] {
+    while (overrides_sent < overrides.size()) {
+      const InstrumentParams& o = overrides[overrides_sent];
+      try {
+        if (publisher->publish_as(
+                o.values, o.instrument, ParamUpdateMsg::Origin::Config, "config") == 0)
+          return;
+      } catch (const std::invalid_argument& e) {
+        FASTMM_LOG_ERROR("[strategy.overrides] {}: {}",
+                         instruments.get(o.instrument).symbol.view(),
+                         std::string_view(e.what()));
+      }
+      ++overrides_sent;
+    }
+  };
   // The session's rows: a warm standby's from when it takes over.
   const auto start_store = [&]() -> int {
     if (!store_thread) return 0;
@@ -2183,7 +2249,12 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   if (!warm) {
     if (const int rc = start_store(); rc != 0) return rc;
   }
-  // The arms the instruments start in, ahead of the first event the engine takes.
+  // The overrides and the arms the instruments start in, ahead of the first event the engine
+  // takes.
+  if (!warm) {
+    overrides_sent = 0;
+    publish_overrides();
+  }
   if (ab && !warm) static_cast<void>(ab->poll(wall_now()));
   if (journal) journal->start();
   std::thread engine_thread;
@@ -2241,6 +2312,11 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   snap.dry_run = opts.dry_run ? 1 : 0;
   set_status_name(snap.engine_name, cfg.engine.name);
   set_status_name(snap.strategy, strategy_name);
+  if (cfg.ab.enabled()) {
+    set_status_name(snap.ab_test, cfg.ab.name);
+    for (std::size_t a = 0; a < cfg.ab.arms.size() && a < kStatusMaxArms; ++a)
+      set_status_name(snap.ab_arms[a], cfg.ab.arms[a].name);
+  }
   snap.venue_count =
       static_cast<std::uint8_t>(std::min<std::size_t>(venue_names.size(), kStatusMaxVenues));
   const auto control_params_published = [&]() -> std::uint64_t {
@@ -2586,7 +2662,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
         published > applied ? published - applied : 0,
         live.param_updates,
         live.param_last_seq,
-        live.param_last_origin == ParamUpdateMsg::Origin::Control ? "control" : "strategy",
+        to_string(live.param_last_origin),
         source.empty() ? std::string_view("-") : source);
     if (!publisher) return out + "\n(this strategy's publisher does not report its values)";
     // The publisher's copy follows every update it sent: what the engine holds once nothing is
@@ -2597,26 +2673,68 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
       if (c == ' ') c = '\n';
     }
     if (!values.empty()) out += "\n" + values;
+    // The instrument's own values, or which instruments hold some.
+    if (inst.valid()) {
+      const std::vector<std::string> own = publisher->own(inst);
+      std::string names;
+      for (const std::string& n : own) names += (names.empty() ? "" : " ") + n;
+      out += "\nown=" + (names.empty() ? std::string("-") : names);
+    } else {
+      std::string held;
+      for (const Instrument& i : instruments) {
+        const std::size_t n = publisher->own(i.id).size();
+        if (n != 0) held += fmt::format("{}{}:{}", held.empty() ? "" : " ", i.symbol.view(), n);
+      }
+      if (!held.empty()) out += "\nown=" + held;
+    }
     return out;
   };
   if (publisher) {
     plane.params = [&](const ControlPlane::ParamRequest& req) {
       ControlPlane::ParamResult r;
       if (ab && ab->state(wall_now()) != AbController::State::Ended) {
-        for (const auto& [name, value] : req.values) {
+        std::vector<std::string> names = req.reset;
+        for (const auto& [name, value] : req.values) names.push_back(name);
+        for (const std::string& name : names) {
           if (!ab->owns(name)) continue;
           r.error = "parameter '" + name + "' belongs to the [ab] test " + cfg.ab.name +
                     " until `ab stop` or `ab promote <arm>`";
           return r;
         }
       }
+      std::vector<InstrumentId> scope{req.instrument};
+      if (!req.group.empty()) {
+        if (!cfg.strategy.groups.contains(req.group)) {
+          r.error = "no group '" + req.group + "' in [strategy.groups]";
+          return r;
+        }
+        scope = resolve_scope(req.group, cfg.strategy.groups, instruments, venue_names);
+      }
+      // A group's updates are checked together first, so a refusal sends none of them.
+      for (const InstrumentId id : scope) {
+        ParamUpdateMsg m{};
+        if (auto err = publisher->build(req.values,
+                                        id,
+                                        m,
+                                        ParamUpdateMsg::kArmKeep,
+                                        req.reset.empty() ? 0 : ParamUpdateMsg::kReset);
+            err && req.reset.empty()) {
+          r.error = *err;
+          return r;
+        }
+      }
       try {
-        r.seq = publisher->publish_as(
-            req.values,
-            req.instrument.valid() ? req.instrument : ParamPublisher::kAllInstruments,
-            ParamUpdateMsg::Origin::Control,
-            req.source);
-        if (r.seq == 0) r.error = "the control ring is full; try again";
+        for (const InstrumentId id : scope) {
+          r.seq =
+              req.reset.empty()
+                  ? publisher->publish_as(
+                        req.values, id, ParamUpdateMsg::Origin::Control, req.source)
+                  : publisher->reset(req.reset, id, ParamUpdateMsg::Origin::Control, req.source);
+          if (r.seq == 0) {
+            r.error = "the control ring is full; try again";
+            break;
+          }
+        }
       } catch (const std::invalid_argument& e) {
         r.error = e.what();
       }
@@ -2757,6 +2875,8 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     if (const int rc = make_store(); rc != 0) return rc;
     if (const int rc = start_store(); rc != 0) return rc;
     owner = true;
+    overrides_sent = 0;
+    publish_overrides();
     open_status();
     open_control();
     for (auto& sl : slots) {
@@ -2841,8 +2961,9 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
       if (standby_rc != 0) reason = 11;
     }
     control_socket.poll(plane);
-    // A full control ring leaves the rest of a block change to the next turn.
-    if (ab && owner) static_cast<void>(ab->poll(wall_now()));
+    // A full control ring leaves the rest of the overrides or a block change to the next turn.
+    if (owner) publish_overrides();
+    if (ab && owner && overrides_sent == overrides.size()) static_cast<void>(ab->poll(wall_now()));
     if (g_signal != 0) reason = 2;
     const std::int64_t now = steady_now().ns;
     systemd.keep_alive(now);

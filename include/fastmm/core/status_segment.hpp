@@ -52,7 +52,10 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 23: the store: whether one runs, its rows, its errors and the records the engine dropped.
 // 24: the feed's L3 book window moves (book_recentres, book_recentre_failures).
 // 25: reduce-only mode (the session, the venues, the instruments it holds; per quote row).
-inline constexpr std::uint32_t kStatusVersion = 25;
+// 26: per quote row, the [ab] arm and the parameters held as the instrument's own; the test's and
+//     the arms' names.
+inline constexpr std::uint32_t kStatusVersion = 26;
+inline constexpr std::size_t kStatusMaxArms = 16;  // kMaxAbArms
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 inline constexpr std::size_t kStatusMaxUnderlyings = 8;    // kMaxUnderlyings
@@ -435,6 +438,9 @@ struct StatusSnapshot {
   std::uint8_t param_last_origin = 0;
   std::uint8_t pad3_[7] = {};
   char param_last_source[40] = {};
+  // [ab]: the test's name and its arms' (empty: no test); a quote row's arm indexes them.
+  char ab_test[40] = {};
+  char ab_arms[kStatusMaxArms][24] = {};
   StatusLatency latency[static_cast<std::size_t>(LatencyInterval::Count)];
   StatusVenue venues[kStatusMaxVenues];
   // [risk.underlying]: the session's net position per underlying (kind Engine).

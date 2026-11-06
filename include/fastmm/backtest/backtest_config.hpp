@@ -152,6 +152,15 @@ struct BacktestConfig {
   bool controls_from_journal = false;
   // [ab]: an A/B test of the strategy's parameters (strategies/ab_test.hpp); no arms: none.
   AbSection ab;
+  // [strategy.groups] and [strategy.overrides]: parameters per instrument, set at the start
+  // (strategies/param_overrides.hpp).
+  std::map<std::string, std::vector<std::string>> param_groups;
+  std::map<std::string, ParamMap> param_overrides;
+  // The run publishes parameter updates of its own: [ab] or [strategy.overrides]
+  // (BacktestSession::enable_ab).
+  [[nodiscard]] bool publishes_params() const noexcept {
+    return ab.enabled() || !param_overrides.empty();
+  }
   // [ab] assignment = "branch": the arm this run is (an index into ab.arms); fastmm-backtest runs
   // each one in turn.
   int ab_arm = -1;

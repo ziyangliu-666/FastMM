@@ -254,6 +254,10 @@ py::tuple run(const std::string& path,
       ls.params = &table->schema();
       ls.meta = meta;
       ls.inputs.push_back(&ch->param_ring());
+      // [strategy.overrides], [ab] and fastmm-ctl param, on the control ring.
+      ls.publisher = [&](ParamSink sink) {
+        return table->publisher(sink, hot.record, instruments.size());
+      };
       ls.set_waker = [ch](std::function<void()> wake) { ch->set_notify(std::move(wake)); };
       ls.make = [&](RunnerDeps& deps) {
         std::unique_ptr<IEngineRunner> runner =

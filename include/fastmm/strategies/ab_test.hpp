@@ -7,10 +7,11 @@
 //
 //   instrument  each instrument stays in one arm. The instruments, heaviest first, are cut into
 //               strata of as many instruments as there are arms, and each stratum gives every arm
-//               one instrument, in an order drawn from the seed.
+//               one instrument, in an order drawn from the seed; or [ab.assign] names each
+//               instrument's arm, and those it does not name stay out of the test.
 //   time        every instrument is in the same arm. Time is cut into blocks of block_s from the
-//               Unix epoch, and each run of as many blocks as there are arms gives every arm one
-//               block, in an order drawn from the seed.
+//               Unix epoch (plus block_offset_s), and each run of as many blocks as there are arms
+//               gives every arm one block, in an order drawn from the seed.
 //   crossover   both: an instrument's arm is its stratum slot plus the block's draw, modulo the
 //               number of arms, so each block splits the instruments and each run of blocks puts
 //               every instrument in every arm once.
@@ -88,6 +89,14 @@ class AbPlan {
   [[nodiscard]] std::int64_t start_ns() const noexcept { return start_ns_; }  // INT64_MIN: none
   [[nodiscard]] std::int64_t end_ns() const noexcept { return end_ns_; }      // INT64_MAX: none
   [[nodiscard]] std::int64_t block_ns() const noexcept { return block_ns_; }  // 0: no blocks
+  // When block `k` ends (time, crossover).
+  [[nodiscard]] std::int64_t block_end(std::int64_t k) const noexcept {
+    return (k + 1) * block_ns_ + offset_ns_;
+  }
+  // The instrument is in the test: [ab.assign] names it, or there is none.
+  [[nodiscard]] bool in_test(std::size_t inst) const noexcept {
+    return inst < slot_.size() && slot_[inst] != kOut;
+  }
   // branch: the arm of this run, and the start when [ab] start names none.
   void set_branch(int arm) noexcept { branch_ = arm; }
   [[nodiscard]] int branch() const noexcept { return branch_; }
@@ -117,7 +126,9 @@ class AbPlan {
   AbAssignment kind_ = AbAssignment::Instrument;
   std::int64_t start_ns_;
   std::int64_t end_ns_;
+  static constexpr std::uint8_t kOut = 0xFF;  // slot_ of an instrument [ab.assign] leaves out
   std::int64_t block_ns_ = 0;
+  std::int64_t offset_ns_ = 0;
   int branch_ = 0;
   std::vector<std::uint8_t> slot_;
   std::vector<std::size_t> stratum_;

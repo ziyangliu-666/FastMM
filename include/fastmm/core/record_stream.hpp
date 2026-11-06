@@ -213,7 +213,8 @@ struct ParamRecord {
   std::uint32_t count;                              // 64  pairs used
   ParamUpdateMsg::Origin origin;                    // 68
   std::uint8_t arm;                                 // 69 ParamUpdateMsg::arm
-  std::uint8_t pad0_[2];                            //
+  std::uint8_t flags;                               // 70 ParamUpdateMsg::flags
+  std::uint8_t pad0_[1];                            //
   std::uint64_t publish_seq;                        // 72
   std::uint16_t field[ParamUpdateMsg::kMaxFields];  // 80  index in the parameter table
   char source[ParamUpdateMsg::kSourceLen];          // 144 NUL-terminated
@@ -231,6 +232,7 @@ static_assert(sizeof(ParamRecord) == sizeof(ParamUpdateMsg) &&
 static_assert(offsetof(ParamRecord, count) == offsetof(ParamUpdateMsg, count) &&
               offsetof(ParamRecord, origin) == offsetof(ParamUpdateMsg, origin) &&
               offsetof(ParamRecord, arm) == offsetof(ParamUpdateMsg, arm) &&
+              offsetof(ParamRecord, flags) == offsetof(ParamUpdateMsg, flags) &&
               offsetof(ParamRecord, publish_seq) == offsetof(ParamUpdateMsg, publish_seq) &&
               offsetof(ParamRecord, field) == offsetof(ParamUpdateMsg, field) &&
               offsetof(ParamRecord, source) == offsetof(ParamUpdateMsg, source) &&

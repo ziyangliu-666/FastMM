@@ -24,9 +24,13 @@ constexpr std::string_view kUsage =
     "  pull [--instrument SYM | --venue NAME]   stop quoting: everywhere, or in that scope\n"
     "  resume [--instrument SYM | --venue NAME] quote again; without a scope it also clears\n"
     "                                           every scoped pull and stops a running flatten\n"
-    "  param <name>=<value> ... [--instrument SYM] [--source WHO]\n"
+    "  param <name>=<value> ... [--instrument SYM | --group G] [--source WHO]\n"
     "                                           new strategy parameters, validated here; the\n"
-    "                                           reply's seq is applied once `params` shows it\n"
+    "                                           reply's seq is applied once `params` shows it;\n"
+    "                                           with a scope, that instrument's own values\n"
+    "  param --reset <name> ... [--instrument SYM | --group G]\n"
+    "                                           the scope's own values of these go back to the\n"
+    "                                           shared ones (every instrument's without a scope)\n"
     "  params [--instrument SYM]                the parameters' values, and the sequence\n"
     "                                           numbers published and applied\n"
     "  limits <key>=<value> ... [--force]       new risk limits (the [risk] keys, and\n"
@@ -122,6 +126,8 @@ struct Scope {
   std::int64_t slippage_bps = 0;
   ControlPlane::ParamValues values;
   std::string source;
+  std::string group;
+  std::vector<std::string> reset;
 };
 
 // Parses the flags of `args`; `key=value` pairs go into scope.values. The error message, empty on
@@ -156,6 +162,12 @@ std::string parse_args(const ControlPlane& plane,
       const auto r = std::from_chars(v.data(), v.data() + v.size(), scope.slippage_bps);
       if (r.ec != std::errc{} || r.ptr != v.data() + v.size() || scope.slippage_bps <= 0)
         return "--max-slippage-bps needs whole basis points > 0";
+    } else if (a == "--group" && allow_source) {
+      if (!value(v)) return "--group needs a name of [strategy.groups]";
+      scope.group = std::string(v);
+    } else if (a == "--reset" && allow_source) {
+      if (!value(v)) return "--reset needs a parameter name";
+      scope.reset.emplace_back(v);
     } else if (a == "--source") {
       if (!allow_source) return "--source is not a flag of this command";
       if (!value(v)) return "--source needs a name, e.g. manual or scheduled:drain";
@@ -322,15 +334,24 @@ std::string control_command(std::string_view request, ControlPlane& plane) {
     if (const std::string err = parse_args(plane, args, false, false, true, scope, true);
         !err.empty())
       return error(err);
-    if (scope.values.empty()) return error("param needs at least one name=value");
+    if (scope.values.empty() && scope.reset.empty())
+      return error("param needs at least one name=value or --reset name");
+    if (!scope.values.empty() && !scope.reset.empty())
+      return error("param takes name=value pairs or --reset names, not both");
+    if (scope.instrument.valid() && !scope.group.empty())
+      return error("give --instrument or --group, not both");
     if (!plane.params) return error("this session takes no parameter updates");
-    const ControlPlane::ParamResult r =
-        plane.params({std::move(scope.values), scope.instrument, scope.source});
+    const ControlPlane::ParamResult r = plane.params({std::move(scope.values),
+                                                      scope.instrument,
+                                                      scope.group,
+                                                      std::move(scope.reset),
+                                                      scope.source});
     if (!r.error.empty()) return error(r.error);
     // Queued, not applied: the engine applies it at its next step and `params` then shows the seq.
     std::string what = "param queued";
     if (r.seq != 0) what += " seq=" + std::to_string(r.seq);
     if (!scope.source.empty()) what += " source=" + scope.source;
+    if (!scope.group.empty()) return ok(what + " (group " + scope.group + ")");
     return ok(what + scope_text(plane, scope));
   }
   if (verb == "ab") {

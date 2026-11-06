@@ -21,6 +21,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string_view>
@@ -43,10 +44,15 @@ class BacktestSession {
   [[nodiscard]] sim::SimBackend& backend() noexcept { return *backend_; }
   // Parameter updates delivered at simulated times during run() (not owned; may be null).
   void set_param_schedule(sim::ParamSchedule* schedule) noexcept { params_ = schedule; }
-  // [ab]: builds the test's publisher with `publisher` (StrategyEntry::publisher), so the arms'
-  // updates reach the engine at their times during run(). A configuration with [ab] needs it.
-  // Throws std::invalid_argument when the arms do not fit the strategy (ab_test.hpp).
+  // [ab] and [strategy.overrides]: builds the run's publisher with `publisher`
+  // (StrategyEntry::publisher), so the overrides reach the engine before the first event and the
+  // arms' updates at their times during run(). A configuration with either needs it
+  // (BacktestConfig::publishes_params). Throws std::invalid_argument when the arms or the
+  // overrides do not fit the strategy (ab_test.hpp, param_overrides.hpp).
   void enable_ab(StrategyEntry::PublisherFactory publisher);
+  // enable_ab() with the publisher `make_publisher` builds on the sink it is given: a strategy
+  // whose parameters are not a FASTMM_PARAMS struct (a Python strategy's HotParamTable).
+  void enable_ab(const std::function<std::unique_ptr<ParamPublisher>(ParamSink)>& make_publisher);
   // Code run at simulated times during run() (sim::SimDriver::set_slow_hooks).
   void set_slow_hooks(const sim::SlowHooks& hooks) noexcept { slow_ = hooks; }
   // Runs to the end of the data / horizon. `runner` (may be null) supplies engine stats and, with
@@ -149,7 +155,7 @@ class BacktestSession {
 template <StrategyLike S>
 BacktestResult run_backtest(const BacktestConfig& cfg, MdSource* source = nullptr) {
   BacktestSession session(cfg, source, &S::schema());
-  if (cfg.ab.enabled()) session.enable_ab(detail::publisher_factory<S>());
+  if (cfg.publishes_params()) session.enable_ab(detail::publisher_factory<S>());
   std::unique_ptr<IEngineRunner> runner = session.backend().template make_runner<S>(session.deps());
   return session.run(session.backend().hooks, runner.get(), S::name());
 }
