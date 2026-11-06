@@ -338,9 +338,13 @@ class Strategy:
 
     Define any subset of the hooks (``on_start(self, ctx)``, ``on_book(self, ctx, inst, book)``,
     ``on_fill(self, ctx, fill)``, ... see ``HOOKS``); undefined hooks are never called. Declare
-    parameters with ``Param``; override ``validate()`` for cross-field checks. With
-    ``BacktestConfig.state_file`` set, ``state(self) -> bytes | str`` is written there at the end
-    and ``restore(self, data: bytes) -> bool`` reads it at the start, after ``on_start``.
+    parameters with ``Param``; override ``validate()`` for cross-field checks.
+
+    ``state(self) -> bytes | str`` and ``restore(self, data: bytes) -> bool`` keep what the
+    strategy has learnt: in ``BacktestConfig.state_file``, and in each journal checkpoint
+    (``[engine] checkpoint_s``, ``ctx.request_checkpoint()``), which a backtest with
+    ``[backtest] start_at`` restores. ``state_version = <int>`` names the layout of those bytes; a
+    checkpoint of another version is refused.
     """
 
     def __init__(self) -> None:

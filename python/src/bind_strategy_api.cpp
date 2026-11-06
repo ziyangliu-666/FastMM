@@ -226,6 +226,7 @@ class PyRun {
   py::object trade_obj_, ticker_obj_, option_obj_, conn_obj_, balance_obj_, perp_obj_, fill_obj_,
       update_obj_;
   py::object state_fn_, restore_fn_;  // the class's state() / restore(), when defined
+  std::uint32_t state_version_ = 0;   // the class's state_version
   std::string state_buf_;             // what state() last returned, for the engine's view
   TradeView* trade_ = nullptr;
   BookTickerView* ticker_ = nullptr;
@@ -276,6 +277,8 @@ PyRun::PyRun(PySimEngine& engine,
   }
   if (py::hasattr(instance, "state")) state_fn_ = instance.attr("state");
   if (py::hasattr(instance, "restore")) restore_fn_ = instance.attr("restore");
+  if (py::hasattr(instance, "state_version"))
+    state_version_ = instance.attr("state_version").cast<std::uint32_t>();
   ctx_ = py::cast(ContextHandle{guard_, this});
   py::list insts;
   for (const Instrument& inst : engine.instruments()) {
@@ -534,6 +537,10 @@ bool py_restore(PyRun& r, std::string_view bytes) noexcept {
     r.fail_current("restore");
     return false;
   }
+}
+
+std::uint32_t py_state_version(const PyRun& r) noexcept {
+  return r.state_version_;
 }
 
 void py_on_driver_steps(PyRun& r) noexcept {
@@ -1431,6 +1438,11 @@ void bind_strategy_api(py::module_& m) {
           "request_stop",
           [](const ContextHandle& c) { c.engine().context().request_stop(); },
           "End the backtest after the current event.")
+      .def(
+          "request_checkpoint",
+          [](const ContextHandle& c) { c.engine().context().request_checkpoint(); },
+          "Write a checkpoint to the journal once the events waiting now are handled: state(), "
+          "the positions and the open orders. A backtest can start from it ([backtest] start_at).")
       .def(
           "random",
           [](const ContextHandle& c) { return c.engine().context().rng().uniform01(); },

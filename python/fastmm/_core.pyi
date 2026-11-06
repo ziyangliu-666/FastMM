@@ -1385,6 +1385,10 @@ class Context:
         """
     def replace_raw(self, order_id: typing.SupportsInt | typing.SupportsIndex, price_raw: typing.Any, qty_raw: typing.Any) -> None:
         ...
+    def request_checkpoint(self) -> None:
+        """
+        Write a checkpoint to the journal once the events waiting now are handled: state(), the positions and the open orders. A backtest can start from it ([backtest] start_at).
+        """
     def request_stop(self) -> None:
         """
         End the backtest after the current event.

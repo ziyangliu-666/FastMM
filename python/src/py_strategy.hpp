@@ -52,6 +52,8 @@ void py_on_risk_reject(PyRun& run, const RiskReject& r) noexcept;
 // when the class defines them; else empty and true.
 std::string_view py_state(PyRun& run) noexcept;
 bool py_restore(PyRun& run, std::string_view bytes) noexcept;
+// The class's `state_version` (0 when it has none).
+std::uint32_t py_state_version(const PyRun& run) noexcept;
 // Called every kDriverStepsPerCheck driver steps: signal check and a brief GIL release, so Ctrl-C
 // also works for a strategy whose hooks rarely run.
 void py_on_driver_steps(PyRun& run) noexcept;
@@ -143,6 +145,9 @@ class PyStrategy {
   [[nodiscard]] std::string_view state() noexcept { return run_ != nullptr ? py_state(*run_) : ""; }
   bool restore(std::string_view bytes) noexcept {
     return run_ == nullptr || py_restore(*run_, bytes);
+  }
+  [[nodiscard]] std::uint32_t state_version() const noexcept {
+    return run_ != nullptr ? py_state_version(*run_) : 0;
   }
 
   // SimDriver calls this through EngineHooks::stopped after every engine step.
