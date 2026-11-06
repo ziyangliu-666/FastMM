@@ -132,10 +132,12 @@ py:SkewMM: parameter 'levels': cannot parse '2.5' as int (a whole number)
 | Control | `quoting_enabled`, `killed`, `reduce_only(inst)` ([reduce-only mode](../how-to/operations/operate-a-running-session.md#reduce-only-mode)), `request_stop()`: the run ends after the current event, `request_checkpoint()` |
 | Venue state | `fees(inst)` -> `Fees`, `risk_headroom(inst)` -> `RiskHeadroom`, `venue_health(venue=0)` -> `VenueHealth`, `order_budget(venue=0)` -> `OrderBudget` |
 | Balances | `balance(venue, asset)` -> `Balance`, `margin(venue=0)` -> `Margin`, `balance_room(inst, side, price)` -> float or `None`, `balances_live()` ([Balances](strategy-api.md#balances)) |
+| Account pools | `pool(venue=0)` -> the accounts' venue ids, primary first, `venue_name(venue)`, `account_usable(venue)` ([Account pools](strategy-api.md#account-pools)) |
+| Homes | `home(inst)` -> venue id or `None`, `placement(venue=0)` -> `"home"` or `"balance"`, `holding(inst, venue)` -> float, `pieces(inst)`, `set_home(inst, venue)` -> bool ([Homes](strategy-api.md#homes)) |
 | Perpetuals | `mark(inst)`, `index(inst)` -> `RefPrice`, `funding(inst)` -> `Funding` ([Perpetuals](strategy-api.md#perpetuals)) |
 | Randomness | `random()` in [0, 1), `randint(lo, hi)` inclusive, from the engine's seeded RNG |
 
-Methods taking or returning prices and quantities have a `_raw` twin on ints ([Numbers](#numbers)): `own_qty_raw`, `best_ex_self_raw`, `queue_ahead_raw`, `set_quotes_raw`, `send_raw`, `replace_raw`, `open_qty_raw`, `balance_room_raw`.
+Methods taking or returning prices and quantities have a `_raw` twin on ints ([Numbers](#numbers)): `own_qty_raw`, `best_ex_self_raw`, `queue_ahead_raw`, `set_quotes_raw`, `send_raw`, `replace_raw`, `open_qty_raw`, `balance_room_raw`, `holding_raw`.
 
 ### set_quotes
 
@@ -327,6 +329,7 @@ The hot `ctx` has no execution view: no `own_qty`, `queue_ahead` or order times.
 | `quoting_enabled` | 1 while quoting is enabled and the instrument's venue is not killed; the engine ignores quotes otherwise |
 | `connected` | in `on_connection`: 1 when the venue's connection is live |
 | `reduce_only` | 1 while [reduce-only mode](../how-to/operations/operate-a-running-session.md#reduce-only-mode) holds the instrument: an order that adds to the position is refused |
+| `home`, `pieces` | the instrument's home account in its pool as a venue id (255: none), and the number of other accounts that hold it ([Homes](strategy-api.md#homes)) |
 | `fill_side`, `fill_maker`, `fill_price`, `fill_qty` | in `on_fill`: `fastmm.BUY` (0) or `fastmm.SELL` (1), 1 for a maker fill, price and quantity with `_raw` fields; 0 in other hooks |
 
 | Method | Intent |

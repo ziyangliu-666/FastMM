@@ -413,6 +413,31 @@ An order goes to one account and stays there. `Order::venue`, `OmsUpdate` and `F
 - `set_quotes` routes the same way, one order at a time.
 - A backtest without window limits knows no budget and sends what the balances allow to the primary.
 
+### Homes
+
+With `[venues.<primary>.pool]` each instrument of the pool has a home account ([Keep each position on one account](../how-to/operations/home-placement.md)).
+
+<!-- snippet: tests/docs/strategy_api_doc_test.cpp#homes -->
+```cpp
+static_assert(std::same_as<decltype(lvalue<Ctx>().home(InstrumentId{})), VenueId>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().placement(VenueId{})), Placement>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().holding(InstrumentId{}, VenueId{})), Qty>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().pieces(InstrumentId{})), std::uint32_t>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().set_home(InstrumentId{}, VenueId{})), bool>);
+```
+
+| Method | Returns |
+|---|---|
+| `home(id)` | the home's venue id; invalid without the table, or before the instrument has one |
+| `placement(primary)` | `Placement::Home` or `Placement::Balance`; a member reads its pool's |
+| `holding(id, account)` | what that account holds: a spot instrument's base balance there, a derivative's position on it; without a pool, the position |
+| `pieces(id)` | the number of accounts other than the home holding at least the instrument's minimum order |
+| `set_home(id, account)` | moves the home (journaled) and cancels the adding orders on other accounts; false when the pool keeps no homes or `account` is not in it |
+
+With `placement = "home"` an order without `NewOrderRequest::account` goes to an account whose own part it takes towards zero, pieces first, and otherwise to the home ([Where orders go](../how-to/operations/home-placement.md#where-orders-go)). `balance_room(id, side, px)` is what the account the next order on that side goes to holds, a piece's part at most. An order for an unusable home is refused with `HomeUnavailable`.
+
+A spot instrument's `holding` is the account's whole balance of the base asset: two instruments on one base asset in a pool (BTCUSDT and BTCFDUSD) share it.
+
 ### Perpetuals
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#perps -->

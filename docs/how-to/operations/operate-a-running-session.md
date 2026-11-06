@@ -41,6 +41,7 @@ Replies start with `ok` or `error`, and `fastmm-ctl` exits 0 or 1, except for `s
 | `unkill` | Clears the kill switch and quotes again, as `SIGHUP` does, including a [latched `max_loss`](kill-switch-and-shutdown.md#the-latched-loss-budget). |
 | `flatten [--instrument SYM] [--max-slippage-bps N]` | The engine works the position off itself, also while the kill switch is set ([below](#flatten)). |
 | `reduce-only on\|off [--instrument SYM \| --venue NAME]` | Refuses every order that would take a position further from zero, in the whole session or one scope ([below](#reduce-only-mode)). |
+| `pool home SYM ACCOUNT` | Moves the instrument's home in its account pool to that account ([Keep each position on one account](home-placement.md)). |
 | `param <name>=<value> ... [--instrument SYM] [--source WHO]` | New strategy parameters ([below](#confirm-a-parameter-change)). |
 | `params [--instrument SYM]` | The parameters' values and the update counters. |
 | `limits <key>=<value> ... [--force]` | New risk limits ([below](#change-a-limit)). |

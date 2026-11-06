@@ -579,6 +579,9 @@ commands (one per datagram; the reply starts with ok or error)
                                            refuse orders that add to a position:
                                            everywhere, or in that scope; off without
                                            a scope clears every scope
+  pool home SYM ACCOUNT [--free]           move the instrument's home to that account
+                                           of its pool ([venues.<primary>.pool]) and pin
+                                           it there; --free leaves it to the planner
   flatten [--instrument SYM] [--max-slippage-bps N]  work the position off, reduce-only
   kill                                     trip the kill switch (quotes pulled, all
                                            orders cancelled; the position stays)
@@ -612,6 +615,7 @@ examples:
   fastmm-ctl --name mm limits max_position=0.5 orders_per_sec=10
   fastmm-ctl --name mm flatten --max-slippage-bps 15
   fastmm-ctl --name mm reduce-only on --venue binance
+  fastmm-ctl --name mm pool home BTCUSDT binance_b
   fastmm-ctl --gateway gw attachments
   fastmm-ctl --gateway gw pull --venue binance
   fastmm-ctl --gateway gw clear-kill

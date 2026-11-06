@@ -107,6 +107,7 @@ One table per venue; `<name>` is how instruments refer to it.
 | `fill_audit_mode` | string |  | "report" logs and counts what differs; "book" also books the executions the engine missed (default "report") |
 | `fees` | table |  | [venues.<name>.fees] table: maker_bps and taker_bps, used for PnL |
 | `treasury` | table |  | [venues.<primary>.treasury] table: transfers that keep one asset spread over the accounts of the pool this venue is the primary of (fastmm-live) |
+| `pool` | table |  | [venues.<primary>.pool] table: where the pool this venue is the primary of keeps each instrument's position (home placement) and the planner that spreads the homes |
 <!-- END config-keys -->
 
 ### `[venues.<name>.fees]`
@@ -171,6 +172,31 @@ Each audit reads the window from where the last one ended to `fill_audit_lag_s` 
 `fill_audit_mode = "book"` also books what the engine missed: the execution replay reads again from the first missing execution, the OMS keeps the executions it has not seen, and the next audit reads again from there to confirm. An execution is asked for once.
 
 The audit needs the store (`[storage]`) and the venue in this process (not behind fastmm-gateway, where the key is ignored with a warning); a connector without it refuses to start. Binance Spot and USDⓈ-M have it. To audit after the fact, against a file the venue exported, use `fastmm-pnl audit` ([Query what you traded](../how-to/operations/query-trading-records.md#check-the-stored-fills-against-the-venue)).
+
+### `[venues.<primary>.pool]`
+
+Where a pool keeps each instrument's position ([Keep each position on one account](../how-to/operations/home-placement.md)). Without the table the pool routes by balance and keeps no homes.
+
+<!-- BEGIN config-keys venues.*.pool -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `placement` | string |  | "balance": each new order to the account whose balance covers it with the most order window left; "home": each instrument's position on one account, its home: an order goes there unless it takes a piece on another account towards zero (default "balance") |
+| `reduce_accounts` | integer |  | accounts that may carry reducing orders of one instrument and side at once; 1 offers a piece alone until it is gone (default 1) |
+| `spill` | string |  | "never": an order for a home that is down is refused HomeUnavailable; "flat": an instrument flat over the pool and not pinned moves to the usable account with the most order window first (default "never") |
+| `plan_interval_s` | integer |  | how often the planner moves homes to spread the accounts' order load, s; 0 = no planner (default 3600) |
+| `plan_lookback_h` | number |  | hours of the engine's own orders the planner plans from (default 3) |
+| `plan_max_moves` | integer |  | instruments the planner moves at most per plan (default 3) |
+| `homes` | table |  | { <symbol> = "<account>", ... }: pinned homes the planner and a spill never move (default none) |
+<!-- END config-keys -->
+
+```toml
+[venues.binance.pool]
+placement = "home"
+plan_interval_s = 3600
+homes = { BTCUSDT = "binance_b" }
+```
+
+The table goes on the pool's primary; `homes` names the primary's instruments and the pool's accounts. The planner runs in fastmm-live on the treasury's thread (`fm-treasury`), not in a dry run or behind fastmm-gateway, and in a backtest on simulated time.
 
 ### `[venues.<primary>.treasury]`
 
@@ -883,6 +909,7 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `p_drop` | number | `0.0` | Probability, below 1, that an outbound order message is lost |
 | `orders_10s` | int | `0` | The simulated venue's order count per 10 s (new orders and replaces, as Binance's `ORDERS` 10 s interval): one past it is refused with `VenueRateLimit`, and `ctx.order_budget` reports the count; `0` is unlimited and leaves the budget unknown |
 | `orders_1d` | int | `0` | The same per day |
+| `orders_credit_fills` | bool | `false` | An order's first fill takes one off each window's count, never below zero, as Binance Spot's unfilled order count does |
 | `equity_bar_s` | int | `1` | Bar length for the equity curve and the Sharpe ratio, s. The annualised Sharpe ratio is reported only for runs of at least 1 day (86,400 s); shorter runs report `n/a` (NaN in Python, `null` in `summary.json`) |
 | `initial_capital` | number | `0` | Starting capital, quote currency. The drawdown percentage is the largest fall from peak equity divided by this value; with `0` it is not reported (NaN in Python, `null` in `summary.json`) |
 | `markout_horizons_s` | string | `"1,10,60"` | Post-fill markout horizons in seconds, comma separated (`"0.5,5"` is allowed); `""` turns markouts off. The run stops the simulated clock at every fill time plus horizon to read the venue mid there, so the shortest horizon also bounds how often the run loop is entered ([Backtesting](../explanation/backtesting.md#markouts)) |
@@ -893,7 +920,7 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `initial_state` | string | `"state_file"` | Where the strategy's starting state comes from: `state_file` reads `[strategy] state_file` when set; `journal` takes the data journal's: the state the recorded session restored at its start, else its first state snapshot, with the positions of that snapshot, or with the positions the session restored and reconciled before its first order ([Backtesting](../explanation/backtesting.md#starting-from-the-live-sessions-state)); `none` starts the strategy fresh. `journal` needs a journal as the data source |
 | `params_from_journal` | bool | `false` | The data journal's parameter updates reach the strategy at the times the recorded session received them, their fields mapped by name and type onto the strategy's schema (as `fastmm-replay` maps them), except the parameters a sweep's point sets; the data source must be a journal |
 | `params_pinned` | string | `""` | Parameter names, comma separated, that `params_from_journal` leaves at their configured values: a run of what a change would have done keeps the session's other updates |
-| `controls_from_journal` | bool | `false` | The data journal's operator commands reach the engine at the times the recorded session received them: quotes pulled and resumed, a flatten, limits changed, a kill switch tripped or reset, reduce-only mode switched. The data source must be a journal |
+| `controls_from_journal` | bool | `false` | The data journal's operator commands reach the engine at the times the recorded session received them: quotes pulled and resumed, a flatten, limits changed, a kill switch tripped or reset, reduce-only mode switched, a pool home moved by the operator, or by the planner when the run does not plan that pool itself (`plan_interval_s = 0`). The data source must be a journal |
 | `start_at` | number or string | none | Unix time in seconds, or a UTC time (`"2026-10-20T08:00:00Z"`), that trading starts at: with `initial_state = "journal"` at the last checkpoint of the data journal at or before it, whose state the strategy restores, else at this time. Before it the run reads the data and the engine refuses orders (`NotReconciled`); then every venue reconciles with the start positions ([Backtesting](../explanation/backtesting.md#starting-inside-a-live-session)) |
 | `balances_from_journal` | bool | `false` | Each venue's account starts from the balances the journal recorded for it: its first snapshot, or with `start_at` its account as the venue last reported it when trading starts (every asset at its total; account-wide margin rows are left out); a venue without one keeps `[backtest.balances]`. From then on the account follows the session's account events: each recorded flow of money in or out (`AccountFlow`, [Venues](venues/connector-behaviour.md#balances)) at its time, a withdrawal at most what the run has free, and a full snapshot whenever the session's connector refreshed the account. A pool whose treasury the run simulates moves its own money: the recorded flows of its accounts are left out. The data source must be one journal |
 | `latency_from_journal` | bool | `false` | The simulated venues follow the latencies the data journal's own messages had: an order or cancel takes the time a live one sent at about the same moment on the same account took to reach the venue (the one of the same instrument within 2 ms, else the nearest within 20 ms), a reply the time the nearest live reply took to come back, wherever that is more than 1 ms longer than the model's draw. Quiet moments keep the model; a burst, when the venue's gateway and its replies slow down, gets what the session got ([Backtesting](../explanation/backtesting.md#starting-inside-a-live-session)). The data source must be a journal |
@@ -927,6 +954,7 @@ One venue's own settings; `<name>` is a `[venues.<name>]` that an instrument tra
 | `stp` | bool | `[risk] stp` | Self-trade prevention (cancel the taker) on this venue |
 | `orders_10s` | int | `[backtest]` | This venue's order count per 10 s (`0`: unlimited); per pool member, so the engine's routing sees each account's window |
 | `orders_1d` | int | `[backtest]` | This venue's order count per day |
+| `orders_credit_fills` | bool | `[backtest]` | A first fill gives back its order's slot in this venue's windows |
 
 ### `[backtest.balances]`
 

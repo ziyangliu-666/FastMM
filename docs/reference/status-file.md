@@ -140,7 +140,7 @@ What each side of an instrument asks for, what works there and what is in the wa
 | `reduce_only` | u8 | 1 while reduce-only mode holds the instrument |
 | `arm` | u8 | the `[ab]` arm it is in: 0 none, k + 1 arm k (`ab_arms`) |
 | `own_params` | u8 | the parameters it holds values of its own for ([Strategy API](strategy-api.md#parameters-per-instrument)) |
-| `home`, `pieces` | u8, u8 | its home's venue id in its account pool (255: none), and the other accounts that hold it ([Keep each position on one account](../how-to/operations/home-placement.md)) |
+| `home`, `pieces` | u8, u8 | its home's venue id in its account pool (255: none), and the number of other accounts that hold it ([Keep each position on one account](../how-to/operations/home-placement.md)) |
 | `position_raw`, `avg_px_raw`, `realized_raw`, `unrealized_raw` | i64 | the position, its average price and PnL, settlement currency |
 | `mid_raw` | i64 | the book's mid, 0 without a two-sided book |
 | `sides` | 2 x side entry | buy, then sell |

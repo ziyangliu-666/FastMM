@@ -95,6 +95,7 @@ Cancels skip every check, including the kill switch.
 | 38 | `InvalidTag` | `ctx.send` used a `user_tag` inside the quote manager's reserved range |
 | 39 | `OrderTableFull` | the connector's table of sent orders was full: 7168 working orders and replaces in flight, over every strategy behind a gateway |
 | 40 | `InvalidAccount` | `NewOrderRequest::account` named a venue outside the instrument's pool (`[venues.<x>] pool_of`) |
+| 41 | `HomeUnavailable` | `placement = "home"`: the order goes to the instrument's home, whose order link is down or whose kill switch is engaged ([Keep each position on one account](../how-to/operations/home-placement.md)) |
 
 ### Gateway
 

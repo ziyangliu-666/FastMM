@@ -5,6 +5,11 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- core: `[venues.<primary>.pool] placement = "home"` keeps each instrument's position on one account of its pool: adding orders go to its home, reducing orders to the accounts holding it, pieces first; `"balance"` (the default) keeps today's routing and only keeps the homes.
+- core: a home planner moves at most `plan_max_moves` homes every `plan_interval_s` to spread the accounts' order load; its moves, `fastmm-ctl pool home` and `ctx.set_home` are journaled `PoolHome` controls that a replay and a backtest reproduce.
+- core: `ctx.holding(id, account)`, `ctx.home(id)`, `ctx.pieces(id)` and `ctx.placement(primary)`, in C++ and Python; the status file shows each instrument's home and pieces.
+- core: `HomeUnavailable` refuses an adding order whose home cannot be reached; `spill = "flat"` re-homes a flat instrument instead.
+- sim: `[backtest] orders_credit_fills` gives a filled order's slot back to the simulated order windows, as Binance Spot does.
 - backtest: shadow sweeps: `[shadow]` and `fastmm-shadow` run variants of a strategy over a live session's journal as it is written, with the simulation's error against the session's real fills and simultaneous intervals on the variants.
 - backtest: `JournalTail` and `FollowSource` read a journal while it is written, parts and all, and give the stream a finished journal gives.
 - backtest: `[backtest] controls_from_journal` replays a session's operator commands.
