@@ -217,6 +217,7 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().killed()), bool>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().venue_killed(VenueId{})), bool>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().reduce_only(InstrumentId{})), bool>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().request_stop()), void>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().request_checkpoint()), void>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().trip_kill(KillReason::StrategyError)), void>);
 // randomness (seeded from the configuration)
 static_assert(std::same_as<decltype(lvalue<Ctx>().rng()), Xoshiro256ss&>);
@@ -247,6 +248,7 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().rng()), Xoshiro256ss&>);
 | `note_quote(id, side, reason, budget = {})` | why the strategy quotes a side as it does, up to 23 bytes, and its budget, for `fastmm-top`'s quote table ([Monitoring](../how-to/operations/monitor-with-fastmm-top.md)) |
 | `metric(name, value)` | publishes a named number in the status file, `fastmm-top` and `fastmm_strategy_metric`; first 32 names, 23 bytes each |
 | `request_stop()` | sets the stop flag: a backtest ends after the current step; replay always drains the journal |
+| `request_checkpoint()` | writes a checkpoint to the journal once the events waiting are handled ([State across sessions](#state-across-sessions)); nothing without a journal |
 | `trip_kill(reason)` | trips the global kill switch: quoting stops and every working order is cancelled |
 | `rng()` | a `Xoshiro256ss` seeded from `[engine] rng_seed`, identical in replay |
 | `own_qty`, `best_ex_self`, `queue_ahead`, `order_times` | our own orders as the market sees them ([Execution view](#execution-view)) |
@@ -748,26 +750,68 @@ In a backtest, `sim::ParamSchedule` (`fastmm/sim/param_schedule.hpp`) delivers u
 
 ## State across sessions
 
-A strategy can carry bytes from one session to the next, such as an online model. It implements both or neither:
+A strategy can keep what it has learnt, such as an online model, in a state file between sessions and in the journal's checkpoints, so a backtest can start from it mid-session. It implements both members or neither:
 
 | Member | Does |
 |---|---|
-| `std::string_view state()` | returns the bytes; the engine copies them at once |
+| `std::string_view state()` | returns the bytes; the engine copies them before the strategy's next hook |
 | `bool restore(std::string_view)` | takes bytes saved before; false when they are not its own |
+| `state_version` | optional, `static constexpr std::uint32_t` or a member function: the layout of the bytes, 0 when not declared |
 
-The signatures are checked at registration like the hooks. The format is the strategy's; a version prefix helps.
+<!-- snippet: tests/docs/strategy_api_doc_test.cpp#state -->
+```cpp
+class LearntSpread : public StrategyBase<AllHooksParams> {
+ public:
+  static constexpr std::string_view name() noexcept { return "doc_learnt_spread"; }
+  static constexpr std::uint32_t state_version = 2;  // bump when the layout below changes
 
-With `[strategy] state_file` set:
+  template <class Ctx>
+  void on_start(Ctx& ctx) noexcept {
+    static_cast<void>(ctx.every(seconds(3600), 0));
+  }
+  template <class Ctx>
+  void on_fill(Ctx&, const Fill& f) noexcept {
+    edge_[f.side == Side::Buy ? 0 : 1] += 1.0;
+    ++fills_;
+  }
+  template <class Ctx>
+  void on_timer(Ctx& ctx, TimerId, std::uint64_t) noexcept {
+    ctx.request_checkpoint();  // once an hour, besides [engine] checkpoint_s
+  }
 
-| Run | Reads the file | Writes it |
+  std::string_view state() noexcept {
+    StateWriter w(buf_);
+    w.put(edge_);
+    w.put(fills_);
+    return w.view();
+  }
+  bool restore(std::string_view bytes) noexcept {
+    StateReader r(bytes);
+    return r.get(edge_) && r.get(fills_) && r.done();
+  }
+
+ private:
+  std::array<double, 2> edge_{};
+  std::uint64_t fills_ = 0;
+  std::array<std::byte, 64> buf_{};  // sized once: state() never allocates
+};
+```
+
+`StateWriter` copies trivially copyable values into a buffer the strategy sizes once, and `put_array` a count and its elements; a write that does not fit leaves `view()` empty instead of growing the buffer. `StateReader` reads them back in the same order, and `done()` is true once every byte was read. The signatures are checked at registration like the hooks.
+
+| Run | `restore` | `state()` |
 |---|---|---|
-| live session, backtest | `restore` once, after `on_start`, before the first event | `state()` every `state_interval_s` (300 s) of engine time and at the end |
-| warm standby (`fastmm-live --standby`) | `restore` when it takes over, after warming up ([Hand over a running session](../how-to/operations/hand-over-a-session.md#warm-standby)) | as a live session, from takeover |
+| live session, backtest, with `[strategy] state_file` | the file, once, after `on_start`, before the first event | to the file every `state_interval_s` (300 s) of engine time and at the end |
+| any session with a journal | | into a checkpoint every `[engine] checkpoint_s`, and once the events waiting are handled after `ctx.request_checkpoint()` |
+| backtest with `[backtest] initial_state = "journal"` and `start_at` | the last checkpoint at or before `start_at`, when trading starts there ([Replay a live session](../how-to/operations/replay-live-session.md#restore-the-strategys-state)) | as above |
+| warm standby (`fastmm-live --standby`) | the file when it takes over, after warming up ([Hand over a running session](../how-to/operations/hand-over-a-session.md#warm-standby)) | as a live session, from takeover |
 | sweep points, walk-forward folds, `[ab]` arms | the file as it was when they began | never |
-| replay of a journal | never | never |
+| replay of a journal | the bytes the session restored, at the same events | never |
 
 - No file is a first start; an unreadable file is a configuration error.
-- `state()` is never called from inside another hook. Writes are atomic, a temporary file then a rename, off the engine thread.
+- `state()` is never called from inside another hook. File writes are atomic, a temporary file then a rename, off the engine thread.
+- Each checkpoint records the `state_version`. A backtest or `fastmm-replay` stops with an error before the first event when the journal's version differs from the strategy's, and never hands those bytes to `restore`.
+- A checkpoint costs `state()` and one copy of its bytes into the journal ring on the engine thread: about 25 µs for 1 MiB and 90 µs for 4 MiB on a Ryzen 7 7800X3D (`BM_Journal_Checkpoint`). One that would leave less than a quarter of `[engine] journal_ring_bytes` free is skipped and counted as `checkpoints_skipped`.
 - A backtest's end state is what the next backtest or live session starts from.
 
 ## Fixed-point helpers

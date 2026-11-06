@@ -86,10 +86,13 @@ A likely misspelling such as `on_fills` warns; `fastmm_allow_near_miss_names = T
 
 A class may also carry state between sessions ([State across sessions](strategy-api.md#state-across-sessions)):
 
-| Method | With `BacktestConfig.state_file` or `[strategy] state_file` |
+| Member | Does |
 |---|---|
-| `restore(self, data: bytes) -> bool` | gets the file's bytes once, after `on_start` |
-| `state(self) -> bytes \| str` | written to the file every `state_interval_s` and at the end |
+| `restore(self, data: bytes) -> bool` | gets the file's bytes once, after `on_start`, or a checkpoint's in a backtest with `[backtest] start_at` |
+| `state(self) -> bytes \| str` | written to the file every `state_interval_s` and at the end, and into every journal checkpoint |
+| `state_version = 1` | the layout of those bytes; a backtest refuses a checkpoint of another version |
+
+`ctx.request_checkpoint()` writes a checkpoint once the events waiting are handled, besides `[engine] checkpoint_s`.
 
 ## Parameters
 
@@ -126,7 +129,7 @@ py:SkewMM: parameter 'levels': cannot parse '2.5' as int (a whole number)
 | Quoting | `set_quotes(inst, bids, asks) -> bool`, `pull_quotes(inst)`, `pull_all_quotes()`, `working_quote(inst, side, level=0) -> Order or None` |
 | Direct orders | `send(inst, side, price, qty, *, post_only=False, reduce_only=False, ioc=False, tag=0) -> int`, `cancel(order_id) -> bool`, `replace(order_id, price, qty)`, `order(order_id) -> Order or None`, `open_qty(inst, side)` |
 | Timers | `every(period_ns, tag=0) -> int`, `once(delay_ns, tag=0) -> int`, `cancel_timer(timer_id) -> bool` |
-| Control | `quoting_enabled`, `killed`, `reduce_only(inst)` ([reduce-only mode](../how-to/operations/operate-a-running-session.md#reduce-only-mode)), `request_stop()`: the run ends after the current event |
+| Control | `quoting_enabled`, `killed`, `reduce_only(inst)` ([reduce-only mode](../how-to/operations/operate-a-running-session.md#reduce-only-mode)), `request_stop()`: the run ends after the current event, `request_checkpoint()` |
 | Venue state | `fees(inst)` -> `Fees`, `risk_headroom(inst)` -> `RiskHeadroom`, `venue_health(venue=0)` -> `VenueHealth`, `order_budget(venue=0)` -> `OrderBudget` |
 | Balances | `balance(venue, asset)` -> `Balance`, `margin(venue=0)` -> `Margin`, `balance_room(inst, side, price)` -> float or `None`, `balances_live()` ([Balances](strategy-api.md#balances)) |
 | Perpetuals | `mark(inst)`, `index(inst)` -> `RefPrice`, `funding(inst)` -> `Funding` ([Perpetuals](strategy-api.md#perpetuals)) |

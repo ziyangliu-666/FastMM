@@ -12,6 +12,10 @@ All notable changes are recorded here (Keep a Changelog format).
 - apps: `fastmm-top` shows a shadow's status, and `--metrics` its `fastmm_shadow_*` gauges.
 - core: `[engine] quote_room_reserve`: a quote is not moved towards the touch while the account it rests on has no more than this many orders left in its venue order windows; the resting order stays instead of a cancel whose new order the window refuses (default 0, -1 off).
 - core: reduce-only mode (`fastmm-ctl reduce-only on|off`, `[risk] reduce_only`) refuses orders that add to a position, per session, venue or instrument, and `ctx.reduce_only(id)` reads it.
+- core: checkpoints record the strategy's `state_version`; a backtest or replay refuses a checkpoint of another version.
+- core: `ctx.request_checkpoint()` writes a checkpoint when the strategy asks, in C++ and Python.
+- core: a checkpoint that would leave less than a quarter of the journal ring free is skipped and counted, instead of overflowing the ring.
+- strategies: `StateWriter` and `StateReader` write and read a strategy's state in a buffer sized once.
 - backtest: `[backtest] reconcile_on_unknown_cancel` follows a cancel the simulated venue refuses as unknown with an open-order snapshot, as the Binance connector does.
 
 ### Changed

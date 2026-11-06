@@ -43,6 +43,21 @@ Run it over the journal from a part well before `start_at`. The run reads the da
 - Give a part early enough for the books and the strategy's averages to settle before the checkpoint.
 - Keys and limits: [Configuration](../../reference/configuration.md#backtest).
 
+## Restore the strategy's state
+
+A strategy that implements `state()` and `restore()` starts the run from what it had learnt at the checkpoint, such as a model fitted to its own fills ([State across sessions](../../reference/strategy-api.md#state-across-sessions)). Without them it starts trading at the checkpoint with an empty model, and parts from the session until it has learnt it again.
+
+1. Implement both, and declare `state_version`.
+2. Raise `state_version` whenever the layout of the bytes changes. A run from a checkpoint of another version stops before its first event:
+
+    ```text
+    backtest: the journal's state at 1700000005000000000 ns has state_version 1 of learner; this build restores version 2
+    ```
+
+3. To write a checkpoint at a moment of the strategy's choosing, such as after it refits its model, call `ctx.request_checkpoint()`.
+
+The log line `journal: started from the checkpoint of <ns> ns (<n> bytes, <m> positions)` gives the size of the state restored. To backtest such a journal from its start without the state, set `initial_state = "none"`.
+
 ## Compare with the live session
 
 Write both sessions' own traffic as CSV and lay them side by side ([Compare a backtest with the live session](journals-replay-pnl.md#compare-a-backtest-with-the-live-session)):

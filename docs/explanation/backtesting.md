@@ -312,6 +312,8 @@ At the checkpoint:
 3. With `balances_from_journal`, each account starts from its last reported balances.
 4. The strategy quotes anew at the back of each queue; the checkpoint's open orders are not placed again.
 
+The warm-up teaches the strategy only what the market data shows. What it learnt from its own fills comes from the checkpoint's bytes, or not at all. In a test session whose strategy widens a side after each of its fills, a run from a checkpoint 30 s in sent 99% of the session's orders over the next 30 s; the same run with a strategy that does not restore sent 48% (`tests/backtest/strategy_state_test.cpp`).
+
 A run from a checkpoint is deterministic and its journal replays bit for bit. With jittered latencies it parts from the session at the first random draw. For a journal without checkpoints, `[backtest.positions]` gives the positions ([Configuration](../reference/configuration.md#backtestpositions)).
 
 A venue slows down when the market does, while the latency model draws from one distribution. A cancel that wins its race in the model may have lost it live. `[backtest] latency_from_journal` makes each simulated message take the live delay at the same moment, where that is longer than the model's draw. It uses the order sent within 2 ms on the same account and instrument, else the nearest one; a reply takes the nearest reply.

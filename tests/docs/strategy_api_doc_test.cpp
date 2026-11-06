@@ -14,7 +14,9 @@
 #include "fastmm/strategy.hpp"
 #include "fastmm/testing/strategy_harness.hpp"
 
+#include <array>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -180,6 +182,7 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().killed()), bool>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().venue_killed(VenueId{})), bool>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().reduce_only(InstrumentId{})), bool>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().request_stop()), void>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().request_checkpoint()), void>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().trip_kill(KillReason::StrategyError)), void>);
 // randomness (seeded from the configuration)
 static_assert(std::same_as<decltype(lvalue<Ctx>().rng()), Xoshiro256ss&>);
@@ -359,7 +362,64 @@ void register_strategies(StrategyRegistry& r) {
 static_assert(std::same_as<decltype(&register_strategies), StrategyModule>);
 // [end:registration]
 
+// ---- state --------------------------------------------------------------------------------------
+
+// [start:state]
+class LearntSpread : public StrategyBase<AllHooksParams> {
+ public:
+  static constexpr std::string_view name() noexcept { return "doc_learnt_spread"; }
+  static constexpr std::uint32_t state_version = 2;  // bump when the layout below changes
+
+  template <class Ctx>
+  void on_start(Ctx& ctx) noexcept {
+    static_cast<void>(ctx.every(seconds(3600), 0));
+  }
+  template <class Ctx>
+  void on_fill(Ctx&, const Fill& f) noexcept {
+    edge_[f.side == Side::Buy ? 0 : 1] += 1.0;
+    ++fills_;
+  }
+  template <class Ctx>
+  void on_timer(Ctx& ctx, TimerId, std::uint64_t) noexcept {
+    ctx.request_checkpoint();  // once an hour, besides [engine] checkpoint_s
+  }
+
+  std::string_view state() noexcept {
+    StateWriter w(buf_);
+    w.put(edge_);
+    w.put(fills_);
+    return w.view();
+  }
+  bool restore(std::string_view bytes) noexcept {
+    StateReader r(bytes);
+    return r.get(edge_) && r.get(fills_) && r.done();
+  }
+
+ private:
+  std::array<double, 2> edge_{};
+  std::uint64_t fills_ = 0;
+  std::array<std::byte, 64> buf_{};  // sized once: state() never allocates
+};
+// [end:state]
+static_assert(KeepsState<LearntSpread>);
+static_assert(LearntSpread::state_version == 2);
+
 }  // namespace docs
+
+TEST_CASE("docs.strategy_api: a strategy's state round trips through state() and restore()") {
+  docs::LearntSpread a;
+  int ctx = 0;  // on_fill does not use its context
+  Fill f{};
+  f.side = Side::Sell;
+  a.on_fill(ctx, f);
+  const std::string saved(a.state());
+  CHECK(saved.size() == 24);
+  CHECK(state_version_of(a) == 2);
+  docs::LearntSpread b;
+  CHECK(b.restore(saved));
+  CHECK(std::string(b.state()) == saved);
+  CHECK_FALSE(b.restore(saved.substr(1)));
+}
 
 TEST_CASE("docs.strategy_api: every documented hook fires in the harness") {
   using docs::AllHooks;
