@@ -122,6 +122,11 @@ struct BacktestConfig {
   std::vector<TreasuryConfig> treasuries;
   // [backtest] transfer_latency_ms: a simulated transfer is carried out this long after it is sent.
   Duration transfer_latency{};
+  // [backtest] transfer_p_fail, transfer_p_unknown, transfer_hang_ms: the simulated venue refuses a
+  // transfer, or loses its answer and carries it out transfer_hang later (sim::SimTransferFaults).
+  double transfer_p_fail = 0.0;
+  double transfer_p_unknown = 0.0;
+  Duration transfer_hang = milliseconds(90'000);
   // The strategy's starting state; Journal also starts the engine's positions where the recorded
   // session had them (sim::SessionStart).
   InitialState initial_state = InitialState::StateFile;

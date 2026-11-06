@@ -147,6 +147,9 @@ struct TreasurySection {
   bool enabled = false;
   bool dry_run = false;
   std::string asset;
+  std::string targets = "weights";  // "weights" | "demand"
+  double headroom = 0.15;
+  bool reserve = false;
   std::map<std::string, double> weights;        // pool account -> weight (absent: 1)
   std::map<std::string, std::string> min_free;  // pool account -> decimal (absent: 0)
   double threshold = 0.2;

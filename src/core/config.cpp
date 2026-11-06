@@ -347,8 +347,14 @@ void parse_treasury(const toml::table& t, VenueSection& v) {
   get(t, "asset", s.asset);
   get(t, "threshold", s.threshold);
   get(t, "state_file", s.state_file);
+  get(t, "targets", s.targets);
+  get(t, "headroom", s.headroom);
+  get(t, "reserve", s.reserve);
   if (s.threshold < 0.0 || s.threshold > 1.0)
     fail_at(*t.get("threshold"), at + ".threshold must be 0 to 1");
+  if (s.targets != "weights" && s.targets != "demand")
+    fail_at(*t.get("targets"), at + ".targets must be \"weights\" or \"demand\"");
+  if (s.headroom < 0.0) fail_at(*t.get("headroom"), at + ".headroom must be at least 0");
   const auto decimal = [&](std::string_view key, std::string& out) {
     const toml::node* n = t.get(key);
     if (n == nullptr) return;
@@ -516,6 +522,13 @@ void check_treasuries(const toml::table& doc, const Config& cfg) {
       if (!in_pool(name))
         fail_here(fmt::format(
             "venues.{}.treasury.min_free: '{}' is not an account of the pool", v.name, name));
+    }
+    if (v.treasury.targets == "demand" && !v.pool.configured) {
+      fail_here(fmt::format(
+          "venues.{}.treasury: targets = \"demand\" funds each account for its home instruments; "
+          "it needs a [venues.{}.pool] table",
+          v.name,
+          v.name));
     }
     if (!v.treasury.weights.empty()) {
       double sum = 0;
@@ -1291,6 +1304,9 @@ TreasuryConfig Config::treasury_config(std::string_view primary) const {
   c.enabled = s.enabled;
   c.dry_run = s.dry_run;
   c.asset = s.asset;
+  c.targets = s.targets == "demand" ? TreasuryTargets::Demand : TreasuryTargets::Weights;
+  c.headroom = s.headroom;
+  c.reserve = s.reserve;
   c.members = pool_plan().members(venue_id(primary));
   for (std::size_t i = 0; i < c.members.size(); ++i) {
     const std::string& name = venues[c.members[i].value].name;
@@ -1462,10 +1478,13 @@ std::string Config::redacted() const {
                    v.fees.taker_bps);
     if (v.treasury.configured) {
       fmt::format_to(std::back_inserter(out),
-                     "treasury = {{ enabled = {}, dry_run = {}, asset = \"{}\" }}\n",
+                     "treasury = {{ enabled = {}, dry_run = {}, asset = \"{}\", targets = \"{}\", "
+                     "reserve = {} }}\n",
                      v.treasury.enabled,
                      v.treasury.dry_run,
-                     v.treasury.asset);
+                     v.treasury.asset,
+                     v.treasury.targets,
+                     v.treasury.reserve);
     }
     if (v.pool.configured) {
       fmt::format_to(
@@ -1657,6 +1676,9 @@ toml::table treasury_table(const TreasurySection& s) {
   t.insert("enabled", s.enabled);
   t.insert("dry_run", s.dry_run);
   t.insert("asset", s.asset);
+  t.insert("targets", s.targets);
+  t.insert("headroom", s.headroom);
+  t.insert("reserve", s.reserve);
   toml::table w;
   for (const auto& [k, v] : s.weights) w.insert(k, v);
   t.insert("weights", std::move(w));

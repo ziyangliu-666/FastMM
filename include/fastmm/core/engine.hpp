@@ -81,6 +81,7 @@
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/timer_wheel.hpp"
+#include "fastmm/core/transfer.hpp"
 #include "fastmm/core/transport.hpp"
 #include "fastmm/core/venue_health.hpp"
 #include "fastmm/strategies/hooks.hpp"
@@ -865,6 +866,41 @@ class Engine {
       out.orders[j] = inst_orders_[inst.id.value].load(std::memory_order_relaxed);
       out.home[j] = VenueId{home_pub_[inst.id.value].load(std::memory_order_relaxed)};
       out.pinned[j] = pinned_pub_[inst.id.value].load(std::memory_order_relaxed);
+    }
+  }
+
+  // ctx.set_funding_need: the quote (in the instrument's quote or settlement asset) its bids want
+  // resting. A pool treasury with targets = "demand" funds each account for the needs of the
+  // instruments whose home it is (pool_funding). Zero or less: none.
+  void set_funding_need(InstrumentId id, Notional quote) noexcept {
+    if (!instruments_.contains(id)) return;
+    need_pub_[id.value].store(std::max<std::int64_t>(quote.raw, 0), std::memory_order_relaxed);
+  }
+  [[nodiscard]] Notional funding_need(InstrumentId id) const noexcept {
+    if (!instruments_.contains(id)) return {};
+    return Notional::from_raw(need_pub_[id.value].load(std::memory_order_relaxed));
+  }
+  // A pool treasury's view of `primary`'s pool in `asset` (core/pool_homes.hpp PoolFunding): the
+  // funding needs summed by home, and the payout held for a transfer. Any thread: it reads only
+  // what the engine thread publishes for it.
+  void pool_funding(VenueId primary, std::string_view asset, PoolFunding& out) const noexcept {
+    out = PoolFunding{};
+    out.members = cfg_.pools.members(primary);
+    for (const Instrument& inst : instruments_) {
+      if (inst.venue != primary || inst.id.value >= kMaxInstruments) continue;
+      const std::int64_t need = need_pub_[inst.id.value].load(std::memory_order_relaxed);
+      if (need <= 0) continue;
+      const std::string_view ccy = inst.is_derivative() ? inst.settlement_ccy() : inst.quote.view();
+      if (!same_currency(ccy, asset)) continue;
+      out.declared = true;
+      const VenueId home{home_pub_[inst.id.value].load(std::memory_order_relaxed)};
+      for (std::size_t k = 0; k < out.members.size(); ++k) {
+        if (out.members[k] == home) out.need[k] = out.need[k] + Notional::from_raw(need);
+      }
+    }
+    if (primary.value < kMaxVenues) {
+      out.hold_seq = hold_seq_pub_[primary.value].load(std::memory_order_acquire);
+      out.held = Notional::from_raw(hold_amt_pub_[primary.value].load(std::memory_order_relaxed));
     }
   }
 
@@ -2814,11 +2850,75 @@ class Engine {
         break;
       case ControlCommand::Transfer:
         ++stats_.treasury_records;  // a treasury's record for the journal (ControlTransferMsg)
+        if (c.hdr.len >= sizeof(ControlTransferMsg))
+          on_transfer(msg_cast<ControlTransferMsg>(&c.hdr));
         break;
       case ControlCommand::ResetLossBudget:
         reset_loss_budget();
         break;
     }
+  }
+
+  // ControlCommand::Transfer with kHeld (a pool treasury with reserve = true): the payout held out
+  // of the payer's balance, by the pool's primary. See ControlTransferMsg.
+  FASTMM_NOINLINE void on_transfer(const ControlTransferMsg& m) noexcept {
+    if ((m.flags & ControlTransferMsg::kHeld) == 0 || m.hdr.venue.value >= kMaxVenues) return;
+    auto& h = transfer_holds_[m.hdr.venue.value];
+    const bool mine = h.active && h.seq == m.seq;
+    const auto amount = static_cast<std::int64_t>(m.arg);
+    const std::string_view asset = m.asset.view();
+    switch (static_cast<TreasuryEventKind>(m.event)) {
+      case TreasuryEventKind::Reserve:
+      case TreasuryEventKind::Sent: {
+        if (!mine) {
+          release_hold(m.hdr.venue);
+          h.active = true;
+          h.seq = m.seq;
+          h.from = m.from;
+          h.asset = m.asset;
+          h.amount = 0;
+        }
+        // At most what the payer has free: a hold never takes what an order holds.
+        const std::int64_t free = balances_->free_of(m.from, asset);
+        const std::int64_t room =
+            free == BalanceBook::kUnreported ? amount : h.amount + std::max<std::int64_t>(free, 0);
+        const std::int64_t want =
+            std::clamp<std::int64_t>(amount, 0, std::max<std::int64_t>(room, 0));
+        if (want != h.amount && balances_->reserve(h.from, h.asset.view(), want - h.amount))
+          h.amount = want;
+        if (static_cast<TreasuryEventKind>(m.event) == TreasuryEventKind::Sent)
+          h.sent = m.hdr.recv_ts;
+        break;
+      }
+      case TreasuryEventKind::Done:
+        // The amount left the payer and reached the receiver: the estimate has it until reports
+        // stamped after it do. The receiver's credit is stamped at the send, so a report that may
+        // already have it does not get it twice.
+        {
+          const Timestamp sent = mine && h.sent.valid() ? h.sent : m.hdr.recv_ts;
+          if (mine) release_hold(m.hdr.venue);
+          balances_->transfer(m.from, asset, -amount, m.hdr.recv_ts);
+          balances_->transfer(m.to, asset, amount, sent);
+        }
+        break;
+      case TreasuryEventKind::Failed:
+      case TreasuryEventKind::Released:
+        if (mine) release_hold(m.hdr.venue);
+        break;
+      case TreasuryEventKind::Planned:
+      case TreasuryEventKind::TimedOut:
+        break;
+    }
+    hold_amt_pub_[m.hdr.venue.value].store(h.active ? h.amount : 0, std::memory_order_relaxed);
+    hold_seq_pub_[m.hdr.venue.value].store(h.active ? h.seq : 0, std::memory_order_release);
+    publish_live(latency_pub_.load());
+  }
+  // The pool's hold goes back into the payer's free estimate.
+  void release_hold(VenueId primary) noexcept {
+    auto& h = transfer_holds_[primary.value];
+    if (h.active && h.amount != 0)
+      static_cast<void>(balances_->reserve(h.from, h.asset.view(), -h.amount));
+    h = {};
   }
 
   // ControlCommand::ResetLossBudget: net_pnl() is zero again from here.
@@ -5248,6 +5348,21 @@ class Engine {
   std::array<std::atomic<bool>, kMaxInstruments> pinned_pub_{};
   // New orders and replaces by instrument since the start, for the planner (any thread).
   std::array<std::atomic<std::uint64_t>, kMaxInstruments> inst_orders_{};
+  // Funding needs by instrument (set_funding_need; raw Notional), for pool_funding (any thread).
+  std::array<std::atomic<std::int64_t>, kMaxInstruments> need_pub_{};
+  // The payout a pool treasury holds (on_transfer), by the pool's primary, and the copy
+  // pool_funding reads.
+  struct TransferHold {
+    bool active = false;
+    std::uint64_t seq = 0;
+    VenueId from{};
+    FixedString<8> asset{};
+    std::int64_t amount = 0;  // raw, held out of `from`'s free estimate
+    Timestamp sent{};         // the Sent record's time
+  };
+  std::array<TransferHold, kMaxVenues> transfer_holds_{};
+  std::array<std::atomic<std::uint64_t>, kMaxVenues> hold_seq_pub_{};
+  std::array<std::atomic<std::int64_t>, kMaxVenues> hold_amt_pub_{};
   // By venue id: its 10 s order limit and whether it is usable, as publish_pool() last saw them.
   std::array<std::atomic<std::int64_t>, kMaxVenues> limit_pub_{};
   std::atomic<std::uint32_t> unusable_pub_{0};

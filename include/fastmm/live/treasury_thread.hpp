@@ -10,9 +10,11 @@
 //                     ControlTransferMsg on the treasury ring, which the journal records.
 //   TreasuryThread    looks at every treasury once a second with the engine's balance table
 //                     (EngineLiveStats::balances, the engine's estimate: free less what its own
-//                     orders hold) and publishes their counters for the status file. It also runs
-//                     the pools' home planners (core/pool_homes.hpp): each reads the engine's
-//                     orders by instrument (Engine::pool_load) and its moves reach the engine as
+//                     orders hold) and its view of each pool's funding
+//                     (IEngineRunner::pool_funding: the needs by home, the payout it holds), and
+//                     publishes their counters for the status file. It also runs the pools' home
+//                     planners (core/pool_homes.hpp): each reads the engine's orders by instrument
+//                     (Engine::pool_load) and its moves reach the engine as
 //                     ControlCommand::PoolHome on the same ring, which the journal records.
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/msg_ring.hpp"
@@ -30,6 +32,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -70,9 +73,6 @@ class LiveTreasuryPort final : public TreasuryPort {
   std::uint64_t dropped_ = 0;  // records the ring had no room for
 };
 
-// Fills a ControlTransferMsg from a treasury event (hdr.venue: the pool's primary).
-void fill_transfer_msg(ControlTransferMsg& m, VenueId primary, const TreasuryEvent& e) noexcept;
-
 class TreasuryThread {
  public:
   // Fills `out` with the engine's balance rows (called on the treasury thread).
@@ -86,6 +86,11 @@ class TreasuryThread {
   };
 
   TreasuryThread(std::vector<Pool> pools, Balances balances, Clock clock = {});
+
+  // The engine's view of a pool's funding (IEngineRunner::pool_funding), called on the thread
+  // before each pool's look; false: none. Before start().
+  using Funding = std::function<bool(VenueId primary, std::string_view asset, PoolFunding& out)>;
+  void set_funding(Funding funding) { funding_ = std::move(funding); }
 
   // The engine's view of a pool (IEngineRunner::pool_load), and where a planner's moves go (the
   // treasury ring). Both called on the thread.
@@ -128,6 +133,8 @@ class TreasuryThread {
   std::unique_ptr<PoolLoad> pool_load_;
   std::atomic<std::uint64_t> home_moves_{0};
   Balances balances_;
+  Funding funding_;
+  PoolFunding pool_funding_;
   Clock clock_;
   std::vector<TreasuryBalance> rows_;
   Seqlocked<StatusTreasury> stats_;

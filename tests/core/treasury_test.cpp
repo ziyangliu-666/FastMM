@@ -7,6 +7,7 @@
 
 #include <filesystem>
 #include <string>
+#include <tuple>
 #include <vector>
 
 using namespace fastmm;
@@ -60,7 +61,13 @@ struct ScriptedPort final : TreasuryPort {
     return on_status;
   }
   void refresh(VenueId v) override { refreshed.push_back(v); }
-  void record(const TreasuryEvent& e) override { events.push_back(e.kind); }
+  void record(const TreasuryEvent& e) override {
+    events.push_back(e.kind);
+    seqs.push_back(e.seq);
+    held.push_back(e.held);
+  }
+  std::vector<std::uint64_t> seqs;
+  std::vector<bool> held;
 };
 
 std::vector<TreasuryBalance> rows(std::initializer_list<const char*> free, std::int64_t as_of) {
@@ -380,4 +387,184 @@ TEST_CASE("core.treasury: disabled does nothing") {
   t.step(kT0, rows({"1000", "0"}, kT0), port);
   CHECK(port.submitted.empty());
   CHECK(port.events.empty());
+}
+
+namespace {
+
+// Accounts with free, locked (own orders' holds) and need.
+std::vector<TreasuryAccount> demand(
+    std::initializer_list<std::tuple<const char*, const char*, const char*>> rows_in) {
+  std::vector<TreasuryAccount> out;
+  std::uint8_t v = 0;
+  for (const auto& [f, l, n] : rows_in) {
+    TreasuryAccount a{V(v++), N(f), true};
+    a.locked = N(l);
+    a.need = N(n);
+    out.push_back(a);
+  }
+  return out;
+}
+
+TreasuryConfig demand_pool(std::size_t n) {
+  TreasuryConfig c = pool(n);
+  c.targets = TreasuryTargets::Demand;
+  c.headroom = 0.1;
+  return c;
+}
+
+PoolFunding held(std::uint64_t seq, const char* amount) {
+  PoolFunding f;
+  f.hold_seq = seq;
+  f.held = N(amount);
+  return f;
+}
+
+}  // namespace
+
+TEST_CASE("core.treasury: demand targets fund each account for its own need") {
+  const TreasuryConfig c = demand_pool(3);
+  // Targets 0, 1100 and 2200; acct2 has 200 committable and asks for 2000. main gives what it
+  // has above 0, from its free part only; acct1 is at its target.
+  TreasuryPlan p = plan_transfers(
+      c, demand({{"3000", "500", "0"}, {"600", "500", "1000"}, {"0", "200", "2000"}}));
+  REQUIRE(p.status == TreasuryPlan::Status::Transfers);
+  REQUIRE(p.count == 1);
+  CHECK(p.transfers[0] == PlannedTransfer{V(0), V(2), N("2000")});
+
+  // What its resting bids hold counts as the account's: one whose bids hold its need is not short.
+  p = plan_transfers(c, demand({{"3000", "0", "0"}, {"0", "1100", "1000"}, {"0", "2200", "2000"}}));
+  CHECK(p.status == TreasuryPlan::Status::Balanced);
+
+  // A giver gives at most its free balance; min_free is kept on top of the need.
+  TreasuryConfig m = demand_pool(2);
+  m.min_free[1] = N("100");
+  p = plan_transfers(m, demand({{"300", "5000", "0"}, {"0", "0", "1000"}}));
+  REQUIRE(p.count == 1);
+  CHECK(p.transfers[0] == PlannedTransfer{V(0), V(1), N("300")});
+  p = plan_transfers(m, demand({{"5000", "0", "0"}, {"0", "0", "1000"}}));
+  REQUIRE(p.count == 1);
+  CHECK(p.transfers[0].amount == N("1200"));
+
+  // A pool with less than the targets add up to shares what it has in proportion to the needs.
+  p = plan_transfers(c, demand({{"2000", "0", "0"}, {"0", "0", "1000"}, {"0", "0", "3000"}}));
+  REQUIRE(p.count == 2);
+  CHECK(p.transfers[0] == PlannedTransfer{V(0), V(2), N("1500")});
+  CHECK(p.transfers[1] == PlannedTransfer{V(0), V(1), N("500")});
+
+  // Without any need declared nothing moves (by weights it would).
+  p = plan_transfers(c, demand({{"1900", "0", "0"}, {"1000", "0", "0"}, {"100", "0", "0"}}));
+  CHECK(p.status == TreasuryPlan::Status::Balanced);
+  CHECK(plan_transfers(pool(3), accounts({"1900", "1000", "100"})).count >= 1);
+}
+
+TEST_CASE("core.treasury: reserve holds the payout in the engine before sending what it held") {
+  TreasuryConfig c = pool(2);
+  c.reserve = true;
+  c.interval_ns = 10 * kS;
+  c.min_interval_ns = 0;
+  c.min_amount = N("100");
+  ScriptedPort port;
+  Treasury t(c);
+  REQUIRE(t.open().has_value());
+
+  // The plan: hold 500 on main for acct1. Nothing is sent yet; the next look is a second away.
+  t.step(kT0, rows({"1000", "0"}, kT0), port);
+  CHECK(port.submitted.empty());
+  REQUIRE(port.events == std::vector<TreasuryEventKind>{TreasuryEventKind::Reserve});
+  CHECK(port.held[0]);
+  const std::uint64_t seq = port.seqs[0];
+  CHECK(seq == 1);
+  CHECK(t.next_look_ns() == kT0 + Treasury::kConfirmNs);
+  CHECK(t.ledger().in_flight[0].phase == TreasuryTransfer::Phase::Reserving);
+
+  // The engine has not answered: wait.
+  const PoolFunding none;
+  t.step(kT0 + 1 * kS, rows({"1000", "0"}, kT0), port, &none);
+  CHECK(port.submitted.empty());
+  // It held 420.555 of it (an order took the rest first): that much goes, rounded to the step.
+  const PoolFunding f = held(seq, "420.555");
+  t.step(kT0 + 2 * kS, rows({"1000", "0"}, kT0), port, &f);
+  REQUIRE(port.submitted.size() == 1);
+  CHECK(port.submitted[0].amount == N("420.55"));
+  CHECK(port.events ==
+        std::vector<TreasuryEventKind>{TreasuryEventKind::Reserve, TreasuryEventKind::Sent});
+  CHECK(port.seqs[1] == seq);
+  CHECK(t.ledger().in_flight[0].phase == TreasuryTransfer::Phase::Submitted);
+}
+
+TEST_CASE("core.treasury: a hold too small or never taken is released unsent") {
+  TreasuryConfig c = pool(2);
+  c.reserve = true;
+  c.interval_ns = 1 * kS;
+  c.min_interval_ns = 0;
+  c.min_amount = N("100");
+  c.timeout_ns = 5 * kS;
+  ScriptedPort port;
+  Treasury t(c);
+  REQUIRE(t.open().has_value());
+  t.step(kT0, rows({"1000", "0"}, kT0), port);
+  const PoolFunding small = held(1, "50");
+  t.step(kT0 + 1 * kS, rows({"1000", "0"}, kT0), port, &small);
+  CHECK(port.submitted.empty());
+  CHECK(t.stats().released == 1);
+  // Given back, and planned again from the balances now: a new hold under the next seq.
+  CHECK(port.events == std::vector<TreasuryEventKind>{TreasuryEventKind::Reserve,
+                                                      TreasuryEventKind::Released,
+                                                      TreasuryEventKind::Reserve});
+  CHECK(port.seqs.back() == 2);
+
+  // That hold never shows: released after timeout_s.
+  REQUIRE(t.ledger().in_flight.size() == 1);
+  for (int s = 2; s <= 6; ++s) t.step(kT0 + s * kS, rows({"1000", "0"}, kT0), port, &small);
+  CHECK(port.submitted.empty());
+  CHECK(t.stats().released == 2);
+}
+
+TEST_CASE("core.treasury: a restart drops an unsent hold and holds again what is in flight") {
+  const auto path = (tmp_dir() / "treasury_reserve.ledger").string();
+  std::filesystem::remove(path);
+  TreasuryConfig c = pool(2);
+  c.reserve = true;
+  c.interval_ns = 1 * kS;
+  c.min_interval_ns = 0;
+  c.state_file = path;
+  {
+    ScriptedPort port;
+    port.on_submit = {TransferState::Unknown, "", "connection reset"};
+    Treasury t(c);
+    REQUIRE(t.open().has_value());
+    t.step(kT0, rows({"1000", "0"}, kT0), port);
+    const PoolFunding f = held(1, "500");
+    t.step(kT0 + 1 * kS, rows({"1000", "0"}, kT0), port, &f);
+    REQUIRE(port.submitted.size() == 1);
+  }
+  {
+    // The answer was lost: the next process holds it again first, under the same seq.
+    ScriptedPort port;
+    port.on_status = {TransferState::Pending, "1", ""};
+    Treasury t(c);
+    REQUIRE(t.open().has_value());
+    REQUIRE(t.ledger().in_flight.size() == 1);
+    CHECK(t.ledger().in_flight[0].seq == 1);
+    t.step(kT0 + 100 * kS, rows({"1000", "0"}, kT0), port);
+    REQUIRE_FALSE(port.events.empty());
+    CHECK(port.events[0] == TreasuryEventKind::Reserve);
+    CHECK(port.seqs[0] == 1);
+    CHECK(port.submitted.empty());
+  }
+  // A ledger left with a hold not yet sent: nothing reached the venue, so it is dropped.
+  TreasuryLedger l;
+  TreasuryTransfer x;
+  x.req.client_id = "fm0abc";
+  x.req.from = V(0);
+  x.req.to = V(1);
+  x.req.asset = "USDT";
+  x.req.amount = N("5");
+  x.seq = 4;
+  x.phase = TreasuryTransfer::Phase::Reserving;
+  l.in_flight.push_back(x);
+  REQUIRE(l.save(c).has_value());
+  Treasury t(c);
+  REQUIRE(t.open().has_value());
+  CHECK(t.ledger().in_flight.empty());
 }

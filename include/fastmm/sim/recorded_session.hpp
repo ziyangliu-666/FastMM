@@ -7,13 +7,17 @@
 // reported it (every balance row and every flow of money in or out), and how long its own messages
 // took to and from the venues. A journal source fills it once when it
 // opens the journal (backtest/journal_source.hpp); the backtest reads it before the run.
+#include "fastmm/core/fx.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/time.hpp"
+#include "fastmm/core/treasury.hpp"
 #include "fastmm/sim/recorded_latency.hpp"
 #include "fastmm/sim/sim_account.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -123,6 +127,24 @@ struct RecordedSession {
 // The venue's time of a balance row or a flow, else the time it was received.
 [[nodiscard]] inline Timestamp account_time(const EventHeader& h) noexcept {
   return h.exch_ts.valid() ? h.exch_ts : h.recv_ts;
+}
+
+// Two recorded flows that are one transfer between two accounts of a pool a treasury of
+// `treasuries` keeps: the same amount of its asset out of one account and into the other, within
+// kTransferPair. A backtest that simulates the treasury leaves such pairs out.
+inline constexpr Duration kTransferPair = seconds(60);
+[[nodiscard]] inline bool pool_transfer(const AccountFlowMsg& a,
+                                        const AccountFlowMsg& b,
+                                        std::span<const TreasuryConfig> treasuries) noexcept {
+  if (a.hdr.venue == b.hdr.venue || a.amount.raw != -b.amount.raw || a.amount.raw == 0 ||
+      !same_currency(a.asset.view(), b.asset.view()))
+    return false;
+  const std::int64_t apart = account_time(a.hdr).ns - account_time(b.hdr).ns;
+  if (apart > kTransferPair.ns || -apart > kTransferPair.ns) return false;
+  return std::any_of(treasuries.begin(), treasuries.end(), [&](const TreasuryConfig& t) {
+    return t.members.contains(a.hdr.venue) && t.members.contains(b.hdr.venue) &&
+           same_currency(a.asset.view(), t.asset);
+  });
 }
 
 }  // namespace fastmm::sim

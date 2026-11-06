@@ -1105,6 +1105,41 @@ TEST_CASE("hotpath.noalloc: engine step with home placement on an account pool")
   CHECK(engine->stats().home_changes == 2);  // the reconciliation's, then the planner's
   CHECK(engine->context().home(InstrumentId{0}) == VenueId{0});
   CHECK(engine->stats().orders_sent >= 2);
+
+  // A demand treasury's inputs: the strategy's funding need, the engine's view of the pool's, and
+  // a payout held, sent and done (ControlTransferMsg with kHeld).
+  auto push_transfer = [&](TreasuryEventKind k, std::uint64_t seq) {
+    ControlTransferMsg m{};
+    init_header(m, EventType::Control, InstrumentId::invalid(), VenueId{0});
+    m.command = ControlCommand::Transfer;
+    m.event = static_cast<std::uint8_t>(k);
+    m.flags = ControlTransferMsg::kHeld;
+    m.seq = seq;
+    m.from = VenueId{1};
+    m.to = VenueId{0};
+    m.arg = static_cast<std::uint64_t>(Notional::from_decimal("20").value().raw);
+    m.asset.assign("USDT");
+    m.hdr.recv_ts = clock.now();
+    REQUIRE(feed.push(m.hdr));
+  };
+  {
+    NoAllocScope guard(true);
+    PoolFunding funding;
+    for (std::uint64_t i = 0; i < 20; ++i) {
+      engine->context().set_funding_need(InstrumentId{0},
+                                         Notional::from_raw(static_cast<std::int64_t>(i + 1)));
+      push_book(i % 2 == 0 ? "100.10" : "100.00", i % 2 == 0 ? "100.12" : "100.02", 30 + i);
+      push_transfer(i % 3 == 0   ? TreasuryEventKind::Reserve
+                    : i % 3 == 1 ? TreasuryEventKind::Sent
+                                 : TreasuryEventKind::Done,
+                    1 + i / 3);
+      while (engine->step() > 0) {
+      }
+      engine->pool_funding(VenueId{0}, "USDT", funding);
+    }
+    CHECK(funding.declared);
+    CHECK(funding.need_of(VenueId{0}) == Notional::from_raw(20));
+  }
 }
 
 namespace {

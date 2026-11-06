@@ -31,14 +31,17 @@
 namespace fastmm::bt {
 
 namespace {
+
 constexpr std::size_t kReserveOrders = 1U << 15;
 constexpr std::size_t kReserveFills = 1U << 14;
 constexpr std::size_t kReserveBars = 1U << 12;
 
 // What a run does at simulated times besides the engine's events, as a slow tier of the driver:
 //   * the pool treasuries ([venues.<primary>.treasury]): at each look they read the pools'
-//     simulated accounts (the venue's free amounts) and step, and their transfers are carried out
-//     by a SimTreasuryPort at simulated times;
+//     simulated accounts (the venue's free and locked amounts) and the engine's funding view
+//     (needs by home, the payout it holds), and step; their transfers are carried out by a
+//     SimTreasuryPort at simulated times, and with reserve = true their records reach the engine
+//     as ControlTransferMsg, as fm-treasury's do live;
 //   * the start of trading ([backtest] start_at): the strategy restores its checkpoint as at a warm
 //     standby's take-over (ControlCommand::TakeOver), then every venue an order can go to
 //     reconciles with the start positions, and the engine trades from there;
@@ -51,7 +54,6 @@ struct RunTier {
   InlineFeed* feed = nullptr;
   std::vector<std::unique_ptr<Treasury>> treasuries;
   std::unique_ptr<sim::SimTreasuryPort> port;
-  Duration interval{std::numeric_limits<std::int64_t>::max()};
   Timestamp next_look = Timestamp::max();
   std::vector<TreasuryBalance> rows;
   Timestamp trade_at = Timestamp::max();
@@ -74,6 +76,7 @@ struct RunTier {
   const IEngineRunner* runner = nullptr;
   std::unique_ptr<PoolLoad> load;
   Timestamp next_plan = Timestamp::max();
+  PoolFunding funding;
 
   void plan_homes(Timestamp now) {
     std::int64_t next = std::numeric_limits<std::int64_t>::max();
@@ -94,6 +97,7 @@ struct RunTier {
 
   void look(Timestamp now) {
     const sim::SimAccounts* accounts = transport->accounts();
+    std::int64_t next = std::numeric_limits<std::int64_t>::max();
     for (const std::unique_ptr<Treasury>& t : treasuries) {
       const TreasuryConfig& c = t->config();
       rows.clear();
@@ -102,12 +106,24 @@ struct RunTier {
         b.venue = v;
         b.asset.assign(c.asset);
         b.known = accounts != nullptr && accounts->enabled(v);
-        if (b.known) b.free = accounts->free(v, c.asset);
+        if (b.known) {
+          b.free = accounts->free(v, c.asset);
+          b.locked = accounts->total(v, c.asset) - b.free;
+        }
         b.as_of_ns = now.ns;
         rows.push_back(b);
       }
-      t->step(now.ns, rows, *port);
+      const bool funded = runner != nullptr && runner->pool_funding(c.members[0], c.asset, funding);
+      t->step(now.ns, rows, *port, funded ? &funding : nullptr);
+      next = std::min(next, t->next_look_ns());
     }
+    next_look = Timestamp{std::max(next, now.ns + 1)};
+  }
+  // A treasury's record reaches the engine as fm-treasury's does live (reserve = true).
+  void record(const TreasuryEvent& e, VenueId primary, Timestamp now) {
+    ControlTransferMsg m;
+    fill_transfer_msg(m, primary, e, now.ns);
+    if (!feed->push(m.hdr)) throw std::runtime_error("backtest: the engine's feed is full");
   }
 
   void start_trading(Timestamp now) {
@@ -166,10 +182,7 @@ struct RunTier {
     if (tier.port) tier.port->settle(now);
     if (tier.user.run != nullptr && now >= tier.user_next)
       tier.user_next = tier.user.run(tier.user.ctx, now);
-    if (now >= tier.next_look) {
-      tier.look(now);
-      tier.next_look = now + tier.interval;
-    }
+    if (now >= tier.next_look) tier.look(now);
     if (now >= tier.next_plan) tier.plan_homes(now);
     return tier.next();
   }
@@ -522,7 +535,8 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
     }
     // The account events after the balances the accounts start from: the flows of money in and
     // out, and the connector's refreshes. A pool whose treasury the run simulates moves its own
-    // money: the session's flows of its accounts are left out.
+    // money between its accounts: the session's transfers between them are left out
+    // (sim::pool_transfer), its other flows stay.
     const std::vector<std::pair<VenueId, Timestamp>> refreshes = recorded->refreshes();
     for (const std::pair<VenueId, Timestamp>& r : refreshes) {
       const bool seen = std::any_of(account_origin_.begin(),
@@ -530,22 +544,33 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
                                     [&](const auto& a) { return a.first == r.first; });
       if (!seen) account_origin_.push_back(r);  // the first snapshot
     }
-    std::size_t left_out = 0;
     for (const AccountFlowMsg& f : recorded->flows) {
-      if (!flow_applies(f.hdr.venue, sim::account_time(f.hdr))) continue;
-      const VenueId v = f.hdr.venue;
-      if (std::any_of(cfg_.treasuries.begin(), cfg_.treasuries.end(), [&](const TreasuryConfig& t) {
-            return std::find(t.members.begin(), t.members.end(), v) != t.members.end();
-          })) {
-        ++left_out;
-        continue;
-      }
-      flows_.push_back(f);
+      if (flow_applies(f.hdr.venue, sim::account_time(f.hdr))) flows_.push_back(f);
     }
     std::stable_sort(
         flows_.begin(), flows_.end(), [](const AccountFlowMsg& x, const AccountFlowMsg& y) {
           return sim::account_time(x.hdr) < sim::account_time(y.hdr);
         });
+    const std::size_t before = flows_.size();
+    std::vector<bool> paired(flows_.size(), false);
+    for (std::size_t i = 0; i < flows_.size(); ++i) {
+      if (paired[i]) continue;
+      for (std::size_t j = i + 1; j < flows_.size(); ++j) {
+        if (sim::account_time(flows_[j].hdr) - sim::account_time(flows_[i].hdr) >
+            sim::kTransferPair)
+          break;
+        if (!paired[j] && sim::pool_transfer(flows_[i], flows_[j], cfg_.treasuries)) {
+          paired[i] = paired[j] = true;
+          break;
+        }
+      }
+    }
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < flows_.size(); ++i) {
+      if (!paired[i]) flows_[kept++] = flows_[i];
+    }
+    flows_.resize(kept);
+    const std::size_t left_out = before - kept;
     for (const auto& [v, t] : refreshes) {
       if (refresh_applies(v, t)) refreshes_.emplace_back(v, t);
     }
@@ -556,21 +581,24 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
         "backtest: the accounts follow {} recorded flows of money and {} refreshes{}",
         flows_.size(),
         refreshes_.size(),
-        left_out > 0 ? fmt::format(" ({} flows of a simulated treasury's pool left out)", left_out)
-                     : std::string());
+        left_out > 0
+            ? fmt::format(" ({} flows of transfers within a simulated treasury's pool left out)",
+                          left_out)
+            : std::string());
   }
-  if (cfg_.controls_from_journal) {
-    if (recorded == nullptr) {
-      throw std::invalid_argument(
-          "backtest: controls_from_journal needs a journal as the data source");
-    }
+  if (cfg_.controls_from_journal && recorded == nullptr) {
+    throw std::invalid_argument(
+        "backtest: controls_from_journal needs a journal as the data source");
+  }
+  if (recorded != nullptr && (cfg_.controls_from_journal || cfg_.balances_from_journal)) {
     for (const std::vector<std::uint64_t>& c : recorded->controls) {
       if (replays_control(*reinterpret_cast<const EventHeader*>(c.data()))) controls_.push_back(c);
     }
     std::stable_sort(controls_.begin(), controls_.end(), [](const auto& x, const auto& y) {
       return RunTier::control_time(x) < RunTier::control_time(y);
     });
-    FASTMM_LOG_INFO("backtest: {} operator commands of the journal replayed", controls_.size());
+    if (cfg_.controls_from_journal)
+      FASTMM_LOG_INFO("backtest: {} operator commands of the journal replayed", controls_.size());
   }
   following_ = recorded != nullptr && recorded->growing;
   if (following_ && cfg_.latency_from_journal) {
@@ -658,7 +686,19 @@ bool BacktestSession::journal_param(ParamUpdateMsg& m) const noexcept {
 bool BacktestSession::replays_control(const EventHeader& h) const {
   if (h.len < sizeof(ControlMsg) || (h.flags & EventHeader::kSynthetic) != 0) return false;
   const auto& m = msg_cast<ControlMsg>(&h);
-  if (!sim::replayable_control(m.command)) return false;
+  if (m.command == ControlCommand::Transfer) {
+    // With balances_from_journal, a held payout of the session's treasury moves the engine's
+    // estimate as it did live, unless the run simulates that pool's treasury (whose own records
+    // do).
+    if (!cfg_.balances_from_journal || h.len < sizeof(ControlTransferMsg) ||
+        (msg_cast<ControlTransferMsg>(&h).flags & ControlTransferMsg::kHeld) == 0)
+      return false;
+    return std::none_of(
+        cfg_.treasuries.begin(), cfg_.treasuries.end(), [&](const TreasuryConfig& t) {
+          return !t.members.empty() && t.members[0] == h.venue;
+        });
+  }
+  if (!cfg_.controls_from_journal || !sim::replayable_control(m.command)) return false;
   if (m.command != ControlCommand::PoolHome || pool_home_source(m.arg) != HomeSource::Planner)
     return true;
   return !cfg_.engine.homes.of(cfg_.engine.pools.primary(h.venue)).planner();
@@ -901,14 +941,28 @@ void BacktestSession::begin(const sim::EngineHooks& hooks,
     tier->transport = &b.transport;
     tier->feed = &b.feed;
     if (!cfg_.treasuries.empty()) {
+      sim::SimTransferFaults faults;
+      faults.p_fail = cfg_.transfer_p_fail;
+      faults.p_unknown = cfg_.transfer_p_unknown;
+      faults.hang = cfg_.transfer_hang;
+      faults.seed = cfg_.seed;
       tier->port = std::make_unique<sim::SimTreasuryPort>(
-          b.transport, [&b] { return b.clock.now(); }, cfg_.transfer_latency);
+          b.transport, [&b] { return b.clock.now(); }, cfg_.transfer_latency, faults);
+      bool held = false;
       for (const TreasuryConfig& c : cfg_.treasuries) {
         auto t = std::make_unique<Treasury>(c);
         if (auto r = t->open(); !r) throw std::runtime_error("backtest: treasury: " + r.error());
-        tier->interval = Duration{std::min(tier->interval.ns, c.interval_ns)};
+        held = held || c.reserve;
         tier->treasuries.push_back(std::move(t));
       }
+      if (held) {
+        RunTier* tp = tier.get();
+        const PoolPlan& plan = cfg_.transport.pools;
+        tier->port->set_record([tp, &b, &plan](const TreasuryEvent& e) {
+          if (e.held && e.req != nullptr) tp->record(e, plan.primary(e.req->from), b.clock.now());
+        });
+      }
+      tier->runner = runner;
       tier->next_look = b.clock.now();
     }
     if (trade_at_.valid()) {
@@ -1115,7 +1169,7 @@ void BacktestSession::take_record(const EventHeader& record) {
       return;
     }
     case EventType::Control: {
-      if (!cfg_.controls_from_journal || !replays_control(record)) return;
+      if (!replays_control(record)) return;
       std::vector<std::uint64_t> bytes((record.len + 7) / 8);
       std::memcpy(bytes.data(), &record, record.len);
       insert(controls_, lp.tier->next_control, std::move(bytes), RunTier::control_time);
@@ -1126,10 +1180,15 @@ void BacktestSession::take_record(const EventHeader& record) {
       if (!cfg_.balances_from_journal) return;
       const auto& f = msg_cast<AccountFlowMsg>(&record);
       if (!flow_applies(f.hdr.venue, sim::account_time(f.hdr))) return;
-      if (std::any_of(cfg_.treasuries.begin(), cfg_.treasuries.end(), [&](const TreasuryConfig& t) {
-            return std::find(t.members.begin(), t.members.end(), f.hdr.venue) != t.members.end();
-          }))
-        return;
+      // The other half of a transfer within a simulated treasury's pool, not yet applied: both
+      // are left out.
+      for (std::size_t k = lp.tier->next_flow; k < flows_.size(); ++k) {
+        if (sim::pool_transfer(flows_[k], f, cfg_.treasuries)) {
+          flows_.erase(flows_.begin() + static_cast<std::ptrdiff_t>(k));
+          wake_slow_tier();
+          return;
+        }
+      }
       insert(flows_, lp.tier->next_flow, f, [](const AccountFlowMsg& x) {
         return sim::account_time(x.hdr);
       });

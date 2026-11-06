@@ -1960,12 +1960,14 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
       }
       const TreasuryConfig& c = t->config();
       FASTMM_LOG_INFO(
-          "[treasury {}] {} over {} accounts{}: threshold={} max_per_hour={} min_interval_s={} "
-          "ledger {}",
+          "[treasury {}] {} over {} accounts{}: targets={} reserve={} threshold={} max_per_hour={} "
+          "min_interval_s={} ledger {}",
           name,
           std::string_view(c.asset),
           c.members.size(),
           c.dry_run ? " (dry run)" : "",
+          to_string(c.targets),
+          c.reserve,
           c.threshold,
           c.max_per_hour,
           c.min_interval_ns / 1'000'000'000,
@@ -1985,12 +1987,16 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
             row.venue = VenueId{b.venue};
             row.asset.assign(std::string_view(b.asset, ::strnlen(b.asset, sizeof b.asset)));
             row.free = Notional::from_raw(b.free_raw);
+            row.locked = Notional::from_raw(b.locked_raw);
             row.known = b.known != 0;
             row.as_of_ns = b.as_of_ns;
             row.transferable = Notional::from_raw(b.transferable_raw);
             out.push_back(row);
           }
         });
+    treasury->set_funding([&runner](VenueId primary, std::string_view asset, PoolFunding& out) {
+      return runner->pool_funding(primary, asset, out);
+    });
     if (!planner_pools.empty()) {
       std::vector<std::unique_ptr<HomePlanner>> planners;
       for (const std::string& name : planner_pools) {

@@ -17,6 +17,8 @@
 //   PoolHomesPlan  every pool's settings and the pinned homes, by instrument
 //   PoolLoad       what the planner reads of a running engine: its orders by instrument, the
 //                  homes, the accounts' windows and which accounts are usable (any thread)
+//   PoolFunding    what a pool treasury reads of a running engine: the funding needs by home,
+//                  the payout it holds (any thread; core/treasury.hpp)
 //   HomePlanner    the planner: pure and deterministic, off the hot path
 //
 // The planner. Every 10 s it takes the orders each instrument sent (new orders and replaces) as
@@ -30,6 +32,7 @@
 // takes none. First homes are given on top of plan_max_moves. A move
 // costs nothing structural: the old home stops adding, and its part drains.
 #include "fastmm/core/account_pool.hpp"
+#include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/strong_id.hpp"
 #include "fastmm/core/time.hpp"
@@ -160,6 +163,24 @@ struct PoolLoad {
   // it is usable (order link live, kill switch not engaged), by index in `members`.
   std::array<std::int64_t, PoolMembers::kMax> limit_10s{};
   std::array<bool, PoolMembers::kMax> usable{};
+};
+
+// What the engine says of one pool's funding (IEngineRunner::pool_funding; any thread): each
+// account's need, the funding needs of the instruments whose home it is, in the treasury's asset;
+// and the payout it holds for a transfer (reserve = true).
+struct PoolFunding {
+  PoolMembers members;
+  std::array<Notional, PoolMembers::kMax> need{};  // by index in `members`
+  bool declared = false;       // an instrument of the pool has a need above zero
+  std::uint64_t hold_seq = 0;  // the transfer the engine holds for (ControlTransferMsg::seq)
+  Notional held;               // ... and how much; hold_seq 0: nothing held
+
+  [[nodiscard]] Notional need_of(VenueId v) const noexcept {
+    for (std::size_t k = 0; k < members.size(); ++k) {
+      if (members[k] == v) return need[k];
+    }
+    return {};
+  }
 };
 
 struct HomeMove {

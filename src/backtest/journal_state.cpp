@@ -139,8 +139,12 @@ void SessionRecorder::add(const EventHeader& h) {
         out_.params.updates.push_back(msg_cast<ParamUpdateMsg>(&h));
       return;
     case EventType::Control:
+      // Operator commands, and a treasury's held payouts (ControlTransferMsg::kHeld).
       if (h.len >= sizeof(ControlMsg) &&
-          sim::replayable_control(msg_cast<ControlMsg>(&h).command) &&
+          (sim::replayable_control(msg_cast<ControlMsg>(&h).command) ||
+           (msg_cast<ControlMsg>(&h).command == ControlCommand::Transfer &&
+            h.len >= sizeof(ControlTransferMsg) &&
+            (msg_cast<ControlTransferMsg>(&h).flags & ControlTransferMsg::kHeld) != 0)) &&
           (h.flags & EventHeader::kSynthetic) == 0) {
         std::vector<std::uint64_t> bytes((h.len + 7) / 8);
         std::memcpy(bytes.data(), &h, h.len);

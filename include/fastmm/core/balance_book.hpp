@@ -36,6 +36,11 @@
 // report that already counted it and carries no venue time, and an ack without a venue time (its
 // hold stays counted twice until the next report).
 //
+// A pool treasury's hold (reserve): an amount of a row the treasury is about to transfer out,
+// taken from the free estimate on top of every report until it is given back, so no order is sized
+// against it. The transfer itself (transfer()) moves the estimate like a fill, stamped, until a
+// report stamped at or after it has it.
+//
 // The pre-trade check (covers): what the order adds to its row's holds (its hold less what the
 // order it replaces held; for a derivative, what it adds to the larger side) must not exceed the
 // row's free estimate, and a derivative needs a free estimate of zero or more. A derivative order
@@ -127,7 +132,8 @@ class BalanceBook {
     // said, `free` can. A report without it keeps the last one.
     std::int64_t withdrawable = -1;
     Timestamp as_of{};
-    std::uint32_t gen = 0;  // the venue's snapshot that last named it
+    std::uint32_t gen = 0;      // the venue's snapshot that last named it
+    std::int64_t reserved = 0;  // a pool treasury's hold, out of `free` (reserve)
 
     // What an internal transfer can take now: the free estimate, capped by what the venue lets
     // leave.
@@ -209,6 +215,29 @@ class BalanceBook {
     }
     if ((m.flags & BalanceMsg::kSnapshotEnd) != 0) end_snapshot(m.hdr.venue, m.hdr.exch_ts);
     return r != kNone;
+  }
+
+  // A pool treasury holds `delta` more of `asset` on `venue` out of the free estimate (negative:
+  // gives it back). False when the table does not keep the row.
+  bool reserve(VenueId venue, std::string_view asset, std::int64_t delta) noexcept {
+    const std::uint16_t r = find(venue, asset);
+    if (r == kNone) return false;
+    rows_[r].reserved += delta;
+    rows_[r].free -= delta;
+    return true;
+  }
+  // What `venue` has free of `asset` now (raw); kUnreported when the row is not kept or reported.
+  [[nodiscard]] std::int64_t free_of(VenueId venue, std::string_view asset) const noexcept {
+    const std::uint16_t r = find(venue, asset);
+    return r == kNone || !rows_[r].reported ? kUnreported : rows_[r].free;
+  }
+  // An internal transfer moved `delta` of `asset` on `venue` at venue time `venue_ts`: the
+  // estimate moves, and a report older than `venue_ts` gets the move again.
+  void transfer(VenueId venue,
+                std::string_view asset,
+                std::int64_t delta,
+                Timestamp venue_ts) noexcept {
+    move_asset(find(venue, asset), delta, venue_ts);
   }
 
   // What an order of `leaves` at `px` holds, in its row's asset (raw); see the header.
@@ -581,6 +610,7 @@ class BalanceBook {
   void rebase(std::uint16_t r) noexcept {
     add_in_flight(r);
     Row& row = rows_[r];
+    row.free -= row.reserved;
     // Compacts in order: each move leaves the front and the ones still pending go to the back.
     const std::size_t n = moves_.size();
     for (std::size_t k = 0; k < n; ++k) {

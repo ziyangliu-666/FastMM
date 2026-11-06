@@ -51,28 +51,10 @@ void LiveTreasuryPort::refresh(VenueId account) {
   if (refresh_) refresh_(account);
 }
 
-void fill_transfer_msg(ControlTransferMsg& m, VenueId primary, const TreasuryEvent& e) noexcept {
-  m = ControlTransferMsg{};
-  init_header(m, EventType::Control, InstrumentId::invalid(), primary);
-  m.command = ControlCommand::Transfer;
-  m.event = static_cast<std::uint8_t>(e.kind);
-  m.state =
-      static_cast<std::uint8_t>(e.result != nullptr ? e.result->state : TransferState::Unknown);
-  if (e.req != nullptr) {
-    m.from = e.req->from;
-    m.to = e.req->to;
-    m.arg = static_cast<std::uint64_t>(e.req->amount.raw);
-    m.asset.assign(e.req->asset);
-    m.client_id.assign(e.req->client_id);
-  }
-  if (e.result != nullptr) m.venue_ref.assign(e.result->venue_ref);
-  m.hdr.recv_ts = wall_now();
-}
-
 void LiveTreasuryPort::record(const TreasuryEvent& e) {
   if (journal_ == nullptr) return;
   ControlTransferMsg m;
-  fill_transfer_msg(m, primary_, e);
+  fill_transfer_msg(m, primary_, e, wall_now().ns);
   if (!journal_->try_push(&m, m.hdr.len)) {
     ++dropped_;
     FASTMM_LOG_ERROR("treasury: the treasury ring is full; a transfer record ({}) is not journaled",
@@ -125,7 +107,9 @@ void TreasuryThread::step() {
   const std::int64_t now = clock_();
   for (Pool& p : pools_) {
     if (stop_.load(std::memory_order_relaxed)) break;
-    p.treasury->step(now, rows_, *p.port);
+    const TreasuryConfig& c = p.treasury->config();
+    const bool funded = funding_ && funding_(c.members[0], c.asset, pool_funding_);
+    p.treasury->step(now, rows_, *p.port, funded ? &pool_funding_ : nullptr);
   }
   for (const std::unique_ptr<HomePlanner>& p : planners_) {
     if (stop_.load(std::memory_order_relaxed)) break;

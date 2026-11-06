@@ -794,6 +794,8 @@ max_per_hour = 4
   CHECK(t.min_interval_ns == 60'000'000'000);  // the defaults
   CHECK(t.cooldown_ns == 300'000'000'000);
   CHECK(t.state_file == "runs/mm.binance.treasury");
+  CHECK(t.targets == TreasuryTargets::Weights);  // today's plan, unless asked
+  CHECK_FALSE(t.reserve);
   CHECK_FALSE(cfg.treasury_config("binance_b").enabled);
   const Config back = Config::parse(cfg.effective_toml());
   CHECK(back.effective_toml() == cfg.effective_toml());
@@ -803,6 +805,41 @@ max_per_hour = 4
   const Config none = Config::parse(pool_toml(""));
   CHECK_FALSE(none.treasury_config("binance").enabled);
   CHECK(none.effective_toml().find("treasury") == std::string::npos);
+}
+
+TEST_CASE("core.config: demand targets and reserve, with the pool's homes") {
+  const Config cfg = Config::parse(pool_toml(R"(
+[venues.binance.pool]
+placement = "home"
+[venues.binance.treasury]
+enabled = true
+asset = "USDT"
+targets = "demand"
+headroom = 0.25
+reserve = true
+)"));
+  const TreasuryConfig t = cfg.treasury_config("binance");
+  CHECK(t.targets == TreasuryTargets::Demand);
+  CHECK(t.headroom == 0.25);
+  CHECK(t.reserve);
+  const Config back = Config::parse(cfg.effective_toml());
+  CHECK(back.treasury_config("binance").targets == TreasuryTargets::Demand);
+  CHECK(back.treasury_config("binance").reserve);
+  CHECK(cfg.redacted().find("targets = \"demand\", reserve = true") != std::string::npos);
+  const auto err = [](const char* tail) {
+    try {
+      static_cast<void>(Config::parse(pool_toml(tail)));
+    } catch (const ConfigError& e) {
+      return std::string(e.what());
+    }
+    return std::string();
+  };
+  CHECK(err("[venues.binance.treasury]\nasset = \"USDT\"\ntargets = \"demand\"\n")
+            .find("needs a [venues.binance.pool] table") != std::string::npos);
+  CHECK(err("[venues.binance.treasury]\nasset = \"USDT\"\ntargets = \"even\"\n")
+            .find("targets must be") != std::string::npos);
+  CHECK(err("[venues.binance.treasury]\nasset = \"USDT\"\nheadroom = -1.0\n")
+            .find("headroom must be at least 0") != std::string::npos);
 }
 
 TEST_CASE("core.config: a treasury belongs to a pool's primary and names its accounts") {

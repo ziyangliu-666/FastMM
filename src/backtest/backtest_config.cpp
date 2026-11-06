@@ -351,7 +351,7 @@ std::vector<Duration> parse_horizons(const std::string& text) {
 }
 
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 42> kBacktestKeys = {"start_at",
+constexpr std::array<std::string_view, 45> kBacktestKeys = {"start_at",
                                                             "controls_from_journal",
                                                             "latency_from_journal",
                                                             "latency_fill_us",
@@ -392,7 +392,10 @@ constexpr std::array<std::string_view, 42> kBacktestKeys = {"start_at",
                                                             "own_orders_in_feed",
                                                             "reconcile_on_unknown_cancel",
                                                             "reorder_window_ms",
-                                                            "transfer_latency_ms"};
+                                                            "transfer_latency_ms",
+                                                            "transfer_p_fail",
+                                                            "transfer_p_unknown",
+                                                            "transfer_hang_ms"};
 
 void check_backtest_keys(const GenericSection& bt) {
   for (const auto& [key, value] : bt.values) {
@@ -504,6 +507,15 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   const std::int64_t transfer_ms = bt.get_int("transfer_latency_ms", 0);
   if (transfer_ms < 0) throw ConfigError("backtest.transfer_latency_ms must be >= 0");
   b.transfer_latency = milliseconds(transfer_ms);
+  b.transfer_p_fail = bt.get_double("transfer_p_fail", 0.0);
+  b.transfer_p_unknown = bt.get_double("transfer_p_unknown", 0.0);
+  if (b.transfer_p_fail < 0.0 || b.transfer_p_unknown < 0.0 ||
+      b.transfer_p_fail + b.transfer_p_unknown > 1.0)
+    throw ConfigError(
+        "backtest.transfer_p_fail and transfer_p_unknown must be 0 to 1 and add up to at most 1");
+  const std::int64_t hang_ms = bt.get_int("transfer_hang_ms", 90'000);
+  if (hang_ms < 0) throw ConfigError("backtest.transfer_hang_ms must be >= 0");
+  b.transfer_hang = milliseconds(hang_ms);
   t.own_orders_in_feed = bt.get_bool("own_orders_in_feed", true);
   t.reconcile_on_unknown_cancel = bt.get_bool("reconcile_on_unknown_cancel", false);
   b.balances_from_journal = bt.get_bool("balances_from_journal", false);

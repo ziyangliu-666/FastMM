@@ -10,14 +10,34 @@
 //   Treasury          the driver: resolves what is in flight, then plans and sends one transfer
 //                     through a TreasuryPort (the connector, the journal, a balance refresh)
 //
-// The plan. Each account has a target: the pool's total free balance shared by `weight` (equal by
-// default). An account is short when its free balance is below its floor, max(target * (1 -
-// threshold), min_free); it then asks for max(target, min_free) less what it has. An account gives
-// what it holds above max(target, min_free), and no more than it can transfer (a venue that says
-// what may leave the account: Binance USD-M maxWithdrawAmount). The largest need is matched with
-// the largest giver first (ties: the account listed first), each transfer at most max_amount,
-// rounded down to `step`, and none below min_amount. Any account whose balance is not known stops
-// the plan.
+// The plan, targets = "weights" (the default). Each account has a target: the pool's total free
+// balance shared by `weight` (equal by default). An account is short when its free balance is
+// below its floor, max(target * (1 - threshold), min_free); it then asks for max(target, min_free)
+// less what it has. An account gives what it holds above max(target, min_free), and no more than
+// it can transfer (a venue that says what may leave the account: Binance USD-M
+// maxWithdrawAmount).
+//
+// The plan, targets = "demand". An account's target is what the strategy says the instruments
+// homed there want resting (StrategyContext::set_funding_need, summed per home by the engine:
+// PoolFunding), times (1 + headroom), plus min_free. What it has is its committable cash: free
+// plus what its own orders hold, so the plan does not chase bids as they rest and cancel. It is
+// short below target * (1 - threshold) and then asks for target less what it has; it gives what
+// it has above its target, out of its free balance only. A pool that has less than its targets
+// add up to shares what it has in proportion to the needs. While no instrument of the pool has a
+// need, nothing is planned.
+//
+// Both: the largest need is matched with the largest giver first (ties: the account listed
+// first), each transfer at most max_amount, rounded down to `step`, and none below min_amount. Any
+// account whose balance is not known stops the plan.
+//
+// reserve = true: a planned transfer is first held out of the payer's balance by the engine
+// (TreasuryEventKind::Reserve, a journaled ControlTransferMsg with kHeld). The engine holds at most
+// the payer's free estimate, and no order is sized against the hold. The next look reads what it
+// held (PoolFunding::held) and sends that, rounded down to `step`; below min_amount the hold is
+// given back (Released) and nothing is sent. The hold lasts until the transfer resolves: Failed
+// gives it back, Done turns it into the move out of the payer and into the receiver, which the
+// accounts' next reports confirm; a transfer past timeout_s keeps it. A process that starts with a
+// transfer in flight holds it again at its first look.
 //
 // One transfer at a time per pool: while a transfer is unresolved, or done and not yet visible in
 // both accounts' balance reports (a report stamped at or after the transfer was seen done, or
@@ -29,6 +49,8 @@
 #include "fastmm/core/account_pool.hpp"
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/fixed_string.hpp"
+#include "fastmm/core/messages.hpp"
+#include "fastmm/core/pool_homes.hpp"
 #include "fastmm/core/result.hpp"
 #include "fastmm/core/strong_id.hpp"
 #include "fastmm/core/transfer.hpp"
@@ -45,12 +67,22 @@
 
 namespace fastmm {
 
+// [venues.<primary>.treasury] targets.
+enum class TreasuryTargets : std::uint8_t {
+  Weights = 0,  // the pool's free balance shared by weight
+  Demand = 1,   // what each account's home instruments want resting
+};
+[[nodiscard]] std::string_view to_string(TreasuryTargets t) noexcept;
+
 struct TreasuryConfig {
   static constexpr std::size_t kMax = PoolMembers::kMax;
 
   bool enabled = false;
   bool dry_run = false;  // log and journal the plan, send nothing
   std::string asset;
+  TreasuryTargets targets = TreasuryTargets::Weights;
+  double headroom = 0.15;  // demand targets: each need times (1 + headroom)
+  bool reserve = false;    // the engine holds a planned payout out of the payer's balance
   // The pool's accounts, the primary first (PoolPlan::members), and their names for the log and
   // the ledger. weight[i], min_free[i] belong to member[i].
   PoolMembers members;
@@ -85,6 +117,8 @@ struct TreasuryAccount {
   // What can leave the account by a transfer (BalanceMsg::kWithdrawable, Binance USD-M
   // maxWithdrawAmount); a negative value: `free` can.
   Notional transferable = Notional::from_raw(-1);
+  Notional locked{};  // what the account's own orders hold: free + locked is its committable cash
+  Notional need{};    // demand targets: what its home instruments want resting (PoolFunding)
 };
 
 struct PlannedTransfer {
@@ -132,8 +166,10 @@ struct TreasuryTransfer {
     Created = 0,    // written to the ledger, not yet answered by the venue
     Submitted = 1,  // the venue took it (or answered Pending)
     Unknown = 2,    // the request got no usable answer: ask for its state
+    Reserving = 3,  // reserve = true: the engine is asked to hold it; not sent
   };
   TransferRequest req;
+  std::uint64_t seq = 0;  // the ledger's counter it was created with (ControlTransferMsg::seq)
   Phase phase = Phase::Created;
   std::int64_t created_ns = 0;
   std::int64_t next_poll_ns = 0;
@@ -158,20 +194,14 @@ struct TreasuryLedger {
   [[nodiscard]] Result<void, std::string> save(const TreasuryConfig& cfg) const;
 };
 
-// What the treasury reports through TreasuryPort::record (journal) and its counters.
-enum class TreasuryEventKind : std::uint8_t {
-  Planned = 0,  // dry run: what would have been sent
-  Sent = 1,     // handed to the venue
-  Done = 2,
-  Failed = 3,
-  TimedOut = 4,  // unresolved past timeout_ns; still asked for
-};
 [[nodiscard]] std::string_view to_string(TreasuryEventKind k) noexcept;
 
 struct TreasuryEvent {
   TreasuryEventKind kind = TreasuryEventKind::Planned;
   const TransferRequest* req = nullptr;
   const TransferResult* result = nullptr;  // the venue's answer, when there is one
+  std::uint64_t seq = 0;                   // TreasuryTransfer::seq
+  bool held = false;                       // reserve = true: the engine holds the amount
 };
 
 struct TreasuryStats {
@@ -181,8 +211,9 @@ struct TreasuryStats {
   std::uint64_t done = 0;
   std::uint64_t failed = 0;
   std::uint64_t timed_out = 0;
-  std::uint64_t limited = 0;  // plans held back by the limiter
-  std::uint64_t errors = 0;   // ledger writes that failed, venue requests without an answer
+  std::uint64_t released = 0;  // reserve = true: holds given back unsent
+  std::uint64_t limited = 0;   // plans held back by the limiter
+  std::uint64_t errors = 0;    // ledger writes that failed, venue requests without an answer
   std::uint32_t in_flight = 0;
   Notional moved;  // done transfers' amounts
 };
@@ -207,6 +238,7 @@ struct TreasuryBalance {
   bool known = false;
   std::int64_t as_of_ns = 0;                       // the venue's time of the last report
   Notional transferable = Notional::from_raw(-1);  // TreasuryAccount::transferable
+  Notional locked{};                               // TreasuryAccount::locked
 };
 
 class Treasury {
@@ -218,7 +250,15 @@ class Treasury {
   [[nodiscard]] Result<void, std::string> open();
   // One look, at wall time `now_ns`: resolves the transfers in flight, else plans and sends at
   // most one. Blocking (the port's requests); returns quickly when it is not yet time to look.
-  void step(std::int64_t now_ns, std::span<const TreasuryBalance> balances, TreasuryPort& port);
+  // `funding`: the engine's needs and holds, which demand targets and reserve read (null: none).
+  void step(std::int64_t now_ns,
+            std::span<const TreasuryBalance> balances,
+            TreasuryPort& port,
+            const PoolFunding* funding = nullptr);
+  // When step() looks next (0: at its first call).
+  [[nodiscard]] std::int64_t next_look_ns() const noexcept { return next_look_ns_; }
+  // How soon after a Reserve the engine's hold is read (reserve = true).
+  static constexpr std::int64_t kConfirmNs = 1'000'000'000;
 
   [[nodiscard]] const TreasuryConfig& config() const noexcept { return cfg_; }
   [[nodiscard]] const TreasuryStats& stats() const noexcept { return stats_; }
@@ -227,7 +267,7 @@ class Treasury {
   [[nodiscard]] std::string client_id(std::int64_t now_ns, std::uint64_t seq) const;
 
  private:
-  void resolve(std::int64_t now_ns, TreasuryPort& port);
+  void resolve(std::int64_t now_ns, TreasuryPort& port, const PoolFunding* funding);
   void finish(std::size_t i,
               TransferState state,
               const TransferResult& r,
@@ -236,7 +276,16 @@ class Treasury {
   [[nodiscard]] bool settled(std::int64_t now_ns, std::span<const TreasuryBalance> balances) const;
   void plan_and_send(std::int64_t now_ns,
                      std::span<const TreasuryBalance> balances,
-                     TreasuryPort& port);
+                     TreasuryPort& port,
+                     const PoolFunding* funding);
+  // reserve = true: a Reserving transfer goes out for what the engine held, or is released. False:
+  // the engine has not answered yet.
+  bool confirm(std::size_t i, std::int64_t now_ns, TreasuryPort& port, const PoolFunding* funding);
+  void submit(std::size_t i, std::int64_t now_ns, TreasuryPort& port);
+  void record(TreasuryPort& port,
+              TreasuryEventKind kind,
+              const TreasuryTransfer& t,
+              const TransferResult* r) const;
   void persist();
 
   TreasuryConfig cfg_;
@@ -250,6 +299,15 @@ class Treasury {
   VenueId settle_to_;
   std::int64_t settle_from_ns_ = 0;
   bool settling_ = false;
+  // reserve = true: the transfers an earlier process left in flight are held again at the first
+  // look.
+  bool rehold_ = false;
 };
+
+// A ControlTransferMsg from a treasury event: hdr.venue the pool's primary, hdr.recv_ts `ts_ns`.
+void fill_transfer_msg(ControlTransferMsg& m,
+                       VenueId primary,
+                       const TreasuryEvent& e,
+                       std::int64_t ts_ns) noexcept;
 
 }  // namespace fastmm

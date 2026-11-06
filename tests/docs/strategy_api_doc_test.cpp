@@ -232,6 +232,12 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().pieces(InstrumentId{})), std::
 static_assert(std::same_as<decltype(lvalue<Ctx>().set_home(InstrumentId{}, VenueId{})), bool>);
 // [end:homes]
 
+// [start:funding]
+static_assert(
+    std::same_as<decltype(lvalue<Ctx>().set_funding_need(InstrumentId{}, Notional{})), void>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().funding_need(InstrumentId{})), Notional>);
+// [end:funding]
+
 // ---- perpetuals: the venue's mark, index and funding
 // ----------------------------------------------
 

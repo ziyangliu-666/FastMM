@@ -8,11 +8,13 @@
 
 #include "fastmm/core/engine.hpp"
 #include "fastmm/sim/market_generator.hpp"
+#include "fastmm/sim/recorded_session.hpp"
 #include "fastmm/sim/sim_driver.hpp"
 #include "fastmm/sim/sim_transport.hpp"
 #include "fastmm/sim/sim_treasury.hpp"
 
 #include <memory>
+#include <string>
 #include <vector>
 
 using namespace fastmm;
@@ -155,4 +157,86 @@ TEST_CASE("sim.treasury: an account transfers what it has free, and only within 
   CHECK(transport.transfer(kPrimary, kMember, "USDT", nt("40"), t) == TransferState::Done);
   CHECK(transport.accounts()->total(kPrimary, "USDT") == nt("60"));
   CHECK(transport.accounts()->total(kMember, "USDT") == nt("40"));
+}
+
+TEST_CASE("sim.treasury: the simulated venue refuses transfers and loses answers as told") {
+  InstrumentTable table = make_table();
+  SimClock clock{Timestamp{seconds(1'700'000'000).ns}};
+  SimTransportConfig tc;
+  REQUIRE(tc.pools.add(kMember, kPrimary));
+  tc.accounts = {SimAccountConfig{kPrimary, {SimBalance{FixedString<8>("USDT"), nt("1000")}}},
+                 SimAccountConfig{kMember, {SimBalance{FixedString<8>("USDT"), nt("0")}}}};
+  SimTransport transport(clock, table, tc);
+  SimTransferFaults faults;
+  faults.p_fail = 0.4;
+  faults.p_unknown = 0.4;
+  faults.hang = seconds(90);
+  faults.seed = 3;
+  SimTreasuryPort port(transport, [&clock] { return clock.now(); }, milliseconds(200), faults);
+  int failed = 0;
+  int lost = 0;
+  int pending = 0;
+  std::vector<TransferRequest> sent;
+  for (int k = 0; k < 40; ++k) {
+    TransferRequest r;
+    r.client_id = "t" + std::to_string(k);
+    r.from = kPrimary;
+    r.to = kMember;
+    r.asset = "USDT";
+    r.amount = nt("1");
+    const TransferResult a = port.submit(r);
+    failed += a.state == TransferState::Failed ? 1 : 0;
+    lost += a.state == TransferState::Unknown ? 1 : 0;
+    pending += a.state == TransferState::Pending ? 1 : 0;
+    if (a.state != TransferState::Failed) sent.push_back(r);
+  }
+  CHECK(failed > 0);
+  CHECK(lost > 0);
+  CHECK(pending > 0);
+  CHECK(port.refused() == static_cast<std::uint64_t>(failed));
+  CHECK(port.lost() == static_cast<std::uint64_t>(lost));
+  // A refusal moves nothing; one whose answer was lost is still Pending at the venue, and is
+  // carried out only after the hang.
+  clock.advance(seconds(1));
+  port.settle(clock.now());
+  CHECK(transport.accounts()->total(kMember, "USDT") == Notional::from_raw(nt("1").raw * pending));
+  for (const TransferRequest& r : sent) {
+    const TransferState s = port.status(r).state;
+    CHECK((s == TransferState::Done || s == TransferState::Pending));
+  }
+  clock.advance(seconds(90));
+  for (const TransferRequest& r : sent) CHECK(port.status(r).state == TransferState::Done);
+  CHECK(transport.accounts()->total(kMember, "USDT") ==
+        Notional::from_raw(nt("1").raw * (pending + lost)));
+  CHECK(transport.accounts()->total(kPrimary, "USDT") ==
+        Notional::from_raw(nt("1000").raw - nt("1").raw * (pending + lost)));
+}
+
+TEST_CASE(
+    "sim.treasury: a recorded transfer within a simulated treasury's pool is a pair of flows") {
+  TreasuryConfig t;
+  t.asset = "USDT";
+  PoolPlan plan;
+  REQUIRE(plan.add(kMember, kPrimary));
+  t.members = plan.members(kPrimary);
+  const std::vector<TreasuryConfig> treasuries{t};
+  const auto flow = [](VenueId v, const char* amount, std::int64_t at_s, const char* asset) {
+    AccountFlowMsg f{};
+    init_header(f, EventType::AccountFlow, InstrumentId{}, v);
+    f.asset.assign(asset);
+    f.amount = nt(amount);
+    f.hdr.exch_ts = Timestamp{seconds(at_s).ns};
+    return f;
+  };
+  const AccountFlowMsg out = flow(kPrimary, "-250", 100, "USDT");
+  CHECK(pool_transfer(out, flow(kMember, "250", 101, "USDT"), treasuries));
+  CHECK(pool_transfer(flow(kMember, "250", 99, "USDT"), out, treasuries));
+  // Not a pair: another amount, too far apart, another asset, the same account, an account
+  // outside the pool (a deposit, a move to the futures wallet).
+  CHECK_FALSE(pool_transfer(out, flow(kMember, "251", 101, "USDT"), treasuries));
+  CHECK_FALSE(pool_transfer(out, flow(kMember, "250", 200, "USDT"), treasuries));
+  CHECK_FALSE(pool_transfer(out, flow(kMember, "250", 101, "BTC"), treasuries));
+  CHECK_FALSE(pool_transfer(out, flow(kPrimary, "250", 101, "USDT"), treasuries));
+  CHECK_FALSE(pool_transfer(out, flow(VenueId{4}, "250", 101, "USDT"), treasuries));
+  CHECK_FALSE(pool_transfer(out, flow(kMember, "250", 101, "USDT"), {}));
 }

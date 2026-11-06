@@ -39,6 +39,17 @@ enum class TransferState : std::uint8_t {
   return "?";
 }
 
+// What the treasury reports through TreasuryPort::record (journal) and its counters.
+enum class TreasuryEventKind : std::uint8_t {
+  Planned = 0,  // dry run: what would have been sent
+  Sent = 1,     // handed to the venue
+  Done = 2,
+  Failed = 3,
+  TimedOut = 4,  // unresolved past timeout_ns; still asked for
+  Reserve = 5,   // reserve = true: the engine is to hold the amount out of the payer's balance
+  Released = 6,  // ... and give it back: nothing was sent
+};
+
 struct TransferRequest {
   std::string client_id;  // [0-9a-z], at most kMaxClientId characters
   VenueId from;           // the pool account the amount leaves

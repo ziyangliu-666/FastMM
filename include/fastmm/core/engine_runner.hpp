@@ -239,6 +239,13 @@ class IEngineRunner {
   // The planner's view of the pool whose primary is `primary` (Engine::pool_load). Any thread.
   // False for a runner without one.
   virtual bool pool_load(VenueId /*primary*/, PoolLoad& /*out*/) const { return false; }
+  // A pool treasury's view of the pool in `asset` (Engine::pool_funding). Any thread. False for
+  // a runner without one.
+  virtual bool pool_funding(VenueId /*primary*/,
+                            std::string_view /*asset*/,
+                            PoolFunding& /*out*/) const {
+    return false;
+  }
 };
 
 // Owns a strategy + engine pair and exposes them through IEngineRunner.
@@ -272,6 +279,10 @@ class EngineRunner final : public IEngineRunner {
   }
   bool pool_load(VenueId primary, PoolLoad& out) const override {
     engine_->pool_load(primary, out);
+    return true;
+  }
+  bool pool_funding(VenueId primary, std::string_view asset, PoolFunding& out) const override {
+    engine_->pool_funding(primary, asset, out);
     return true;
   }
   [[nodiscard]] Engine& engine() noexcept { return *engine_; }

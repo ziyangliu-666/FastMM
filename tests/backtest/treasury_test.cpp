@@ -135,6 +135,16 @@ state_file = "never-written.treasury"
   CHECK(c.treasuries[0].state_file.empty());  // nothing is written in a backtest
   CHECK(c.transfer_latency == milliseconds(250));
   CHECK(BacktestConfig::from_config(Config::parse(base)).transfer_latency == Duration{});
+  const BacktestConfig f = BacktestConfig::from_config(Config::parse(
+      base +
+      "[backtest]\ntransfer_p_fail = 0.1\ntransfer_p_unknown = 0.2\ntransfer_hang_ms = 5000\n"));
+  CHECK(f.transfer_p_fail == 0.1);
+  CHECK(f.transfer_p_unknown == 0.2);
+  CHECK(f.transfer_hang == milliseconds(5000));
+  CHECK(BacktestConfig::from_config(Config::parse(base)).transfer_hang == milliseconds(90'000));
+  CHECK_THROWS_AS(static_cast<void>(BacktestConfig::from_config(Config::parse(
+                      base + "[backtest]\ntransfer_p_fail = 0.7\ntransfer_p_unknown = 0.7\n"))),
+                  ConfigError);
   CHECK_THROWS_AS(static_cast<void>(BacktestConfig::from_config(
                       Config::parse(base + "[backtest]\ntransfer_latency_ms = -1\n"))),
                   ConfigError);

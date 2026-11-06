@@ -108,7 +108,7 @@ CONTROL_COMMANDS = ("Stop", "PullQuotes", "ResumeQuotes", "TripKill", "ResetKill
 # HomeSource (include/fastmm/core/pool_homes.hpp).
 HOME_SOURCES = ("operator", "planner", "strategy", "reconcile", "pin", "first", "spill")
 # ControlTransferMsg (include/fastmm/core/messages.hpp): TreasuryEventKind and TransferState.
-TREASURY_EVENTS = ("planned", "sent", "done", "failed", "timed_out")
+TREASURY_EVENTS = ("planned", "sent", "done", "failed", "timed_out", "reserve", "released")
 TRANSFER_STATES = ("pending", "done", "failed", "not_found", "unknown")
 ENGINE_TIMERS = {1: "max_param_age", 2: "ack sweep", 3: "flatten"}
 
@@ -243,6 +243,8 @@ def decode_body(type_name: str, body: bytes, params=()) -> str:
             out = (f"command={cmd} event={ev} state={st} id={fixed(25, 31)} "
                    f"{dec(q(8))} {fixed(16, 8)} venue {body[3]} -> {body[4]} "
                    f"venue_ref={fixed(57, 23)}")
+            if body[5] & 1 and len(body) >= 96:  # kHeld: the engine holds the payout, by seq
+                out += f" held seq={u64(88)}"
         return out
     if type_name == "ParamUpdate":
         return param_update_fields(body, params)

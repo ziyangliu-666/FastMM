@@ -304,6 +304,16 @@ class StrategyContext {
     return e_->set_home(id, account);
   }
 
+  // The quote the instrument's bids want resting (a spot instrument's quote asset, a
+  // derivative's settlement asset; 0: none). A pool treasury with targets = "demand" funds each
+  // account for the needs of the instruments whose home it is. Declare it when the sizes change.
+  void set_funding_need(InstrumentId id, Notional quote) noexcept {
+    e_->set_funding_need(id, quote);
+  }
+  [[nodiscard]] Notional funding_need(InstrumentId id) const noexcept {
+    return e_->funding_need(id);
+  }
+
   // ---- perpetuals (core/perp_book.hpp)
   // -----------------------------------------------------------
 
