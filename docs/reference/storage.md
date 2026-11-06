@@ -57,6 +57,7 @@ The engine copies each record into the ring without allocating, calling the kern
 | `KillRecord` | every kill switch trip, global or per venue | reason, flag word, PnL |
 | `RejectRecord` | every refused order, repeats folded ([rejects](#rejects)) | account, instrument, side, reason, what refused it, the budget then |
 | `LimitsRecord` | every `fastmm-ctl limits` applied | the `[risk]` limits before and after, and whether `--force` turned one off |
+| `MarkoutRecord` | with `[engine] markout_ms`, each fill and each horizon after it | the instrument's mid then ([markouts](#markouts)) |
 | `ParamRecord` | every strategy parameter update applied | target, origin, source, publisher sequence and the (field, raw value) pairs ([Journal format](journal-format.md#parameter-updates)) |
 
 The record layouts are in `include/fastmm/core/record_stream.hpp`.
@@ -97,7 +98,7 @@ The SQLite backend opens the file with `journal_mode=WAL` and `synchronous=NORMA
 
 ## Schema
 
-The schema is version 12, in `src/store/sqlite_schema.cpp`. An older store is migrated in place when opened, after a copy to `<path>.v<version>.bak`. A store from a newer FastMM is refused with the version it holds.
+The schema is version 14, in `src/store/sqlite_schema.cpp`. An older store is migrated in place when opened, after a copy to `<path>.v<version>.bak`. A store from a newer FastMM is refused with the version it holds.
 
 ### sessions
 
@@ -256,7 +257,7 @@ The strategy parameters over time: the starting set and every update applied (ve
 | Table | One row per | Columns |
 |---|---|---|
 | `param_schema` | `(session_id, field)` | `name`, `type` (`int`, `double`, `bool`, `decimal`, `bps`, `ms`) |
-| `param_updates` | `(session_id, seq)` | `ts_ns`, `instrument_id`, `symbol`, `origin`, `source`, `publish_seq`, `fields`, `changed`, `complete`, `arm` |
+| `param_updates` | `(session_id, seq)` | `ts_ns`, `instrument_id`, `symbol`, `origin`, `source`, `publish_seq`, `fields`, `changed`, `complete`, `arm`, `reset` |
 | `param_values` | `(session_id, seq, name)` | `value` as text, `raw` (NULL when not known), `changed` |
 
 `param_updates` columns:
@@ -264,14 +265,15 @@ The strategy parameters over time: the starting set and every update applied (ve
 | Column | Meaning |
 |---|---|
 | `seq` | 0 for the starting set, else the record's `seq` |
-| `origin` | `initial`, `control`, `ab` or `strategy` |
+| `origin` | `initial`, `control`, `ab`, `config` (`[strategy.overrides]`) or `strategy` |
 | `source` | `fastmm-ctl param --source`, or `ab:<test>` |
 | `complete` | on `seq` 0: 1 when every parameter is known, 0 when the strategy brings its own publisher |
 | `instrument_id`, `symbol` | the target; NULL for every instrument |
 | `fields`, `changed` | values carried, values changed |
 | `arm` | the arm the update put its instruments in, `''` out of the test, NULL when not the test's (version 12) |
+| `reset` | 1 when the update gives instruments the shared values back; NULL before version 13 |
 
-A control or `[ab]` update is stored whole. A strategy publisher's update keeps only changed values and writes nothing when none changed. An update to every instrument replaces what single instruments had.
+A control, `[ab]` or configuration update is stored whole. A strategy publisher's update keeps only changed values and writes nothing when none changed. `fastmm-pnl params --instrument` applies the engine's rule: an update to every instrument keeps what single instruments hold, a reset drops it (before version 13 every update to every instrument did).
 
 ### rejects
 
@@ -303,13 +305,27 @@ Refusals with the same instrument, side, account, reason, source and flags withi
 
 ### ab_arms
 
-One row per arm of the session's `[ab]` test, keyed `(session_id, arm)` (version 12). `fastmm-pnl fills` and `orders` show each row's arm; markouts need the journal ([Run an A/B test](../how-to/strategies/ab-test.md#read-it-out)).
+One row per arm of the session's `[ab]` test, keyed `(session_id, arm)` (version 12). `fastmm-pnl fills` and `orders` show each row's arm, and `fastmm-pnl ab` reads the test out ([Run a live A/B by instrument](../how-to/strategies/live-ab-by-instrument.md)).
 
 | Column | Meaning |
 |---|---|
 | `arm` | its index; 0 is the control |
 | `test`, `name` | the test's and the arm's names |
 | `params` | the arm's parameters as space-separated `name=value`; empty for the configured ones |
+
+### markouts
+
+The mid of an instrument at each of its fills and at each `[engine] markout_ms` horizon after it, keyed `(session_id, fill_seq, horizon_ms)` (version 14). None without `markout_ms`.
+
+| Column | Meaning |
+|---|---|
+| `fill_seq` | the fill's `seq` in `fills` |
+| `horizon_ms` | 0 at the fill, else the horizon |
+| `instrument_id`, `fill_ns` | the fill's instrument and engine time |
+| `ts_ns` | when the engine read the mid: at its first event or timer from the horizon on, before that event applies |
+| `mid_raw` | the book's mid, raw fixed point; no row while the book has no two sides |
+
+The engine holds up to 4096 fills per horizon waiting for their mid; a fill past that gets no row at the horizon. Pending markouts end with the session.
 
 ### limit_changes
 

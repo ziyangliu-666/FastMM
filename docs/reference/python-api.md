@@ -533,7 +533,7 @@ The engine writes fills into a ring of `fills_capacity` fills, which the slow ti
 
 ### Publishing parameters
 
-`publish` names any subset of the parameters. The values apply together at one engine event; the others keep their values. `inst=None` applies them to every instrument. The hot `on_params` then runs for each instrument the update reached.
+`publish` names any subset of the parameters. The values apply together at one engine event; the others keep their values. `inst=None` applies them to every instrument except where an instrument holds the parameter as its own, as after `publish(inst=...)`, `[strategy.overrides]` or an `[ab]` arm ([Strategy API](strategy-api.md#parameters-per-instrument)). The hot `on_params` then runs for each instrument the update reached.
 
 - Each name is checked and each value parsed and range-checked as `fastmm.Param` does. `validate()` then runs on a copy of the instance with the new values.
 - The first error raises `ValueError` and nothing is sent. An update names at most 32 parameters.

@@ -385,6 +385,9 @@ OPTIONS:
   --books                     pnl: the engine's own day roll-up of its positions, as it
                               booked them
   --order <id>                order: the client order id
+  --test <name>               ab: the [ab] name (default: the newest session's)
+  --horizons-ms <ms,...>      ab: recorded horizons to show (default: all)
+  --resamples <n>             ab: resamples of the days (default 2000)
 
 SUBCOMMANDS:
   sessions                    one row per session: when it ran, what it made, how it ended
@@ -416,6 +419,9 @@ SUBCOMMANDS:
                               its flags; --raw lists every stored copy
   order                       everything stored about one order (--order <id>), in time
                               order
+  ab                          an [ab] test per arm: fills, notional, markouts and pnl at
+                              each [engine] markout_ms horizon, and each arm against the
+                              first with 95% intervals over whole UTC days
 ```
 <!-- END cli-help -->
 
@@ -549,9 +555,13 @@ commands (one per datagram; the reply starts with ok or error)
   pull [--instrument SYM | --venue NAME]   stop quoting: everywhere, or in that scope
   resume [--instrument SYM | --venue NAME] quote again; without a scope it also clears
                                            every scoped pull and stops a running flatten
-  param <name>=<value> ... [--instrument SYM] [--source WHO]
+  param <name>=<value> ... [--instrument SYM | --group G] [--source WHO]
                                            new strategy parameters, validated here; the
-                                           reply's seq is applied once `params` shows it
+                                           reply's seq is applied once `params` shows it;
+                                           with a scope, that instrument's own values
+  param --reset <name> ... [--instrument SYM | --group G]
+                                           the scope's own values of these go back to the
+                                           shared ones (every instrument's without a scope)
   params [--instrument SYM]                the parameters' values, and the sequence
                                            numbers published and applied
   limits <key>=<value> ... [--force]       new risk limits (the [risk] keys, and

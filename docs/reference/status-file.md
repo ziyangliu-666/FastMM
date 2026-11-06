@@ -21,7 +21,7 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`.
 1. The writer makes the counter odd, writes the snapshot, then makes it even again.
 2. A reader copies the snapshot and keeps it when the counter was even and unchanged across the copy; otherwise it retries.
 
-`magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 25) sit at the same offsets in every version. The layout is internal ([Public API](public-api.md)): read it with `fastmm-top` from the same build. Another version is refused:
+`magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 26) sit at the same offsets in every version. The layout is internal ([Public API](public-api.md)): read it with `fastmm-top` from the same build. Another version is refused:
 
 ```text
 <file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)
@@ -68,6 +68,7 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`.
 | `underlyings` | 8 x underlying entry | `[risk.underlying]`, in the order of the configuration's base assets: `name` (char[16], empty for an unused entry), `known` (u8: 0 while an inverse contract with a position has no mark), `net_raw` (i64, base units, signed), `max_net_raw` (i64, the limit applied now, 0 none) |
 | `balance_count`, `balances` | u32, 32 x balance entry | the balance table ([below](#balance-entry)); a gateway's is the account's over every strategy |
 | `perp_count`, `perps` | u32, 32 x perp entry | mark, index and funding per derivative that has reported ([below](#perp-entry)); a gateway's is the account's |
+| `ab_test`, `ab_arms` | char[40], 16 x char[24] | the `[ab]` test's name and its arms', empty without a test |
 | `quote_count`, `quotes` | u32, 256 x quote entry | the quote table, one entry per instrument in the table's order ([below](#quote-entry)) |
 | `metric_count`, `metrics` | u32, 32 x {name char[24], value f64} | the numbers the strategy publishes with `ctx.metric`, in the order it first named them |
 | `gateway` | gateway block | `kind` 1 only, zero otherwise ([below](#gateway-block)) |
@@ -137,6 +138,8 @@ What each side of an instrument asks for, what works there and what is in the wa
 | `symbol` | char[24] | the instrument |
 | `instrument`, `venue` | u32, u8 | its id and its venue's index |
 | `reduce_only` | u8 | 1 while reduce-only mode holds the instrument |
+| `arm` | u8 | the `[ab]` arm it is in: 0 none, k + 1 arm k (`ab_arms`) |
+| `own_params` | u8 | the parameters it holds values of its own for ([Strategy API](strategy-api.md#parameters-per-instrument)) |
 | `position_raw`, `avg_px_raw`, `realized_raw`, `unrealized_raw` | i64 | the position, its average price and PnL, settlement currency |
 | `mid_raw` | i64 | the book's mid, 0 without a two-sided book |
 | `sides` | 2 x side entry | buy, then sell |

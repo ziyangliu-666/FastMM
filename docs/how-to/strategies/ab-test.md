@@ -1,6 +1,6 @@
 # Run an A/B test
 
-An `[ab]` section runs two or more parameter sets of one strategy, the arms, in one session. The same section runs in `fastmm-live` and `fastmm-backtest`, so you can try a test on a recorded session before it goes live.
+An `[ab]` section runs two or more parameter sets of one strategy, the arms, in one session. The same section runs in `fastmm-live` and `fastmm-backtest`, so you can try a test on a recorded session before it goes live. To run one on real money by instrument and read it from the store, see [Run a live A/B by instrument](live-ab-by-instrument.md).
 
 ## Choose the design
 
@@ -18,7 +18,7 @@ Start from `crossover`: it removes both the difference between instruments and t
 
 Blocks are `block_s` long and start at multiples of it since 1970-01-01 UTC, so a backtest and a live session over the same hours share them. Each run of as many blocks as there are arms gives each arm one block, in an order drawn from `seed`. Make a block longer than the parameter takes to show its effect, and the test several runs long.
 
-`instrument` and `crossover` sort the instruments by `[ab.weights]`, such as a recent daily volume or a volatility. Each consecutive group of as many instruments as there are arms gets each arm once.
+`instrument` and `crossover` sort the instruments by `[ab.weights]`, such as a recent daily volume or a volatility. Each consecutive group of as many instruments as there are arms gets each arm once. `[ab.assign]` names each instrument's arm instead, and `block_offset_s` moves the block boundaries off the multiples of `block_s`.
 
 `branch` takes nothing from the market's noise: both arms see the same data, and the simulator's draws are the same until their orders differ. It tests what a change would have done over a recorded session, not how it does live, and `fastmm-live` refuses it. From a checkpoint of a live session, each arm starts in the session's state ([Replay a live session](../operations/replay-live-session.md#compare-two-configurations-from-a-checkpoint)).
 

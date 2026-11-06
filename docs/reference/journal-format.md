@@ -233,14 +233,15 @@ A `ParamUpdate` message (448 bytes) is an engine input with new strategy paramet
 |---:|---:|---|---|
 | 8 | 4 | `instrument` | the target instrument; `0xFFFFFFFF` for all instruments |
 | 64 | 4 | `count` | pairs used, at most 32 |
-| 68 | 1 | `origin` | 0 the strategy's own publisher (or not recorded), 1 the control socket (`fastmm-ctl param`), 2 the `[ab]` test |
+| 68 | 1 | `origin` | 0 the strategy's own publisher (or not recorded), 1 the control socket (`fastmm-ctl param`), 2 the `[ab]` test, 3 `[strategy.overrides]` |
 | 69 | 1 | `arm` | the `[ab]` arm it puts its instruments in: 0 none named, k + 1 arm k, 255 out of the test |
+| 70 | 1 | `flags` | bit 0, reset: the named parameters stop being the instrument's own and take the shared value (`value` carries it); for all instruments, every instrument's own value of them is dropped |
 | 72 | 8 | `publish_seq` | the publisher's sequence number, from 1 |
 | 80 | 64 | `field` | `uint16` each: the parameter's index in the parameter table |
 | 144 | 40 | `source` | who asked for it (`fastmm-ctl param --source`), NUL-terminated; empty when not given |
 | 192 | 256 | `value` | `int64` each: the raw value |
 
-An older journal reads with origin 0, no arm and an empty source.
+An update for all instruments that is not a reset leaves the values instruments hold as their own; one with an arm is a reset ([Strategy API](strategy-api.md#parameters-per-instrument)). An older journal reads with origin 0, no arm, no flags and an empty source.
 
 | Parameter type | Raw value |
 |---|---|

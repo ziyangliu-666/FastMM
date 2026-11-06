@@ -18,8 +18,16 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: a checkpoint that would leave less than a quarter of the journal ring free is skipped and counted, instead of overflowing the ring.
 - strategies: `StateWriter` and `StateReader` write and read a strategy's state in a buffer sized once.
 - backtest: `[backtest] reconcile_on_unknown_cancel` follows a cancel the simulated venue refuses as unknown with an open-order snapshot, as the Binance connector does.
+- core: `[strategy.overrides]` and `[strategy.groups]` set strategy parameters per instrument or group, journaled at the start of the session.
+- live: `fastmm-ctl param` takes `--group` and `--reset`, and `params --instrument` lists the instrument's own values.
+- core: `[ab.assign]` assigns arms by a list, and `[ab] block_offset_s` moves the block boundaries.
+- core: `[engine] markout_ms` records the mid at each fill and at each horizon after it in the store's `markouts` table.
+- apps: `fastmm-pnl ab` reads an `[ab]` test from the store: per arm, fills, notional, markouts and PnL, with intervals over whole UTC days.
+- apps: `fastmm-top` shows each instrument's `[ab]` arm and how many parameters it holds as its own.
+- python: Python strategies take `[strategy.overrides]` and `[ab]` in backtests and live sessions.
 
 ### Changed
+- core: an update for every instrument leaves the values an instrument holds as its own (set for it alone); a reset gives it the shared value.
 - sim: under the queue fill models an order of ours that rests at or inside the touch, or leaves it, goes out in the feed at once with a ticker of the touch, as a live venue's book ticker shows it, instead of with the instrument's next recorded message.
 - backtest: `initial_state = "journal"` over a journal that begins at the session's start takes no periodic checkpoint from after its first order for the start's state.
 - backtest: a sweep's point with `params_from_journal` keeps the parameters it sets against the journal's updates.

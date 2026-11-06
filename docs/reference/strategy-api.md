@@ -723,11 +723,13 @@ class MyMM : public StrategyBase<MyParams, ParamScope::PerInstrument> {
 | | `Shared` (default) | `PerInstrument` |
 |---|---|---|
 | `params()` | the configuration plus every update | the configuration plus updates that named no instrument |
-| `params(id)` | same as `params()` | `params()` plus the updates that named `id` |
-| updates for one instrument (`fastmm-ctl param --instrument`, an `[ab]` test with per-instrument arms) | refused | taken |
+| `params(id)` | same as `params()` | `params()` with the instrument's own values on top, an array index |
+| updates for one instrument (`[strategy.overrides]`, `fastmm-ctl param --instrument`, an `[ab]` arm) | refused | taken, as the instrument's own values |
+
+An instrument's own value stays when an update for every instrument changes that parameter. A reset (`fastmm-ctl param --reset`, an instrument leaving an `[ab]` test) gives it the shared value again. `own_params(id)` is the mask of the parameters it holds as its own.
 
 - A parameter read only through `params()`, or only in `on_start`, does not vary per instrument.
-- `basic_mm` and `avellaneda_stoikov` are `PerInstrument`. A/B tests: [Run an A/B test](../how-to/strategies/ab-test.md).
+- `basic_mm`, `avellaneda_stoikov` and every Python strategy are `PerInstrument`. Per-instrument tests: [Run a live A/B by instrument](../how-to/strategies/live-ab-by-instrument.md).
 
 ## Parameter updates
 
@@ -743,7 +745,7 @@ In a backtest, `sim::ParamSchedule` (`fastmm/sim/param_schedule.hpp`) delivers u
 - `publish(values, inst)` parses each value into a copy of the parameters and runs `validate()`. Nothing is sent if it throws `std::invalid_argument`.
 - It throws for an unknown name, a name given twice, a value that does not parse or is out of range, a failed `validate()` and more than 32 values.
 - It returns false when the ring is full or after `close()`; the engine never waits for the publisher.
-- The copy starts from the constructor's parameters and follows every update sent. An update applies to all instruments, or with `PerInstrument` may name one.
+- The copy starts from the constructor's parameters and follows every update sent. An update applies to all instruments, or with `PerInstrument` may name one; `reset(names, inst)` sends a reset.
 - The engine assigns an update's values at one event, journals it, then calls `on_params(ctx)`. Parameters it does not name keep their values.
 - `[strategy] max_param_age_ms` (0, off, by default) disables quoting before the first update and when none arrived for that long in engine time. The quotes are pulled and `on_quoting(false)` fires; the next update fires `on_quoting(true)`.
 - Replay applies the journaled updates at the same events, matched to the parameters by name ([Journal format](journal-format.md#parameter-updates)).

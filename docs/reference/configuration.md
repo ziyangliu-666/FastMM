@@ -37,6 +37,7 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `instance_lock` | boolean |  | fastmm-live: take an exclusive lock on lock_file before touching the account and refuse to start (exit code 8) while another process holds it; --standby and --takeover take it whatever this says (default false) |
 | `lock_file` | string |  | the instance lock's file (default "<journal_dir>/<name>.lock") |
 | `handoff_timeout_ms` | integer |  | fastmm-live --takeover: how long to wait for the running session to release the instance lock once it accepted the handoff, ms (default 75000) |
+| `markout_ms` | integer array |  | with a store, the mid at each fill and this many ms after it, up to 4 horizons, in the store's markouts table (fastmm-pnl ab); e.g. [1000, 10000, 60000] (default: none) |
 | `stall_ms` | integer |  | fastmm-live: an engine thread that has not finished a turn of its loop for this long (a strategy hook that never returns) is given up: every venue cancels all its orders and the process exits with code 5, ms; 0 = never (default 10000) |
 | `ack_timeout_ms` | integer |  | force-cancel an order whose ack has not arrived within this long, ms; 0 = off (default 0) |
 | `queue_conservatism` | number |  | the queue position estimate ctx.queue_ahead, from 0 to 1: at 0 a level's shrink is shared between cancels ahead of and behind our order, at 1 cancels never move it up (default 1.0; a backtest uses [backtest] queue_conservatism when set) |
@@ -613,6 +614,8 @@ Live connectors replace `tick`, `lot` and the size bounds with the venue's refer
 | `state_file` | string |  | file the strategy's state() is written to every state_interval_s and at the end, and restore() reads at the start (a strategy that keeps state; default: none) |
 | `state_interval_s` | integer |  | how often the state is written, seconds of engine time (default 300) |
 | `params` | table |  | [strategy.params] table: the strategy's parameters |
+| `groups` | table |  | [strategy.groups] table: name = ["symbol" or "venue:symbol", ...], instruments that [strategy.overrides] and fastmm-ctl param --group name together |
+| `overrides` | table |  | [strategy.overrides.<key>] tables: parameters of one instrument ("symbol" or "venue:symbol") or group on top of [strategy.params]; an instrument's own table wins over its groups' (a strategy with a parameter set per instrument) |
 <!-- END config-keys -->
 
 `[strategy.params]` holds scalars, validated against the strategy's parameter schema:
@@ -646,6 +649,8 @@ An A/B test of strategy parameters, in `fastmm-live` and in a backtest ([Run an 
 | `start` | string |  | UTC time the test starts, YYYY-MM-DD, YYYY-MM-DDTHH:MM or YYYY-MM-DDTHH:MM:SSZ; before it the configured parameters run (default: at the start of the session) |
 | `end` | string |  | UTC time the test ends, as start; after it the configured parameters run again (default: none) |
 | `weights` | table |  | [ab.weights] table: instrument, crossover: the weight of each instrument ("venue:symbol" or "symbol" = number >= 0, e.g. its daily volume), every instrument or none; instruments of similar weight go to different arms (default: equal weights) |
+| `assign` | table |  | [ab.assign] table: instrument, crossover: the arm of each instrument ("venue:symbol" or "symbol" = arm name) instead of a drawn split; an instrument not listed stays out of the test (default: drawn, balanced on weights) |
+| `block_offset_s` | integer |  | time, crossover: blocks start this many seconds after the multiples of block_s, 0 to block_s - 1; with block_s = 86400, 79200 starts each day at 22:00 UTC (default 0) |
 | `arms` | any | yes | [[ab.arms]] tables, 2 to 16, in order: arm 0 is the control the readout compares the others with |
 <!-- END config-keys -->
 
