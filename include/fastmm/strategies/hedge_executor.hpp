@@ -1,6 +1,7 @@
 #pragma once
-// HedgeExecutor: keeps a strategy's exposure hedged with taker orders (docs/how-to/strategies/
-// hedge-executor.md). A strategy owns one, configures it in on_start and forwards its hooks.
+// HedgeExecutor: keeps a strategy's exposure hedged with taker orders, or with post-only orders at
+// the hedge's touch (docs/how-to/strategies/hedge-executor.md). A strategy owns one, configures it
+// in on_start and forwards its hooks.
 //
 // Exposure and residual, in base units (linear contracts: quantity * contract multiplier):
 //
@@ -47,6 +48,21 @@
 // such as a REST timeout) holds every order for Config::uncertain_hold, so a fill still on its way
 // is booked before the positions are trusted again.
 //
+// Bands (Config::band, flat): a residual is hedged once it is worth `band` at the hedge
+// instrument's mid, and then until it is worth less than `flat`; inside the band nothing goes out.
+//
+// Maker mode (Config::maker): the hedge is a post-only limit at the hedge instrument's own touch
+// (a buy at its best bid, a sell at its best ask, our own orders left out) for the whole residual.
+// It rests while the residual keeps its sign and stays outside `flat`; when the touch on its side
+// moves it is cancelled and placed again at the new touch, at most every Config::repeg; with
+// Config::resize it is also placed again when its leaves are worth that much more or less than the
+// residual. A post-only refusal is not a failure: the next order waits `repeg`. With
+// Config::taker_after, an order that has rested that long is cancelled and the rest goes as the
+// IOC above. A maker hedge left open by an earlier session (same tag) is adopted. Book tickers do
+// not move ctx.book: a strategy that forwards the hedge instruments' tickers (on_book_ticker) has
+// the maker hedge priced at the newer of the ticker's touch and the depth book's, and a hedge
+// instrument whose ticker is fresh is not stale.
+//
 // De-risking (Config::derisk_after > 0): when no hedge instrument has taken the residual for that
 // long (unusable, balance short or halted), the executor reduces the exposure itself: reduce-only
 // IOC orders on a source whose position has the residual's sign, priced derisk_tolerance through
@@ -84,6 +100,12 @@ class HedgeExecutor {
   static constexpr std::size_t kMaxSources = 4;
   static constexpr std::size_t kMaxHedges = 4;
   static constexpr std::size_t kMaxFailures = 16;
+  // Maker mode looks its order up and cancels it (StrategyContext::order, cancel).
+  template <class Ctx>
+  static constexpr bool works_orders = requires(Ctx& c, ClientOrderId id) {
+    c.order(id);
+    c.cancel(id);
+  };
 
   struct Config {
     std::string_view name = "hedge";     // log prefix
@@ -99,6 +121,17 @@ class HedgeExecutor {
     Qty derisk_step{};                     // base units per de-risk order; 0: the whole residual
     Duration derisk_interval = milliseconds(1000);
     Ratio derisk_tolerance{};
+    // Bands, quote currency at the hedge instrument's mid: hedge once the residual is worth `band`,
+    // then until it is worth less than `flat` (0: any residual; until it rounds under the lot).
+    Notional band{};
+    Notional flat{};
+    // Maker mode: a post-only order at the hedge's own touch instead of an IOC. It follows the
+    // touch at most every `repeg`, is placed again when its leaves are `resize` off the residual
+    // (0: never), and what it leaves after resting `taker_after` crosses (0: never).
+    bool maker = false;
+    Duration repeg = milliseconds(100);
+    Notional resize{};
+    Duration taker_after{};
   };
 
   struct Stats {
@@ -111,6 +144,9 @@ class HedgeExecutor {
     std::uint64_t benches = 0;      // instruments benched after max_failures
     std::uint64_t derisk_episodes = 0;
     std::uint64_t derisk_orders = 0;
+    std::uint64_t maker_moves = 0;    // maker hedges cancelled to follow the touch or re-size
+    std::uint64_t maker_crossed = 0;  // maker hedges cancelled at taker_after for an IOC
+    std::uint64_t maker_refused = 0;  // maker hedges refused as crossing (post-only)
   };
 
   // What the last evaluation found.
@@ -124,6 +160,8 @@ class HedgeExecutor {
     Held,         // no usable instrument's balance or margin covers the hedge
     Unavailable,  // no hedge instrument is usable
     Halted,       // every hedge instrument failed max_failures times; restart() clears it
+    Inside,       // the residual is inside Config::band
+    Resting,      // a maker hedge rests at the touch
   };
 
   // Why a hedge instrument is not usable now.
@@ -167,6 +205,11 @@ class HedgeExecutor {
     cfg_ = cfg;
     clear_state();
     ready_ = false;
+    if (cfg_.maker && !works_orders<Ctx>) {
+      FASTMM_LOG_ERROR("{}: maker mode needs a context that cancels orders; not hedging",
+                       cfg_.name);
+      return false;
+    }
     if (n_sources_ == 0 || n_hedges_ == 0) {
       FASTMM_LOG_ERROR("{}: needs a source and a hedge instrument; not hedging", cfg_.name);
       return false;
@@ -246,7 +289,22 @@ class HedgeExecutor {
     }
     const int k = hedge_index(o.instrument);
     if (k < 0) return false;
-    if (o.cum_qty.is_zero()) failed(ctx, static_cast<std::size_t>(k), now);
+    if (maker_open_ && o.cl_ord_id == maker_id_) {
+      // Our own cancel ends most maker hedges: only a refusal is a failure, and a post-only one
+      // only means the touch moved.
+      maker_open_ = false;
+      maker_cancel_ = false;
+      forget_in_ticker(static_cast<std::size_t>(k), o);
+      if (o.state == OrderState::Rejected && o.reject_reason == RejectReason::PostOnlyWouldCross) {
+        ++stats_.maker_refused;
+        next_ns_ = std::max(next_ns_, now + cfg_.repeg.ns);
+      } else if (o.state == OrderState::Rejected) {
+        failed(ctx, static_cast<std::size_t>(k), now);
+      }
+    } else if (o.cum_qty.is_zero() &&
+               !(cfg_.maker && o.tif == TimeInForce::Gtc && o.state == OrderState::Canceled)) {
+      failed(ctx, static_cast<std::size_t>(k), now);
+    }
     if (uncertain(u)) hold_uncertain(o, now);
     update(ctx);
     return true;
@@ -256,6 +314,19 @@ class HedgeExecutor {
   template <class Ctx>
   void on_book(Ctx& ctx, InstrumentId id) noexcept {
     if (ready_ && hedge_index(id) >= 0) update(ctx);
+  }
+
+  // A hedge instrument's book ticker: its touch, newer than the depth book's until the book
+  // updates. False for another instrument.
+  template <class Ctx>
+  bool on_book_ticker(Ctx& ctx, InstrumentId id, const BookTickerMsg& m) noexcept {
+    const int k = ready_ ? hedge_index(id) : -1;
+    if (k < 0) return false;
+    if (m.bid_px.is_positive() && m.ask_px > m.bid_px)
+      ticker_[static_cast<std::size_t>(k)] =
+          Ticker{m.bid_px, m.ask_px, m.bid_qty, m.ask_qty, ctx.now().ns};
+    update(ctx);
+    return true;
   }
 
   template <class Ctx>
@@ -294,6 +365,8 @@ class HedgeExecutor {
   void update(Ctx& ctx) noexcept {
     if (!ready_) return;
     const std::int64_t now = ctx.now().ns;
+    if (cfg_.maker && !maker_open_) adopt(ctx);
+    if (maker_open_ && keep_maker(ctx, now)) return;
     if (in_flight(ctx)) {
       state_ = State::InFlight;
       return;
@@ -312,15 +385,22 @@ class HedgeExecutor {
       blocked(ctx, residual, now);
       return;
     }
-    if (residual.is_zero()) {
+    if (residual.is_zero() || inside_flat(ctx, residual)) {
       state_ = State::Flat;
       split_ = false;
+      working_ = false;
       unblock("flat");
       return;
     }
     if (under_minimum(ctx, residual)) {
       state_ = State::Waiting;
+      working_ = false;
       unblock("the residual is under the hedge minimum");
+      return;
+    }
+    if (!working_ && cfg_.band.is_positive() && worth(ctx, residual) < cfg_.band) {
+      state_ = State::Inside;
+      unblock("the residual is inside the band");
       return;
     }
     std::size_t first = n_hedges_;
@@ -409,6 +489,16 @@ class HedgeExecutor {
     }
     ++stats_.hedges_sent;
     state_ = State::InFlight;
+    working_ = true;  // past the band: hedged until flat
+    if (cfg_.maker && !cross_) {
+      maker_open_ = true;
+      maker_id_ = *sent;
+      maker_k_ = k;
+      maker_sent_ns_ = now;
+      maker_move_ns_ = now;
+      state_ = State::Resting;
+    }
+    cross_ = false;
     if (cut && !split_) {
       split_ = true;
       FASTMM_LOG_INFO(
@@ -489,7 +579,8 @@ class HedgeExecutor {
     if (!b.is_valid()) return Reason::NoBook;
     if (cfg_.stale.ns > 0) {
       const Timestamp t = b.last_update();
-      if (t.valid() && now - t.ns > cfg_.stale.ns) return Reason::Stale;
+      const std::int64_t last = std::max(t.valid() ? t.ns : 0, ticker_[i].ns);
+      if (last > 0 && now - last > cfg_.stale.ns) return Reason::Stale;
     }
     if (ctx.venue_health(v).gated) return Reason::Gated;
     return Reason::Usable;
@@ -560,6 +651,23 @@ class HedgeExecutor {
     if (inst.min_notional.is_positive() && inst.notional(px, qty) < inst.min_notional)
       return std::nullopt;
     return NewOrderRequest::limit(inst.id, side, px, qty).ioc().tag(tag);
+  }
+
+  // The maker hedge of `residual` on `inst`: a post-only limit of -residual in contracts, rounded
+  // down to the lot and capped at max_qty, at the touch of its own side (`bid` for a buy, `ask` for
+  // a sell). None under the lot, min_qty or min_notional, or without that touch.
+  [[nodiscard]] static std::optional<NewOrderRequest> maker_order(
+      const Instrument& inst, Qty residual, Price bid, Price ask, std::uint32_t tag) noexcept {
+    if (residual.is_zero()) return std::nullopt;
+    const Side side = residual.is_negative() ? Side::Buy : Side::Sell;
+    Qty qty = inst.round_qty(to_contracts(inst, residual.abs()));
+    if (inst.max_qty.is_positive() && qty > inst.max_qty) qty = inst.round_qty(inst.max_qty);
+    if (!qty.is_positive() || qty < inst.min_qty) return std::nullopt;
+    const Price px = side == Side::Buy ? bid : ask;
+    if (!px.is_positive()) return std::nullopt;
+    if (inst.min_notional.is_positive() && inst.notional(px, qty) < inst.min_notional)
+      return std::nullopt;
+    return NewOrderRequest::limit(inst.id, side, px, qty).post_only().tag(tag);
   }
 
   // The largest quantity of `inst` whose notional at `price` is at most `cap`, rounded down to the
@@ -658,11 +766,22 @@ class HedgeExecutor {
         return "unavailable";
       case State::Halted:
         return "halted";
+      case State::Inside:
+        return "inside the band";
+      case State::Resting:
+        return "resting";
     }
     return "?";
   }
 
  private:
+  struct Ticker {
+    Price bid{};
+    Price ask{};
+    Qty bid_qty{};
+    Qty ask_qty{};
+    std::int64_t ns = 0;  // when it arrived (engine time); 0: none
+  };
   struct Leg {
     InstrumentId id{};
     Ratio tolerance{};
@@ -704,6 +823,15 @@ class HedgeExecutor {
     next_derisk_ns_ = 0;
     derisk_stuck_ = false;
     split_ = false;
+    working_ = false;
+    maker_open_ = false;
+    maker_cancel_ = false;
+    cross_ = false;
+    maker_id_ = ClientOrderId{};
+    maker_k_ = 0;
+    maker_sent_ns_ = 0;
+    maker_move_ns_ = 0;
+    ticker_ = {};
   }
 
   // What [risk] admits on `id` now. A context without the risk engine (a test double) has no
@@ -728,9 +856,148 @@ class HedgeExecutor {
     const auto& b = ctx.book(h.id);
     const Instrument& inst = ctx.instrument(h.id);
     std::optional<NewOrderRequest> r =
-        hedge_order(inst, residual, b.best_bid().price, b.best_ask().price, h.tolerance, cfg_.tag);
+        cfg_.maker && !cross_
+            ? maker_order(inst,
+                          residual,
+                          touch(ctx, h.id, Side::Buy),
+                          touch(ctx, h.id, Side::Sell),
+                          cfg_.tag)
+            : hedge_order(
+                  inst, residual, b.best_bid().price, b.best_ask().price, h.tolerance, cfg_.tag);
     if (r) *cut = fit_risk(headroom(ctx, h.id), inst, *r);
     return r;
+  }
+
+  // The best price of one side of hedge instrument `id`: its last forwarded ticker's when that is
+  // newer than the depth book, unless all it shows there is our maker hedge; else the depth book's
+  // without our own orders where the context can tell them (StrategyContext::best_ex_self).
+  template <class Ctx>
+  [[nodiscard]] Price touch(const Ctx& ctx, InstrumentId id, Side side) const noexcept {
+    const auto& b = ctx.book(id);
+    const int k = hedge_index(id);
+    if (k >= 0) {
+      const Ticker& t = ticker_[static_cast<std::size_t>(k)];
+      const Timestamp u = b.last_update();
+      if (t.ns > 0 && (!u.valid() || t.ns >= u.ns)) {
+        const Price px = side == Side::Buy ? t.bid : t.ask;
+        const Qty shown = side == Side::Buy ? t.bid_qty : t.ask_qty;
+        Qty ours{};
+        if constexpr (works_orders<Ctx>) {
+          if (maker_open_) {
+            const Order* o = ctx.order(maker_id_);
+            if (o != nullptr && o->instrument == id && o->side == side && o->price == px)
+              ours = o->leaves_qty();
+          }
+        }
+        if (px.is_positive() && (!ours.is_positive() || shown > ours)) return px;
+      }
+    }
+    if constexpr (requires { ctx.best_ex_self(id, side); }) {
+      return ctx.best_ex_self(id, side).price;
+    } else {
+      return side == Side::Buy ? b.best_bid().price : b.best_ask().price;
+    }
+  }
+
+  // The maker hedge `o` ended: the ticker no longer shows it. A side it was all of is left to the
+  // depth book until the next ticker.
+  void forget_in_ticker(std::size_t k, const Order& o) noexcept {
+    Ticker& t = ticker_[k];
+    Price& px = o.side == Side::Buy ? t.bid : t.ask;
+    Qty& shown = o.side == Side::Buy ? t.bid_qty : t.ask_qty;
+    if (t.ns == 0 || px != o.price) return;
+    shown = shown - o.leaves_qty();
+    if (!shown.is_positive()) px = Price{};
+  }
+
+  // What `residual` is worth at the mid of the hedge instrument hedges go to; Notional::max() while
+  // its book is not valid, so no band holds a hedge back.
+  template <class Ctx>
+  [[nodiscard]] Notional worth(const Ctx& ctx, Qty residual) const noexcept {
+    const InstrumentId id = hedges_[active_].id;
+    const auto& b = ctx.book(id);
+    if (!b.is_valid()) return Notional::max();
+    const Instrument& inst = ctx.instrument(id);
+    return inst.notional(b.mid(), to_contracts(inst, residual.abs()));
+  }
+  // The residual is within Config::flat.
+  template <class Ctx>
+  [[nodiscard]] bool inside_flat(const Ctx& ctx, Qty residual) const noexcept {
+    return cfg_.flat.is_positive() && worth(ctx, residual) < cfg_.flat;
+  }
+
+  // A maker hedge is open: keeps it, or cancels it to follow the touch, re-size, cross or stop.
+  // True while it stays open (resting, pending, or its cancel out); false once it has ended.
+  template <class Ctx>
+  bool keep_maker(Ctx& ctx, std::int64_t now) noexcept {
+    if constexpr (!works_orders<Ctx>) {
+      maker_open_ = false;
+      return false;
+    } else {
+      return keep_maker_on(ctx, now);
+    }
+  }
+  template <class Ctx>
+  bool keep_maker_on(Ctx& ctx, std::int64_t now) noexcept {
+    const Order* o = ctx.order(maker_id_);
+    if (o == nullptr) {
+      maker_open_ = false;
+      maker_cancel_ = false;
+      return false;
+    }
+    state_ = State::InFlight;
+    if (maker_cancel_ || is_pending(o->state)) return true;
+    const Qty residual = this->residual(ctx);
+    const InstrumentId id = o->instrument;
+    const Instrument& inst = ctx.instrument(id);
+    const Side want = residual.is_negative() ? Side::Buy : Side::Sell;
+    const bool stop = residual.is_zero() || inside_flat(ctx, residual) ||
+                      under_minimum(ctx, residual) || ctx.reconciling() || halted_ ||
+                      why(ctx, maker_k_, now) != Reason::Usable;
+    bool move = false;
+    if (!stop && want == o->side) {
+      if (cfg_.taker_after.ns > 0 && now - maker_sent_ns_ >= cfg_.taker_after.ns) {
+        move = true;
+        cross_ = true;
+        ++stats_.maker_crossed;
+      } else if (now - maker_move_ns_ >= cfg_.repeg.ns) {
+        const Price px = touch(ctx, id, want);
+        if (px.is_positive() && px != o->price) move = true;
+        if (cfg_.resize.is_positive()) {
+          const Qty need = inst.round_qty(to_contracts(inst, residual.abs()));
+          const Qty off = (o->leaves_qty() - need).abs();
+          if (inst.notional(o->price, off) > cfg_.resize) move = true;
+        }
+      }
+      if (!move) {
+        state_ = State::Resting;
+        return true;
+      }
+    }
+    if (stop) working_ = false;
+    if (ctx.cancel(maker_id_)) {
+      maker_cancel_ = true;
+      maker_move_ns_ = now;
+      if (move && !cross_) ++stats_.maker_moves;
+    }
+    return true;
+  }
+
+  // A maker hedge an earlier session left open (an open order with our tag on a hedge
+  // instrument) is taken over as the one resting.
+  template <class Ctx>
+  void adopt(const Ctx& ctx) noexcept {
+    if constexpr (requires { ctx.oms(); }) {
+      ctx.oms().for_each_open_order([&](Handle<Order>, const Order& o) {
+        if (maker_open_ || o.user_tag != cfg_.tag || hedge_index(o.instrument) < 0) return;
+        maker_open_ = true;
+        maker_cancel_ = false;
+        maker_id_ = o.cl_ord_id;
+        maker_k_ = static_cast<std::size_t>(hedge_index(o.instrument));
+        maker_sent_ns_ = ctx.now().ns;
+        maker_move_ns_ = 0;
+      });
+    }
   }
   // The venue's balance or margin covers `r` (StrategyContext::balance_room).
   template <class Ctx>
@@ -929,6 +1196,7 @@ class HedgeExecutor {
   std::array<std::size_t, kMaxHedges> failures_{};
   std::array<std::array<std::int64_t, kMaxFailures>, kMaxHedges> fail_ns_{};
   std::array<std::int64_t, kMaxHedges> bench_until_{};
+  std::array<Ticker, kMaxHedges> ticker_{};  // on_book_ticker, per hedge instrument
   std::size_t active_ = 0;
   Stats stats_{};
   State state_ = State::Idle;
@@ -937,6 +1205,15 @@ class HedgeExecutor {
   bool held_ = false;
   bool unavailable_ = false;  // logged once until a hedge instrument takes the residual again
   bool split_ = false;        // a hedge cut to a [risk] limit was logged; cleared when flat
+  bool working_ = false;      // the residual passed Config::band and is hedged until flat
+  // maker mode
+  bool maker_open_ = false;    // maker_id_ is open
+  bool maker_cancel_ = false;  // ... and its cancel is out
+  bool cross_ = false;         // taker_after: the next hedge is an IOC
+  ClientOrderId maker_id_{};
+  std::size_t maker_k_ = 0;         // its hedge instrument
+  std::int64_t maker_sent_ns_ = 0;  // when it went out (taker_after)
+  std::int64_t maker_move_ns_ = 0;  // when it went out or was last cancelled (repeg)
   // de-risking
   bool blocked_ = false;
   bool derisking_ = false;

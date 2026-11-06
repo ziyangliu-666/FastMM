@@ -67,6 +67,7 @@ struct Ctx {
     NewOrderRequest req;
     ClientOrderId id;
     bool open = true;
+    Order order{};  // what order() shows while it is open
   };
 
   InstrumentTable table;
@@ -125,8 +126,34 @@ struct Ctx {
                       : RejectReason::MaxPosition);
     }
     const ClientOrderId id{0x0001'0000'0000ULL + sent.size() + 1};
-    sent.push_back(Sent{r, id, true});
+    Sent s{r, id, true};
+    s.order.cl_ord_id = id;
+    s.order.instrument = r.instrument;
+    s.order.side = r.side;
+    s.order.price = r.price;
+    s.order.qty = r.qty;
+    s.order.tif = r.tif;
+    s.order.user_tag = r.user_tag;
+    s.order.state = OrderState::Live;
+    sent.push_back(s);
     return id;
+  }
+  [[nodiscard]] const Order* order(ClientOrderId id) const {
+    for (const Sent& s : sent) {
+      if (s.id == id && s.open) return &s.order;
+    }
+    return nullptr;
+  }
+  std::vector<ClientOrderId> cancels;
+  Result<void, RejectReason> cancel(ClientOrderId id) {
+    for (Sent& s : sent) {
+      if (s.id == id && s.open) {
+        s.order.state = OrderState::PendingCancel;
+        cancels.push_back(id);
+        return {};
+      }
+    }
+    return fail(RejectReason::VenueUnknownOrder);
   }
   [[nodiscard]] Qty balance_room(InstrumentId id, Side side, Price) const {
     return room[id.value][static_cast<std::size_t>(side)];
@@ -195,6 +222,8 @@ void end(HedgeExecutor& h,
   u.order.instrument = o.req.instrument;
   u.order.side = o.req.side;
   u.order.qty = o.req.qty;
+  u.order.price = o.req.price;
+  u.order.tif = o.req.tif;
   u.order.cum_qty = q;
   u.order.state = state;
   u.order.reject_reason = reason;
@@ -231,6 +260,178 @@ ConnectionStateMsg connection(std::uint8_t venue, std::uint8_t channel, ConnStat
 }
 
 }  // namespace
+
+namespace {
+
+Notional usd(const char* s) {
+  return Notional::from_decimal(s).value();
+}
+
+HedgeExecutor::Config maker_config() {
+  HedgeExecutor::Config c = config();
+  c.maker = true;
+  c.band = usd("1000");
+  c.flat = usd("200");
+  c.repeg = milliseconds(100);
+  return c;
+}
+
+// A fill of hedge B's open order `i` for `qty` contracts, as the engine books it before the
+// order's own update.
+void hedge_fill(HedgeExecutor& h, Ctx& c, std::size_t i, const char* qty) {
+  const Ctx::Sent& o = c.sent.at(i);
+  c.pos[kB.value] += o.req.side == Side::Buy ? qt(qty) : -qt(qty);
+  Fill f;
+  f.instrument = kB;
+  f.qty = qt(qty);
+  static_cast<void>(h.on_fill(c, f));
+}
+
+}  // namespace
+
+TEST_CASE("strategies.hedge_executor: a band holds a taker hedge until the residual is worth it") {
+  Ctx c;
+  HedgeExecutor::Config cfg = config();
+  cfg.band = usd("1000");
+  HedgeExecutor h = make(c, false, cfg);
+  // Without B's book the residual has no worth to hold back, and nothing can be sent: the band
+  // still holds the 500 USDT once the book is back.
+  c.books[kB.value].valid = false;
+  source_fill(h, c, "0.005");  // 500 USDT
+  CHECK(c.sent.empty());
+  c.set_book(kB, "100000.0", "100000.2");
+  h.on_book(c, kB);
+  CHECK(c.sent.empty());
+  CHECK(h.state() == HedgeExecutor::State::Inside);
+  source_fill(h, c, "0.01");
+  REQUIRE(c.sent.size() == 1);
+  CHECK(c.sent[0].req.tif == TimeInForce::Ioc);
+  CHECK(c.sent[0].req.qty == qt("1.5"));
+}
+
+TEST_CASE(
+    "strategies.hedge_executor: a maker hedge rests at the touch, follows it, stops at flat") {
+  Ctx c;
+  HedgeExecutor h = make(c, false, maker_config());
+  source_fill(h, c, "0.005");
+  CHECK(c.sent.empty());
+  source_fill(h, c, "0.01");  // 1500 USDT long: sell 1.5 contracts of B at its ask
+  REQUIRE(c.sent.size() == 1);
+  CHECK(c.sent[0].req.side == Side::Sell);
+  CHECK(c.sent[0].req.price == px("100000.2"));
+  CHECK(c.sent[0].req.qty == qt("1.5"));
+  CHECK(c.sent[0].req.post_only);
+  CHECK(c.sent[0].req.tif == TimeInForce::Gtc);
+  CHECK(h.state() == HedgeExecutor::State::Resting);
+  // The ask moves within repeg: the order stays.
+  c.advance(milliseconds(50));
+  c.set_book(kB, "100000.2", "100000.4");
+  h.on_book(c, kB);
+  CHECK(c.cancels.empty());
+  // Past repeg: cancelled, and placed at the new ask once the cancel ends.
+  c.advance(milliseconds(60));
+  h.on_book(c, kB);
+  REQUIRE(c.cancels.size() == 1);
+  CHECK(h.stats().maker_moves == 1);
+  CHECK(c.sent.size() == 1);
+  end(h, c, 0, OrderState::Canceled, "0");
+  REQUIRE(c.sent.size() == 2);
+  CHECK(c.sent[1].req.price == px("100000.4"));
+  CHECK(h.stats().hedge_failures == 0);
+  // A partial fill leaves 500 USDT: still outside flat, the order stays.
+  hedge_fill(h, c, 1, "1");
+  CHECK(c.cancels.size() == 1);
+  // Under flat (100 USDT): cancelled, and nothing follows.
+  hedge_fill(h, c, 1, "0.4");
+  REQUIRE(c.cancels.size() == 2);
+  end(h, c, 1, OrderState::Canceled, "0");
+  CHECK(c.sent.size() == 2);
+  CHECK(h.state() == HedgeExecutor::State::Flat);
+  // Back under the band after flat: the next hedge waits for the band again.
+  source_fill(h, c, "0.005");
+  CHECK(c.sent.size() == 2);
+  CHECK(h.state() == HedgeExecutor::State::Inside);
+}
+
+TEST_CASE(
+    "strategies.hedge_executor: a maker hedge pegs to a forwarded ticker newer than the book") {
+  Ctx c;
+  HedgeExecutor h = make(c, false, maker_config());
+  source_fill(h, c, "0.015");
+  REQUIRE(c.sent.size() == 1);
+  CHECK(c.sent[0].req.price == px("100000.2"));
+  // The ticker moves the ask while the depth book is 3 s old (stale = 2 s): B stays usable.
+  c.t = c.t + milliseconds(3000);
+  BookTickerMsg m{};
+  init_header(m, EventType::BookTicker, kB, VenueId{1});
+  m.bid_px = px("100000.2");
+  m.ask_px = px("100000.4");
+  m.bid_qty = qt("1");
+  m.ask_qty = qt("1");
+  CHECK(h.on_book_ticker(c, kB, m));
+  REQUIRE(c.cancels.size() == 1);
+  end(h, c, 0, OrderState::Canceled, "0");
+  REQUIRE(c.sent.size() == 2);
+  CHECK(c.sent[1].req.price == px("100000.4"));
+  // All the ticker shows at its ask is our order: the touch is the others', the book's 100000.6.
+  c.books[kB.value].ask = px("100000.6");
+  m.ask_qty = c.sent[1].req.qty;
+  c.t = c.t + milliseconds(200);
+  CHECK(h.on_book_ticker(c, kB, m));
+  CHECK(c.cancels.size() == 2);
+  end(h, c, 1, OrderState::Canceled, "0");
+  REQUIRE(c.sent.size() == 3);
+  CHECK(c.sent[2].req.price == px("100000.6"));
+  CHECK_FALSE(h.on_book_ticker(c, kSrc, m));
+}
+
+TEST_CASE("strategies.hedge_executor: a refused post-only hedge is no failure and waits repeg") {
+  Ctx c;
+  HedgeExecutor h = make(c, false, maker_config());
+  source_fill(h, c, "0.015");
+  REQUIRE(c.sent.size() == 1);
+  end(h, c, 0, OrderState::Rejected, "0", true, "0", RejectReason::PostOnlyWouldCross);
+  CHECK(h.stats().hedge_failures == 0);
+  CHECK(h.stats().maker_refused == 1);
+  CHECK(c.sent.size() == 1);
+  c.advance(milliseconds(100));
+  h.on_timer(c);
+  CHECK(c.sent.size() == 2);
+}
+
+TEST_CASE("strategies.hedge_executor: taker_after crosses what a maker hedge left after resting") {
+  Ctx c;
+  HedgeExecutor::Config cfg = maker_config();
+  cfg.taker_after = milliseconds(1000);
+  HedgeExecutor h = make(c, false, cfg);
+  source_fill(h, c, "0.015");
+  REQUIRE(c.sent.size() == 1);
+  hedge_fill(h, c, 0, "0.5");
+  c.advance(milliseconds(1000));
+  h.on_timer(c);
+  REQUIRE(c.cancels.size() == 1);
+  CHECK(h.stats().maker_crossed == 1);
+  end(h, c, 0, OrderState::Canceled, "0");
+  REQUIRE(c.sent.size() == 2);
+  CHECK(c.sent[1].req.tif == TimeInForce::Ioc);
+  CHECK(c.sent[1].req.qty == qt("1"));
+  filled(h, c, 1);
+  CHECK(h.state() == HedgeExecutor::State::Flat);
+}
+
+TEST_CASE("strategies.hedge_executor: a maker hedge whose residual changes sign is cancelled") {
+  Ctx c;
+  HedgeExecutor h = make(c, false, maker_config());
+  source_fill(h, c, "0.015");
+  REQUIRE(c.sent.size() == 1);
+  CHECK(c.sent[0].req.side == Side::Sell);
+  source_fill(h, c, "-0.03");  // now 1500 USDT short
+  REQUIRE(c.cancels.size() == 1);
+  end(h, c, 0, OrderState::Canceled, "0");
+  REQUIRE(c.sent.size() == 2);
+  CHECK(c.sent[1].req.side == Side::Buy);
+  CHECK(c.sent[1].req.price == px("100000.0"));
+}
 
 TEST_CASE("strategies.hedge_executor: start refuses a bad set of legs") {
   Ctx c;

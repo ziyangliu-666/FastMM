@@ -1,6 +1,6 @@
 # Hedge with HedgeExecutor
 
-`HedgeExecutor` keeps a strategy's exposure hedged with taker orders on other instruments. The strategy configures it and forwards its hooks; the executor sizes, sends, fails over and de-risks.
+`HedgeExecutor` keeps a strategy's exposure hedged with taker orders on other instruments, or with post-only orders at their touch ([maker mode](#maker-mode-and-bands)). The strategy configures it and forwards its hooks; the executor sizes, sends, fails over and de-risks.
 
 `xmm` is built on it ([Cross-exchange market making](xmm.md)). [`examples/cpp/hedged_mm.cpp`](../../../examples/cpp/hedged_mm.cpp) is a small quoter that uses it.
 
@@ -112,6 +112,25 @@ The `ctx.risk_headroom` cut covers `max_order_qty`, `max_order_notional` at the 
 
 An outcome the venue does not report is an ack-timeout cancel, a reconciliation drop with quantity unaccounted for, or a generic `VenueReject` such as a REST timeout.
 
+## Maker mode and bands
+
+A band leaves a small residual unhedged. With `band` set, nothing goes out until the residual is worth `band` at the hedge instrument's mid; from then on the executor hedges until it is worth less than `flat`. Both apply in taker mode too.
+
+With `maker = true` the hedge is a post-only limit at the hedge instrument's own touch, our own orders left out: a buy at its best bid, a sell at its best ask, for the whole residual.
+
+| Event | What the executor does |
+|---|---|
+| the touch on the order's side moves | cancels it and places it at the new touch, at most every `repeg` |
+| its leaves are worth `resize` more or less than the residual | cancels it and places it again for the residual |
+| the residual changes sign, falls under `flat`, or the instrument stops being usable | cancels it |
+| it has rested `taker_after` | cancels it and sends the rest as the IOC above |
+| the venue refuses it as crossing | places the next one `repeg` later; not a failure |
+| our cancel ends it | places the next one if the residual still calls for it; not a failure |
+
+Book tickers do not move `ctx.book`. Forward the hedge instruments' tickers to `on_book_ticker(ctx, id, m)` and the maker hedge is priced at the ticker's touch while it is newer than the depth book's, leaving out a side that only our hedge makes; a fresh ticker also keeps the instrument from being `Stale`.
+
+A maker hedge with the executor's tag left open by an earlier session is adopted as the resting order. `stats()` counts `maker_moves`, `maker_crossed` and `maker_refused`.
+
 ## Failover
 
 The executor skips a hedge instrument, and the next one in the list takes the hedge, while one of these holds:
@@ -156,6 +175,12 @@ The executor sends these orders itself so they share the hedges' sizing, in-flig
 | `derisk_step` | 0 (the residual) | largest de-risk order, base units |
 | `derisk_interval` | 1 s | wait between de-risk orders |
 | `derisk_tolerance` | 0 | de-risk IOC distance through the touch |
+| `band` | 0 (any residual) | residual worth that starts a hedge, quote currency at the hedge's mid |
+| `flat` | 0 (the lot) | residual worth under which hedging stops |
+| `maker` | false | hedge with post-only orders at the touch |
+| `repeg` | 100 ms | maker: shortest time between moves of the resting hedge |
+| `resize` | 0 (never) | maker: leaves this far from the residual, quote currency, re-size the order |
+| `taker_after` | 0 (never) | maker: rest time after which the rest crosses |
 
 ## Monitor it
 
@@ -165,7 +190,7 @@ The executor sends these orders itself so they share the hedges' sizing, in-flig
 | `stats()` | counts of hedges sent, failures, unreported outcomes, halts, held episodes, failovers, benches, de-risk episodes and de-risk orders |
 | `why(ctx, i, now)` | the `Reason` instrument `i` is skipped |
 
-The states are `Flat`, `Waiting`, `InFlight`, `Reconciling`, `Holding`, `Held`, `Unavailable` and `Halted`. Each transition is logged once: a failover or a return, a bench, a halt, a held hedge and its release, no instrument usable, a de-risk episode's start and end.
+The states are `Flat`, `Waiting`, `Inside` (the band), `Resting` (a maker hedge), `InFlight`, `Reconciling`, `Holding`, `Held`, `Unavailable` and `Halted`. Each transition is logged once: a failover or a return, a bench, a halt, a held hedge and its release, no instrument usable, a de-risk episode's start and end.
 
 ## Test it
 
