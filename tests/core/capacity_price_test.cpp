@@ -61,7 +61,8 @@ TEST_CASE("capacity: demand is bucketed in quarter octaves of the floor") {
     CHECK(CapacityDayPrice::bucket(CapacityDayPrice::edge(b) * 1.0001) == b);
 }
 
-TEST_CASE("capacity: the window's share prices the next order; a first fill gives a slot back") {
+TEST_CASE(
+    "capacity: the window's share prices the next order, and a first fill gives a slot back") {
   CapacityPrice c;
   c.configure(config());
   const std::int64_t t0 = 1000 * kSec;

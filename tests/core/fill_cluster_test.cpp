@@ -2,10 +2,11 @@
 // the hold and its extension, the lift; and in the engine, quote fills on several instruments pull
 // that side everywhere, set_quotes places nothing on it during the hold, and the last quotes come
 // back when it ends. Direct orders are neither counted nor pulled.
+#include "fastmm/core/fill_cluster.hpp"
+
 #include "test_support.hpp"
 
 #include "fastmm/core/engine.hpp"
-#include "fastmm/core/fill_cluster.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -148,8 +149,8 @@ struct FourBooks {
     cfg.quotes.min_requote_interval = Duration{};
     cfg.quotes.min_requote_ticks = 1;
     cfg.fill_cluster = FillClusterConfig{names, milliseconds(500), milliseconds(300)};
-    engine =
-        std::make_unique<ClusterEngine>(cfg, table, clock, transport, feed, strategy, &journal_ring);
+    engine = std::make_unique<ClusterEngine>(
+        cfg, table, clock, transport, feed, strategy, &journal_ring);
     engine->warm_up();
     engine->start();
     for (std::uint16_t k = 0; k < kInstruments; ++k) push_book(InstrumentId{k});
@@ -235,7 +236,8 @@ struct FourBooks {
   }
   [[nodiscard]] std::size_t count(EventType t) const {
     std::size_t n = 0;
-    for (std::size_t i = 0; i < transport.out.size(); ++i) n += transport.header(i).type == t ? 1U : 0U;
+    for (std::size_t i = 0; i < transport.out.size(); ++i)
+      n += transport.header(i).type == t ? 1U : 0U;
     return n;
   }
 };
@@ -273,7 +275,8 @@ TEST_CASE("core.engine: quote fills on several instruments hold that side everyw
   CHECK(v.engagements[0] == 1);
   CHECK(v.held_until[0] == f.clock.now() + milliseconds(300));
   CHECK(f.count(EventType::OutCancel) == 4);
-  for (std::uint16_t k = 0; k < kInstruments; ++k) CHECK(f.working(InstrumentId{k}, Side::Sell) == 1);
+  for (std::uint16_t k = 0; k < kInstruments; ++k)
+    CHECK(f.working(InstrumentId{k}, Side::Sell) == 1);
   CHECK(f.working(InstrumentId{3}, Side::Buy) == 1);  // the direct order
 
   f.cancel_ack_all();

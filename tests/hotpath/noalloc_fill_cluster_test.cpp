@@ -1,5 +1,5 @@
-// The fill-cluster guard on the hot path: quote fills on two instruments engage it, the engine pulls
-// the side, requotes meet the hold, and the hold's end puts the quotes back, all without an
+// The fill-cluster guard on the hot path: quote fills on two instruments engage it, the engine
+// pulls the side, requotes meet the hold, and the hold's end puts the quotes back, all without an
 // allocation.
 #include "alloc_counter.hpp"
 #include "test_support.hpp"
