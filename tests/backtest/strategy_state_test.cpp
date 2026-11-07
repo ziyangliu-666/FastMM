@@ -49,6 +49,7 @@ class Learner : public StrategyBase<BasicMMParams> {
     static_cast<void>(ctx.every(seconds(1), 1));
     if (ask_every.ns > 0) static_cast<void>(ctx.every(ask_every, 2));
     buf_.resize(sizeof(Model) + 16 + padding);
+    pad_.resize(padding);
   }
   template <class Ctx>
   void on_timer(Ctx& ctx, TimerId, std::uint64_t tag) noexcept {
@@ -77,7 +78,7 @@ class Learner : public StrategyBase<BasicMMParams> {
   std::string_view state() noexcept {
     StateWriter w(std::span<std::byte>(buf_.data(), buf_.size()));
     w.put(m_);
-    w.put_array(std::span<const std::byte>(buf_.data(), padding));  // stands in for a big model
+    w.put_array(std::span<const std::byte>(pad_));  // stands in for a big model
     return w.view();
   }
   bool restore(std::string_view bytes) noexcept {
@@ -98,6 +99,7 @@ class Learner : public StrategyBase<BasicMMParams> {
   };
   Model m_;
   std::vector<std::byte> buf_;
+  std::vector<std::byte> pad_;
 };
 
 BacktestConfig learner_config() {
