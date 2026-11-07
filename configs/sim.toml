@@ -55,6 +55,10 @@ taker_bps = 4.0
 weight_per_minute = 6000     # REQUEST_WEIGHT / 1 MINUTE (X-MBX-USED-WEIGHT-1M)
 orders_per_10s = 1000        # ORDERS / 10 SECOND (Binance: 50)
 orders_per_day = 1000000
+# The account's own ORDERS limits (GET /api/v3/rateLimit/order, the WS API rateLimits[]), as
+# Binance raises them per account; exchangeInfo keeps the two above. 0: the same.
+account_orders_per_10s = 0
+account_orders_per_day = 0
 max_recv_window_ms = 60000
 
 [sim.generator]

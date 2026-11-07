@@ -163,6 +163,10 @@ SimServerConfig SimServerConfig::from_config(const Config& cfg) {
   c.weight_limit_per_minute = get_u32(s, "limits.weight_per_minute", c.weight_limit_per_minute);
   c.orders_limit_per_10s = get_u32(s, "limits.orders_per_10s", c.orders_limit_per_10s);
   c.orders_limit_per_day = get_u32(s, "limits.orders_per_day", c.orders_limit_per_day);
+  c.account_orders_limit_per_10s =
+      get_u32(s, "limits.account_orders_per_10s", c.account_orders_limit_per_10s);
+  c.account_orders_limit_per_day =
+      get_u32(s, "limits.account_orders_per_day", c.account_orders_limit_per_day);
   c.max_recv_window_ms = get_u32(s, "limits.max_recv_window_ms", c.max_recv_window_ms);
   c.ping_interval_ms = get_u32(s, "ping_interval_ms", c.ping_interval_ms);
   c.pong_timeout_ms = get_u32(s, "pong_timeout_ms", c.pong_timeout_ms);

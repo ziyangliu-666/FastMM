@@ -52,6 +52,8 @@ Impl::Impl(SimServerConfig c)
     : cfg_(std::move(c)),
       fees_(FeeModel::from_bps(cfg_.maker_bps, cfg_.taker_bps)),
       reactor_(usable_backend(cfg_.net_backend)) {
+  account_orders_10s_ = cfg_.account_orders_limit_per_10s;
+  account_orders_1d_ = cfg_.account_orders_limit_per_day;
   if (cfg_.symbols.empty()) throw std::invalid_argument("SimExchangeServer: no symbols configured");
   if (cfg_.symbols.size() > 64) throw std::invalid_argument("SimExchangeServer: too many symbols");
   if (cfg_.api_key.empty() || (cfg_.api_secret.empty() && cfg_.ed25519_public_key_pem.empty()))
@@ -807,6 +809,12 @@ void SimExchangeServer::set_my_trades_unanswered(bool unanswered) {
 }
 void SimExchangeServer::rate_limit_next_requests(std::uint32_t count) {
   impl_->call([this, count] { impl_->faults_.rate_limit_next = count; });
+}
+void SimExchangeServer::set_account_order_limits(std::uint32_t per_10s, std::uint32_t per_day) {
+  impl_->call([this, per_10s, per_day] {
+    impl_->account_orders_10s_ = per_10s;
+    impl_->account_orders_1d_ = per_day;
+  });
 }
 void SimExchangeServer::set_clock_offset_ms(std::int64_t offset_ms) {
   impl_->call([this, offset_ms] { impl_->clock_offset_ms_ = offset_ms; });

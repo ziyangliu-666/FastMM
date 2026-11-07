@@ -58,7 +58,8 @@ The simulator reads `[[instruments]]` (symbol, base, quote, tick, lot, min_qty, 
 | `account.balances.<ASSET>` | 100 base, 10,000,000 quote | starting balances |
 | `fees.maker_bps`, `fees.taker_bps` | 1, 4 | commission, charged in the quote asset |
 | `limits.weight_per_minute` | 6000 | REQUEST_WEIGHT / 1 MINUTE |
-| `limits.orders_per_10s`, `limits.orders_per_day` | 1000, 1000000 | ORDERS limits (Binance: 50 / 10 s) |
+| `limits.orders_per_10s`, `limits.orders_per_day` | 1000, 1000000 | ORDERS limits in `exchangeInfo` (Binance: 100 / 10 s, 200,000 / day) |
+| `limits.account_orders_per_10s`, `limits.account_orders_per_day` | 0, 0 | the account's own ORDERS limits, as Binance raises them per account: enforced, and reported by `GET /api/v3/rateLimit/order` and the WS API `rateLimits`, while `exchangeInfo` keeps the two above; 0 = the same as those |
 | `limits.max_recv_window_ms` | 60000 | larger recvWindow answers -1131 |
 | `generator.*` | see file | `MarketGeneratorParams` + `enabled`, `seed_levels` |
 | `faults.*` | off | see Fault injection |
@@ -86,6 +87,7 @@ Query string or form body; the signature covers query + body.
 | `PUT /api/v3/order/amend/keepPriority` | quantity decrease, keeps queue priority |
 | `GET /api/v3/openOrders[?symbol]`, `DELETE /api/v3/openOrders?symbol` | -2011 when nothing is open |
 | `GET /api/v3/account/commission?symbol` | `fees.maker_bps` and `fees.taker_bps` as `standardCommission`; special and tax commission zero |
+| `GET /api/v3/rateLimit/order` | the account's ORDERS limits and counts, weight 40 |
 | `GET /api/v3/myTrades?symbol[&fromId / &startTime&endTime][&limit]` | the account's executions, oldest id first; `fromId` with a time range is -1128, a window over 24 h is -1127, limit caps at 1000 |
 | `POST/PUT/DELETE /api/v3/userDataStream` | legacy listenKey (`/ws/<listenKey>`) |
 
@@ -97,7 +99,7 @@ Every response carries `X-MBX-USED-WEIGHT-1M`. Order endpoints also carry `X-MBX
 
 ### WebSocket API
 
-`/ws-api/v3` echoes the request id verbatim. Methods: `ping`, `time`, `exchangeInfo`, `depth`, `ticker.book`, `userDataStream.subscribe.signature` (returns `{"subscriptionId":N}`), `session.logon` / `session.status` / `session.logout` and `userDataStream.subscribe` (Ed25519 account), `userDataStream.unsubscribe`, `order.place`, `order.test`, `order.cancel`, `order.cancelReplace`, `order.amend.keepPriority`, `order.status`, `openOrders.status`, `openOrders.cancelAll` and `account.status`. A 429 error carries `data.retryAfter`.
+`/ws-api/v3` echoes the request id verbatim. Methods: `ping`, `time`, `exchangeInfo`, `depth`, `ticker.book`, `userDataStream.subscribe.signature` (returns `{"subscriptionId":N}`), `session.logon` / `session.status` / `session.logout` and `userDataStream.subscribe` (Ed25519 account), `userDataStream.unsubscribe`, `order.place`, `order.test`, `order.cancel`, `order.cancelReplace`, `order.amend.keepPriority`, `order.status`, `openOrders.status`, `openOrders.cancelAll`, `account.status` and `account.rateLimits.orders`. A 429 error carries `data.retryAfter`.
 
 ### User data events
 
@@ -142,6 +144,7 @@ The timed `[sim.faults]` settings (`*_after_s`) are one-shot, in seconds after t
 | `reject_next_orders` | `reject_next_orders(k)` | `-2010` rejects |
 | `rate_limit_next` | `rate_limit_next_requests(k)` | 429 / `-1003` / `Retry-After` cooldown |
 | — | `set_clock_offset_ms(ms)` | clock skew between client and venue |
+| `limits.account_orders_per_*` | `set_account_order_limits(per_10s, per_day)` | the account's limits change while it trades (0: `exchangeInfo`'s) |
 | — | `expire_listen_keys()` | legacy listenKey expiry |
 | — | `swallow_next_ws_api_responses(k, method)` | the request is carried out and the reply never sent: an outcome the client cannot know; with `method` (`"order.cancel"`), only requests of that method count |
 | — | `duplicate_next_user_events(k)` | a repeated `executionReport`: duplicate acks, duplicate fills |

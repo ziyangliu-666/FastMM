@@ -91,6 +91,11 @@ struct SimServerConfig {
   std::uint32_t weight_limit_per_minute = 6000;
   std::uint32_t orders_limit_per_10s = 1000;
   std::uint32_t orders_limit_per_day = 1'000'000;
+  // The account's own order-count limits, as Binance raises them per account: enforced, reported
+  // in the WS API rateLimits[] and by GET /api/v3/rateLimit/order, while exchangeInfo keeps the
+  // ones above. 0: the exchangeInfo limit.
+  std::uint32_t account_orders_limit_per_10s = 0;
+  std::uint32_t account_orders_limit_per_day = 0;
   std::uint32_t max_recv_window_ms = 60'000;
   std::uint32_t max_open_orders_per_symbol = 200;
 

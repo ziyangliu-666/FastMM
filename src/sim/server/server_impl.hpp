@@ -117,6 +117,7 @@ enum class RestEndpoint : std::uint8_t {
   ListenKeyCreate,
   ListenKeyKeepalive,
   ListenKeyClose,
+  OrderRateLimits,
 };
 
 enum class RespType : std::uint8_t { Ack, Result, Full };
@@ -356,6 +357,16 @@ struct SimExchangeServer::Impl final : public net::WsSessionHandler, public Matc
   [[nodiscard]] std::uint32_t ws_api_weight(std::string_view method, const ParamList& p) const;
   [[nodiscard]] OpResult rate_limit_error(std::int64_t now_ms, bool ws_api);
   [[nodiscard]] std::string rate_limits_json(std::int64_t now_ms);
+  // The account's ORDERS windows with their limits and counts (GET /api/v3/rateLimit/order,
+  // account.rateLimits.orders).
+  [[nodiscard]] std::string order_rate_limits_json(std::int64_t now_ms);
+  // The account's order-count limits: its own where set, else exchangeInfo's.
+  [[nodiscard]] std::uint32_t account_orders_10s() const noexcept {
+    return account_orders_10s_ != 0 ? account_orders_10s_ : cfg_.orders_limit_per_10s;
+  }
+  [[nodiscard]] std::uint32_t account_orders_1d() const noexcept {
+    return account_orders_1d_ != 0 ? account_orders_1d_ : cfg_.orders_limit_per_day;
+  }
   net::HttpServerConfig http_config() const;
 
   // ---- state --------------------------------------------------------------------------------
@@ -407,6 +418,9 @@ struct SimExchangeServer::Impl final : public net::WsSessionHandler, public Matc
   bool amend_in_progress_ = false;
 
   FaultState faults_;
+  // SimServerConfig::account_orders_limit_*, changed at run time by set_account_order_limits.
+  std::uint32_t account_orders_10s_ = 0;
+  std::uint32_t account_orders_1d_ = 0;
   // Every clientOrderId the account has had accepted, so a repeat is visible long after the first
   // order was forgotten (SimServerStats::duplicate_client_order_ids).
   std::unordered_set<std::string> seen_client_ids_;

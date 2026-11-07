@@ -55,6 +55,7 @@ constexpr RouteDef kRoutes[] = {
     {"GET", "/api/v3/openOrders", RestEndpoint::OpenOrders},
     {"GET", "/api/v3/myTrades", RestEndpoint::MyTrades},
     {"GET", "/api/v3/account/commission", RestEndpoint::Commission},
+    {"GET", "/api/v3/rateLimit/order", RestEndpoint::OrderRateLimits},
     {"DELETE", "/api/v3/openOrders", RestEndpoint::CancelAll},
     {"POST", "/api/v3/userDataStream", RestEndpoint::ListenKeyCreate},
     {"PUT", "/api/v3/userDataStream", RestEndpoint::ListenKeyKeepalive},
@@ -72,6 +73,7 @@ constexpr std::string_view kSignedWsMethods[] = {
     "openOrders.status",
     "openOrders.cancelAll",
     "account.status",
+    "account.rateLimits.orders",
 };
 
 }  // namespace
@@ -113,6 +115,8 @@ std::uint32_t Impl::rest_weight(RestEndpoint ep, const ParamList& p) const {
       return 4;
     case RestEndpoint::OpenOrders:
       return p.has("symbol") ? 6 : 80;
+    case RestEndpoint::OrderRateLimits:
+      return 40;  // rest-api.md "Query Unfilled Order Count"
     case RestEndpoint::MyTrades:
       return p.has("orderId") ? 5 : 20;  // rest-api.md "Account trade list"
     default:
@@ -131,12 +135,31 @@ std::string Impl::rate_limits_json(std::int64_t now_ms) {
       {"ORDERS",
        "SECOND",
        10,
-       cfg_.orders_limit_per_10s,
+       account_orders_10s(),
        static_cast<std::int64_t>(a.orders_10s.count(now_ms))},
       {"ORDERS",
        "DAY",
        1,
-       cfg_.orders_limit_per_day,
+       account_orders_1d(),
+       static_cast<std::int64_t>(a.orders_1d.count(now_ms))},
+  };
+  std::string out;
+  append_rate_limits(out, limits);
+  return out;
+}
+
+std::string Impl::order_rate_limits_json(std::int64_t now_ms) {
+  Account& a = accounts_.front();
+  const RateLimitView limits[] = {
+      {"ORDERS",
+       "SECOND",
+       10,
+       account_orders_10s(),
+       static_cast<std::int64_t>(a.orders_10s.count(now_ms))},
+      {"ORDERS",
+       "DAY",
+       1,
+       account_orders_1d(),
        static_cast<std::int64_t>(a.orders_1d.count(now_ms))},
   };
   std::string out;
@@ -258,6 +281,9 @@ OpResult Impl::dispatch_rest(const net::HttpRequest& req,
       return op_my_trades(*acct, params);
     case RestEndpoint::Commission:
       return op_commission(params);
+    case RestEndpoint::OrderRateLimits:
+      ++stats_.order_limit_queries;
+      return OpResult::ok(order_rate_limits_json(now_ms));
     case RestEndpoint::CancelAll:
       return op_cancel_all(*acct, params);
     default:
@@ -270,6 +296,7 @@ OpResult Impl::dispatch_rest(const net::HttpRequest& req,
 
 std::uint32_t Impl::ws_api_weight(std::string_view method, const ParamList& p) const {
   if (method == "exchangeInfo" || method == "account.status") return 20;
+  if (method == "account.rateLimits.orders") return 40;
   if (method == "depth") return depth_weight(p);
   if (method == "openOrders.status") return p.has("symbol") ? 6 : 80;
   if (method == "userDataStream.subscribe.signature" || method == "order.status" ||
@@ -400,6 +427,10 @@ OpResult Impl::dispatch_ws_api(net::WsSession& s, const WsApiRequest& req, std::
   if (m == "order.status") return op_query_order(*acct, p);
   if (m == "openOrders.status") return op_open_orders(*acct, p);
   if (m == "openOrders.cancelAll") return op_cancel_all(*acct, p);
+  if (m == "account.rateLimits.orders") {
+    ++stats_.order_limit_queries;
+    return OpResult::ok(order_rate_limits_json(now_ms));
+  }
   return op_account(*acct, p);  // account.status
 }
 

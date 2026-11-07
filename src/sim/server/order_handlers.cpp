@@ -668,20 +668,20 @@ OpResult Impl::submit_new_order(Account& a, const NewOrderSpec& spec, bool test_
     if (spec.type != BinanceOrderType::Market) lock = spec.qty;
   }
   if (test_only) return OpResult::ok("{}");
-  if (a.orders_10s.count(now_ms) + 1 > cfg_.orders_limit_per_10s) {
+  if (a.orders_10s.count(now_ms) + 1 > account_orders_10s()) {
     OpResult r = reject(429,
                         -1015,
                         "Too many new orders; current limit is " +
-                            std::to_string(cfg_.orders_limit_per_10s) + " orders per 10 SECOND.");
+                            std::to_string(account_orders_10s()) + " orders per 10 SECOND.");
     r.retry_after_s = (a.orders_10s.ms_until_reset(now_ms) + 999) / 1000;
     ++stats_.rate_limited;
     return r;
   }
-  if (a.orders_1d.count(now_ms) + 1 > cfg_.orders_limit_per_day) {
+  if (a.orders_1d.count(now_ms) + 1 > account_orders_1d()) {
     OpResult r = reject(429,
                         -1015,
                         "Too many new orders; current limit is " +
-                            std::to_string(cfg_.orders_limit_per_day) + " orders per 1 DAY.");
+                            std::to_string(account_orders_1d()) + " orders per 1 DAY.");
     r.retry_after_s = (a.orders_1d.ms_until_reset(now_ms) + 999) / 1000;
     ++stats_.rate_limited;
     return r;

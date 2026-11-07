@@ -5,6 +5,7 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- sim: `fastmm-sim-exchange` reports per-account order limits (`[sim.limits] account_orders_per_10s`, `account_orders_per_day`, `set_account_order_limits`) through `GET /api/v3/rateLimit/order`, `account.rateLimits.orders` and the WS API `rateLimits`, and enforces them.
 - strategies: `HedgeExecutor` maker mode hedges with a post-only order at the hedge's own touch, moved with it at most every `repeg`, re-sized past `resize`, crossed after `taker_after`; `band` and `flat` leave a small residual unhedged in either mode.
 - core: `[risk] fill_cluster_names` pulls one side's quotes on every instrument for `fill_cluster_hold_ms` once quote fills on that side cover that many instruments within `fill_cluster_window_ms`, then puts them back; `ctx.fill_cluster()` reports it.
 - core: `[venues.<primary>.treasury] targets = "demand"` funds each pool account for its home instruments' needs, which strategies declare with `ctx.set_funding_need(id, quote)`; `"weights"` stays the default.

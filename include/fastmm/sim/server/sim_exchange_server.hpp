@@ -45,6 +45,7 @@ struct SimServerStats {
   std::uint64_t time_requests = 0;
   std::uint64_t open_orders_queries = 0;
   std::uint64_t my_trades_queries = 0;
+  std::uint64_t order_limit_queries = 0;  // GET /api/v3/rateLimit/order, account.rateLimits.orders
   std::uint64_t cancel_all_requests = 0;
   std::uint64_t signature_errors = 0;
   std::uint64_t session_logons = 0;  // successful session.logon (Ed25519 accounts)
@@ -148,6 +149,9 @@ class SimExchangeServer {
   void set_my_trades_unanswered(bool unanswered);
   void rate_limit_next_requests(std::uint32_t count);
   void set_clock_offset_ms(std::int64_t offset_ms);
+  // The account's own order-count limits from now on (SimServerConfig::account_orders_limit_*;
+  // 0: exchangeInfo's).
+  void set_account_order_limits(std::uint32_t per_10s, std::uint32_t per_day);
   void expire_listen_keys();
 
   // Uncertain outcomes. The next `count` WebSocket API requests are carried out in full and their
