@@ -2,54 +2,97 @@
 
 All notable changes are recorded here (Keep a Changelog format).
 
-## [Unreleased]
+## [0.11.0] - 2026-11-07
+
+A strategy's learnt state now lives in versioned checkpoints, and its parameters and `[ab]` arms can
+be set per instrument. A pool of accounts can keep each position on one home account and fund it by
+what its instruments need, and `[capacity]` prices every order against the account's order limits.
+
+Highlights:
+- Strategy state in versioned checkpoints, also written when the strategy asks (Added, core)
+- Parameters and `[ab]` arms per instrument or group of instruments (Added, core)
+- Home placement and a demand treasury for pools of accounts (Added, core)
+- `[capacity]` prices each order slot against the account's order windows (Added, core)
+- Shadow sweeps run variants beside a live session as its journal is written (Added, backtest)
+- `HedgeExecutor` hedges with post-only orders at the touch (Added, strategies)
+
+### Breaking changes
+- python: the hot hook ABI is version 3; hooks cached for version 2 are compiled again.
+- store: schema 15; a store opened by 0.11 does not open in 0.10.
+- apps: the status file is version 28; run `fastmm-top` from the same build as `fastmm-live`.
+- core: the `[strategy] state_file` starts with a 16-byte head; 0.10 cannot read a file 0.11 wrote.
+- sim: under the queue fill models our orders at the touch show in the feed at once; results change.
 
 ### Added
-- venues: Binance Spot sizes its order windows by the account's own limits, from `GET /api/v3/rateLimit/order` at start and after the order channel comes back and from every WS API reply, so an account with raised limits uses them; `exchangeInfo`'s stay when the query fails.
-- sim: `fastmm-sim-exchange` reports per-account order limits (`[sim.limits] account_orders_per_10s`, `account_orders_per_day`, `set_account_order_limits`) through `GET /api/v3/rateLimit/order`, `account.rateLimits.orders` and the WS API `rateLimits`, and enforces them.
-- strategies: `HedgeExecutor` maker mode hedges with a post-only order at the hedge's own touch, moved with it at most every `repeg`, re-sized past `resize`, crossed after `taker_after`; `band` and `flat` leave a small residual unhedged in either mode.
-- core: `[risk] fill_cluster_names` pulls one side's quotes on every instrument for `fill_cluster_hold_ms` once quote fills on that side cover that many instruments within `fill_cluster_window_ms`, then puts them back; `ctx.fill_cluster()` reports it.
-- core: `[venues.<primary>.treasury] targets = "demand"` funds each pool account for its home instruments' needs, which strategies declare with `ctx.set_funding_need(id, quote)`; `"weights"` stays the default.
-- core: `reserve = true` has the engine hold a treasury's payout out of the payer's free balance until the transfer resolves, so no order spends it first; the holds are journaled `Transfer` controls that a replay and a backtest reproduce.
-- sim: `[backtest] transfer_p_fail`, `transfer_p_unknown` and `transfer_hang_ms` make the simulated venue refuse transfers and lose their answers.
-- core: `[capacity]` prices each new order and each move of a resting one against the order slot it takes: a knapsack threshold on the account's window, day prices for `orders_1d` and `orders_per_day`; `mode = "observe"` refuses nothing, `"new"` and `"enforce"` refuse below the price with `PricedOut`.
-- core: quote levels and direct orders carry a value (`DesiredQuotes::bid(px, qty, value, keep)`, `NewOrderRequest::value`, Python `(price, qty, value, keep)` and `send(value=)`); `[capacity] value = "learned"` values the levels that state none from the session's fills.
-- store: the `capacity` table holds each account's minute of priced, sent and refused orders and the price (schema 15).
-- core: `[venues.<primary>.pool] placement = "home"` keeps each instrument's position on one account of its pool: adding orders go to its home, reducing orders to the accounts holding it, pieces first; `"balance"` (the default) keeps today's routing and only keeps the homes.
-- core: a home planner moves at most `plan_max_moves` homes every `plan_interval_s` to spread the accounts' order load; its moves, `fastmm-ctl pool home` and `ctx.set_home` are journaled `PoolHome` controls that a replay and a backtest reproduce.
-- core: `ctx.holding(id, account)`, `ctx.home(id)`, `ctx.pieces(id)` and `ctx.placement(primary)`, in C++ and Python; the status file shows each instrument's home and pieces.
-- core: `HomeUnavailable` refuses an adding order whose home cannot be reached; `spill = "flat"` re-homes a flat instrument instead.
-- sim: `[backtest] orders_credit_fills` gives a filled order's slot back to the simulated order windows, as Binance Spot does.
-- backtest: shadow sweeps: `[shadow]` and `fastmm-shadow` run variants of a strategy over a live session's journal as it is written, with the simulation's error against the session's real fills and simultaneous intervals on the variants.
-- backtest: `JournalTail` and `FollowSource` read a journal while it is written, parts and all, and give the stream a finished journal gives.
-- backtest: `[backtest] controls_from_journal` replays a session's operator commands.
-- python: `fastmm.shadow` follows a journal with a C++ strategy or a class with hot hooks.
-- apps: `fastmm-top` shows a shadow's status, and `--metrics` its `fastmm_shadow_*` gauges.
-- core: `[engine] quote_room_reserve`: a quote is not moved towards the touch while the account it rests on has no more than this many orders left in its venue order windows; the resting order stays instead of a cancel whose new order the window refuses (default 0, -1 off).
-- core: reduce-only mode (`fastmm-ctl reduce-only on|off`, `[risk] reduce_only`) refuses orders that add to a position, per session, venue or instrument, and `ctx.reduce_only(id)` reads it.
-- core: checkpoints and the `[strategy] state_file` record the strategy's `state_version`; a backtest, replay or live session refuses state of another version.
-- core: a `state()` that returns no bytes leaves the state file as it was, with a warning.
+- core: checkpoints and the `[strategy] state_file` record the strategy's `state_version`.
+- core: a backtest, replay or live session refuses strategy state of another `state_version`.
 - core: `ctx.request_checkpoint()` writes a checkpoint when the strategy asks, in C++ and Python.
-- core: a checkpoint that would leave less than a quarter of the journal ring free is skipped and counted, instead of overflowing the ring.
-- strategies: `StateWriter` and `StateReader` write and read a strategy's state in a buffer sized once.
-- backtest: `[backtest] reconcile_on_unknown_cancel` follows a cancel the simulated venue refuses as unknown with an open-order snapshot, as the Binance connector does.
-- core: `[strategy.overrides]` and `[strategy.groups]` set strategy parameters per instrument or group, journaled at the start of the session.
-- live: `fastmm-ctl param` takes `--group` and `--reset`, and `params --instrument` lists the instrument's own values.
-- core: `[ab.assign]` assigns arms by a list, and `[ab] block_offset_s` moves the block boundaries.
-- core: `[engine] markout_ms` records the mid at each fill and at each horizon after it in the store's `markouts` table.
-- apps: `fastmm-pnl ab` reads an `[ab]` test from the store: per arm, fills, notional, markouts and PnL, with intervals over whole UTC days.
-- apps: `fastmm-top` shows each instrument's `[ab]` arm and how many parameters it holds as its own.
-- python: Python strategies take `[strategy.overrides]` and `[ab]` in backtests and live sessions.
+- core: a checkpoint that would leave under a quarter of the journal ring free is skipped.
+- core: `[strategy.overrides]` and `[strategy.groups]` set strategy parameters per instrument.
+- core: `[ab.assign]` assigns arms by a list; `[ab] block_offset_s` moves the block boundaries.
+- core: `[engine] markout_ms` writes the mid at each fill and horizons after it to `markouts`.
+- core: `[venues.<primary>.pool] placement = "home"` keeps each position on one account of a pool.
+- core: a home planner moves at most `plan_max_moves` homes every `plan_interval_s`.
+- core: home moves by the planner, `fastmm-ctl pool home` and `ctx.set_home` are journaled.
+- core: `HomeUnavailable` refuses an adding order whose home is out of reach.
+- core: `spill = "flat"` re-homes a flat instrument whose home is out of reach.
+- core: `ctx.holding`, `ctx.home`, `ctx.pieces`, `ctx.placement` and `ctx.set_home`.
+- core: `[venues.<primary>.treasury] targets = "demand"` funds each account for its homes' needs.
+- core: `ctx.set_funding_need(id, quote)` declares an instrument's funding need.
+- core: a treasury with `reserve = true` holds each payout out of the payer's free balance.
+- core: `[capacity]` prices each new order and each move against the order slot it takes.
+- core: `[capacity] mode` is `"observe"`, `"new"` or `"enforce"`; the last two refuse `PricedOut`.
+- core: quote levels and orders carry a value; `[capacity] value = "learned"` values the rest.
+- core: `ctx.capacity(venue)` returns what an order slot on that account costs now.
+- core: `[risk] fill_cluster_names` pulls one side's quotes everywhere after a burst of fills.
+- core: `ctx.fill_cluster()` reports the fill-cluster guard.
+- core: reduce-only mode (`[risk] reduce_only`, `fastmm-ctl reduce-only`) refuses adding orders.
+- core: `ctx.reduce_only(id)` reads reduce-only mode.
+- core: `[engine] quote_room_reserve` holds a quote in place while its account has few orders left.
+- core: `OrderBudget::wait_ns` gives the time until the next order fits the venue's windows.
+- strategies: `StateWriter` and `StateReader` write and read a strategy's state bytes.
+- strategies: `HedgeExecutor` with `maker = true` hedges with post-only orders at the touch.
+- strategies: `HedgeExecutor` `band` and `flat` leave a small residual unhedged.
+- python: `fastmm.shadow` follows a journal with a C++ strategy or a class with hot hooks.
+- python: a quote level is `(price, qty, value)` or `(price, qty, value, keep)`; `send(value=)`.
+- python: `engine_stats()` counts checkpoints written and skipped.
+- store: the `capacity` table holds each account's priced, sent and refused orders by minute.
+- backtest: `[shadow]` and `fastmm-shadow` run variants of a strategy beside a live session.
+- backtest: a shadow reports its error against the session's real fills.
+- backtest: `JournalTail` and `FollowSource` read a journal while it is written.
+- backtest: `[backtest] controls_from_journal` replays a session's operator commands.
+- backtest: `[backtest] params_pinned` keeps the named parameters from the journal's updates.
+- backtest: `[backtest] reconcile_on_unknown_cancel` follows an unknown cancel with a snapshot.
+- backtest: `MultiverseWatch` reads and stops a multiverse's runs while they run.
+- sim: `[backtest] transfer_p_fail`, `transfer_p_unknown` and `transfer_hang_ms` fail transfers.
+- sim: `[backtest] orders_credit_fills` gives a filled order's slot back to the order windows.
+- sim: `fastmm-sim-exchange` reports and enforces per-account order limits (`[sim.limits]`).
+- venues: Binance Spot sizes its order windows by the account's own order limits.
+- apps: `fastmm-pnl ab` reads an `[ab]` test from the store: fills, markouts and PnL per arm.
+- apps: `fastmm-top` shows each instrument's arm, own parameters, home and pieces.
+- apps: `fastmm-top` shows a shadow's status, and `--metrics` its `fastmm_shadow_*` gauges.
+- apps: `fastmm-data mark` gives a journal's mid at each row of a CSV and horizons after it.
+- live: `fastmm-ctl param` takes `--group` and `--reset`; `params --instrument` lists its own.
+- tools: `tools/replay_board.py` sets a backtest over a live journal beside the session.
 
 ### Changed
-- core: an update for every instrument leaves the values an instrument holds as its own (set for it alone); a reset gives it the shared value.
-- sim: under the queue fill models an order of ours that rests at or inside the touch, or leaves it, goes out in the feed at once with a ticker of the touch, as a live venue's book ticker shows it, instead of with the instrument's next recorded message.
-- backtest: `initial_state = "journal"` over a journal that begins at the session's start takes no periodic checkpoint from after its first order for the start's state.
-- backtest: a sweep's point with `params_from_journal` keeps the parameters it sets against the journal's updates.
+- core: a parameter update for every instrument keeps the values an instrument holds as its own.
+- core: a refusal for a full order window says when the window frees.
+- store: a refusal repeated without a break is written less often, down to once a minute.
+- backtest: `initial_state = "journal"` takes no checkpoint from after the session's first order.
+- backtest: a journal read from a later part of its session warns about earlier parameter updates.
+- backtest: a sweep's point with `params_from_journal` keeps the parameters it sets.
 
 ### Fixed
-- sim: a cancel the simulated venue refuses carries no venue time, as Binance's -2011 does not, so a cancel that lost its race with a fill no longer leaves the sold quantity in the engine's balance estimate.
-- core: a reconciliation holds the resting quotes instead of cancelling them, so the quotes still asked for are not sent again at its end; every quote of every account was cancelled and re-sent for one account's reconciliation, which on Binance follows each cancel that loses its race with a fill.
+- core: one account's reconciliation no longer cancels and re-sends every account's quotes.
+- sim: a cancel that loses its race with a fill no longer leaves the sold quantity in the balance.
+
+### Documentation
+- docs: restore a strategy's learnt state from a checkpoint.
+- docs: run a live A/B test by instrument.
+- docs: keep each position on one account of a pool, and fund each account by its homes' needs.
+- docs: shadow sweeps: turning them on, reading them, their keys and their cost.
+- docs: the home page names the features for what they do.
 
 ## [0.10.1] - 2026-10-29
 
