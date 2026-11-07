@@ -177,7 +177,7 @@ TEST_CASE(
   LiveEngine live(cfg, opts);
   live.start();
   REQUIRE(fills_at_least(fx, 2, 30000));
-  REQUIRE(wait_until([&] { return live.engine().stats().priced_out >= 3; }, 30000));
+  REQUIRE(wait_until([&] { return live.live_stats().stats.capacity_priced_out >= 3; }, 30000));
   std::this_thread::sleep_for(std::chrono::milliseconds(500));
   live.stop();
   const EngineStats& es = live.engine().stats();
