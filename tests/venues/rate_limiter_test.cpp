@@ -347,6 +347,45 @@ TEST_CASE("venues.rate_limiter: the published budget stops where can_send does")
   }
 }
 
+TEST_CASE("venues.rate_limiter: an account's own order limits resize its windows") {
+  // exchangeInfo's 100 per 10 s and 200,000 a day; the account was raised to 300 and 600,000.
+  RateLimiter rl(0.9);
+  REQUIRE(rl.add_order_bucket(100, 10 * kSec));
+  REQUIRE(rl.add_order_bucket(200'000, 86'400 * kSec));
+  const std::int64_t now = 5 * kSec;
+  rl.on_headers(-1, 85, now);
+  CHECK(rl.can_send(0, now, true));
+  rl.on_headers(-1, 90, now);
+  CHECK_FALSE(rl.can_send(0, now, true));  // 90 of 100
+  CHECK(rl.set_order_limit(300, 10 * kSec));
+  CHECK_FALSE(rl.set_order_limit(300, 10 * kSec));  // the same limit again changes nothing
+  CHECK(rl.set_order_limit(600'000, 86'400 * kSec));
+  CHECK(rl.order_bucket(0)->used == 90);  // the count stays with the window
+  CHECK(rl.can_send(0, now, true));
+  fastmm::OrderBudget b = budget_of(rl, now, 0);
+  CHECK(b.orders_10s.limit == 300);
+  CHECK(b.orders_10s.cap == 270);
+  CHECK(b.orders_10s.remaining() == 180);
+  CHECK(b.orders_1d.limit == 600'000);
+  CHECK(b.orders_1d.cap == 540'000);
+
+  // Counts by window: the day's is calibrated too.
+  rl.on_order_count(5000, 86'400 * kSec, now);
+  rl.on_order_count(20, 60 * kSec, now);  // no such window: ignored
+  b = budget_of(rl, now, 0);
+  CHECK(b.orders_1d.used == 5000);
+  CHECK(b.orders_10s.used == 90);
+  CHECK_FALSE(b.orders_1m.known());
+
+  // A window exchangeInfo did not list is added; a lower limit shrinks one.
+  CHECK(rl.set_order_limit(1000, 60 * kSec));
+  CHECK(rl.set_order_limit(80, 10 * kSec));
+  b = budget_of(rl, now, 0);
+  CHECK(b.orders_1m.limit == 1000);
+  CHECK(b.orders_10s.limit == 80);
+  CHECK_FALSE(rl.can_send(0, now, true));  // 90 sent, 72 admitted
+}
+
 TEST_CASE("venues.rate_limiter: windows roll on the venue's clock") {
   // The venue's clock is 23 s ahead of the local one: its minute ends at local 37 s, 97 s, ...
   RateLimiter rl(1.0);

@@ -244,6 +244,14 @@ TEST_CASE("binance.ws_api: response decoding (ok, cancel, cancelReplace, errors,
   CHECK(r.rate.weight_limit == 6000);
   CHECK(r.rate.order_count == 1);  // shortest ORDERS window (10 s)
   CHECK(r.rate.order_limit == 50);
+  // Every ORDERS entry with its window: the account's limit on each (rateLimit/order).
+  REQUIRE(r.rate.order_windows == 2);
+  CHECK(r.rate.orders[0].window_s == 10);
+  CHECK(r.rate.orders[0].limit == 50);
+  CHECK(r.rate.orders[0].count == 1);
+  CHECK(r.rate.orders[1].window_s == 86'400);
+  CHECK(r.rate.orders[1].limit == 160'000);
+  CHECK(r.rate.orders[1].count == 1);
 
   auto cancel = padded_fixture("binance/ws_api_order_cancel_ok.json");
   REQUIRE(d.decode(cancel.view(), r) == ParseStatus::Ok);
@@ -597,4 +605,38 @@ TEST_CASE(
   // Not "&xtimestamp=": the parameter itself.
   REQUIRE(restamp_signed_query(s, "a=1&timestamp=7&signature=00", 8, out));
   CHECK(out.view().starts_with("a=1&timestamp=8&signature="));
+}
+
+TEST_CASE("binance.rest: the account's order limits, GET /api/v3/rateLimit/order") {
+  const Signer s = hmac_signer();
+  TestUniverse u;
+  BinanceOrderEncoder enc(s, u.symbols, 5000);
+  RestRequest rr;
+  REQUIRE(enc.encode_rest_order_rate_limits(kTs, rr));
+  CHECK(rr.method == "GET");
+  CHECK(rr.path == "/api/v3/rateLimit/order");
+  CHECK(rr.weight == 40);
+  CHECK(std::string(rr.query.view())
+            .starts_with("recvWindow=5000&timestamp=1789295199000&signature="));
+
+  // rest-api.md "Query Unfilled Order Count", for an account whose limits were raised.
+  const char* body = R"([
+    {"rateLimitType":"ORDERS","interval":"SECOND","intervalNum":10,"limit":300,"count":12},
+    {"rateLimitType":"ORDERS","interval":"DAY","intervalNum":1,"limit":600000,"count":4821}])";
+  std::vector<RateLimitRule> rules;
+  REQUIRE(decode_order_rate_limits(body, rules).empty());
+  REQUIRE(rules.size() == 2);
+  CHECK(rules[0].window_ns() == 10'000'000'000);
+  CHECK(rules[0].limit == 300);
+  CHECK(rules[0].count == 12);
+  CHECK(rules[1].window_ns() == 86'400'000'000'000);
+  CHECK(rules[1].limit == 600'000);
+  CHECK(rules[1].count == 4821);
+
+  rules.clear();
+  CHECK_FALSE(decode_order_rate_limits("[]", rules).empty());
+  CHECK_FALSE(decode_order_rate_limits(R"({"code":-1022,"msg":"bad"})", rules).empty());
+  CHECK_FALSE(decode_order_rate_limits(
+                  R"([{"rateLimitType":"ORDERS","interval":"SECOND","intervalNum":10}])", rules)
+                  .empty());
 }

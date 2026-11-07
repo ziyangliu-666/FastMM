@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <thread>
 
@@ -473,6 +474,7 @@ void BinanceVenue::connect_private() {
   resume_known_ids_.clear();
   exec_replay_.open(!cfg_.dry_run && signer_.usable());
   if (!cfg_.dry_run) {
+    request_order_limits();
     if (cfg_.ws_order_api) open_order();
     if (cfg_.user_stream == UserStreamMode::WsApi) {
       open_user();
@@ -789,6 +791,7 @@ void BinanceVenue::on_order_state(net::ConnState s) {
     if (reconnected) {
       exec_replay_.read_all();  // the replies lost with the connection name no instrument
       reconcile_.request();
+      request_order_limits();  // the account's limits may have changed while it was down
     } else if (first_connect) {
       reconcile_.sweep();
     }
@@ -833,8 +836,16 @@ void BinanceVenue::on_order_text(std::string_view t, std::int64_t ts) {
 }
 
 void BinanceVenue::handle_ws_api_response(const WsApiResponse& r, std::string_view raw) {
-  rate_.on_headers(r.rate.used_weight, r.rate.order_count, now_ns());
-  budget_pub_.store(budget_of(rate_, now_ns(), orders_taken_));
+  const std::int64_t now = now_ns();
+  rate_.on_headers(r.rate.used_weight, -1, now);
+  // Each ORDERS entry names its window, the account's limit on it and the count.
+  for (std::size_t i = 0; i < r.rate.order_windows; ++i) {
+    const OrderWindowInfo& w = r.rate.orders[i];
+    const std::int64_t window_ns = w.window_s * 1'000'000'000;
+    adopt_order_limit(window_ns, w.limit);
+    rate_.on_order_count(w.count, window_ns, now);
+  }
+  budget_pub_.store(budget_of(rate_, now, orders_taken_));
   if (const auto req = parse_request_id(r.id)) {
     handle_order_response(req->first, req->second, r);
     return;
@@ -1809,6 +1820,73 @@ void BinanceVenue::request_server_time() {
       });
   if (!queued) time_request_pending_ = false;
   rate_.on_sent(1, now_ns());  // GET /api/v3/time: "IP Weight 1" (general endpoints, 2026-09-14)
+}
+
+void BinanceVenue::request_order_limits() {
+  if (rest_ == nullptr || rest_hard_stopped_ || order_limits_pending_ || !signer_.usable()) return;
+  RestRequest rr;
+  if (!encoder_->encode_rest_order_rate_limits(venue_time_ms(), rr)) return;
+  const auto target = signed_target(rr);  // made when sent
+  std::weak_ptr<int> alive = alive_;
+  order_limits_pending_ = true;
+  const bool queued =
+      rest_->request("GET", target, api_headers(), {}, [this, alive](const net::HttpResponse& r) {
+        if (alive.expired()) return;
+        order_limits_pending_ = false;
+        ++stats_.rest_requests;
+        note_rate_headers(r);
+        std::vector<RateLimitRule> rules;
+        std::string why;
+        if (!r.ok()) {
+          ++stats_.rest_errors;
+          why = r.status != 0 ? fmt::format("HTTP {} {}", r.status, r.body.substr(0, 200))
+                              : std::string(net::to_string(r.error));
+        } else {
+          why = decode_order_rate_limits(r.body, rules);
+        }
+        if (!why.empty()) {
+          FASTMM_LOG_WARN(
+              "{}: GET /api/v3/rateLimit/order failed ({}); the order windows keep "
+              "the limits they have",
+              cfg_.name,
+              why);
+          return;
+        }
+        const std::int64_t now = now_ns();
+        for (const RateLimitRule& rule : rules) {
+          adopt_order_limit(rule.window_ns(), rule.limit);
+          rate_.on_order_count(rule.count, rule.window_ns(), now);
+        }
+        budget_pub_.store(budget_of(rate_, now, orders_taken_));
+      });
+  if (queued) {
+    rate_.on_sent(rr.weight, now_ns());
+  } else {
+    order_limits_pending_ = false;
+  }
+}
+
+void BinanceVenue::adopt_order_limit(std::int64_t window_ns, std::int64_t limit) {
+  if (limit <= 0 || limit > std::numeric_limits<std::uint32_t>::max() || window_ns <= 0) return;
+  std::int64_t was = 0;
+  for (std::size_t i = 0; i < RateLimiter::kMaxBuckets; ++i) {
+    const std::optional<RateBucket> b = rate_.order_bucket(i);
+    if (b && b->window_ns == window_ns) {
+      was = b->limit;
+      break;
+    }
+  }
+  if (was == limit) return;
+  if (!rate_.set_order_limit(static_cast<std::uint32_t>(limit), window_ns)) return;
+  const std::int64_t s = window_ns / 1'000'000'000;
+  FASTMM_LOG_INFO("{}: the account's order limit is {} per {} (was {})",
+                  cfg_.name,
+                  limit,
+                  s % 86'400 == 0  ? fmt::format("{} d", s / 86'400)
+                  : s % 3'600 == 0 ? fmt::format("{} h", s / 3'600)
+                  : s % 60 == 0    ? fmt::format("{} min", s / 60)
+                                   : fmt::format("{} s", s),
+                  was == 0 ? std::string("none") : std::to_string(was));
 }
 
 void BinanceVenue::request_listen_key() {

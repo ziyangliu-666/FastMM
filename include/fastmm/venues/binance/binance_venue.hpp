@@ -22,7 +22,9 @@
 // cancel_all() uses an independent BlockingHttp connection so the kill switch works even if
 // the reactor thread is wedged (6.7).
 //
-// Rate limits: REQUEST_WEIGHT / ORDERS buckets from exchangeInfo.rateLimits; WS API
+// Rate limits: REQUEST_WEIGHT / ORDERS buckets from exchangeInfo.rateLimits, the ORDERS ones
+// resized to the account's own limits (GET /api/v3/rateLimit/order when the private session
+// starts and the order channel comes back, and the limits every WS API reply names); WS API
 // responses carry `rateLimits[]` and REST responses X-MBX-USED-WEIGHT-1M /
 // X-MBX-ORDER-COUNT-10S; 429 -> Retry-After cooldown, longer for one soon after another; 418 ->
 // REST hard stop. The start's snapshots, history queries and order lookups, one per symbol, take
@@ -273,6 +275,12 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
                        std::int64_t venue_ms);
   void request_snapshot(InstrumentId id);
   void request_server_time();
+  // GET /api/v3/rateLimit/order: the account's own order-count limits, which the order windows
+  // take (adopt_order_limit). A failed query leaves the limits the windows have.
+  void request_order_limits();
+  // The account's limit on the order window of `window_ns`, from that query or a WS API reply's
+  // rateLimits[]: the window is resized, and the change logged, when it differs.
+  void adopt_order_limit(std::int64_t window_ns, std::int64_t limit);
   // The rate limiter's windows on the venue's clock (clock_offset_ms_), after each sync.
   void align_rate_windows() noexcept;
   void request_listen_key();
@@ -396,6 +404,7 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   std::int64_t clock_sync_ns_ = 0;
   std::int64_t time_request_sent_ns_ = 0;
   bool time_request_pending_ = false;
+  bool order_limits_pending_ = false;
   bool clock_resync_wanted_ = false;
   bool session_logged_on_ = false;
   bool user_subscribed_ = false;

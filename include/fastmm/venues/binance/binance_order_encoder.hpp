@@ -45,6 +45,7 @@
 #include "fastmm/venues/request_id.hpp"
 #include "fastmm/venues/symbology.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -193,6 +194,11 @@ class BinanceOrderEncoder {
   // GET /api/v3/account/commission: the account's fee rates on `symbol`. Weight 20.
   bool encode_rest_commission(std::string_view symbol, std::int64_t timestamp_ms, RestRequest& out);
 
+  // GET /api/v3/rateLimit/order: the account's own order-count limits and counts (rest-api.md
+  // "Query Unfilled Order Count"), which exchangeInfo does not show for an account whose limits
+  // were raised. Weight 40.
+  bool encode_rest_order_rate_limits(std::int64_t timestamp_ms, RestRequest& out);
+
   // Sorted parameter list for one request; builds both the signature payload and the JSON.
   // Public so the .cpp helpers can build lists; not part of the stable API.
   using ParamList = BinanceParams<20>;  // cancelReplace is the widest request
@@ -239,11 +245,22 @@ class BinanceOrderEncoder {
 
 // ---- WebSocket API response ---------------------------------------------------------------
 
+// One ORDERS entry of rateLimits[]: the account's limit on that window and its count.
+struct OrderWindowInfo {
+  std::int64_t window_s = 0;
+  std::int64_t limit = -1;
+  std::int64_t count = -1;
+};
+
 struct RateLimitInfo {
+  static constexpr std::size_t kMaxOrderWindows = 4;
   std::int64_t used_weight = -1;  // REQUEST_WEIGHT count (first entry)
   std::int64_t weight_limit = -1;
   std::int64_t order_count = -1;  // ORDERS count (shortest interval entry)
   std::int64_t order_limit = -1;
+  // Every ORDERS entry, in the order listed (10 s and 1 day on Spot).
+  std::array<OrderWindowInfo, kMaxOrderWindows> orders{};
+  std::size_t order_windows = 0;
 };
 
 struct WsApiResponse {

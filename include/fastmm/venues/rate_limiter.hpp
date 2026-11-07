@@ -177,6 +177,18 @@ class RateLimiter {
   bool add_order_bucket(std::uint32_t limit, std::int64_t window_ns) noexcept {
     return add(orders_, limit, window_ns, offset_);
   }
+  // The account's own limit on the order-count window of `window_ns` (Binance raises it per
+  // account, which exchangeInfo does not show): the bucket of that length takes it and keeps its
+  // count, or one is added. False when the bucket already had that limit, or there is no room.
+  bool set_order_limit(std::uint32_t limit, std::int64_t window_ns) noexcept {
+    for (RateBucket& b : orders_) {
+      if (!b.active || b.window_ns != window_ns) continue;
+      if (b.limit == limit) return false;
+      b.limit = limit;
+      return true;
+    }
+    return add(orders_, limit, window_ns, offset_);
+  }
   // The venue's clock minus the local (now) clock, ns: every window, the IP's included, rolls
   // where the venue's does from now on. 0 (the default): windows of the local clock.
   void set_clock_offset(std::int64_t venue_minus_local_ns, std::int64_t now) noexcept;
@@ -255,6 +267,19 @@ class RateLimiter {
                                       recent_orders_.since(now, kHeaderLagNs),
                                       now,
                                       kHeaderLagNs);
+    }
+  }
+  // The venue's order count on the window of `window_ns` (WS API rateLimits[], which name each
+  // window), calibrated as on_headers does; ignored when no bucket has that length.
+  void on_order_count(std::int64_t count, std::int64_t window_ns, std::int64_t now) noexcept {
+    if (count < 0) return;
+    for (RateBucket& b : orders_) {
+      if (!b.active || b.window_ns != window_ns) continue;
+      b.calibrate(static_cast<std::uint32_t>(count),
+                  recent_orders_.since(now, kHeaderLagNs),
+                  now,
+                  kHeaderLagNs);
+      return;
     }
   }
   // Bybit style: remaining requests for this endpoint (X-Bapi-Limit-Status) and the limit.

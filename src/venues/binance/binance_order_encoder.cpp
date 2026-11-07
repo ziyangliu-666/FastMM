@@ -410,6 +410,17 @@ bool BinanceOrderEncoder::encode_rest_commission(std::string_view symbol,
   return finish_rest(p, out);
 }
 
+bool BinanceOrderEncoder::encode_rest_order_rate_limits(std::int64_t timestamp_ms,
+                                                        RestRequest& out) {
+  ParamList p;  // sorted by name
+  p.add_int("recvWindow", recv_window_ms_);
+  p.add_int("timestamp", timestamp_ms);
+  out.method = "GET";
+  out.path = "/api/v3/rateLimit/order";
+  out.weight = 40;  // rest-api.md "Query Unfilled Order Count"
+  return finish_rest(p, out);
+}
+
 // ---- response decoder ----------------------------------------------------------------------
 
 struct BinanceWsApiDecoder::Impl {
@@ -558,10 +569,14 @@ namespace {
     if (type == "REQUEST_WEIGHT" && info.used_weight < 0) {
       info.used_weight = count;
       info.weight_limit = limit;
-    } else if (type == "ORDERS" && (best_order_window < 0 || window_s < best_order_window)) {
-      best_order_window = window_s;
-      info.order_count = count;
-      info.order_limit = limit;
+    } else if (type == "ORDERS") {
+      if (info.order_windows < info.orders.size())
+        info.orders[info.order_windows++] = OrderWindowInfo{window_s, limit, count};
+      if (best_order_window < 0 || window_s < best_order_window) {
+        best_order_window = window_s;
+        info.order_count = count;
+        info.order_limit = limit;
+      }
     }
   }
 }

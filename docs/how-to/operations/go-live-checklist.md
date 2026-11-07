@@ -42,7 +42,7 @@ A `[risk]` limit is off when it is `0` or missing ([Configuration](../../referen
 | `max_loss` | what you accept losing. The budget carries across restarts until `--clear-kill` ([The latched loss budget](kill-switch-and-shutdown.md#the-latched-loss-budget)) |
 | `[engine] on_kill` | what the process does when a limit trips ([After a kill](kill-switch-and-shutdown.md#after-a-kill-the-engine-trips-itself)) |
 | `[accounting]` | with more than one settlement currency: the reporting currency and a rate source per other currency. Without it, a start with `max_loss` exits 3 ([Configuration](../../reference/configuration.md#accounting)) |
-| `orders_per_sec`, `burst` | below your account's order rate limit at the venue. Connectors also limit themselves: Bybit `orders_per_second`, Deribit `matching_engine_rate` and `matching_engine_burst`, Binance from `exchangeInfo` |
+| `orders_per_sec`, `burst` | below your account's order rate limit at the venue. Connectors also limit themselves: Bybit `orders_per_second`, Deribit `matching_engine_rate` and `matching_engine_burst`, Binance from the account's own order limits |
 | `stp = true` | unless you trade against yourself on purpose |
 
 ## Keys and access

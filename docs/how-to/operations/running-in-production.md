@@ -111,7 +111,7 @@ Use `tools/pnl_report.py`, which recomputes PnL from the journal and reconciles 
 
 The connectors hold themselves to 90% of the venue's limit; `[risk] orders_per_sec` and `burst` add an engine-side bucket, off by default. An order refused by either is rejected, never queued; cancels are exempt.
 
-- Binance takes its limits from `exchangeInfo` at start-up. If that response has no usable `rateLimits`, no bucket is active.
+- Binance takes its limits from `exchangeInfo` at start-up, then sizes the order windows by the account's own limits (`GET /api/v3/rateLimit/order` and every WS API reply), so an account with raised limits uses them ([Binance Spot](../../reference/venues/binance-spot.md#rate-limits)). If `exchangeInfo` has no usable `rateLimits` and the account query fails, no bucket is active.
 - A Binance HTTP 418 IP ban stops REST until restart and trips the venue with `VenueHardStop`. Its cancel-all then fails, so cancel on the website.
 
 Set `[risk] orders_per_sec` and `burst` explicitly, and raise `[engine] min_requote_ticks` and `min_requote_interval_ms` to cut the request rate at the source.

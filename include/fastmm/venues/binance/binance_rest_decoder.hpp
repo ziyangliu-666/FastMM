@@ -7,6 +7,8 @@
 //                                (rest-api.md / web-socket-api.md "Account information")
 //   GET /api/v3/account/commission -> the account's fee rates on one symbol (rest-api.md
 //                                "Query Commission Rates", faqs/commission_faq.md)
+//   GET /api/v3/rateLimit/order -> the account's ORDERS windows (rest-api.md "Query Unfilled
+//                                Order Count")
 //   {"code":..,"msg":..}      -> error envelope (errors.md)
 //   POST /api/v3/userDataStream -> listenKey (legacy; the sim exchange)
 #include "fastmm/core/fees.hpp"
@@ -39,6 +41,7 @@ struct RateLimitRule {
   std::string interval;  // SECOND | MINUTE | DAY
   int interval_num = 1;
   std::int64_t limit = 0;
+  std::int64_t count = -1;  // GET /api/v3/rateLimit/order: the account's count; -1: not given
   [[nodiscard]] std::int64_t window_ns() const noexcept {
     std::int64_t s = interval_num;
     if (interval == "MINUTE") s *= 60;
@@ -80,6 +83,8 @@ std::string decode_commission(std::string_view json, CommissionRates& out);
 std::string decode_account_balances(std::string_view json,
                                     std::vector<AccountBalance>& out,
                                     std::int64_t& update_time_ms);
+// GET /api/v3/rateLimit/order: the account's ORDERS windows, each with its limit and count.
+std::string decode_order_rate_limits(std::string_view json, std::vector<RateLimitRule>& out);
 std::string decode_server_time(std::string_view json, std::int64_t& server_time_ms);
 // True when the body is a {"code":..,"msg":..} error envelope.
 bool decode_rest_error(std::string_view json, int& code, std::string& msg);

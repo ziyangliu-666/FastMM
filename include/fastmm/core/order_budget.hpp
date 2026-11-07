@@ -1,10 +1,10 @@
 #pragma once
 // OrderBudget (ctx.order_budget): what the engine's own rate limit and a venue's limits still
 // admit now. The [risk] orders_per_sec bucket is the engine's; the venue's windows come from its
-// connector's rate limiter (venues/rate_limiter.hpp), the limits exchangeInfo declared and the
-// counts the venue's own response headers report. The connector publishes them from its thread
-// through a seqlock; the engine reads the latest publication. Nothing of it is journaled, so a
-// replay sees no venue budget.
+// connector's rate limiter (venues/rate_limiter.hpp): the account's limits (exchangeInfo's, or
+// the account's own where the venue reports them) and the counts the venue's own responses
+// report. The connector publishes them from its thread through a seqlock; the engine reads the
+// latest publication. Nothing of it is journaled, so a replay sees no venue budget.
 #include <algorithm>
 #include <cstdint>
 #include <limits>
@@ -44,8 +44,8 @@ struct OrderBudget {
   // Nanoseconds until that bucket admits the next order: 0 while local_tokens > 0. A strategy whose
   // order was refused RateLimit waits this long rather than resending on every event.
   std::int64_t local_wait_ns = 0;
-  // The venue's order counts by window: Binance ORDERS per 10 s, 1 minute and 1 day as
-  // exchangeInfo lists them, each the count the venue last reported (X-MBX-ORDER-COUNT-*) plus
+  // The venue's order counts by window: Binance ORDERS per 10 s, 1 minute and 1 day at the
+  // account's limits, each the count the venue last reported (X-MBX-ORDER-COUNT-*) plus
   // the orders sent since, the ones still on their way to the connector included.
   RateWindow orders_10s;
   RateWindow orders_1m;

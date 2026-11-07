@@ -204,6 +204,15 @@ REST runs on two connections, one request at a time each. Orders, REST-fallback 
 | an order the limiter refuses | `VenueRateLimit`, counted in the status line's `rate_refused(weight/10s/1m/1d/paused)` |
 | execution replay | at most 4 requests in flight on its connection |
 
+The order windows start from `exchangeInfo`'s `ORDERS` limits, which are Binance's defaults (100 per 10 s, 200,000 per day). An account in Binance's rate-limit program has higher ones that `exchangeInfo` does not show, so the connector takes the account's own:
+
+| When | Source |
+|---|---|
+| the private session starts, and the order channel comes back after a drop | `GET /api/v3/rateLimit/order` (signed, weight 40) |
+| every WS API reply | its `rateLimits[]`, whose `ORDERS` entries name each window's limit and count |
+
+A window whose limit differs is resized, keeping its count, and the connector logs `<venue>: the account's order limit is <n> per <window> (was <m>)` once per change. If the query fails it logs a warning and keeps the limits the windows have, `exchangeInfo`'s at the start. The 90% share (`order_rate_threshold`) applies to the new limit, and `ctx.order_budget`, the status file and `fastmm-top`'s order budget line show it as `used/admits (limit)`.
+
 A count the venue reports raises the local estimate to it. It lowers the estimate to that count plus what was sent in the last 2 s, except in a window's first 2 s.
 
 A pool's accounts that leave from one IP share one weight window, keyed by the REST URL and the [source address](../configuration.md#source-address). A 429 pause or a 418 stop answered to one account holds them all. The kill switch's `cancel_all()` retries a 418 or 429 three times before reporting failure.
@@ -242,6 +251,7 @@ Parameters go in the query string. Signed requests carry `timestamp`, `recvWindo
 | `GET /api/v3/time` | public | `{"serverTime": ms}` |
 | `GET /api/v3/depth?symbol=S&limit=<depth_limit>` | public | `{"lastUpdateId":L,"bids":[["px","qty"]...],"asks":[...]}` |
 | `GET /api/v3/account/commission?symbol=S` | signed, with `fetch_fees` | `standardCommission`, `specialCommission`, `taxCommission`, each `{maker,taker,buyer,seller}` |
+| `GET /api/v3/rateLimit/order` | signed; optional, a failure keeps `exchangeInfo`'s limits | array of `{rateLimitType,interval,intervalNum,limit,count}`, the `ORDERS` entries read |
 | `GET /api/v3/openOrders[?symbol=S]` | signed | array of `{symbol,orderId,clientOrderId,price,origQty,executedQty,status,timeInForce,type,side}` |
 | `DELETE /api/v3/openOrders?symbol=S` | signed | 200 with an array; `400 {"code":-2011}` means nothing open |
 | `GET /api/v3/order?symbol=S&orderId=N` | signed | `{orderId,clientOrderId}`, also for an order that has ended and traded |

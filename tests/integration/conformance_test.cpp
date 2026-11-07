@@ -241,6 +241,83 @@ TEST_CASE("sim_exchange: order lifecycle over the WS API with real fills and rec
   CHECK_FALSE(h.venue->fatal());
 }
 
+TEST_CASE("sim_exchange: the order windows take the account's own limits, not exchangeInfo's") {
+  // exchangeInfo publishes Binance's defaults; this account was raised (Spot rate-limit program).
+  sim::server::SimServerConfig cfg = test_server_config();
+  cfg.orders_limit_per_10s = 100;
+  cfg.orders_limit_per_day = 200'000;
+  cfg.account_orders_limit_per_10s = 300;
+  cfg.account_orders_limit_per_day = 600'000;
+  ServerFixture fx(cfg);
+  VenueHarness h(venue_config(fx));
+  REQUIRE(h.venue->load_reference_data(h.instruments));
+  OrderBudget b = h.venue->budget_source().load();
+  CHECK(b.orders_10s.limit == 100);
+  CHECK(b.orders_1d.limit == 200'000);
+
+  // At start: GET /api/v3/rateLimit/order.
+  h.connect();
+  REQUIRE(h.pump([&] {
+    const OrderBudget now = h.venue->budget_source().load();
+    return now.orders_10s.limit == 300 && now.orders_1d.limit == 600'000 &&
+           h.venue->md_feed()->synced_count() == 1 && h.live_order_channels() >= 2;
+  }));
+  CHECK(fx.server.stats().order_limit_queries == 1);
+  b = h.venue->budget_source().load();
+  CHECK(b.orders_10s.cap == 270);
+  CHECK(b.orders_1d.cap == 540'000);
+
+  // Per reply: the account's limits change while it trades, and the next order's reply says so.
+  fx.server.set_account_order_limits(500, 0);  // the day's back to exchangeInfo's
+  const Price bid = fx.server.stats().best_bid.price;
+  REQUIRE(bid.is_positive());
+  const ClientOrderId o1 = cid(1);
+  h.send(new_order(o1,
+                   Side::Buy,
+                   OrderType::PostOnly,
+                   TimeInForce::Gtc,
+                   bid - Price::from_int(100),
+                   Qty::from_decimal("0.001").value())
+             .hdr);
+  REQUIRE(h.pump([&] { return h.acks(o1) >= 1; }));
+  b = h.venue->budget_source().load();
+  CHECK(b.orders_10s.limit == 500);
+  CHECK(b.orders_10s.used >= 1);
+  CHECK(b.orders_1d.limit == 200'000);
+
+  // On reconnect: asked again.
+  fx.server.set_account_order_limits(400, 700'000);
+  fx.server.drop_ws_api_connections();
+  REQUIRE(h.pump([&] {
+    const OrderBudget now = h.venue->budget_source().load();
+    return fx.server.stats().order_limit_queries == 2 && now.orders_10s.limit == 400 &&
+           now.orders_1d.limit == 700'000;
+  }));
+  CHECK_FALSE(h.venue->fatal());
+}
+
+TEST_CASE(
+    "sim_exchange: GET /api/v3/rateLimit/order and the WS API rateLimits name the account's") {
+  sim::server::SimServerConfig cfg = test_server_config();
+  cfg.orders_limit_per_10s = 100;
+  cfg.account_orders_limit_per_10s = 250;
+  ServerFixture fx(cfg);
+  BlockingHttp http(fx.http());
+  const HttpReply info = http.get("/api/v3/exchangeInfo");
+  REQUIRE(info.ok());
+  CHECK(contains(info.body, R"("interval":"SECOND","intervalNum":10,"limit":100)"));
+  const std::string q = "recvWindow=5000&timestamp=" + std::to_string(fx.server.server_time_ms());
+  const std::string sig(net::hmac_sha256_hex(kApiSecret, q).view());
+  const HttpReply r = http.get("/api/v3/rateLimit/order?" + q + "&signature=" + sig,
+                               std::string("X-MBX-APIKEY: ") + kApiKey + "\r\n");
+  REQUIRE(r.ok());
+  CHECK(contains(r.body, R"("interval":"SECOND","intervalNum":10,"limit":250,"count":0)"));
+  CHECK(contains(r.body, R"("interval":"DAY","intervalNum":1,"limit":1000000,"count":0)"));
+  CHECK_FALSE(contains(r.body, "REQUEST_WEIGHT"));
+  // Unsigned: refused like every account request.
+  CHECK_FALSE(http.get("/api/v3/rateLimit/order?" + q).ok());
+}
+
 TEST_CASE("sim_exchange: a size-down amends in place and keeps the order id, a reprice does not") {
   // The point of order.amend.keepPriority for a quoter: shrinking a quote at the same price is
   // the common requote, and cancelReplace pays for it with the queue position. Here the

@@ -87,6 +87,10 @@ struct Harness {
   net::WsSession* user_session = nullptr;  // server thread only
   std::atomic<bool> account_fails{false};  // account.status and GET /api/v3/account answer errors
   std::atomic<int> account_requests{0};    // account.status + GET /api/v3/account seen
+  std::atomic<bool> order_limits_fail{false};  // GET /api/v3/rateLimit/order answers 500
+  std::atomic<int> order_limit_requests{0};
+  // The account's limit per 10 s that rateLimit/order and order.place's rateLimits[] name.
+  std::atomic<long long> orders_limit_10s{50};
   std::string account_ws = fastmm::test::fixture("binance/ws_api_account_status.json");
   std::string account_rest = fastmm::test::fixture("binance/account_rest.json");
 
@@ -153,6 +157,19 @@ struct Harness {
         return net::HttpServerResponse::json(500, R"({"code":-1001,"msg":"Internal error."})");
       return net::HttpServerResponse::json(200, account_rest);
     });
+    // The account's order limits, as exchangeInfo's (the fixture's 50 per 10 s, 160,000 a day).
+    srv.route("GET", "/api/v3/rateLimit/order", [this](const net::HttpRequest& r) {
+      const bool ok = r.header("X-MBX-APIKEY") == kKey && signed_ok(r.query);
+      ++order_limit_requests;
+      if (!ok || order_limits_fail.load())
+        return net::HttpServerResponse::json(500, R"({"code":-1001,"msg":"Internal error."})");
+      return net::HttpServerResponse::json(
+          200,
+          R"([{"rateLimitType":"ORDERS","interval":"SECOND","intervalNum":10,"limit":)" +
+              std::to_string(orders_limit_10s.load()) +
+              R"(,"count":0},{"rateLimitType":"ORDERS","interval":"DAY","intervalNum":1,)"
+              R"("limit":160000,"count":0}])");
+    });
     srv.route("GET", "/api/v3/openOrders", [this](const net::HttpRequest&) {
       ++rest_open_orders;
       return net::HttpServerResponse::json(200, "[]");
@@ -212,7 +229,9 @@ struct Harness {
             R"({"id":")" + id +
             R"(","status":200,"result":{"symbol":"BTCUSDT","orderId":4293153,"orderListId":-1,"clientOrderId":")" +
             json_str(t, "newClientOrderId") +
-            R"(","transactTime":1789295199990},"rateLimits":[{"rateLimitType":"ORDERS","interval":"SECOND","intervalNum":10,"limit":50,"count":1},{"rateLimitType":"REQUEST_WEIGHT","interval":"MINUTE","intervalNum":1,"limit":6000,"count":3}]})");
+            R"(","transactTime":1789295199990},"rateLimits":[{"rateLimitType":"ORDERS","interval":"SECOND","intervalNum":10,"limit":)" +
+            std::to_string(orders_limit_10s.load()) +
+            R"(,"count":1},{"rateLimitType":"REQUEST_WEIGHT","interval":"MINUTE","intervalNum":1,"limit":6000,"count":3}]})");
         if (user_session != nullptr) {
           user_session->send_text(exec_report("NEW", "NEW", "0.00000000", "0.00000000", -1));
           user_session->send_text(
@@ -1142,7 +1161,9 @@ TEST_CASE("binance.venue: with the order table full an order or replace is refus
   // refused as unknown; a replace that found no room went out and left its new order untracked.
   Harness h;
   // Thousands of orders within seconds: windows that hold them (the fake's replies report counts
-  // of 1 and 3, which the limiter takes only as low as what it sent in the last 2 s).
+  // of 1 and 3, which the limiter takes only as low as what it sent in the last 2 s), the account's
+  // order limit among them, which the replies name.
+  h.orders_limit_10s = 100000;
   for (const auto& [from, to] :
        {std::pair<std::string, std::string>{R"("intervalNum":10,"limit":50})",
                                             R"("intervalNum":10,"limit":100000})"},
@@ -1734,5 +1755,33 @@ TEST_CASE(
     venue.disconnect();
     reactor.run_once(0);
   }
+  h.srv.stop();
+}
+
+TEST_CASE("binance.venue: a failed query of the account's order limits keeps exchangeInfo's") {
+  Harness h;
+  h.order_limits_fail = true;
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  RecordingSink md(8U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  BinanceVenue venue(VenueId{0}, h.config(false));
+  REQUIRE(venue.load_reference_data(instruments));
+  REQUIRE(symbols.build(instruments));
+  venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+  const InstrumentId ids[] = {InstrumentId{0}};
+  venue.subscribe(ids);
+  venue.connect(reactor);
+  REQUIRE(pump_until(reactor, [&] {
+    return h.order_limit_requests.load() == 1 && venue.status().rest_errors >= 1;
+  }));
+  const OrderBudget b = venue.budget_source().load();
+  CHECK(b.orders_10s.limit == 50);
+  CHECK(b.orders_1d.limit == 160'000);
+  CHECK_FALSE(venue.fatal());
+  venue.disconnect();
   h.srv.stop();
 }

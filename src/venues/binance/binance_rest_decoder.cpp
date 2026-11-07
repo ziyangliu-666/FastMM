@@ -98,6 +98,33 @@ std::string decode_exchange_info(std::string_view json, ExchangeInfo& out) {
   return {};
 }
 
+std::string decode_order_rate_limits(std::string_view json, std::vector<RateLimitRule>& out) {
+  dom::parser parser;
+  dom::element root;
+  if (parser.parse(sj::padded_string(json)).get(root) != sj::SUCCESS)
+    return "rateLimit/order: invalid JSON";
+  dom::array arr;
+  if (root.get(arr) != sj::SUCCESS) return "rateLimit/order: not an array";
+  for (dom::element e : arr) {
+    RateLimitRule r;
+    std::string_view s;
+    std::int64_t n = 0;
+    if (e["rateLimitType"].get(s) != sj::SUCCESS || s != "ORDERS") continue;
+    r.type = std::string(s);
+    if (e["interval"].get(s) != sj::SUCCESS) return "rateLimit/order: entry without interval";
+    r.interval = std::string(s);
+    if (e["intervalNum"].get(n) != sj::SUCCESS || n <= 0)
+      return "rateLimit/order: entry without intervalNum";
+    r.interval_num = static_cast<int>(n);
+    if (e["limit"].get(n) != sj::SUCCESS || n <= 0) return "rateLimit/order: entry without limit";
+    r.limit = n;
+    if (e["count"].get(n) == sj::SUCCESS) r.count = n;
+    out.push_back(std::move(r));
+  }
+  if (out.empty()) return "rateLimit/order: no ORDERS entry";
+  return {};
+}
+
 std::string decode_commission(std::string_view json, CommissionRates& out) {
   dom::parser parser;
   dom::element root;
