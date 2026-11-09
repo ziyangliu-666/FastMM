@@ -2,10 +2,13 @@
 
 All notable changes are recorded here (Keep a Changelog format).
 
-## [Unreleased]
+## [0.12.0] - 2026-11-09
+
+A pool's home can hand the adding orders it cannot take now to another account, and
+`fastmm-sim-exchange` serves a whole pool of sub-accounts with internal transfers between them.
 
 ### Added
-- core: `[engine] send_token_reserve` keeps order tokens of `[risk] orders_per_sec` from every quote for the orders the strategy sends itself, so a hedge or an unwind is not refused `RateLimit` while waiting quotes take each token as it comes back.
+- core: `[engine] send_token_reserve` keeps `[risk]` order tokens for the orders a strategy sends itself.
 - core: `[venues.<primary>.pool] spill = "busy"` sends an adding order its home cannot take elsewhere.
 - core: `spill_at` sets the share of the home's 10 s window from which adding orders spill.
 - backtest: `summary.json` counts `home_spills` and `home_unavailable`.
