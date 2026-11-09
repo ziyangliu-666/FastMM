@@ -24,7 +24,7 @@ FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret \
   ./build/release/bin/fastmm-live --config configs/sim-local.toml
 ```
 
-`configs/sim-local-tls.toml` connects over TLS instead. `scripts/run-sim.sh` runs both and prints a summary; `docker compose -f deploy/docker/compose.yml up --build` runs them in containers with `configs/sim-docker.toml`:
+`configs/sim-local-tls.toml` connects over TLS instead, and `configs/sim-pool.toml` serves a pool of five sub-accounts ([A pool of accounts](#a-pool-of-accounts)). `scripts/run-sim.sh` runs both and prints a summary; `docker compose -f deploy/docker/compose.yml up --build` runs them in containers with `configs/sim-docker.toml`:
 
 ```bash
 ./scripts/run-sim.sh --duration 30s [--tls] [--build-dir build/<dir>]
@@ -56,11 +56,14 @@ The simulator reads `[[instruments]]` (symbol, base, quote, tick, lot, min_qty, 
 | `account.api_key`, `account.api_secret` | sim-key, sim-secret | the HMAC key (env overrides) |
 | `account.ed25519_public_key_file` | none | Ed25519 public key (PEM): the account key becomes an Ed25519 key, `session.logon` works |
 | `account.balances.<ASSET>` | 100 base, 10,000,000 quote | starting balances |
+| `accounts.<name>.api_key`, `.api_secret`, `.ed25519_public_key_file`, `.email`, `.balances.<ASSET>` | none; email `<name>@sim.local` | a pool of sub-accounts instead of `[sim.account]` ([A pool of accounts](#a-pool-of-accounts)) |
+| `master.api_key`, `.api_secret`, `.ed25519_public_key_file`, `.email`, `.balances.<ASSET>` | none; email `master@sim.local`, empty wallet | the master key, which signs transfers and trades nothing |
 | `fees.maker_bps`, `fees.taker_bps` | 1, 4 | commission, charged in the quote asset |
 | `limits.weight_per_minute` | 6000 | REQUEST_WEIGHT / 1 MINUTE |
 | `limits.orders_per_10s`, `limits.orders_per_day` | 1000, 1000000 | ORDERS limits in `exchangeInfo` (Binance: 100 / 10 s, 200,000 / day) |
 | `limits.account_orders_per_10s`, `limits.account_orders_per_day` | 0, 0 | the account's own ORDERS limits, as Binance raises them per account: enforced, and reported by `GET /api/v3/rateLimit/order` and the WS API `rateLimits`, while `exchangeInfo` keeps the two above; 0 = the same as those |
 | `limits.max_recv_window_ms` | 60000 | larger recvWindow answers -1131 |
+| `limits.uid_weight_per_minute` | 180000 | the master's `/sapi/` UID weight per minute; a transfer costs 360 |
 | `generator.*` | see file | `MarketGeneratorParams` + `enabled`, `seed_levels` |
 | `faults.*` | off | see Fault injection |
 
@@ -90,6 +93,7 @@ Query string or form body; the signature covers query + body.
 | `GET /api/v3/rateLimit/order` | the account's ORDERS limits and counts, weight 40 |
 | `GET /api/v3/myTrades?symbol[&fromId / &startTime&endTime][&limit]` | the account's executions, oldest id first; `fromId` with a time range is -1128, a window over 24 h is -1127, limit caps at 1000 |
 | `POST/PUT/DELETE /api/v3/userDataStream` | legacy listenKey (`/ws/<listenKey>`) |
+| `POST/GET /sapi/v1/sub-account/universalTransfer` | the master key only; [A pool of accounts](#a-pool-of-accounts) |
 
 Every response carries `X-MBX-USED-WEIGHT-1M`. Order endpoints also carry `X-MBX-ORDER-COUNT-10S` and `X-MBX-ORDER-COUNT-1D`. 429 responses carry `Retry-After`.
 
@@ -106,6 +110,7 @@ Every response carries `X-MBX-USED-WEIGHT-1M`. Order endpoints also carry `X-MBX
 Events go to WS API connections with a user-data subscription as `{"subscriptionId":N,"event":{...}}`, and raw to `/ws/<listenKey>` connections:
 
 * `executionReport`. `x` is `NEW`, `CANCELED` (`c` = cancel request id, `C` = cancelled order id), `REPLACED` (amend), `REJECTED` (post-acceptance), `TRADE` (`l,L,n,N,t,m`), `EXPIRED` (IOC/FOK/MARKET remainder) or `TRADE_PREVENTION` (self-trade, EXPIRE_MAKER).
+* `balanceUpdate` (`a`, signed `d`, `T`) on both accounts of an internal transfer, each followed by its `outboundAccountPosition`.
 * `outboundAccountPosition` after every balance change. Events from one request are sent after its response.
 * `listenKeyExpired`.
 
@@ -128,6 +133,32 @@ LIMIT / LIMIT_MAKER orders lock quote notional (buys) or base quantity (sells). 
 | unknown order on cancel / query / amend | 400 `-2011 Unknown order sent.` / `-2013 Order does not exist.` |
 
 The server also sends WebSocket pings every `ping_interval_ms` and closes connections that have not answered for `pong_timeout_ms`.
+
+## A pool of accounts
+
+`[sim.accounts.<name>]` tables replace `[sim.account]` with a pool of Binance sub-accounts, at most 15, in ascending name order. Each has its own key (HMAC or Ed25519), email, balances, orders, ORDERS windows and user data streams (WS API subscriptions and listenKeys); the order limits in `[sim.limits]` apply to each account. Accounts of one pool trade with each other; self-trade prevention acts within one account. A config with both `[sim.account]` and `[sim.accounts.*]` is refused.
+
+```bash
+./build/release/bin/fastmm-sim-exchange --config configs/sim-pool.toml
+```
+
+The `[sim.master]` key moves free balance between the accounts with `POST /sapi/v1/sub-account/universalTransfer`: `fromEmail` and `toEmail` (absent or the master's email: the master's wallet), `fromAccountType` and `toAccountType` `SPOT`, `asset`, `amount` and an optional `clientTranId`. It answers `{"tranId":N,"clientTranId":"..."}`, and both accounts' user streams get a `balanceUpdate` followed by an `outboundAccountPosition`. Every call costs 360 of the master's UID weight (`X-SAPI-USED-UID-WEIGHT-1M`) and 1 of IP weight.
+
+`GET /sapi/v1/sub-account/universalTransfer` lists transfers out of `fromEmail`, into `toEmail`, or to and from the master when neither is given, newest first, filtered by `clientTranId`, `startTime` and `endTime` (at most 7 days, default the last 7), with `page` and `limit` (at most 500). A row's `status` is `PROCESS`, `SUCCESS` or `FAILURE`; with no rows the answer is `{"totalCount":0}`. A refused request leaves no row.
+
+| condition | answer |
+|---|---|
+| a key other than the master's, or no `[sim.master]` | 401 `-2015` |
+| the payer's free balance is short (what open orders lock does not count) | 400 `-9000 user have no available amount` |
+| an asset in `transfer_refused_assets` | 400 `-9000` |
+| a `clientTranId` already used in the run | 400 `-1130 Duplicate clientTranId.` |
+| an unknown email, both sides the same account, an account type other than `SPOT` | 400 `-1130` |
+| `transfer_p_fail` | 400 `-1000`, nothing moves |
+| `transfer_p_lost` | carried out; the answer is dropped (the client times out) and the next lost one is a 503 `-1001`, by turns |
+| `transfer_delay_ms` | 200 at once, `PROCESS` in the history; carried out that long later, or `FAILURE` if the free balance no longer covers it |
+| more than `transfer_ban_after` transfers in a minute, or the UID weight over `limits.uid_weight_per_minute` | 429 `-1003` + `Retry-After`, nothing moves |
+
+`transfer_p_fail` and `transfer_p_lost` are drawn per transfer from the `seed`, so one seed and one sequence of requests give the same outcomes. The `transfer_*` keys live in `[sim.faults]`; `set_transfer_faults()` changes them while the server runs.
 
 ## Fault injection
 
@@ -154,7 +185,7 @@ The timed `[sim.faults]` settings (`*_after_s`) are one-shot, in seconds after t
 | — | `fail_next_auth(k)` | 401 / `-2015`, as a revoked key |
 | — | `send_malformed_frames(md, ws_api)` | one text frame that is not JSON on every open connection |
 
-`open_client_order_ids()` lists what the account holds open, for comparing the two sides' views.
+`open_client_order_ids()` lists what the accounts hold open, for comparing the two sides' views. With a pool, `open_orders()`, `open_client_order_ids()`, `fill_open_order()` and the order counts of `stats()` cover every account; `balances(name)` and `master_balances()` read one account's wallet.
 
 `stats()` returns counters for all of the above, plus counts since `mark()`: minimum open orders, orders, cancels, fills, cancel-alls, open-order and `myTrades` queries, and sessions opened. `duplicate_client_order_ids` counts ids accepted twice in the run, after the first order ended; a restarted engine that reused a session epoch shows up there.
 
@@ -168,13 +199,14 @@ The generator, order ids and trade ids depend only on the configuration, the see
 
 Not implemented:
 
-* RSA keys and more than one account. With `[sim.account] ed25519_public_key_file` (a `-----BEGIN PUBLIC KEY-----` PEM) the account key is Ed25519: signatures are verified with it, `session.logon`, `session.status`, `session.logout` and the unsigned `userDataStream.subscribe` work, and later requests on that connection may omit `apiKey` and `signature`. `session.logon` with an HMAC account answers `-4056`. Session revocation is not simulated.
+* RSA keys. With `[sim.account] ed25519_public_key_file` (a `-----BEGIN PUBLIC KEY-----` PEM) the account key is Ed25519: signatures are verified with it, `session.logon`, `session.status`, `session.logout` and the unsigned `userDataStream.subscribe` work, and later requests on that connection may omit `apiKey` and `signature`. `session.logon` with an HMAC account answers `-4056`. Session revocation is not simulated.
 * SBE market data and `responseFormat=sbe`: JSON only.
 * Order types other than LIMIT / LIMIT_MAKER / MARKET: no stop, take-profit, iceberg, trailing, `quoteOrderQty`, OCO/OTO/OPO lists, SOR or pegged orders (`-1014`).
 * Other market data: klines, aggTrades, 24 h tickers, avgPrice, `@depth<N>` partial books, `/api/v3/trades`. `@depth` and `@depth@100ms` share one interval, and bookTicker is batched per interval rather than sent on every change.
-* The events `balanceUpdate`, `listStatus`, `externalLockUpdate` and `eventStreamTerminated`.
+* The events `listStatus`, `externalLockUpdate` and `eventStreamTerminated`.
+* Transfers are SPOT to SPOT only. The master's wallet has no user stream and trades nothing; on Binance the master is also a trading account.
 * Self-trade prevention is EXPIRE_MAKER only. Commission is always charged in the quote asset. There is no BNB discount.
-* Rate limits are not per IP: one weight window for the whole server and one order-count window for the account. A 418 ban only happens when a test asks for one (`ban_next_requests`), and there is no connection weight and no `X-MBX-ORDER-COUNT-*` on the WS API (counts are in `rateLimits`).
+* Rate limits are not per IP: one weight window for the whole server and one order-count window per account. A 418 ban only happens when a test asks for one (`ban_next_requests`), and there is no connection weight and no `X-MBX-ORDER-COUNT-*` on the WS API (counts are in `rateLimits`).
 * The legacy listenKey stream is kept ([venues.md](venues/binance-spot.md)).
 * The ack delay applies to WS API responses only. REST answers are synchronous.
 * Order ids start at 1 for every run. Cancelled and filled orders are forgotten, so querying them answers `-2013`. Their executions are kept: `myTrades` answers from a trade log that lives for the whole run.
@@ -182,4 +214,4 @@ Not implemented:
 
 ## Integration tests
 
-`tests/integration` (label `integration`) runs `BinanceVenue` and the `fastmm-live` wiring against the in-process server over TCP and TLS; `FASTMM_IT_LOG=1` prints the connector and engine log. `recovery_test.cpp` and `recovery_restart_test.cpp` break a session with the fault controls above and check it recovers; the latter kills and restarts real `fastmm-live` processes.
+`tests/integration` (label `integration`) runs `BinanceVenue` and the `fastmm-live` wiring against the in-process server over TCP and TLS; `FASTMM_IT_LOG=1` prints the connector and engine log. `sim_pool_test.cpp` drives a pool and its transfers, including FastMM's `TransferClient`. `recovery_test.cpp` and `recovery_restart_test.cpp` break a session with the fault controls above and check it recovers; the latter kills and restarts real `fastmm-live` processes.

@@ -9,6 +9,12 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: `[venues.<primary>.pool] spill = "busy"` sends an adding order its home cannot take elsewhere.
 - core: `spill_at` sets the share of the home's 10 s window from which adding orders spill.
 - backtest: `summary.json` counts `home_spills` and `home_unavailable`.
+- sim: `[sim.accounts.<name>]` serves a pool of sub-accounts, each with its own key and streams.
+- sim: `[sim.master]` signs `POST` and `GET /sapi/v1/sub-account/universalTransfer` between them.
+- sim: a transfer sends `balanceUpdate` and `outboundAccountPosition` to both accounts' streams.
+- sim: `transfer_p_fail`, `transfer_p_lost`, `transfer_delay_ms` and `transfer_ban_after` faults.
+- sim: `transfer_refused_assets` and `[sim.limits] uid_weight_per_minute` refuse transfers.
+- sim: `configs/sim-pool.toml` runs a pool of five accounts.
 - venues: the Binance transfer key can be an Ed25519 key (`transfer_key_type = "ed25519"`).
 
 ### Fixed
