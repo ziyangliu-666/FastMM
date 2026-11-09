@@ -2,13 +2,15 @@
 
 All notable changes are recorded here (Keep a Changelog format).
 
-## [Unreleased]
+## [0.13.0] - 2026-11-09
+
+A pool of accounts can keep each spot position on its home by itself: the engine moves the pieces
+there by internal transfer, held, budgeted and confirmed like orders, and sends the pool's sells home.
 
 ### Breaking changes
 - apps: the status file is version 29; run `fastmm-top` from the same build as `fastmm-live`.
 
 ### Added
-- apps: the status file, `fastmm-top` and Prometheus show the pools' transfers and their breaker.
 - core: `[venues.<primary>.pool] sweep = true` moves a spot piece to its home by internal transfer.
 - core: a sweeping pool sends spot sells to the home; a piece's resting sell moves at its reprice.
 - core: `[venues.<primary>.transfers]` caps a sweep's transfers per minute, hour and day.
@@ -17,11 +19,15 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: `[venues.<primary>.transfers] dry_run = true` journals the transfers a sweep would make.
 - core: `ctx.sweeping(venue)` says whether a pool sweeps now.
 - apps: `fastmm-ctl pool sweep on|off|pause VENUE` and `fastmm-ctl pool sweep SYM`.
+- apps: the status file, `fastmm-top` and Prometheus show the pools' transfers and their breaker.
 - backtest: a backtest simulates a pool's sweep; `summary.json` counts its `transfers`.
 - sim: a simulated transfer reports a flow on each account ahead of its balances.
 - venues: a refused transfer carries the venue's error code and HTTP status.
 - python: `ctx.sweeping(venue)`.
 - tools: `journal_dump.py` prints a lane's transfers and `PoolSweep`.
+
+### Changed
+- venues: a Binance transfer answered 429 is refused at once instead of sent again.
 
 ## [0.12.0] - 2026-11-09
 
