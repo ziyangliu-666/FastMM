@@ -37,7 +37,15 @@ Each home buys with its own quote balance; a treasury with `targets = "demand"` 
 
 A piece never takes an order larger than its part, so it never goes through zero; a flatten slices the position one holder at a time.
 
-An order for a home whose order link is down, or whose kill switch is engaged, is refused with `HomeUnavailable`. With `spill = "flat"` an instrument whose pool-wide position is zero and whose home is not pinned moves to the usable account with the most order window instead, and `balance_room` already sizes quotes for it. When the old home's link is back, the adding orders left on it are cancelled. A home whose order window is full refuses the order with `RateLimit`; it is never sent elsewhere, since that would start a piece.
+What happens to an adding order the home cannot take depends on `spill`:
+
+| `spill` | Home down (order link or kill switch) | Home's order window full | Home short of the balance |
+|---|---|---|---|
+| `"never"` | refused `HomeUnavailable` | refused `RateLimit` | refused `BalanceShort` |
+| `"flat"` | a flat, unpinned instrument moves to the usable account with the most window; else refused | refused `RateLimit` | refused `BalanceShort` |
+| `"busy"` | sent to the account the balance routing picks; the home stays | sent elsewhere from `spill_at` of the window (default 0.8) | sent to an account that covers it |
+
+With `"flat"`, when the old home's link is back, the adding orders left on it are cancelled. With `"busy"`, an order `[capacity]` prices above its value on the home also goes elsewhere, and `balance_room` sizes a buy against any usable account. A spilled order that fills starts a piece, which drains like any other. On a derivative, `"busy"` behaves as `"flat"`.
 
 `reduce_accounts` is how many holders carry reducing orders of one instrument and side at once; a piece may always join while only the home carries one. With `1`, a piece's part is offered alone until it is gone, so the resting sell is the piece's size, not the position's. `ctx.balance_room` and `fit_to_balance` size each side to the one account its next order goes to: a single-level quote stays on that account. Above `1`, only a strategy that places one level per account (`NewOrderRequest`, or several levels) uses the extra holders.
 

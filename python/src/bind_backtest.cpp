@@ -226,6 +226,8 @@ py::dict engine_dict(const RunnerStats& s) {
   d["checkpoints"] = s.checkpoints;
   d["checkpoints_skipped"] = s.checkpoints_skipped;
   d["checkpoint_bytes"] = s.checkpoint_bytes;
+  d["home_unavailable"] = s.home_unavailable;
+  d["home_spills"] = s.home_spills;
   d["realized_pnl"] = raw_to_float(s.realized_pnl_raw);
   d["unrealized_pnl"] = raw_to_float(s.unrealized_pnl_raw);
   d["fees"] = raw_to_float(s.fees_raw);

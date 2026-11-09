@@ -52,6 +52,10 @@ struct RunnerStats {
   // would have been (observe mode, or moves under mode = "new").
   std::uint64_t capacity_priced_out = 0;
   std::uint64_t capacity_observed = 0;
+  // Pools with homes (core/pool_homes.hpp): adding orders refused HomeUnavailable, and those
+  // spill = "busy" sent off their home.
+  std::uint64_t home_unavailable = 0;
+  std::uint64_t home_spills = 0;
   // Fills booked as estimates, from a cum_qty no fill message reported (Engine::book_missed_fill);
   // the orders whose estimate no execution has named yet; and estimates whose order the OMS forgot
   // before one did (OmsStats::synthetic_pending, synthetic_forgotten): an execution of such an

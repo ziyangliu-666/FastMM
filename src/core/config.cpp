@@ -412,8 +412,13 @@ void parse_pool(const toml::table& t, VenueSection& v) {
   if (s.placement != "balance" && s.placement != "home")
     fail_at(*t.get("placement"), at + ".placement must be \"balance\" or \"home\"");
   get(t, "spill", s.spill);
-  if (s.spill != "never" && s.spill != "flat")
-    fail_at(*t.get("spill"), at + ".spill must be \"never\" or \"flat\"");
+  if (s.spill != "never" && s.spill != "flat" && s.spill != "busy")
+    fail_at(*t.get("spill"), at + ".spill must be \"never\", \"flat\" or \"busy\"");
+  if (const toml::node* n = t.get("spill_at")) {
+    const auto x = n->value<double>();
+    if (!x || !(*x > 0.0) || *x > 1.0) fail_at(*n, at + ".spill_at must be above 0 and at most 1");
+    s.spill_at = *x;
+  }
   const auto ranged =
       [&](std::string_view key, std::int64_t& out, std::int64_t lo, std::int64_t hi) {
         const toml::node* n = t.get(key);
@@ -1590,11 +1595,12 @@ std::string Config::redacted() const {
     if (v.pool.configured) {
       fmt::format_to(
           std::back_inserter(out),
-          "pool = {{ placement = \"{}\", reduce_accounts = {}, spill = \"{}\", "
+          "pool = {{ placement = \"{}\", reduce_accounts = {}, spill = \"{}\", spill_at = {}, "
           "plan_interval_s = {}, plan_lookback_h = {}, plan_max_moves = {} }} ({} pinned)\n",
           v.pool.placement,
           v.pool.reduce_accounts,
           v.pool.spill,
+          v.pool.spill_at,
           v.pool.plan_interval_s,
           v.pool.plan_lookback_h,
           v.pool.plan_max_moves,
@@ -1830,6 +1836,7 @@ toml::table pool_table(const PoolSection& s) {
   t.insert("placement", s.placement);
   t.insert("reduce_accounts", s.reduce_accounts);
   t.insert("spill", s.spill);
+  t.insert("spill_at", s.spill_at);
   t.insert("plan_interval_s", s.plan_interval_s);
   t.insert("plan_lookback_h", s.plan_lookback_h);
   t.insert("plan_max_moves", s.plan_max_moves);
@@ -2207,7 +2214,10 @@ PoolHomesPlan pool_homes(const Config& cfg, const InstrumentTable& table) {
     p.configured = true;
     p.placement = v.pool.placement == "home" ? Placement::Home : Placement::Balance;
     p.reduce_accounts = static_cast<std::uint8_t>(v.pool.reduce_accounts);
-    p.spill = v.pool.spill == "flat" ? HomeSpill::Flat : HomeSpill::Never;
+    p.spill = v.pool.spill == "flat"   ? HomeSpill::Flat
+              : v.pool.spill == "busy" ? HomeSpill::Busy
+                                       : HomeSpill::Never;
+    p.spill_at = v.pool.spill_at;
     p.plan_interval = seconds(v.pool.plan_interval_s);
     p.plan_lookback = Duration{static_cast<std::int64_t>(v.pool.plan_lookback_h * 3600e9)};
     p.plan_max_moves = static_cast<std::uint32_t>(v.pool.plan_max_moves);

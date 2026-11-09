@@ -174,6 +174,7 @@ struct PoolSection {
   std::string placement = "balance";
   std::int64_t reduce_accounts = 1;
   std::string spill = "never";
+  double spill_at = 0.8;
   std::int64_t plan_interval_s = 3600;
   double plan_lookback_h = 3.0;
   std::int64_t plan_max_moves = 3;

@@ -162,6 +162,7 @@ struct EngineStats {
   std::uint64_t reduce_only_switches = 0;  // ControlCommand::ReduceOnly applied
   std::uint64_t home_changes = 0;          // pool homes changed (ControlCommand::PoolHome)
   std::uint64_t home_unavailable = 0;      // orders refused HomeUnavailable
+  std::uint64_t home_spills = 0;           // adding orders spill = "busy" sent off their home
   std::uint64_t priced_out = 0;            // orders and moves refused PricedOut ([capacity])
   std::uint64_t treasury_records = 0;  // pool treasury transfer steps (ControlCommand::Transfer)
   std::uint64_t flatten_orders = 0;    // reduce-only orders a flatten sent
@@ -753,7 +754,7 @@ class Engine {
       return balances_->room(id, inst, side, px);
     // With placement = "home": what the one account the next order on the side goes to holds,
     // a piece's part at most (a piece's order never takes it through zero).
-    const bool homed = homes_on_ && cfg_.homes.of(inst.venue).homes();
+    bool homed = homes_on_ && cfg_.homes.of(inst.venue).homes();
     VenueId target{};
     Qty cap = Qty::max();
     if (homed) {
@@ -761,6 +762,9 @@ class Engine {
       if (target.valid() && target != home_[id.value]) {
         const Qty held = holding(id, target);
         cap = Qty::from_raw(side == Side::Sell ? held.raw : -held.raw);
+      } else if (!target.valid() && spills_busy(inst) && side == Side::Buy &&
+                 home_[id.value].valid()) {
+        homed = false;  // spill = "busy": the home or any account that covers it
       } else if (!target.valid()) {
         target = add_target(inst);
         if (!target.valid()) return Qty{};
@@ -998,6 +1002,8 @@ class Engine {
     r.transport_full = stats_.transport_full;
     r.timers_fired = stats_.timers_fired;
     r.checkpoints = stats_.checkpoints;
+    r.home_unavailable = stats_.home_unavailable;
+    r.home_spills = stats_.home_spills;
     r.checkpoints_skipped = stats_.checkpoints_skipped;
     r.checkpoint_bytes = stats_.checkpoint_bytes;
     r.realized_pnl_raw = positions_.total_realized().raw;
@@ -3951,7 +3957,7 @@ class Engine {
     bool budget_known = false;
     RejectSource window_source = RejectSource::RiskBucket;
     if (FASTMM_UNLIKELY(pools_on_)) {
-      const Route rt = route(req, inst);
+      const Route rt = route(req, inst, buy);
       if (FASTMM_UNLIKELY(rt.refused != RejectReason::None)) {
         ++stats_.home_unavailable;
         note_refusal(req.instrument, req.side, rt.refused);
@@ -3959,6 +3965,7 @@ class Engine {
       }
       account = rt.account;
       if (!account.valid()) return fail(RejectReason::InvalidAccount);
+      if (FASTMM_UNLIKELY(rt.spilled)) ++stats_.home_spills;
       if (FASTMM_UNLIKELY(rt.assigns))
         static_cast<void>(apply_home(req.instrument, account, rt.source));
       // The account's order window is full up to its connector's cap, or the connector is paused
@@ -4108,8 +4115,12 @@ class Engine {
     RejectReason refused = RejectReason::None;
     bool assigns = false;  // the order gives the instrument this home (source)
     HomeSource source = HomeSource::First;
+    bool spilled = false;  // spill = "busy": the home could not take it
   };
-  [[nodiscard]] Route route(const NewOrderRequest& req, const Instrument& inst) const noexcept {
+  // `buy`: the order's price for [capacity] (spill = "busy" spills an order its home prices out).
+  [[nodiscard]] Route route(const NewOrderRequest& req,
+                            const Instrument& inst,
+                            const Purchase* buy = nullptr) const noexcept {
     if (FASTMM_LIKELY(!homes_on_) || req.account.valid() || !cfg_.homes.of(inst.venue).homes() ||
         !cfg_.pools.pooled(inst.venue))
       return Route{choose_account(req, inst)};
@@ -4123,6 +4134,16 @@ class Engine {
       if (!first.valid()) return Route{{}, RejectReason::HomeUnavailable};
       return Route{first, RejectReason::None, true, HomeSource::First};
     }
+    if (spills_busy(inst)) {
+      if (home_takes(req, inst, h, buy)) return Route{h};
+      const VenueId to = pick_account(req, inst);
+      if (to.valid() && to != h) {
+        Route r{to};
+        r.spilled = true;
+        return r;
+      }
+      return account_usable(h) ? Route{h} : Route{h, RejectReason::HomeUnavailable};
+    }
     if (account_usable(h)) return Route{h};
     if (spills(inst)) {
       const VenueId to = roomiest_account(inst.venue);
@@ -4130,11 +4151,47 @@ class Engine {
     }
     return Route{h, RejectReason::HomeUnavailable};
   }
-  // spill = "flat" moves this instrument off an unusable home: it is flat over the pool and not
-  // pinned.
+  // This instrument moves off an unusable home: spill = "flat" (or "busy" for a derivative), flat
+  // over the pool and not pinned.
   [[nodiscard]] bool spills(const Instrument& inst) const noexcept {
-    return cfg_.homes.of(inst.venue).spill == HomeSpill::Flat &&
+    const HomeSpill sp = cfg_.homes.of(inst.venue).spill;
+    return (sp == HomeSpill::Flat || (sp == HomeSpill::Busy && inst.is_derivative())) &&
            positions_.get(inst.id).qty.is_zero() && !pinned_[inst.id.value];
+  }
+  // spill = "busy" on a spot instrument: an adding order its home cannot take goes elsewhere.
+  [[nodiscard]] bool spills_busy(const Instrument& inst) const noexcept {
+    return cfg_.homes.of(inst.venue).spill == HomeSpill::Busy && !inst.is_derivative();
+  }
+  // spill = "busy": the home takes this adding order now. It is usable, its windows have room and
+  // its 10 s window is below spill_at of what its connector admits, its balance covers the order,
+  // and [capacity] does not price its slot above the order's value.
+  [[nodiscard]] bool home_takes(const NewOrderRequest& req,
+                                const Instrument& inst,
+                                VenueId h,
+                                const Purchase* buy) const noexcept {
+    if (!account_usable(h)) return false;
+    const OrderBudget b = order_budget(h);
+    if (no_order_room(b)) return false;
+    if (b.orders_10s.known() &&
+        static_cast<double>(b.orders_10s.used) >=
+            cfg_.homes.of(inst.venue).spill_at * static_cast<double>(b.orders_10s.admits()))
+      return false;
+    if (balances_live_ && !balance_covers(inst,
+                                          h,
+                                          req.side,
+                                          req.type,
+                                          req.price,
+                                          req.qty,
+                                          0,
+                                          req.reduce_only,
+                                          oms_.open_qty(req.instrument, req.side)))
+      return false;
+    if (buy != nullptr && capacity_on_ && capacity_->prices(h)) {
+      const double value =
+          buy->value != buy->value ? std::numeric_limits<double>::infinity() : buy->value;
+      if (value < capacity_->price(h, inst.venue, now_.ns)) return false;
+    }
+    return true;
   }
   // Where the next adding order goes for balance_room: the home, a first home, or the spill's
   // account; invalid when none would take it.
@@ -4303,7 +4360,8 @@ class Engine {
   // for instruments it is not home to (a spill moved them off while it was down) are cancelled.
   FASTMM_NOINLINE void account_back(VenueId v) noexcept {
     const VenueId primary = cfg_.pools.primary(v);
-    if (!cfg_.homes.of(primary).homes()) return;
+    // spill = "busy" moved no home: the orders it sent elsewhere stay.
+    if (!cfg_.homes.of(primary).homes() || cfg_.homes.of(primary).spill == HomeSpill::Busy) return;
     enter_api();
     for (const Instrument& inst : instruments_) {
       if (inst.venue == primary && inst.id.value < kMaxInstruments &&
@@ -4410,8 +4468,15 @@ class Engine {
                                          const Instrument& inst) const noexcept {
     if (req.account.valid())
       return cfg_.pools.admits(inst.venue, req.account) ? req.account : VenueId{};
+    if (cfg_.pools.members(inst.venue).size() == 1) return inst.venue;
+    const VenueId best = pick_account(req, inst);
+    return best.valid() ? best : inst.venue;
+  }
+  // choose_account's choice among the pool's accounts; invalid when none covers the order and has
+  // room for it.
+  [[nodiscard]] VenueId pick_account(const NewOrderRequest& req,
+                                     const Instrument& inst) const noexcept {
     const PoolMembers members = cfg_.pools.members(inst.venue);
-    if (members.size() == 1) return inst.venue;
     const bool by_balance = balances_live_ && !inst.is_derivative();
     const Qty open = oms_.open_qty(req.instrument, req.side);
     VenueId best{};
@@ -4436,7 +4501,7 @@ class Engine {
         best_1d = left_1d;
       }
     }
-    return best.valid() ? best : inst.venue;
+    return best;
   }
 
   Result<void, RejectReason> submit_cancel(Handle<Order> h) noexcept {

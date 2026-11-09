@@ -143,3 +143,18 @@ TEST_CASE("backtest.pool_home: orders_credit_fills gives a filled order's window
   REQUIRE(limited(plain) > 0);
   CHECK(limited(credited) < limited(plain));
 }
+
+TEST_CASE("backtest.pool_home: spill busy takes the orders a full home window would refuse") {
+  BacktestConfig cfg = pool_config(Placement::Home, 0);
+  cfg.transport.orders_10s = 20;
+  const Run home = run(cfg);
+  cfg.engine.homes.pool[0].spill = HomeSpill::Busy;
+  const Run busy = run(cfg);
+  const auto limited = [](const Run& x) {
+    return x.result.engine.risk_rejects_by_reason[RejectReason::RateLimit] +
+           x.result.transport.rejects_rate_limit;
+  };
+  REQUIRE(limited(home) > 0);
+  CHECK(limited(busy) < limited(home));
+  CHECK(busy.result.engine.orders_sent > home.result.engine.orders_sent);
+}

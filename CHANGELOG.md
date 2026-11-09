@@ -6,6 +6,9 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ### Added
 - core: `[engine] send_token_reserve` keeps order tokens of `[risk] orders_per_sec` from every quote for the orders the strategy sends itself, so a hedge or an unwind is not refused `RateLimit` while waiting quotes take each token as it comes back.
+- core: `[venues.<primary>.pool] spill = "busy"` sends an adding order its home cannot take elsewhere.
+- core: `spill_at` sets the share of the home's 10 s window from which adding orders spill.
+- backtest: `summary.json` counts `home_spills` and `home_unavailable`.
 - venues: the Binance transfer key can be an Ed25519 key (`transfer_key_type = "ed25519"`).
 
 ### Fixed

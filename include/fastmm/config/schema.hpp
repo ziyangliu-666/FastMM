@@ -585,7 +585,15 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "\"never\": an order for a home that is down is refused HomeUnavailable; \"flat\": an "
      "instrument flat over the pool and not pinned moves to the usable account with the most "
-     "order window first (default \"never\")"},
+     "order window first; \"busy\": a spot order that adds goes to the account the balance "
+     "routing picks when its home is down, past spill_at of its 10 s window, short of the "
+     "balance or priced out by [capacity], and the home stays (default \"never\")"},
+    {"venues.*.pool",
+     "spill_at",
+     KeyType::Float,
+     false,
+     "spill = \"busy\": the share of the home's 10 s order window, as its connector admits it, "
+     "from which adding orders go to another account (default 0.8)"},
     {"venues.*.pool",
      "plan_interval_s",
      KeyType::Int,

@@ -373,6 +373,8 @@ std::string BacktestResult::summary_json() const {
   u64("checkpoints", engine.checkpoints);
   u64("checkpoints_skipped", engine.checkpoints_skipped);
   u64("checkpoint_bytes", engine.checkpoint_bytes);
+  u64("home_unavailable", engine.home_unavailable);
+  u64("home_spills", engine.home_spills);
   s += "  \"risk_rejects\": {";
   for (const auto& [reason, n] : nonzero_rejects(engine.risk_rejects_by_reason)) {
     fmt::format_to(

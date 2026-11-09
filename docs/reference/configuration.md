@@ -183,7 +183,8 @@ Where a pool keeps each instrument's position ([Keep each position on one accoun
 |---|---|---|---|
 | `placement` | string |  | "balance": each new order to the account whose balance covers it with the most order window left; "home": each instrument's position on one account, its home: an order goes there unless it takes a piece on another account towards zero (default "balance") |
 | `reduce_accounts` | integer |  | accounts that may carry reducing orders of one instrument and side at once; 1 offers a piece alone until it is gone (default 1) |
-| `spill` | string |  | "never": an order for a home that is down is refused HomeUnavailable; "flat": an instrument flat over the pool and not pinned moves to the usable account with the most order window first (default "never") |
+| `spill` | string |  | "never": an order for a home that is down is refused HomeUnavailable; "flat": an instrument flat over the pool and not pinned moves to the usable account with the most order window first; "busy": a spot order that adds goes to the account the balance routing picks when its home is down, past spill_at of its 10 s window, short of the balance or priced out by [capacity], and the home stays (default "never") |
+| `spill_at` | number |  | spill = "busy": the share of the home's 10 s order window, as its connector admits it, from which adding orders go to another account (default 0.8) |
 | `plan_interval_s` | integer |  | how often the planner moves homes to spread the accounts' order load, s; 0 = no planner (default 3600) |
 | `plan_lookback_h` | number |  | hours of the engine's own orders the planner plans from (default 3) |
 | `plan_max_moves` | integer |  | instruments the planner moves at most per plan (default 3) |

@@ -6,6 +6,7 @@
 
 #include <doctest/doctest.h>
 
+#include <array>
 #include <cstddef>
 #include <cstring>
 #include <memory>
@@ -75,6 +76,13 @@ struct Transport {
     return batch.size();
   }
   [[nodiscard]] bool supports_replace(VenueId) const noexcept { return true; }
+  // Each account's order windows, when a test gives them (venue_known).
+  std::array<OrderBudget, 8> budget{};
+  bool venue_budget(VenueId v, OrderBudget& o) const noexcept {
+    if (v.value >= budget.size() || !budget[v.value].venue_known) return false;
+    o = budget[v.value];
+    return true;
+  }
   // The OutNewOrders and OutCancels sent so far, in order.
   [[nodiscard]] std::vector<const OutNewOrderMsg*> news() const {
     std::vector<const OutNewOrderMsg*> r;
@@ -498,4 +506,114 @@ TEST_CASE("core.engine home: balance_room follows a spill, so a fitted quote rea
   r.link(kC, false);
   CHECK(ctx.balance_room(kSpot, Side::Buy, px("49000")) == Qty{});
   CHECK(r.send(kSpot, Side::Buy, "49000", "0.001").error() == RejectReason::HomeUnavailable);
+}
+
+namespace {
+// spill = "busy" on the spot pool; each account's 10 s window admits `limit` orders.
+EngineConfig busy_config() {
+  EngineConfig cfg = make_config(Placement::Home);
+  cfg.homes.pool[kA.value].spill = HomeSpill::Busy;
+  return cfg;
+}
+void windows(Rig& r, std::int64_t limit) {
+  for (const VenueId v : {kA, kB, kC}) {
+    OrderBudget& b = r.transport.budget[v.value];
+    b.venue_known = true;
+    b.orders_10s.window_ms = 10'000;
+    b.orders_10s.limit = limit;
+  }
+}
+}  // namespace
+
+TEST_CASE("core.engine home: spill busy sends adding orders off a home whose window is busy") {
+  Rig r(busy_config());
+  windows(r, 10);
+  auto& ctx = r.engine->context();
+  REQUIRE(ctx.set_home(kSpot, kA));
+  // Below 0.8 of the window: the home. From the eighth order on: another account, the home stays.
+  for (int k = 0; k < 8; ++k) {
+    REQUIRE(r.send(kSpot, Side::Buy, "49000", "0.001"));
+    CHECK(r.last_account() == kA);
+  }
+  REQUIRE(r.send(kSpot, Side::Buy, "49000", "0.001"));
+  CHECK(r.last_account() != kA);
+  CHECK(ctx.home(kSpot) == kA);
+  CHECK(r.engine->stats().home_spills == 1);
+  // A sell with no holder still goes where it did; nothing re-homes.
+  REQUIRE(r.send(kSpot, Side::Sell, "51000", "0.001"));
+  CHECK(r.last_account() == kA);
+  CHECK(r.journaled_homes().size() == 1);  // the strategy's set_home only
+}
+
+TEST_CASE("core.engine home: spill_at sets how full the home's window gets") {
+  EngineConfig cfg = busy_config();
+  cfg.homes.pool[kA.value].spill_at = 0.5;
+  Rig r(cfg);
+  windows(r, 10);
+  REQUIRE(r.engine->context().set_home(kSpot, kA));
+  for (int k = 0; k < 5; ++k) REQUIRE(r.send(kSpot, Side::Buy, "49000", "0.001"));
+  CHECK(r.last_account() == kA);
+  REQUIRE(r.send(kSpot, Side::Buy, "49000", "0.001"));
+  CHECK(r.last_account() != kA);
+}
+
+TEST_CASE("core.engine home: spill busy sends a buy its home cannot pay for to one that can") {
+  Rig r(busy_config());
+  auto& ctx = r.engine->context();
+  r.snapshot(kA, "0", "0", "10");
+  r.snapshot(kB, "0", "0", "1000");
+  r.snapshot(kC, "0", "0", "100");
+  REQUIRE(ctx.set_home(kSpot, kA));
+  // The home covers it: the home.
+  REQUIRE(r.send(kSpot, Side::Buy, "5000", "0.001"));
+  CHECK(r.last_account() == kA);
+  // It does not: the account with the most room that does.
+  const auto buy = r.send(kSpot, Side::Buy, "49000", "0.002");
+  REQUIRE(buy);
+  CHECK(r.last_account() == kB);
+  CHECK(ctx.home(kSpot) == kA);
+  // balance_room sizes against any account, as the routing will place it: what B covers with its
+  // own open buy, less the pool's open buys.
+  CHECK(ctx.balance_room(kSpot, Side::Buy, px("49000")) ==
+        ctx.balance_room(kSpot, Side::Buy, px("49000"), kB) + qt("0.002") - qt("0.003"));
+  // Its fill makes a piece on B; the sell side reduces B's part first, as before.
+  r.ack(kSpot, *buy, kB);
+  r.fill(kSpot, *buy, kB, Side::Buy, "49000", "0.002");
+  CHECK(ctx.pieces(kSpot) == 1);
+  REQUIRE(r.send(kSpot, Side::Sell, "51000", "0.002"));
+  CHECK(r.last_account() == kB);
+}
+
+TEST_CASE("core.engine home: spill busy sends past a home that is down, and keeps it") {
+  Rig r(busy_config());
+  auto& ctx = r.engine->context();
+  REQUIRE(ctx.set_home(kSpot, kA));
+  REQUIRE(r.send(kSpot, Side::Buy, "49000", "0.001"));
+  r.link(kA, false);
+  const auto buy = r.send(kSpot, Side::Buy, "49000", "0.001");
+  REQUIRE(buy);
+  const VenueId to = r.last_account();
+  CHECK(to != kA);
+  CHECK(ctx.home(kSpot) == kA);
+  r.ack(kSpot, *buy, to);
+  // The home's link is back: the spilled order stays.
+  r.link(kA, true);
+  CHECK(r.transport.cancels().empty());
+  REQUIRE(r.send(kSpot, Side::Buy, "49000", "0.001"));
+  CHECK(r.last_account() == kA);
+  // No account at all: refused as before.
+  for (const VenueId v : {kA, kB, kC}) r.link(v, false);
+  CHECK(r.send(kSpot, Side::Buy, "49000", "0.001").error() == RejectReason::HomeUnavailable);
+}
+
+TEST_CASE("core.engine home: spill busy moves a flat derivative off a home that is down") {
+  EngineConfig cfg = busy_config();
+  cfg.homes.pool[kP.value].spill = HomeSpill::Busy;
+  Rig r(cfg);
+  auto& ctx = r.engine->context();
+  REQUIRE(ctx.set_home(kPerp, kP));
+  r.link(kP, false);
+  REQUIRE(r.send(kPerp, Side::Buy, "49000", "0.001"));
+  CHECK(r.last_account() == kQ);
+  CHECK(ctx.home(kPerp) == kQ);
 }

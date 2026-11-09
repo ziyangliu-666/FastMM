@@ -54,11 +54,27 @@ enum class Placement : std::uint8_t {
   return p == Placement::Home ? "home" : "balance";
 }
 
-// What an adding order does when its home is not usable (order link down, kill switch).
+// What an adding order does when its home cannot take it.
 enum class HomeSpill : std::uint8_t {
-  Never = 0,  // refused HomeUnavailable
-  Flat = 1,   // a flat instrument is re-homed to the usable account with the most window first
+  Never = 0,  // a home that is not usable (order link down, kill switch) refuses HomeUnavailable
+  Flat = 1,   // ... and a flat instrument is re-homed to the usable account with the most window
+  // A spot order goes to the account the balance routing picks, the home staying the home, when
+  // the home is not usable, its 10 s window is past spill_at of what its connector admits (or
+  // another of its windows is full), it does not cover the order, or [capacity] prices its slot
+  // above the order; otherwise to the home. A derivative's home spills as with Flat.
+  Busy = 2,
 };
+[[nodiscard]] constexpr std::string_view to_string(HomeSpill s) noexcept {
+  switch (s) {
+    case HomeSpill::Never:
+      return "never";
+    case HomeSpill::Flat:
+      return "flat";
+    case HomeSpill::Busy:
+      return "busy";
+  }
+  return "?";
+}
 
 // Who changed a home (ControlMsg::arg of ControlCommand::PoolHome, kPoolHomeSourceShift).
 enum class HomeSource : std::uint8_t {
@@ -124,6 +140,7 @@ struct PoolPlacement {
   // is worked off before the home's part is offered.
   std::uint8_t reduce_accounts = 1;
   HomeSpill spill = HomeSpill::Never;
+  double spill_at = 0.8;                    // spill = "busy": the share of the 10 s window
   Duration plan_interval = seconds(3600);   // zero: no planner
   Duration plan_lookback = seconds(10800);  // 3 h
   std::uint32_t plan_max_moves = 3;

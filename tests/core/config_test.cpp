@@ -842,6 +842,38 @@ reserve = true
             .find("headroom must be at least 0") != std::string::npos);
 }
 
+TEST_CASE("core.config: spill busy and the share of the home's window it starts at") {
+  const Config cfg = Config::parse(pool_toml(R"(
+[venues.binance.pool]
+placement = "home"
+spill = "busy"
+spill_at = 0.6
+)"));
+  const PoolHomesPlan plan = pool_homes(cfg, load_instruments(cfg));
+  CHECK(plan.of(VenueId{0}).spill == HomeSpill::Busy);
+  CHECK(plan.of(VenueId{0}).spill_at == 0.6);
+  CHECK(cfg.redacted().find("spill = \"busy\", spill_at = 0.6") != std::string::npos);
+  const Config back = Config::parse(cfg.effective_toml());
+  CHECK(back.effective_toml() == cfg.effective_toml());
+  CHECK(pool_homes(Config::parse(pool_toml("[venues.binance.pool]\n")), load_instruments(cfg))
+            .of(VenueId{0})
+            .spill_at == 0.8);
+  const auto err = [](const char* tail) {
+    try {
+      static_cast<void>(Config::parse(pool_toml(tail)));
+    } catch (const ConfigError& e) {
+      return std::string(e.what());
+    }
+    return std::string();
+  };
+  CHECK(err("[venues.binance.pool]\nspill = \"often\"\n").find("spill must be") !=
+        std::string::npos);
+  CHECK(err("[venues.binance.pool]\nspill_at = 0.0\n").find("spill_at must be") !=
+        std::string::npos);
+  CHECK(err("[venues.binance.pool]\nspill_at = 1.5\n").find("spill_at must be") !=
+        std::string::npos);
+}
+
 TEST_CASE("core.config: a treasury belongs to a pool's primary and names its accounts") {
   const auto err = [](const char* tail) {
     try {
