@@ -10,6 +10,7 @@
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/pool_homes.hpp"
 #include "fastmm/core/session_state.hpp"
+#include "fastmm/core/transfer_worker.hpp"
 #include "fastmm/sim/recorded_session.hpp"
 #include "fastmm/sim/sim_treasury.hpp"
 #include "fastmm/sim/venue_order.hpp"
@@ -48,8 +49,14 @@ constexpr std::size_t kReserveBars = 1U << 12;
 //   * with balances_from_journal, the session's account events at their times: each recorded flow
 //     of money in or out of an account (AccountFlowMsg), and a full snapshot of an account when the
 //     session's connector refreshed it;
+//   * the pools' transfer lanes ([venues.<primary>.pool] sweep): every kLanePoll the transfer
+//   worker
+//     takes the engine's intents and carries them out through the same SimTreasuryPort; the
+//     accounts' flows and balances reach the engine on each account's link, its answers on the
+//     feed;
 //   * a slow tier the caller set (a Python strategy's), at its own times.
 struct RunTier {
+  static constexpr Duration kLanePoll = milliseconds(50);
   sim::SimTransport* transport = nullptr;
   InlineFeed* feed = nullptr;
   std::vector<std::unique_ptr<Treasury>> treasuries;
@@ -77,6 +84,15 @@ struct RunTier {
   std::unique_ptr<PoolLoad> load;
   Timestamp next_plan = Timestamp::max();
   PoolFunding funding;
+  // The lanes' worker, and the runner it takes their intents from.
+  std::unique_ptr<TransferWorker> worker;
+  IEngineRunner* lanes = nullptr;
+  Timestamp next_lane = Timestamp::max();
+
+  void lane_step(Timestamp now) {
+    worker->step(now.ns, [this](LaneIntent& in) { return lanes->pop_transfer_intent(in); });
+    next_lane = now + kLanePoll;
+  }
 
   void plan_homes(Timestamp now) {
     std::int64_t next = std::numeric_limits<std::int64_t>::max();
@@ -168,6 +184,7 @@ struct RunTier {
     return std::min({user_next,
                      next_look,
                      next_plan,
+                     next_lane,
                      port ? port->next_due() : Timestamp::max(),
                      trade_at,
                      flow,
@@ -184,6 +201,7 @@ struct RunTier {
       tier.user_next = tier.user.run(tier.user.ctx, now);
     if (now >= tier.next_look) tier.look(now);
     if (now >= tier.next_plan) tier.plan_homes(now);
+    if (now >= tier.next_lane) tier.lane_step(now);
     return tier.next();
   }
 };
@@ -511,6 +529,18 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
         "backtest: fill_model l3_queue needs a source that carries every order (itch); "
         "over L2 data it would see no queue at all");
   }
+  // The pools whose sweep the run simulates move their spot instruments' base assets themselves.
+  for (std::size_t v = 0; v < cfg_.engine.homes.lane.size(); ++v) {
+    const VenueId primary{static_cast<std::uint8_t>(v)};
+    if (!cfg_.engine.homes.lane_of(primary).on() || !cfg_.engine.homes.of(primary).configured)
+      continue;
+    sim::TransferScope sc;
+    sc.members = cfg_.engine.pools.members(primary);
+    for (const Instrument& i : cfg_.instruments) {
+      if (i.venue == primary && !i.is_derivative()) sc.assets.push_back(i.base);
+    }
+    scopes_.push_back(std::move(sc));
+  }
   if (cfg_.balances_from_journal) {
     if (recorded == nullptr) {
       throw std::invalid_argument(
@@ -559,7 +589,7 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
         if (sim::account_time(flows_[j].hdr) - sim::account_time(flows_[i].hdr) >
             sim::kTransferPair)
           break;
-        if (!paired[j] && sim::pool_transfer(flows_[i], flows_[j], cfg_.treasuries)) {
+        if (!paired[j] && sim::pool_transfer(flows_[i], flows_[j], cfg_.treasuries, scopes_)) {
           paired[i] = paired[j] = true;
           break;
         }
@@ -689,9 +719,10 @@ bool BacktestSession::replays_control(const EventHeader& h) const {
   if (m.command == ControlCommand::Transfer) {
     // With balances_from_journal, a held payout of the session's treasury moves the engine's
     // estimate as it did live, unless the run simulates that pool's treasury (whose own records
-    // do).
+    // do). A lane's records are the session's own: its transfers reach the run as flows.
     if (!cfg_.balances_from_journal || h.len < sizeof(ControlTransferMsg) ||
-        (msg_cast<ControlTransferMsg>(&h).flags & ControlTransferMsg::kHeld) == 0)
+        (msg_cast<ControlTransferMsg>(&h).flags & ControlTransferMsg::kHeld) == 0 ||
+        (msg_cast<ControlTransferMsg>(&h).flags & ControlTransferMsg::kLane) != 0)
       return false;
     return std::none_of(
         cfg_.treasuries.begin(), cfg_.treasuries.end(), [&](const TreasuryConfig& t) {
@@ -935,12 +966,13 @@ void BacktestSession::begin(const sim::EngineHooks& hooks,
   const bool plans = std::any_of(cfg_.engine.homes.pool.begin(),
                                  cfg_.engine.homes.pool.end(),
                                  [](const PoolPlacement& p) { return p.planner(); });
+  const bool lanes = runner != nullptr && runner->has_lanes();
   if (!cfg_.treasuries.empty() || trade_at_.valid() || !flows_.empty() || !refreshes_.empty() ||
-      !controls_.empty() || following_ || plans) {
+      !controls_.empty() || following_ || plans || lanes) {
     tier = std::make_unique<RunTier>();
     tier->transport = &b.transport;
     tier->feed = &b.feed;
-    if (!cfg_.treasuries.empty()) {
+    if (!cfg_.treasuries.empty() || lanes) {
       sim::SimTransferFaults faults;
       faults.p_fail = cfg_.transfer_p_fail;
       faults.p_unknown = cfg_.transfer_p_unknown;
@@ -948,7 +980,7 @@ void BacktestSession::begin(const sim::EngineHooks& hooks,
       faults.seed = cfg_.seed;
       tier->port = std::make_unique<sim::SimTreasuryPort>(
           b.transport, [&b] { return b.clock.now(); }, cfg_.transfer_latency, faults);
-      bool held = false;
+      bool held = lanes;
       for (const TreasuryConfig& c : cfg_.treasuries) {
         auto t = std::make_unique<Treasury>(c);
         if (auto r = t->open(); !r) throw std::runtime_error("backtest: treasury: " + r.error());
@@ -963,7 +995,32 @@ void BacktestSession::begin(const sim::EngineHooks& hooks,
         });
       }
       tier->runner = runner;
-      tier->next_look = b.clock.now();
+      if (!cfg_.treasuries.empty()) tier->next_look = b.clock.now();
+    }
+    if (lanes) {
+      // The lanes' worker, on simulated time, with no ledger: a run starts with nothing in flight.
+      std::vector<LanePool> pools;
+      for (std::size_t v = 0; v < cfg_.engine.homes.lane.size(); ++v) {
+        const VenueId primary{static_cast<std::uint8_t>(v)};
+        LaneConfig lc = cfg_.engine.homes.lane_of(primary);
+        if (!lc.on() || !cfg_.engine.homes.of(primary).configured) continue;
+        lc.state_file.clear();
+        LanePool lp_cfg;
+        lp_cfg.primary = primary;
+        lp_cfg.cfg = lc;
+        lp_cfg.members = cfg_.engine.pools.members(primary);
+        for (std::size_t k = 0; k < lp_cfg.members.size(); ++k) {
+          const std::size_t id = lp_cfg.members[k].value;
+          lp_cfg.names[k] =
+              id < cfg_.venue_names.size() ? cfg_.venue_names[id] : "venue " + std::to_string(id);
+        }
+        lp_cfg.port = tier->port.get();
+        pools.push_back(std::move(lp_cfg));
+      }
+      tier->worker = std::make_unique<TransferWorker>(std::move(pools));
+      static_cast<void>(tier->worker->open());
+      tier->lanes = runner;
+      tier->next_lane = b.clock.now();
     }
     if (trade_at_.valid()) {
       // The checkpoint's bytes are restored at the take-over.
@@ -1183,7 +1240,7 @@ void BacktestSession::take_record(const EventHeader& record) {
       // The other half of a transfer within a simulated treasury's pool, not yet applied: both
       // are left out.
       for (std::size_t k = lp.tier->next_flow; k < flows_.size(); ++k) {
-        if (sim::pool_transfer(flows_[k], f, cfg_.treasuries)) {
+        if (sim::pool_transfer(flows_[k], f, cfg_.treasuries, scopes_)) {
           flows_.erase(flows_.begin() + static_cast<std::ptrdiff_t>(k));
           wake_slow_tier();
           return;

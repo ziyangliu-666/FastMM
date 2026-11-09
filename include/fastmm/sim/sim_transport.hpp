@@ -509,9 +509,9 @@ class SimTransport final : public MatchingSink {
   [[nodiscard]] const OutboundHasher& outbound_hash() const noexcept { return hasher_; }
   [[nodiscard]] const QueuePositionModel& queue() const noexcept { return queue_; }
   // An internal transfer between two simulated accounts of one pool, carried out at venue time
-  // `ts` (SimAccounts::transfer): each account's new balance goes to the engine on its own link as
-  // a BalanceMsg, as a venue's account stream reports one. Done, or Failed when the accounts
-  // refuse it.
+  // `ts` (SimAccounts::transfer): each account's link gets the flow (AccountFlowMsg, as a Binance
+  // balanceUpdate) and then its new balances (BalanceMsg), as a venue's account stream reports
+  // them. Done, or Failed when the accounts refuse it.
   TransferState transfer(
       VenueId from, VenueId to, std::string_view asset, Notional amount, Timestamp ts) noexcept;
   // Money in or out of `venue`'s account other than by trades, at venue time `ts`
@@ -727,6 +727,8 @@ class SimTransport final : public MatchingSink {
   // `venue_ts` that moved them (the same connection: no latency draw of their own).
   void publish_account(Link& l, Timestamp venue_ts) noexcept;
   void push_balance(Link& l, BalanceMsg& m) noexcept;
+  // An account event (a balance, a flow) on the link's user stream, in order behind its fills.
+  void push_user(Link& l, EventHeader& h) noexcept;
   void push_md_wire(EventHeader& h, Timestamp venue_ts) noexcept;
   static constexpr std::size_t kMaxMdWireBytes = std::size_t{1} << 30;
   [[nodiscard]] std::byte* reserve_md(Link& l, std::uint32_t len) noexcept;

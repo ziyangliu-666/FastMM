@@ -15,6 +15,7 @@
 #include "fastmm/backtest/result.hpp"
 #include "fastmm/backtest/synthetic_source.hpp"
 #include "fastmm/core/engine_runner.hpp"
+#include "fastmm/sim/recorded_session.hpp"
 #include "fastmm/sim/sim_backend.hpp"
 #include "fastmm/strategies/module.hpp"
 #include "fastmm/strategies/registry.hpp"
@@ -129,6 +130,8 @@ class BacktestSession {
   // balances_from_journal: the session's flows of money and account refreshes after the balances
   // the accounts start from.
   std::vector<AccountFlowMsg> flows_;
+  // What the run's own transfers move (sim::pool_transfer): the swept pools' base assets.
+  std::vector<sim::TransferScope> scopes_;
   std::vector<std::pair<VenueId, Timestamp>> refreshes_;
   // controls_from_journal: the session's operator commands (each as recorded), in time order.
   std::vector<std::vector<std::uint64_t>> controls_;

@@ -13,6 +13,8 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: `[venues.<primary>.transfers] dry_run = true` journals the transfers a sweep would make.
 - core: `ctx.sweeping(venue)` says whether a pool sweeps now.
 - venues: a refused transfer carries the venue's error code and HTTP status.
+- backtest: a backtest simulates a pool's sweep; `summary.json` counts its `transfers`.
+- sim: a simulated transfer reports a flow on each account ahead of its balances.
 
 ## [0.12.0] - 2026-11-09
 

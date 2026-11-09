@@ -1449,8 +1449,18 @@ TransferState SimTransport::transfer(
     VenueId from, VenueId to, std::string_view asset, Notional amount, Timestamp ts) noexcept {
   if (accounts_ == nullptr || !accounts_->transfer(from, to, asset, amount))
     return TransferState::Failed;
+  // As a venue's user stream announces it: the flow on each account, then its new balances.
   for (const VenueId v : {from, to}) {
-    if (Link* l = link_of_venue(v); l != nullptr) publish_account(*l, ts);
+    Link* l = link_of_venue(v);
+    if (l == nullptr) continue;
+    AccountFlowMsg f{};
+    init_header(f, EventType::AccountFlow, InstrumentId{}, v);
+    f.hdr.exch_ts = ts;
+    f.amount = v == from ? Notional::from_raw(-amount.raw) : amount;
+    f.asset.assign(asset);
+    f.flow_id.assign("transfer");
+    push_user(*l, f.hdr);
+    publish_account(*l, ts);
   }
   return TransferState::Done;
 }
@@ -1477,21 +1487,25 @@ void SimTransport::publish_account(Link& l, Timestamp venue_ts) noexcept {
 }
 
 void SimTransport::push_balance(Link& l, BalanceMsg& m) noexcept {
+  push_user(l, m.hdr);
+}
+
+void SimTransport::push_user(Link& l, EventHeader& h) noexcept {
   if (l.lat.own_fill()) {
     // The private stream: behind the fill that moved it, else the stream's fixed delay.
     const Timestamp arrival =
-        std::max(l.last_user_arrival, m.hdr.exch_ts + l.lat.fill_in_params().fixed);
+        std::max(l.last_user_arrival, h.exch_ts + l.lat.fill_in_params().fixed);
     l.last_user_arrival = arrival;
-    m.hdr.recv_ts = arrival;
-    m.hdr.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
-    if (!wire_push(l, kUserWire, m.hdr)) ++stats_.wire_full;
+    h.recv_ts = arrival;
+    h.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
+    if (!wire_push(l, kUserWire, h)) ++stats_.wire_full;
     return;
   }
-  const Timestamp arrival = std::max(l.last_order_arrival, m.hdr.exch_ts);
+  const Timestamp arrival = std::max(l.last_order_arrival, h.exch_ts);
   l.last_order_arrival = arrival;
-  m.hdr.recv_ts = arrival;
-  m.hdr.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
-  if (!wire_push(l, kOrderWire, m.hdr)) ++stats_.wire_full;
+  h.recv_ts = arrival;
+  h.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
+  if (!wire_push(l, kOrderWire, h)) ++stats_.wire_full;
 }
 
 void SimTransport::push_md_wire(EventHeader& h, Timestamp venue_ts) noexcept {

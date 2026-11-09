@@ -375,6 +375,21 @@ std::string BacktestResult::summary_json() const {
   u64("checkpoint_bytes", engine.checkpoint_bytes);
   u64("home_unavailable", engine.home_unavailable);
   u64("home_spills", engine.home_spills);
+  if (engine.lane_planned + engine.lane_requested != 0) {
+    fmt::format_to(std::back_inserter(s),
+                   "  \"transfers\": {{\"planned\": {}, \"requested\": {}, \"done\": {}, "
+                   "\"done_by_flows\": {}, \"failed\": {}, \"unknown\": {}, \"late\": {}, "
+                   "\"trips\": {}, \"moved_value\": {:.10g}}},\n",
+                   engine.lane_planned,
+                   engine.lane_requested,
+                   engine.lane_done,
+                   engine.lane_done_by_flows,
+                   engine.lane_failed,
+                   engine.lane_unknown,
+                   engine.lane_late,
+                   engine.lane_trips,
+                   static_cast<double>(engine.lane_moved_raw) / 1e8);
+  }
   s += "  \"risk_rejects\": {";
   for (const auto& [reason, n] : nonzero_rejects(engine.risk_rejects_by_reason)) {
     fmt::format_to(
@@ -621,7 +636,7 @@ bool BacktestResult::write_all(const std::string& dir) const {
   return write_file(d / "equity.csv", equity_csv()) && write_file(d / "fills.csv", fills_csv()) &&
          write_file(d / "orders.csv", orders_csv()) &&
          write_file(d / "summary.json", summary_json()) &&
-         (treasury.pools == 0 || write_file(d / "transfers.csv", transfers_csv()));
+         (treasury.transfers.empty() || write_file(d / "transfers.csv", transfers_csv()));
 }
 
 namespace {

@@ -102,7 +102,8 @@ struct RecordedSession {
 // The operator commands a run replays as they reached the session ([backtest]
 // controls_from_journal): quotes pulled and resumed, a flatten, limits changed, a kill switch
 // tripped or reset, reduce-only mode switched, a pool home moved by the operator or the planner
-// (the engine's own home changes are records, kSynthetic, and the run makes them again). A control
+// (the engine's own home changes are records, kSynthetic, and the run makes them again), a pool's
+// sweep turned on, off or paused. A control
 // socket's Stop ends the session and with it the data; what else the engine takes on this path
 // concerns the process, not the trading.
 [[nodiscard]] constexpr bool replayable_control(ControlCommand c) noexcept {
@@ -118,6 +119,7 @@ struct RecordedSession {
     case ControlCommand::ResetLossBudget:
     case ControlCommand::ReduceOnly:
     case ControlCommand::PoolHome:
+    case ControlCommand::PoolSweep:
       return true;
     default:
       return false;
@@ -129,22 +131,38 @@ struct RecordedSession {
   return h.exch_ts.valid() ? h.exch_ts : h.recv_ts;
 }
 
+// The assets a run moves itself between the accounts of one pool: a simulated treasury's asset, or
+// the base assets of the spot instruments of a pool whose sweep the run simulates.
+struct TransferScope {
+  PoolMembers members;
+  std::vector<FixedString<8>> assets;
+};
+
 // Two recorded flows that are one transfer between two accounts of a pool a treasury of
-// `treasuries` keeps: the same amount of its asset out of one account and into the other, within
-// kTransferPair. A backtest that simulates the treasury leaves such pairs out.
+// `treasuries` keeps, or within a `scopes` entry: the same amount of its asset out of one account
+// and into the other, within kTransferPair. A backtest that simulates the transfers leaves such
+// pairs out.
 inline constexpr Duration kTransferPair = seconds(60);
 [[nodiscard]] inline bool pool_transfer(const AccountFlowMsg& a,
                                         const AccountFlowMsg& b,
-                                        std::span<const TreasuryConfig> treasuries) noexcept {
+                                        std::span<const TreasuryConfig> treasuries,
+                                        std::span<const TransferScope> scopes = {}) noexcept {
   if (a.hdr.venue == b.hdr.venue || a.amount.raw != -b.amount.raw || a.amount.raw == 0 ||
       !same_currency(a.asset.view(), b.asset.view()))
     return false;
   const std::int64_t apart = account_time(a.hdr).ns - account_time(b.hdr).ns;
   if (apart > kTransferPair.ns || -apart > kTransferPair.ns) return false;
-  return std::any_of(treasuries.begin(), treasuries.end(), [&](const TreasuryConfig& t) {
-    return t.members.contains(a.hdr.venue) && t.members.contains(b.hdr.venue) &&
-           same_currency(a.asset.view(), t.asset);
-  });
+  const bool treasury =
+      std::any_of(treasuries.begin(), treasuries.end(), [&](const TreasuryConfig& t) {
+        return t.members.contains(a.hdr.venue) && t.members.contains(b.hdr.venue) &&
+               same_currency(a.asset.view(), t.asset);
+      });
+  return treasury || std::any_of(scopes.begin(), scopes.end(), [&](const TransferScope& s) {
+           return s.members.contains(a.hdr.venue) && s.members.contains(b.hdr.venue) &&
+                  std::any_of(s.assets.begin(), s.assets.end(), [&](const FixedString<8>& x) {
+                    return same_currency(x.view(), a.asset.view());
+                  });
+         });
 }
 
 }  // namespace fastmm::sim
