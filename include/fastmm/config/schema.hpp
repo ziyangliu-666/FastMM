@@ -316,6 +316,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      "the strategy's own orders and for quotes that do; quotes short of a token wait and are "
      "placed in turn as tokens return, not refused (default 0)"},
     {"engine",
+     "send_token_reserve",
+     KeyType::Int,
+     false,
+     "order tokens of [risk] orders_per_sec every quote leaves for the orders the strategy sends "
+     "itself, which are refused without a token where quotes wait for one; a quote that does not "
+     "reduce the position leaves quote_token_reserve on top of it (default 0)"},
+    {"engine",
      "quote_room_reserve",
      KeyType::Int,
      false,

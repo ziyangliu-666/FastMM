@@ -3636,10 +3636,11 @@ class Engine {
   // while the bucket has a token for a quote. One that cannot quote now leaves the queue: its next
   // set_quotes starts it again.
   FASTMM_NOINLINE void retry_starved() noexcept {
-    if (risk_.bucket().available(now_) <= quotes_.params().token_reserve) return;
+    const std::int64_t keep = quotes_.params().send_reserve + quotes_.params().token_reserve;
+    if (risk_.bucket().available(now_) <= keep) return;
     Placer place{this};
     for (std::size_t n = quotes_.starved_count(); n > 0 && quotes_.starved(); --n) {
-      if (risk_.bucket().available(now_) <= quotes_.params().token_reserve) break;
+      if (risk_.bucket().available(now_) <= keep) break;
       const InstrumentId id = quotes_.pop_starved();
       if (!quoting_enabled(id)) continue;
       quotes_.retry(instruments_.get(id), oms_, now_, place);
@@ -3815,12 +3816,13 @@ class Engine {
   }
 
   // Whether the [risk] bucket has a token for a quote that leaves `open_after` working on `side`:
-  // one that does not take the position towards zero leaves QuoteParams::token_reserve for the
-  // orders that do and for the strategy's own. Cancels never need one.
+  // every quote leaves QuoteParams::send_reserve for the orders the strategy sends itself, and one
+  // that does not take the position towards zero leaves token_reserve on top of it for the orders
+  // that do. Cancels never need one.
   [[nodiscard]] bool quote_token(InstrumentId id, Side side, Qty open_after) const noexcept {
     const TokenBucket& b = risk_.bucket();
     if (FASTMM_LIKELY(!b.enabled())) return true;
-    const std::int64_t have = b.available(now_);
+    const std::int64_t have = b.available(now_) - quotes_.params().send_reserve;
     if (have > quotes_.params().token_reserve) return true;
     if (have <= 0) return false;
     const std::int64_t pos = positions_.get(id).qty.raw;

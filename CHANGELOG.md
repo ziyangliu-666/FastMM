@@ -2,6 +2,11 @@
 
 All notable changes are recorded here (Keep a Changelog format).
 
+## [Unreleased]
+
+### Added
+- core: `[engine] send_token_reserve` keeps order tokens of `[risk] orders_per_sec` from every quote for the orders the strategy sends itself, so a hedge or an unwind is not refused `RateLimit` while waiting quotes take each token as it comes back.
+
 ## [0.11.0] - 2026-11-07
 
 A strategy's learnt state now lives in versioned checkpoints, and its parameters and `[ab]` arms can

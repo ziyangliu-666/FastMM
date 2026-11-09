@@ -169,6 +169,12 @@ struct QuoteParams {
   // orders a strategy sends itself (hedges, unwinds) and for quotes that do. Read by the engine's
   // placer; 0 = quotes may take the last token.
   std::int64_t token_reserve = 0;
+  // Order tokens every quote leaves for the orders a strategy sends itself (ctx.send, a hedge or an
+  // unwind), on top of token_reserve for the quotes that add risk. A quote short of a token waits
+  // for one; a sent order short of one is refused RateLimit, and the waiting quotes take each token
+  // as it comes back, so without this a sent order can find none for as long as quotes wait.
+  // 0 = quotes may take the last token.
+  std::int64_t send_reserve = 0;
   // Orders an account's venue order windows (ctx.order_budget) keep for News into empty levels and
   // for moves away from the touch: with no more than this many left, a resting quote is not moved
   // towards the touch (held, QuoteStats::kept_room). Read by the engine's placer; 0 = only when
@@ -192,8 +198,8 @@ struct QuoteAction {
   // ended (on_order_update), so it was decided against a balance that order may have changed.
   bool deferred;
   bool withheld;  // New output: not sent, the balance does not cover it (deferred only)
-  // New / Replace output: not sent, no order token for it now (QuoteParams::token_reserve); the
-  // instrument is retried when tokens come back.
+  // New / Replace output: not sent, no order token for it now (QuoteParams::token_reserve,
+  // send_reserve); the instrument is retried when tokens come back.
   bool rate_limited;
   VenueId account{};  // New: the pool account to send it from (invalid = automatic)
   // New / Replace output: the pre-trade check that refused it (None: sent, or not refused by one).
