@@ -3329,6 +3329,20 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   for (auto& s : slots) {
     if (s->thread.joinable()) s->thread.join();
   }
+  if (const LaneStatus l = runner->live_stats().lanes; l.pools != 0) {
+    FASTMM_LOG_INFO(
+        "fastmm-live: transfers requested={} planned={} done={} by_flows={} failed={} unknown={} "
+        "late={} trips={} in_flight={}",
+        l.requested,
+        l.planned,
+        l.done,
+        l.done_by_flows,
+        l.failed,
+        l.unknown,
+        l.late,
+        l.trips,
+        l.in_flight);
+  }
   if (treasury) {
     treasury->join();
     const StatusTreasury t = treasury->stats();
