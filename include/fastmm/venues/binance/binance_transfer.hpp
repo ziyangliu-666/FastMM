@@ -126,7 +126,11 @@ class TransferClient {
  private:
   [[nodiscard]] TransferResult submit(const TransferRequest& req, const TransferLeg& leg);
   [[nodiscard]] TransferResult query(const TransferRequest& req, const TransferLeg& leg);
-  [[nodiscard]] HttpReply send(std::string_view label, const BlockingControl::Build& build);
+  // `retry`: send it again while the venue answers rate-limited. Never for a transfer: its 429
+  // reaches the caller, whose breaker counts it.
+  [[nodiscard]] HttpReply send(std::string_view label,
+                               const BlockingControl::Build& build,
+                               bool retry);
 
   TransferSettings s_;
   Signer signer_;

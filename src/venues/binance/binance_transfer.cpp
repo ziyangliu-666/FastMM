@@ -275,14 +275,16 @@ TransferClient::TransferClient(TransferSettings s, Send send, Clock clock)
       send_(std::move(send)),
       clock_(clock != nullptr ? clock : &wall_ms) {}
 
-HttpReply TransferClient::send(std::string_view label, const BlockingControl::Build& build) {
+HttpReply TransferClient::send(std::string_view label,
+                               const BlockingControl::Build& build,
+                               bool retry_limited) {
   if (send_) return send_(label, build);
   BlockingHttpOptions o;
   o.ca_file = s_.ca_file;
   o.insecure_tls = s_.insecure_tls;
   o.timeout_ms = s_.http_timeout_ms;
   BlockingRetry retry;
-  retry.max_retries = 2;
+  retry.max_retries = retry_limited ? 2 : 0;
   retry.deadline_ms = 8'000;
   BlockingControl control(s_.venue, s_.rest_url, o, retry);
   return control.send(label, build);
@@ -292,17 +294,23 @@ TransferResult TransferClient::submit(const TransferRequest& req, const Transfer
   BlockingRequest probe;
   if (!encode_transfer(signer_, leg, req.asset, req.amount, clock_(), s_.recv_window_ms, probe))
     return {TransferState::Failed, {}, "the transfer request cannot be built"};
-  const HttpReply reply = send("transfer " + leg.client_id, [&](BlockingRequest& q) {
-    return encode_transfer(signer_, leg, req.asset, req.amount, clock_(), s_.recv_window_ms, q);
-  });
+  const HttpReply reply = send(
+      "transfer " + leg.client_id,
+      [&](BlockingRequest& q) {
+        return encode_transfer(signer_, leg, req.asset, req.amount, clock_(), s_.recv_window_ms, q);
+      },
+      false);
   return decode_transfer_reply(reply);
 }
 
 TransferResult TransferClient::query(const TransferRequest& req, const TransferLeg& leg) {
   const std::int64_t since = req.created_ms > kQuerySlackMs ? req.created_ms - kQuerySlackMs : 0;
-  const HttpReply reply = send("transfer status " + leg.client_id, [&](BlockingRequest& q) {
-    return encode_transfer_query(signer_, leg, since, clock_(), s_.recv_window_ms, q);
-  });
+  const HttpReply reply = send(
+      "transfer status " + leg.client_id,
+      [&](BlockingRequest& q) {
+        return encode_transfer_query(signer_, leg, since, clock_(), s_.recv_window_ms, q);
+      },
+      true);
   return decode_transfer_history(reply, leg.client_id);
 }
 
