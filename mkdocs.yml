@@ -179,6 +179,7 @@ nav:
               - how-to/operations/operate-a-running-session.md
               - how-to/operations/home-placement.md
               - how-to/operations/fund-a-pool.md
+              - how-to/operations/sweep-pieces.md
               - how-to/operations/run-behind-a-gateway.md
               - how-to/operations/hand-over-a-session.md
               - how-to/operations/kill-switch-and-shutdown.md

@@ -221,6 +221,8 @@ std::string_view to_string(TreasuryEventKind k) noexcept {
       return "reserve";
     case TreasuryEventKind::Released:
       return "released";
+    case TreasuryEventKind::Request:
+      return "request";
   }
   return "?";
 }
@@ -761,7 +763,8 @@ void fill_transfer_msg(ControlTransferMsg& m,
   m.event = static_cast<std::uint8_t>(e.kind);
   m.state =
       static_cast<std::uint8_t>(e.result != nullptr ? e.result->state : TransferState::Unknown);
-  m.flags = e.held ? ControlTransferMsg::kHeld : std::uint8_t{0};
+  m.flags = static_cast<std::uint8_t>((e.held ? ControlTransferMsg::kHeld : 0U) |
+                                      (e.lane ? ControlTransferMsg::kLane : 0U));
   m.seq = e.seq;
   if (e.req != nullptr) {
     m.from = e.req->from;
@@ -770,7 +773,11 @@ void fill_transfer_msg(ControlTransferMsg& m,
     m.asset.assign(e.req->asset);
     m.client_id.assign(e.req->client_id);
   }
-  if (e.result != nullptr) m.venue_ref.assign(e.result->venue_ref);
+  if (e.result != nullptr) {
+    m.venue_ref.assign(e.result->venue_ref);
+    m.code = e.result->code;
+    m.http_status = static_cast<std::uint16_t>(std::clamp(e.result->http_status, 0, 65535));
+  }
   m.hdr.recv_ts = Timestamp{ts_ns};
 }
 

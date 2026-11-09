@@ -202,6 +202,7 @@ struct TreasuryEvent {
   const TransferResult* result = nullptr;  // the venue's answer, when there is one
   std::uint64_t seq = 0;                   // TreasuryTransfer::seq
   bool held = false;                       // reserve = true: the engine holds the amount
+  bool lane = false;                       // a pool's transfer lane (core/transfer_lane.hpp)
 };
 
 struct TreasuryStats {

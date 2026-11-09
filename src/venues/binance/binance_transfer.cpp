@@ -178,10 +178,19 @@ std::string id_text(const dom::element& e) {
   return {};
 }
 
+// The venue's error code of a refusal, 0 without one.
+int error_code(const HttpReply& reply) {
+  int code = 0;
+  std::string msg;
+  return reply.error.empty() && decode_rest_error(reply.body, code, msg) ? code : 0;
+}
+
 }  // namespace
 
 TransferResult decode_transfer_reply(const HttpReply& reply) {
   TransferResult r;
+  r.http_status = reply.status;
+  r.code = error_code(reply);
   if (reply.status == 0 || reply.status >= 500) {
     r.state = TransferState::Unknown;
     r.detail = error_text(reply);
@@ -210,6 +219,8 @@ TransferResult decode_transfer_reply(const HttpReply& reply) {
 TransferResult decode_transfer_history(const HttpReply& reply, std::string_view client_id) {
   TransferResult r;
   if (!reply.ok()) {
+    r.http_status = reply.status;
+    r.code = error_code(reply);
     r.state = TransferState::Unknown;
     r.detail = error_text(reply);
     return r;

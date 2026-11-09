@@ -45,7 +45,7 @@ What happens to an adding order the home cannot take depends on `spill`:
 | `"flat"` | a flat, unpinned instrument moves to the usable account with the most window; else refused | refused `RateLimit` | refused `BalanceShort` |
 | `"busy"` | sent to the account the balance routing picks; the home stays | sent elsewhere from `spill_at` of the window (default 0.8) | sent to an account that covers it |
 
-With `"flat"`, when the old home's link is back, the adding orders left on it are cancelled. With `"busy"`, an order `[capacity]` prices above its value on the home also goes elsewhere, and `balance_room` sizes a buy against any usable account. A spilled order that fills starts a piece, which drains like any other. On a derivative, `"busy"` behaves as `"flat"`.
+With `"flat"`, when the old home's link is back, the adding orders left on it are cancelled. With `"busy"`, an order `[capacity]` prices above its value on the home also goes elsewhere, and `balance_room` sizes a buy against any usable account. A spilled order that fills starts a piece, which drains like any other, or goes home by transfer with `sweep = true` ([Sweep pieces home](sweep-pieces.md)). On a derivative, `"busy"` behaves as `"flat"`.
 
 `reduce_accounts` is how many holders carry reducing orders of one instrument and side at once; a piece may always join while only the home carries one. With `1`, a piece's part is offered alone until it is gone, so the resting sell is the piece's size, not the position's. `ctx.balance_room` and `fit_to_balance` size each side to the one account its next order goes to: a single-level quote stays on that account. Above `1`, only a strategy that places one level per account (`NewOrderRequest`, or several levels) uses the extra holders.
 

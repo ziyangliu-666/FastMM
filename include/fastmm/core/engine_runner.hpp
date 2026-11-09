@@ -56,6 +56,19 @@ struct RunnerStats {
   // spill = "busy" sent off their home.
   std::uint64_t home_unavailable = 0;
   std::uint64_t home_spills = 0;
+  // The pools' transfer lanes (core/transfer_lane.hpp), summed: transfers planned (dry run),
+  // requested, done (and of them, confirmed by both accounts' flows), failed, answered with no
+  // usable answer, unresolved past timeout_s; breaker trips; the value done transfers moved at the
+  // mid (Notional raw).
+  std::uint64_t lane_planned = 0;
+  std::uint64_t lane_requested = 0;
+  std::uint64_t lane_done = 0;
+  std::uint64_t lane_done_by_flows = 0;
+  std::uint64_t lane_failed = 0;
+  std::uint64_t lane_unknown = 0;
+  std::uint64_t lane_late = 0;
+  std::uint64_t lane_trips = 0;
+  std::int64_t lane_moved_raw = 0;
   // Fills booked as estimates, from a cum_qty no fill message reported (Engine::book_missed_fill);
   // the orders whose estimate no execution has named yet; and estimates whose order the OMS forgot
   // before one did (OmsStats::synthetic_pending, synthetic_forgotten): an execution of such an
@@ -254,6 +267,10 @@ class IEngineRunner {
                             PoolFunding& /*out*/) const {
     return false;
   }
+  // The pools' transfer lanes (core/transfer_lane.hpp): the transfer worker's next message from
+  // the engine (Engine::pop_transfer_intent; its one consumer thread), and whether there are lanes.
+  virtual bool pop_transfer_intent(LaneIntent& /*out*/) { return false; }
+  [[nodiscard]] virtual bool has_lanes() const { return false; }
 };
 
 // Owns a strategy + engine pair and exposes them through IEngineRunner.
@@ -293,6 +310,8 @@ class EngineRunner final : public IEngineRunner {
     engine_->pool_funding(primary, asset, out);
     return true;
   }
+  bool pop_transfer_intent(LaneIntent& out) override { return engine_->pop_transfer_intent(out); }
+  [[nodiscard]] bool has_lanes() const override { return engine_->has_lanes(); }
   [[nodiscard]] Engine& engine() noexcept { return *engine_; }
   [[nodiscard]] Strategy& strategy() noexcept { return *strategy_; }
 

@@ -160,6 +160,12 @@ TEST_CASE("binance.transfer: the POST's answers") {
   r = decode_transfer_reply(reply(400, R"({"code":-9000,"msg":"Insufficient balance"})"));
   CHECK(r.state == TransferState::Failed);
   CHECK(r.detail.find("-9000") != std::string::npos);
+  CHECK(r.code == -9000);
+  CHECK(r.http_status == 400);
+  r = decode_transfer_reply(reply(429, R"({"code":-1003,"msg":"Too many requests"})"));
+  CHECK(r.state == TransferState::Failed);
+  CHECK(r.code == -1003);
+  CHECK(r.http_status == 429);
   CHECK(decode_transfer_reply(reply(503, "")).state == TransferState::Unknown);
   HttpReply lost;
   lost.error = "connection reset";

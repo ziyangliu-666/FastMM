@@ -1142,6 +1142,127 @@ TEST_CASE("hotpath.noalloc: engine step with home placement on an account pool")
   }
 }
 
+TEST_CASE("hotpath.noalloc: engine sweeps a pool's pieces through its transfer lane") {
+  InstrumentTable table;
+  Instrument btc = make_inst();
+  btc.base = "BTC";
+  btc.quote = "USDT";
+  btc.venue = VenueId{0};
+  REQUIRE(table.add(btc));
+  SimClock clock{Timestamp{seconds(1000).ns}};
+  NullTransport transport;
+  InlineFeed feed{1 << 20};
+  MsgRing journal_ring{1 << 22};
+  BasicMM strategy;
+  REQUIRE_FALSE(strategy.configure({{"half_spread_bps", "10"},
+                                    {"quote_qty", "0.01"},
+                                    {"max_inventory", "0.05"},
+                                    {"levels", "1"}}));
+  EngineConfig cfg;
+  cfg.risk.max_order_qty = qt("1");
+  cfg.risk.max_open_orders = 16;
+  cfg.quotes.min_requote_interval = Duration{};
+  REQUIRE(cfg.pools.add(VenueId{1}, VenueId{0}));
+  REQUIRE(cfg.pools.add(VenueId{2}, VenueId{0}));
+  cfg.homes.pool[0].configured = true;
+  cfg.homes.pool[0].placement = Placement::Home;
+  cfg.homes.pin[0] = VenueId{0};
+  cfg.homes.lane[0].sweep = SweepMode::On;
+  cfg.homes.lane[0].sweep_delay = milliseconds(500);
+  using E = Engine<BasicMM, SimClock, NullTransport, InlineFeed>;
+  auto engine = std::make_unique<E>(cfg, table, clock, transport, feed, strategy, &journal_ring);
+  engine->warm_up();
+  engine->start();
+  std::int64_t venue_ms = 1'789'000'000'000;
+  auto push_balance = [&](VenueId v, const char* asset, const char* free, std::uint8_t flags) {
+    BalanceMsg m{};
+    init_header(m, EventType::Balance, InstrumentId::invalid(), v);
+    m.asset.assign(asset);
+    m.free = Notional::from_decimal(free).value();
+    m.total = m.free;
+    m.equity = m.free;
+    m.flags = flags;
+    m.hdr.exch_ts = Timestamp{++venue_ms * 1'000'000};
+    m.hdr.recv_ts = clock.now();
+    REQUIRE(feed.push(m.hdr));
+  };
+  auto push_book = [&](const char* bid, const char* ask, std::uint64_t seq) {
+    std::byte* p = feed.reserve(BookDeltaMsg::size_for(1, 1));
+    REQUIRE(p != nullptr);
+    auto* d = reinterpret_cast<BookDeltaMsg*>(p);
+    init_header(*d,
+                seq == 1 ? EventType::BookSnapshot : EventType::BookDelta,
+                InstrumentId{0},
+                VenueId{0},
+                BookDeltaMsg::size_for(1, 1));
+    if (seq == 1) d->hdr.flags |= EventHeader::kSnapshot;
+    d->hdr.recv_ts = clock.now();
+    d->bid_count = d->ask_count = 1;
+    d->last_update_id = seq;
+    d->levels()[0] = Level{px(bid), qt("5")};
+    d->levels()[1] = Level{px(ask), qt("5")};
+    feed.commit();
+  };
+  auto push_flow = [&](VenueId v, std::int64_t amount) {
+    AccountFlowMsg f{};
+    init_header(f, EventType::AccountFlow, InstrumentId::invalid(), v);
+    f.asset.assign("BTC");
+    f.amount = Notional::from_raw(amount);
+    f.hdr.exch_ts = Timestamp{++venue_ms * 1'000'000};
+    f.hdr.recv_ts = clock.now();
+    REQUIRE(feed.push(f.hdr));
+  };
+  auto push_answer = [&](TreasuryEventKind k, std::uint64_t seq, TransferState st) {
+    ControlTransferMsg m{};
+    init_header(m, EventType::Control, InstrumentId::invalid(), VenueId{0});
+    m.command = ControlCommand::Transfer;
+    m.event = static_cast<std::uint8_t>(k);
+    m.state = static_cast<std::uint8_t>(st);
+    m.flags = ControlTransferMsg::kLane | ControlTransferMsg::kHeld;
+    m.seq = seq;
+    m.hdr.recv_ts = clock.now();
+    REQUIRE(feed.push(m.hdr));
+  };
+  for (std::uint8_t v = 0; v < 3; ++v) {
+    push_balance(VenueId{v}, "USDT", "500", BalanceMsg::kSnapshot);
+    push_balance(VenueId{v},
+                 "BTC",
+                 v == 0 ? "0.02" : "0.01",
+                 BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd);
+  }
+  push_book("100.00", "100.02", 1);
+  while (engine->step() > 0) {
+  }
+  std::uint64_t done = 0;
+  {
+    NoAllocScope guard(true);
+    LaneIntent in;
+    for (std::uint64_t i = 0; i < 40; ++i) {
+      clock.advance(milliseconds(250));
+      push_book(i % 2 == 0 ? "100.10" : "100.00", i % 2 == 0 ? "100.12" : "100.02", 2 + i);
+      while (engine->step() > 0) {
+      }
+      while (engine->pop_transfer_intent(in)) {
+        if (in.kind != LaneIntent::Kind::Send) continue;
+        push_answer(TreasuryEventKind::Sent, in.seq, TransferState::Pending);
+        push_flow(in.from, -in.amount);
+        push_flow(in.to, in.amount);
+        while (engine->step() > 0) {
+        }
+        ++done;
+      }
+      // A piece again, from a report.
+      if (i % 10 == 5) {
+        push_balance(VenueId{1}, "BTC", "0.01", 0);
+        while (engine->step() > 0) {
+        }
+      }
+    }
+  }
+  CHECK(done >= 2);
+  CHECK(engine->lane(VenueId{0})->stats().done_by_flows == done);
+}
+
 namespace {
 // Asks for a checkpoint at every book, with 64 KiB of state from StateWriter.
 class Checkpointing : public StrategyBase<BasicMMParams> {

@@ -179,6 +179,25 @@ struct PoolSection {
   double plan_lookback_h = 3.0;
   std::int64_t plan_max_moves = 3;
   std::map<std::string, std::string> homes;  // symbol -> pool account
+  std::string sweep = "false";               // "false" | "true" | "auto"
+  std::int64_t sweep_delay_ms = 3000;
+  std::int64_t sweep_dust_s = 3600;
+  std::int64_t sweep_retry_s = 30;
+};
+
+// [venues.<primary>.transfers]: the transfer lane of the pool whose primary this venue is
+// (core/transfer_lane.hpp). Config::pool_homes() makes it typed.
+struct TransfersSection {
+  bool configured = false;  // the table is present
+  std::int64_t max_in_flight = 8;
+  std::int64_t per_minute = 20;
+  std::int64_t per_hour = 300;
+  std::int64_t per_day = 3000;
+  std::int64_t breaker_s = 900;
+  std::int64_t timeout_s = 60;
+  std::int64_t status_interval_s = 10;
+  bool dry_run = false;
+  std::string state_file;  // empty: <journal_dir>/<engine name>.<primary>.transfers
 };
 
 struct VenueSection {
@@ -219,6 +238,7 @@ struct VenueSection {
   FeesSection fees;
   TreasurySection treasury;
   PoolSection pool;
+  TransfersSection transfers;
   // Every key the generic parser does not interpret, stringified. The venue `kind` names owns
   // them: it declares them, validates them and reports an unknown one
   // (fastmm::venues::validate_venues, include/fastmm/venues/registry.hpp), which is why the

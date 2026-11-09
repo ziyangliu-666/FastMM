@@ -2,6 +2,18 @@
 
 All notable changes are recorded here (Keep a Changelog format).
 
+## [Unreleased]
+
+### Added
+- core: `[venues.<primary>.pool] sweep = true` moves a spot piece to its home by internal transfer.
+- core: a sweeping pool sends spot sells to the home; a piece's resting sell moves at its reprice.
+- core: `[venues.<primary>.transfers]` caps a sweep's transfers per minute, hour and day.
+- core: a breaker pauses the sweep after refusals, lost answers or a rate-limit answer.
+- core: the engine holds each transfer out of the payer and confirms it from both accounts' flows.
+- core: `[venues.<primary>.transfers] dry_run = true` journals the transfers a sweep would make.
+- core: `ctx.sweeping(venue)` says whether a pool sweeps now.
+- venues: a refused transfer carries the venue's error code and HTTP status.
+
 ## [0.12.0] - 2026-11-09
 
 A pool's home can hand the adding orders it cannot take now to another account, and

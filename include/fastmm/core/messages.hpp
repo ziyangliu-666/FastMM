@@ -552,8 +552,12 @@ static_assert(offsetof(ControlUnderlyingMsg, command) == offsetof(ControlMsg, co
 // balance (BalanceBook::reserve), by `seq`: a Reserve holds at most the payer's free estimate, a
 // Sent sets the hold to `arg`, Failed and Released give it back, Done gives it back and moves `arg`
 // out of `from` and into `to` until their next reports. Without it the engine counts the record.
+// With kLane the record belongs to the pool's transfer lane (core/transfer_lane.hpp): the engine's
+// own Request, Planned and Done are kSynthetic, the worker's answers are inputs; `code` and
+// `http_status` carry the venue's answer to a refusal.
 struct ControlTransferMsg {
   static constexpr std::uint8_t kHeld = 1;
+  static constexpr std::uint8_t kLane = 2;
 
   EventHeader hdr;
   ControlCommand command;
@@ -569,7 +573,9 @@ struct ControlTransferMsg {
   FixedString<23> venue_ref;  // 121: the venue's id of the transfer
   std::uint8_t pad1_[7];      // 145
   std::uint64_t seq;          // 152: the treasury's counter of the transfer
-  std::uint8_t pad_[32];      // 160 -> 192
+  std::int32_t code;          // 160: the venue's error code, 0 without one
+  std::uint16_t http_status;  // 164
+  std::uint8_t pad_[26];      // 166 -> 192
 };
 static_assert(sizeof(ControlTransferMsg) == 192 &&
               std::is_trivially_copyable_v<ControlTransferMsg>);
@@ -578,7 +584,9 @@ static_assert(offsetof(ControlTransferMsg, command) == offsetof(ControlMsg, comm
               offsetof(ControlTransferMsg, asset) == 80 &&
               offsetof(ControlTransferMsg, client_id) == 89 &&
               offsetof(ControlTransferMsg, venue_ref) == 121 &&
-              offsetof(ControlTransferMsg, seq) == 152);
+              offsetof(ControlTransferMsg, seq) == 152 &&
+              offsetof(ControlTransferMsg, code) == 160 &&
+              offsetof(ControlTransferMsg, http_status) == 164);
 
 struct ConnectionStateMsg {
   EventHeader hdr;

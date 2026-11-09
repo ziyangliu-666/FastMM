@@ -41,7 +41,9 @@
 // whose order link is not live, or whose kill switch is engaged, is routed around. With
 // [venues.<primary>.pool] placement = "home" each instrument has a home account instead
 // (core/pool_homes.hpp): an order that adds to the position goes to the home, one that reduces it
-// to the accounts holding it, the pieces away from home first.
+// to the accounts holding it, the pieces away from home first. With sweep = true the engine moves
+// the pieces home by internal transfer and sends the pool's spot sells to the home
+// (core/transfer_lane.hpp).
 //
 // Parameters (ADR-0013): a ParamUpdate event assigns new parameter values to the strategy
 // (apply_param_update), then on_params runs. With EngineConfig::max_param_age, quoting is disabled
@@ -78,11 +80,13 @@
 #include "fastmm/core/risk.hpp"
 #include "fastmm/core/rng.hpp"
 #include "fastmm/core/seqlock.hpp"
+#include "fastmm/core/spsc_ring.hpp"
 #include "fastmm/core/strategy_context.hpp"
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/timer_wheel.hpp"
 #include "fastmm/core/transfer.hpp"
+#include "fastmm/core/transfer_lane.hpp"
 #include "fastmm/core/transport.hpp"
 #include "fastmm/core/venue_health.hpp"
 #include "fastmm/strategies/hooks.hpp"
@@ -199,6 +203,9 @@ class Engine {
   static constexpr std::uint8_t kBatchEndTimer = 5;
   // The journal's checkpoint ([engine] checkpoint_s).
   static constexpr std::uint8_t kCheckpointTimer = 6;
+  // The pools' sweep (core/transfer_lane.hpp), every kSweepPeriod.
+  static constexpr std::uint8_t kSweepTimer = 7;
+  static constexpr Duration kSweepPeriod = milliseconds(250);
 
   Engine(const EngineConfig& cfg,
          const InstrumentTable& instruments,
@@ -293,6 +300,19 @@ class Engine {
     }
     for (std::atomic<std::uint8_t>& h : home_pub_)
       h.store(VenueId{}.value, std::memory_order_relaxed);
+    if (homes_on_) {
+      for (std::size_t v = 0; v < kMaxVenues; ++v) {
+        const VenueId primary{static_cast<std::uint8_t>(v)};
+        const LaneConfig& lc = cfg_.homes.lane_of(primary);
+        if (!lc.on() || !cfg_.homes.of(primary).configured || !cfg_.pools.pooled(primary)) continue;
+        lanes_[v] = std::make_unique<TransferLane>(primary, lc);
+        lanes_on_ = true;
+      }
+      if (lanes_on_) {
+        sweep_cells_ = std::make_unique<SweepCells>();
+        lane_out_ = std::make_unique<SpscRing<LaneIntent, kLaneRing>>();
+      }
+    }
   }
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
@@ -406,6 +426,15 @@ class Engine {
     FASTMM_LOG_INFO(
         "strategy {} hooks: {}", strategy_name(), implemented_hooks<Strategy, Context, Book>());
     if (cfg_.ack_timeout.ns > 0) ack_timer_ = timers_.add(now_, cfg_.ack_timeout, /*repeat=*/true);
+    if (lanes_on_) {
+      lane_start_ = now_;
+      sweep_timer_ = timers_.add(now_, kSweepPeriod, /*repeat=*/true);
+      std::uint32_t live = 0;
+      for (std::size_t v = 0; v < kMaxVenues; ++v) {
+        if (lanes_[v] != nullptr && !lanes_[v]->config().dry_run) live |= 1U << v;
+      }
+      set_lanes_live(live);
+    }
     const bool quoting_before = quoting_enabled();
     if constexpr (has_hook(Hook::Start)) strategy_.on_start(ctx_);
     after_hooks(quoting_before);
@@ -757,7 +786,10 @@ class Engine {
     bool homed = homes_on_ && cfg_.homes.of(inst.venue).homes();
     VenueId target{};
     Qty cap = Qty::max();
-    if (homed) {
+    if (FASTMM_UNLIKELY(lanes_on_) && side == Side::Sell && sweeping(inst)) {
+      homed = true;  // a sweeping pool sells from the home (route)
+      target = home_[id.value];
+    } else if (homed) {
       target = reduce_route(inst, side, px, Qty{}, /*sizing=*/true);
       if (target.valid() && target != home_[id.value]) {
         const Qty held = holding(id, target);
@@ -902,6 +934,26 @@ class Engine {
     if (!instruments_.contains(id)) return {};
     return Notional::from_raw(need_pub_[id.value].load(std::memory_order_relaxed));
   }
+  // ---- transfer lanes (core/transfer_lane.hpp) --------------------------------------------------
+
+  // The pool sweeps now: its free base on other accounts goes to the homes, and its reducing spot
+  // orders go to the home. False without a lane, in a dry run, while the breaker is open or once
+  // the day's budget is used. Any thread.
+  [[nodiscard]] bool sweeping(VenueId primary) const noexcept {
+    const VenueId p = cfg_.pools.primary(primary);
+    return p.value < 32 && (lanes_live_pub_.load(std::memory_order_relaxed) & (1U << p.value)) != 0;
+  }
+  // The pool's lane; null without one. Engine thread.
+  [[nodiscard]] const TransferLane* lane(VenueId primary) const noexcept {
+    const VenueId p = cfg_.pools.primary(primary);
+    return p.value < kMaxVenues ? lanes_[p.value].get() : nullptr;
+  }
+  // The transfer worker's next message from the engine (its one consumer thread).
+  bool pop_transfer_intent(LaneIntent& out) noexcept {
+    return lane_out_ != nullptr && lane_out_->try_pop(out);
+  }
+  [[nodiscard]] bool has_lanes() const noexcept { return lanes_on_; }
+
   // A pool treasury's view of `primary`'s pool in `asset` (core/pool_homes.hpp PoolFunding): the
   // funding needs summed by home, and the payout held for a transfer. Any thread: it reads only
   // what the engine thread publishes for it.
@@ -1004,6 +1056,19 @@ class Engine {
     r.checkpoints = stats_.checkpoints;
     r.home_unavailable = stats_.home_unavailable;
     r.home_spills = stats_.home_spills;
+    for (const std::unique_ptr<TransferLane>& lane : lanes_) {
+      if (lane == nullptr) continue;
+      const LaneStats& l = lane->stats();
+      r.lane_planned += l.planned;
+      r.lane_requested += l.requested;
+      r.lane_done += l.done;
+      r.lane_done_by_flows += l.done_by_flows;
+      r.lane_failed += l.failed;
+      r.lane_unknown += l.unknown;
+      r.lane_late += l.late;
+      r.lane_trips += l.trips;
+      r.lane_moved_raw += l.moved_value;
+    }
     r.checkpoints_skipped = stats_.checkpoints_skipped;
     r.checkpoint_bytes = stats_.checkpoint_bytes;
     r.realized_pnl_raw = positions_.total_realized().raw;
@@ -1152,7 +1217,20 @@ class Engine {
   struct Placer {
     Engine* e;
     bool operator()(QuoteAction& a) noexcept { return e->place_quote(a); }
+    // A resting order to move by cancel and new rather than replace (QuoteManager).
+    [[nodiscard]] bool relocates(const Order& o, VenueId account) const noexcept {
+      return e->relocates(o, account);
+    }
   };
+  // A sweeping pool's sell resting on an account other than the home, placed by the routing: its
+  // next move is a cancel and a new order, which the routing sends home, so the base it locks can
+  // be swept.
+  [[nodiscard]] bool relocates(const Order& o, VenueId account) const noexcept {
+    if (FASTMM_LIKELY(!lanes_on_) || account.valid() || o.side != Side::Sell ||
+        !instruments_.contains(o.instrument))
+      return false;
+    return sweeping(instruments_.get(o.instrument)) && o.venue != home_[o.instrument.value];
+  }
 
   // ---- strategy hooks -------------------------------------------------------------------------
 
@@ -1365,7 +1443,10 @@ class Engine {
       case EventType::Padding:
       case EventType::EngineTime:
       case EventType::StrategyState:
-      case EventType::AccountFlow:  // journaled for a backtest; the balances follow BalanceMsg
+      case EventType::AccountFlow:
+        // The balances follow BalanceMsg; a flow confirms a lane's transfer.
+        if (FASTMM_UNLIKELY(lanes_on_)) on_account_flow(msg_cast<AccountFlowMsg>(h));
+        break;
       case EventType::Count:
         break;  // not consumed by the L2 engine
     }
@@ -1383,6 +1464,8 @@ class Engine {
       call_batch_end();  // replay of a batch end
     } else if (t.engine == kCheckpointTimer) {
       journal_checkpoint();  // replay of the journal's checkpoint
+    } else if (t.engine == kSweepTimer) {
+      sweep_tick();  // replay of the pools' sweep
     } else if (t.engine != 0) {
       check_param_age();  // replay of the engine's max_param_age timer
     } else {
@@ -2938,8 +3021,17 @@ class Engine {
         break;
       case ControlCommand::Transfer:
         ++stats_.treasury_records;  // a treasury's record for the journal (ControlTransferMsg)
-        if (c.hdr.len >= sizeof(ControlTransferMsg))
+        if (c.hdr.len < sizeof(ControlTransferMsg)) break;
+        if ((msg_cast<ControlTransferMsg>(&c.hdr).flags & ControlTransferMsg::kLane) != 0) {
+          // The engine's own lane records are in the journal as records: a replay makes them again.
+          if ((c.hdr.flags & EventHeader::kSynthetic) == 0)
+            on_lane_record(msg_cast<ControlTransferMsg>(&c.hdr));
+        } else {
           on_transfer(msg_cast<ControlTransferMsg>(&c.hdr));
+        }
+        break;
+      case ControlCommand::PoolSweep:
+        on_pool_sweep(c);
         break;
       case ControlCommand::ResetLossBudget:
         reset_loss_budget();
@@ -2995,6 +3087,7 @@ class Engine {
         break;
       case TreasuryEventKind::Planned:
       case TreasuryEventKind::TimedOut:
+      case TreasuryEventKind::Request:
         break;
     }
     hold_amt_pub_[m.hdr.venue.value].store(h.active ? h.amount : 0, std::memory_order_relaxed);
@@ -3564,8 +3657,9 @@ class Engine {
     const bool flatten_timer = flatten_timer_.valid() && id == flatten_timer_;
     const bool state_timer = state_timer_.valid() && id == state_timer_;
     const bool checkpoint_timer = checkpoint_timer_.valid() && id == checkpoint_timer_;
+    const bool sweep_timer = sweep_timer_.valid() && id == sweep_timer_;
     const bool engine_timer = ack_timer || flatten_timer || state_timer || checkpoint_timer ||
-                              (param_timer_.valid() && id == param_timer_);
+                              sweep_timer || (param_timer_.valid() && id == param_timer_);
     // Journal a synthetic TimerMsg so replay reproduces the strategy's timer calls.
     if (journal_.enabled()) {
       TimerMsg t{};
@@ -3575,6 +3669,7 @@ class Engine {
                  : flatten_timer    ? kFlattenTimer
                  : state_timer      ? kStateTimer
                  : checkpoint_timer ? kCheckpointTimer
+                 : sweep_timer      ? kSweepTimer
                  : engine_timer     ? 1
                                     : 0;
       t.user_data = user_data;
@@ -3601,6 +3696,8 @@ class Engine {
       if constexpr (KeepsState<Strategy>) capture_state();
     } else if (checkpoint_timer) {
       journal_checkpoint();
+    } else if (sweep_timer) {
+      sweep_tick();
     } else if (engine_timer) {
       param_timer_ = TimerId{};  // a one-shot timer is freed once it has fired
       flush_out();
@@ -4121,6 +4218,10 @@ class Engine {
   [[nodiscard]] Route route(const NewOrderRequest& req,
                             const Instrument& inst,
                             const Purchase* buy = nullptr) const noexcept {
+    // A sweeping pool keeps the base on the home: a spot sell goes there, a piece is swept.
+    if (FASTMM_UNLIKELY(lanes_on_) && !req.account.valid() && req.side == Side::Sell &&
+        sweeping(inst))
+      return Route{home_[inst.id.value]};
     if (FASTMM_LIKELY(!homes_on_) || req.account.valid() || !cfg_.homes.of(inst.venue).homes() ||
         !cfg_.pools.pooled(inst.venue))
       return Route{choose_account(req, inst)};
@@ -4453,6 +4554,387 @@ class Engine {
       limit_pub_[v].store(b.venue_known ? b.orders_10s.limit : 0, std::memory_order_relaxed);
     }
     unusable_pub_.store(unusable, std::memory_order_relaxed);
+  }
+
+  // ---- transfer lanes (core/transfer_lane.hpp) ------------------------------------------------
+
+  // The sweep, every kSweepPeriod: late transfers, the breaker, then each sweeping pool's pieces.
+  FASTMM_NOINLINE void sweep_tick() noexcept {
+    std::uint32_t live = 0;
+    for (std::size_t v = 0; v < kMaxVenues; ++v) {
+      TransferLane* lane = lanes_[v].get();
+      if (lane == nullptr) continue;
+      note_late(*lane);
+      const BreakerState b = lane->breaker(now_);
+      const bool open = b == BreakerState::Closed && !lane->day_spent(now_);
+      if (open && !lane->config().dry_run) live |= 1U << v;
+      if (!open || !balances_live_ || risk_.killed() || risk_.venue_killed(lane->primary()))
+        continue;
+      sweep_pool(*lane);
+    }
+    set_lanes_live(live);
+  }
+  void set_lanes_live(std::uint32_t live) noexcept {
+    lanes_live_ = live;
+    lanes_live_pub_.store(live, std::memory_order_relaxed);
+  }
+  // The pool's lane sweeps for this instrument: a spot instrument whose base the venue transfers,
+  // with a usable home.
+  [[nodiscard]] bool sweeping(const Instrument& inst) const noexcept {
+    if (FASTMM_LIKELY(!lanes_on_) || inst.is_derivative() || inst.venue.value >= kMaxVenues ||
+        (lanes_live_ & (1U << inst.venue.value)) == 0)
+      return false;
+    const VenueId h = home_[inst.id.value];
+    return h.valid() && account_usable(h) && !lanes_[inst.venue.value]->blocked(inst.base.view());
+  }
+  void note_late(TransferLane& lane) noexcept {
+    for (TransferLane::Slot& t : lane.slots()) {
+      if (!t.active || t.late || now_ - t.created < lane.config().timeout) continue;
+      t.late = true;
+      ++lane.stats().late;
+      FASTMM_LOG_WARN("transfer {} of {} {} -> {} unresolved after {} s: still held",
+                      t.seq,
+                      t.asset.view(),
+                      venue_name(t.from),
+                      venue_name(t.to),
+                      (now_ - t.created).ns / 1'000'000'000);
+    }
+  }
+  // One pool: its pieces due a transfer, the largest first within the budget.
+  void sweep_pool(TransferLane& lane) noexcept {
+    const VenueId primary = lane.primary();
+    const LaneConfig& lc = lane.config();
+    const PoolMembers members = cfg_.pools.members(primary);
+    std::array<SweepCandidate, 64> cands{};
+    std::size_t n = 0;
+    std::array<FixedString<8>, kMaxInstruments> seen{};
+    std::size_t n_seen = 0;
+    for (const Instrument& inst : instruments_) {
+      if (inst.venue != primary || inst.is_derivative() || inst.id.value >= kMaxInstruments)
+        continue;
+      const InstrumentId id = inst.id;
+      // One instrument per base asset: a second one with the same base shares the first's sweep.
+      bool dup = false;
+      for (std::size_t k = 0; k < n_seen; ++k)
+        dup = dup || same_currency(seen[k].view(), inst.base.view());
+      if (dup) continue;
+      seen[n_seen++] = inst.base;
+      const VenueId h = home_[id.value];
+      const bool now_asked = sweep_now_[id.value];
+      sweep_now_[id.value] = false;
+      if (!h.valid() || !account_usable(h) || lane.blocked(inst.base.view())) continue;
+      const Price mid = books_[id.value].mid();
+      const bool home_sells = tradable(inst, holding(id, h), mid);
+      for (std::size_t k = 0; k < members.size(); ++k) {
+        const VenueId from = members[k];
+        if (from == h) continue;
+        SweepCell& cell = (*sweep_cells_)[id.value][k];
+        const std::int64_t total = balances_->base_total(id, from);
+        if (total == BalanceBook::kUnreported) continue;
+        if (total != cell.total) {
+          cell.total = total;
+          cell.changed = now_;
+        }
+        const std::int64_t free = balances_->free_of(from, inst.base.view());
+        if (free == BalanceBook::kUnreported || free <= 0 || now_ < cell.retry) continue;
+        if (lc.dry_run && cell.planned == total) continue;
+        const Duration age = now_ - cell.changed;
+        const bool dust = !tradable(inst, Qty::from_raw(free), mid);
+        const bool due =
+            now_asked || (dust ? age >= lc.sweep_dust || (home_sells && age >= lc.sweep_delay)
+                               : age >= lc.sweep_delay);
+        if (!due || n == cands.size()) continue;
+        SweepCandidate& c = cands[n++];
+        c.instrument = id;
+        c.from = from;
+        c.to = h;
+        c.asset = inst.base;
+        c.amount = free;
+        c.value = mid.is_positive() ? inst.notional(mid, Qty::from_raw(free)).to_double() : 0.0;
+        c.dust = dust;
+      }
+    }
+    if (n == 0) return;
+    const std::size_t room = lane.room(now_);
+    const std::size_t take = plan_sweeps(std::span<SweepCandidate>(cands.data(), n),
+                                         room,
+                                         [&](std::string_view a) { return lane.busy(a); });
+    for (std::size_t i = 0; i < take; ++i) request_transfer(lane, cands[i]);
+  }
+  // A transfer of the candidate: held out of the payer's free estimate, journaled and handed to the
+  // worker (dry run: journaled as planned, nothing held or sent).
+  void request_transfer(TransferLane& lane, const SweepCandidate& c) noexcept {
+    const std::uint64_t seq = lane.next_seq(lane_start_);
+    lane.count(now_);
+    const std::size_t k = pool_index(lane.primary(), c.from);
+    SweepCell& cell = (*sweep_cells_)[c.instrument.value][k];
+    const auto value = static_cast<std::int64_t>(c.value * static_cast<double>(kFixedScale));
+    if (lane.config().dry_run) {
+      cell.planned = cell.total;
+      ++lane.stats().planned;
+      journal_lane(
+          lane.primary(), TreasuryEventKind::Planned, seq, c.from, c.to, c.asset, c.amount);
+      return;
+    }
+    TransferLane::Slot* t = lane.open(seq);
+    if (t == nullptr) return;  // room() counted the slots
+    t->instrument = c.instrument;
+    t->from = c.from;
+    t->to = c.to;
+    t->asset = c.asset;
+    t->amount = c.amount;
+    t->value = value;
+    t->created = now_;
+    t->phase = TransferLane::Phase::Requested;
+    hold_lane(*t, c.amount);
+    ++lane.stats().requested;
+    journal_lane(lane.primary(), TreasuryEventKind::Request, seq, c.from, c.to, c.asset, c.amount);
+    LaneIntent in;
+    in.kind = LaneIntent::Kind::Send;
+    in.primary = lane.primary();
+    in.from = c.from;
+    in.to = c.to;
+    in.asset = c.asset;
+    in.amount = c.amount;
+    in.seq = seq;
+    in.created_ns = now_.ns;
+    if (!lane_out_->try_push(in)) ++lane.stats().worker_full;
+    FASTMM_LOG_INFO("transfer {} {} {} {} -> {} ({})",
+                    seq,
+                    Notional::from_raw(c.amount),
+                    c.asset.view(),
+                    venue_name(c.from),
+                    venue_name(c.to),
+                    c.dust ? "dust" : "piece");
+  }
+  // The payer's hold: at most its free estimate.
+  void hold_lane(TransferLane::Slot& t, std::int64_t amount) noexcept {
+    const std::int64_t free = balances_->free_of(t.from, t.asset.view());
+    const std::int64_t want =
+        free == BalanceBook::kUnreported ? amount : std::clamp<std::int64_t>(amount, 0, free);
+    if (want > 0 && balances_->reserve(t.from, t.asset.view(), want)) {
+      t.hold = want;
+      t.held = true;
+    }
+  }
+  void release_lane(TransferLane::Slot& t) noexcept {
+    if (t.held && t.hold != 0)
+      static_cast<void>(balances_->reserve(t.from, t.asset.view(), -t.hold));
+    t.held = false;
+    t.hold = 0;
+  }
+  // The engine's own lane record, for the journal (kSynthetic: a replay makes it again).
+  void journal_lane(VenueId primary,
+                    TreasuryEventKind kind,
+                    std::uint64_t seq,
+                    VenueId from,
+                    VenueId to,
+                    const FixedString<8>& asset,
+                    std::int64_t amount,
+                    TransferState state = TransferState::Unknown) noexcept {
+    if (!journal_.enabled()) return;
+    ControlTransferMsg m{};
+    init_header(m, EventType::Control, InstrumentId::invalid(), primary);
+    m.hdr.flags |= EventHeader::kSynthetic;
+    m.hdr.recv_ts = now_;
+    m.command = ControlCommand::Transfer;
+    m.event = static_cast<std::uint8_t>(kind);
+    m.state = static_cast<std::uint8_t>(state);
+    m.from = from;
+    m.to = to;
+    m.flags = ControlTransferMsg::kLane | ControlTransferMsg::kHeld;
+    m.arg = static_cast<std::uint64_t>(amount);
+    m.asset = asset;
+    m.seq = seq;
+    lane_client_id(m.client_id, primary, seq);
+    if (!journal_.record(m.hdr)) ++stats_.journal_overflows;
+  }
+  // The worker's answer about a lane's transfer (an input).
+  FASTMM_NOINLINE void on_lane_record(const ControlTransferMsg& m) noexcept {
+    const VenueId primary = m.hdr.venue;
+    if (primary.value >= kMaxVenues || lanes_[primary.value] == nullptr) return;
+    TransferLane& lane = *lanes_[primary.value];
+    const auto kind = static_cast<TreasuryEventKind>(m.event);
+    TransferLane::Slot* t = lane.find(m.seq);
+    if (kind == TreasuryEventKind::Reserve) {
+      // A transfer an earlier process left in flight: held again until it resolves.
+      if (t != nullptr || lane.by_asset(m.asset.view()) != nullptr) return;
+      t = lane.open(m.seq);
+      if (t == nullptr) return;
+      t->from = m.from;
+      t->to = m.to;
+      t->asset = m.asset;
+      t->amount = static_cast<std::int64_t>(m.arg);
+      t->created = m.hdr.recv_ts;
+      t->phase = TransferLane::Phase::Unknown;
+      for (const Instrument& inst : instruments_) {
+        if (inst.venue == primary && same_currency(inst.base.view(), m.asset.view()))
+          t->instrument = inst.id;
+      }
+      hold_lane(*t, t->amount);
+      FASTMM_LOG_WARN("transfer {} of an earlier process held again: {} {} {} -> {}",
+                      m.seq,
+                      Notional::from_raw(t->amount),
+                      m.asset.view(),
+                      venue_name(m.from),
+                      venue_name(m.to));
+      return;
+    }
+    if (t == nullptr) return;  // resolved already (flows), or not this session's
+    const auto state = static_cast<TransferState>(m.state);
+    switch (kind) {
+      case TreasuryEventKind::Sent:
+        if (state == TransferState::Done) {
+          finish_lane(lane, *t, m.hdr.recv_ts, false);
+        } else if (state == TransferState::Unknown) {
+          t->phase = TransferLane::Phase::Unknown;
+          ++lane.stats().unknown;
+          if (lane.note_unknown(now_)) on_lane_trip(lane);
+        } else {
+          t->phase = TransferLane::Phase::Sent;
+          t->sent = m.hdr.recv_ts;
+          ++lane.stats().sent;
+        }
+        break;
+      case TreasuryEventKind::Done:
+        finish_lane(lane, *t, m.hdr.recv_ts, false);
+        break;
+      case TreasuryEventKind::Failed: {
+        ++lane.stats().failed;
+        release_lane(*t);
+        if (t->instrument.valid() && t->instrument.value < kMaxInstruments) {
+          (*sweep_cells_)[t->instrument.value][pool_index(primary, t->from)].retry =
+              now_ + lane.config().sweep_retry;
+        }
+        const bool rate = m.http_status == 429 || m.code == -1003;
+        // Binance -9000: the payer has less free than asked, with the engine's hold in place.
+        if (lane.note_asset_refusal(t->asset.view(), m.code == -9000)) {
+          FASTMM_LOG_ERROR(
+              "transfers of {} refused {} times in a row for want of balance: the "
+              "pool leaves its pieces to trade off for the session",
+              t->asset.view(),
+              TransferLane::kAssetStrikes);
+        }
+        FASTMM_LOG_WARN("transfer {} {} {} -> {} refused (code {}, HTTP {})",
+                        t->seq,
+                        t->asset.view(),
+                        venue_name(t->from),
+                        venue_name(t->to),
+                        m.code,
+                        m.http_status);
+        lane.close(*t);
+        if (lane.note_failure(now_, rate)) on_lane_trip(lane);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  void on_lane_trip(TransferLane& lane) noexcept {
+    const BreakerState b = lane.breaker(now_);
+    if (b == BreakerState::Off) {
+      FASTMM_LOG_ERROR(
+          "{}: the sweep's breaker tripped again: off until fastmm-ctl pool sweep on; "
+          "pieces trade off on their accounts",
+          venue_name(lane.primary()));
+    } else {
+      FASTMM_LOG_ERROR(
+          "{}: the sweep's breaker tripped: paused for {} s; pieces trade off on their "
+          "accounts meanwhile",
+          venue_name(lane.primary()),
+          lane.config().breaker.ns / 1'000'000'000);
+    }
+    set_lanes_live(lanes_live_ & ~(1U << lane.primary().value));
+  }
+  // The transfer moved: what the flows did not apply yet moves the estimates now. The payer's at
+  // `at`, the receiver's at the send (a report that already has it does not get it twice).
+  void finish_lane(TransferLane& lane,
+                   TransferLane::Slot& t,
+                   Timestamp at,
+                   bool by_flows) noexcept {
+    if (!t.out_seen) {
+      release_lane(t);
+      balances_->transfer(t.from, t.asset.view(), -t.amount, at);
+    }
+    if (!t.in_seen) {
+      const Timestamp credit = t.sent.valid() ? t.sent : (t.created.valid() ? t.created : at);
+      balances_->transfer(t.to, t.asset.view(), t.amount, credit);
+    }
+    ++lane.stats().done;
+    lane.stats().moved_value += t.value;
+    lane.note_asset_done(t.asset.view());
+    if (by_flows) {
+      ++lane.stats().done_by_flows;
+      journal_lane(lane.primary(),
+                   TreasuryEventKind::Done,
+                   t.seq,
+                   t.from,
+                   t.to,
+                   t.asset,
+                   t.amount,
+                   TransferState::Done);
+      LaneIntent in;
+      in.kind = LaneIntent::Kind::Resolved;
+      in.primary = lane.primary();
+      in.seq = t.seq;
+      if (!lane_out_->try_push(in)) ++lane.stats().worker_full;
+    }
+    lane.close(t);
+  }
+  // A flow of money on an account: the out or in leg of a lane's transfer of that asset and amount.
+  FASTMM_NOINLINE void on_account_flow(const AccountFlowMsg& m) noexcept {
+    const VenueId primary = cfg_.pools.primary(m.hdr.venue);
+    if (primary.value >= kMaxVenues || lanes_[primary.value] == nullptr) return;
+    TransferLane& lane = *lanes_[primary.value];
+    TransferLane::Slot* t = lane.by_asset(m.asset.view());
+    if (t == nullptr) return;
+    const Timestamp at = m.hdr.exch_ts.valid() ? m.hdr.exch_ts : m.hdr.recv_ts;
+    if (m.hdr.venue == t->from && m.amount.raw == -t->amount && !t->out_seen) {
+      t->out_seen = true;
+      release_lane(*t);
+      balances_->transfer(t->from, t->asset.view(), -t->amount, at);
+    } else if (m.hdr.venue == t->to && m.amount.raw == t->amount && !t->in_seen) {
+      t->in_seen = true;
+      balances_->transfer(t->to, t->asset.view(), t->amount, at);
+    } else {
+      return;
+    }
+    if (t->out_seen && t->in_seen) finish_lane(lane, *t, at, true);
+  }
+  // ControlCommand::PoolSweep: the operator turns a pool's sweep on, off or pauses it, or sweeps
+  // one instrument at the next look.
+  void on_pool_sweep(const ControlMsg& c) noexcept {
+    const VenueId primary = cfg_.pools.primary(c.hdr.venue);
+    if (primary.value >= kMaxVenues || lanes_[primary.value] == nullptr) {
+      FASTMM_LOG_WARN("pool sweep for venue {} ignored: its pool has no sweep", c.hdr.venue.value);
+      return;
+    }
+    TransferLane& lane = *lanes_[primary.value];
+    switch (c.arg) {
+      case kSweepOff:
+        lane.set_off();
+        set_lanes_live(lanes_live_ & ~(1U << primary.value));
+        break;
+      case kSweepOn:
+        lane.set_on();
+        break;
+      case kSweepPause:
+        lane.pause(now_);
+        set_lanes_live(lanes_live_ & ~(1U << primary.value));
+        break;
+      case kSweepNow:
+        if (instruments_.contains(c.hdr.instrument)) sweep_now_[c.hdr.instrument.value] = true;
+        break;
+      default:
+        return;
+    }
+    FASTMM_LOG_WARN("{}: pool sweep {} by the operator (breaker {})",
+                    venue_name(primary),
+                    c.arg == kSweepOff     ? "off"
+                    : c.arg == kSweepOn    ? "on"
+                    : c.arg == kSweepPause ? "paused"
+                                           : "now",
+                    to_string(lane.breaker(now_)));
   }
 
   // The pool account a new order on `inst` goes from (EngineConfig::pools). The request's own
@@ -5702,6 +6184,29 @@ class Engine {
     Timestamp sent{};         // the Sent record's time
   };
   std::array<TransferHold, kMaxVenues> transfer_holds_{};
+  // The pools' transfer lanes (core/transfer_lane.hpp), by the primary's venue id; null without.
+  static constexpr std::size_t kLaneRing = 1024;
+  bool lanes_on_ = false;
+  std::array<std::unique_ptr<TransferLane>, kMaxVenues> lanes_{};
+  // A lane sweeps now (sweep on, not a dry run, the breaker closed, the day's budget left): the
+  // routing sends its reducing spot orders home. Set by sweep_tick and the lane's records.
+  std::uint32_t lanes_live_ = 0;  // bit per primary
+  std::atomic<std::uint32_t> lanes_live_pub_{0};
+  TimerId sweep_timer_{};
+  Timestamp lane_start_{};
+  // What the sweep knows of each account's holding of each instrument: the base total it last saw
+  // and since when, a refused transfer's wait, and (dry run) the total it last planned from.
+  struct SweepCell {
+    std::int64_t total = BalanceBook::kUnreported;
+    Timestamp changed{};
+    Timestamp retry{};
+    std::int64_t planned = BalanceBook::kUnreported;
+  };
+  using SweepCells = std::array<std::array<SweepCell, PoolMembers::kMax>, kMaxInstruments>;
+  std::unique_ptr<SweepCells> sweep_cells_;
+  std::array<bool, kMaxInstruments> sweep_now_{};  // fastmm-ctl pool sweep SYMBOL
+  // Intents and notices for the transfer worker (core/transfer_worker.hpp).
+  std::unique_ptr<SpscRing<LaneIntent, kLaneRing>> lane_out_;
   std::array<std::atomic<std::uint64_t>, kMaxVenues> hold_seq_pub_{};
   std::array<std::atomic<std::int64_t>, kMaxVenues> hold_amt_pub_{};
   // By venue id: its 10 s order limit and whether it is usable, as publish_pool() last saw them.

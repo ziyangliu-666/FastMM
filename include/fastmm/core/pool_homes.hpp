@@ -36,6 +36,7 @@
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/strong_id.hpp"
 #include "fastmm/core/time.hpp"
+#include "fastmm/core/transfer_lane.hpp"
 
 #include <array>
 #include <cstddef>
@@ -152,10 +153,16 @@ struct PoolPlacement {
 struct PoolHomesPlan {
   std::array<PoolPlacement, PoolPlan::kVenues> pool{};  // by the primary's venue id
   std::array<VenueId, kMaxInstruments> pin{};           // invalid: not pinned
+  // Each pool's transfer lane and sweep (core/transfer_lane.hpp), by the primary's venue id.
+  std::array<LaneConfig, PoolPlan::kVenues> lane{};
 
   [[nodiscard]] const PoolPlacement& of(VenueId primary) const noexcept {
     static constexpr PoolPlacement kNone{};
     return primary.value < pool.size() ? pool[primary.value] : kNone;
+  }
+  [[nodiscard]] const LaneConfig& lane_of(VenueId primary) const noexcept {
+    static const LaneConfig kNone{};
+    return primary.value < lane.size() ? lane[primary.value] : kNone;
   }
   // A pool keeps homes: it has a [venues.<primary>.pool] table.
   [[nodiscard]] bool active() const noexcept {

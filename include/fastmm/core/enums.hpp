@@ -516,6 +516,10 @@ enum class ControlCommand : std::uint8_t {
   // pool_home_arg(to, source, from). From the planner and the operator; the engine journals its
   // own (kSynthetic), which a replay does not take as input.
   PoolHome = 17,
+  // A pool's sweep (core/transfer_lane.hpp): hdr.venue the pool's primary, arg kSweepOff, kSweepOn,
+  // kSweepPause or kSweepNow (hdr.instrument: the instrument whose pieces go home at the next
+  // look). From the operator (fastmm-ctl pool sweep).
+  PoolSweep = 18,
 };
 [[nodiscard]] constexpr std::string_view to_string(ControlCommand c) noexcept {
   switch (c) {
@@ -555,6 +559,8 @@ enum class ControlCommand : std::uint8_t {
       return "ReduceOnly";
     case ControlCommand::PoolHome:
       return "PoolHome";
+    case ControlCommand::PoolSweep:
+      return "PoolSweep";
   }
   return "?";
 }

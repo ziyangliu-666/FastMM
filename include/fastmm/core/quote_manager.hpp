@@ -704,7 +704,7 @@ class QuoteManager {
         return 0;
       }
       // A side backing off sends no replace either: the order is cancelled and the New waits.
-      if (st.replace && !backing_off(st, side, now)) {
+      if (st.replace && !backing_off(st, side, now) && !relocates(place, o, account)) {
         QuoteAction a{QuoteActionKind::Replace,
                       inst.id,
                       side,
@@ -752,6 +752,18 @@ class QuoteManager {
       return 0;
     }
     return submit_new(inst, side, lvl, slot, target, account, value, now, place);
+  }
+
+  // The placer wants the resting order moved by cancel and new (Engine::relocates).
+  template <class Placer>
+  [[nodiscard]] static bool relocates(Placer& place, const Order& o, VenueId account) noexcept {
+    if constexpr (requires {
+                    { place.relocates(o, account) } -> std::convertible_to<bool>;
+                  }) {
+      return place.relocates(o, account);
+    } else {
+      return false;
+    }
   }
 
   // The slot's order is live and really the slot's: order slots are reused by later orders.

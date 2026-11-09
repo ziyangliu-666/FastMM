@@ -443,6 +443,44 @@ void parse_pool(const toml::table& t, VenueSection& v) {
       s.homes[std::string(k.str())] = *name;
     }
   }
+  if (const toml::node* n = t.get("sweep")) {
+    if (const auto b = n->value<bool>()) {
+      s.sweep = *b ? "true" : "false";
+    } else if (n->value<std::string>().value_or("") == "auto") {
+      s.sweep = "auto";
+    } else {
+      fail_at(*n, at + ".sweep must be true, false or \"auto\"");
+    }
+  }
+  ranged("sweep_delay_ms", s.sweep_delay_ms, 0, 3'600'000);
+  ranged("sweep_dust_s", s.sweep_dust_s, 0, 604800);
+  ranged("sweep_retry_s", s.sweep_retry_s, 0, 86400);
+}
+
+// [venues.<primary>.transfers]: the keys and their ranges; the venue having a pool table is checked
+// with the pools (check_pools).
+void parse_transfers(const toml::table& t, VenueSection& v) {
+  validate_table(t, "venues.*.transfers");
+  TransfersSection& s = v.transfers;
+  s.configured = true;
+  const std::string at = fmt::format("venues.{}.transfers", v.name);
+  const auto ranged =
+      [&](std::string_view key, std::int64_t& out, std::int64_t lo, std::int64_t hi) {
+        const toml::node* n = t.get(key);
+        if (n == nullptr) return;
+        get(t, key, out);
+        if (out < lo || out > hi)
+          fail_at(*n, fmt::format("{}.{} must be {} to {}", at, key, lo, hi));
+      };
+  ranged("max_in_flight", s.max_in_flight, 1, static_cast<std::int64_t>(TransferLane::kSlots));
+  ranged("per_minute", s.per_minute, 0, 100000);
+  ranged("per_hour", s.per_hour, 0, 1000000);
+  ranged("per_day", s.per_day, 0, 1000000);
+  ranged("breaker_s", s.breaker_s, 0, 86400);
+  ranged("timeout_s", s.timeout_s, 1, 86400);
+  ranged("status_interval_s", s.status_interval_s, 1, 3600);
+  get(t, "dry_run", s.dry_run);
+  get(t, "state_file", s.state_file);
 }
 
 // A pool table belongs to a pool's primary; its pins name the pool's accounts and the primary's
@@ -450,6 +488,14 @@ void parse_pool(const toml::table& t, VenueSection& v) {
 void check_pools(const toml::table& doc, const Config& cfg) {
   const PoolPlan plan = cfg.pool_plan();
   for (const VenueSection& v : cfg.venues) {
+    if (v.transfers.configured && !v.pool.configured) {
+      const std::string msg = fmt::format(
+          "venues.{}.transfers: the transfer lane belongs to a pool with a [venues.{}.pool] table",
+          v.name,
+          v.name);
+      if (const toml::node* n = doc["venues"][v.name]["transfers"].node()) fail_at(*n, msg);
+      throw ConfigError(msg);
+    }
     if (!v.pool.configured) continue;
     const toml::node* node = doc["venues"][v.name]["pool"].node();
     const auto fail_here = [&](const std::string& msg) {
@@ -926,6 +972,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
       }
       if (const auto* tr = t->get_as<toml::table>("treasury")) parse_treasury(*tr, v);
       if (const auto* pl = t->get_as<toml::table>("pool")) parse_pool(*pl, v);
+      if (const auto* tr = t->get_as<toml::table>("transfers")) parse_transfers(*tr, v);
       // Everything the generic parser did not read belongs to the connector: keep it verbatim,
       // with its line, for the venue that owns it (venues/registry.hpp).
       for (const auto& [k, val] : *t) {
@@ -1596,15 +1643,28 @@ std::string Config::redacted() const {
       fmt::format_to(
           std::back_inserter(out),
           "pool = {{ placement = \"{}\", reduce_accounts = {}, spill = \"{}\", spill_at = {}, "
-          "plan_interval_s = {}, plan_lookback_h = {}, plan_max_moves = {} }} ({} pinned)\n",
+          "sweep = {}, plan_interval_s = {}, plan_lookback_h = {}, plan_max_moves = {} }} ({} "
+          "pinned)\n",
           v.pool.placement,
           v.pool.reduce_accounts,
           v.pool.spill,
           v.pool.spill_at,
+          v.pool.sweep,
           v.pool.plan_interval_s,
           v.pool.plan_lookback_h,
           v.pool.plan_max_moves,
           v.pool.homes.size());
+    }
+    if (v.transfers.configured) {
+      fmt::format_to(std::back_inserter(out),
+                     "transfers = {{ max_in_flight = {}, per_minute = {}, per_hour = {}, per_day = "
+                     "{}, breaker_s = {}, dry_run = {} }}\n",
+                     v.transfers.max_in_flight,
+                     v.transfers.per_minute,
+                     v.transfers.per_hour,
+                     v.transfers.per_day,
+                     v.transfers.breaker_s,
+                     v.transfers.dry_run);
     }
   }
   for (const auto& i : instruments) {
@@ -1843,6 +1903,29 @@ toml::table pool_table(const PoolSection& s) {
   toml::table h;
   for (const auto& [k, v] : s.homes) h.insert(k, v);
   t.insert("homes", std::move(h));
+  if (s.sweep == "auto") {
+    t.insert("sweep", s.sweep);
+  } else {
+    t.insert("sweep", s.sweep == "true");
+  }
+  t.insert("sweep_delay_ms", s.sweep_delay_ms);
+  t.insert("sweep_dust_s", s.sweep_dust_s);
+  t.insert("sweep_retry_s", s.sweep_retry_s);
+  return t;
+}
+
+// [venues.<primary>.transfers], every key with its value.
+toml::table transfers_table(const TransfersSection& s) {
+  toml::table t;
+  t.insert("max_in_flight", s.max_in_flight);
+  t.insert("per_minute", s.per_minute);
+  t.insert("per_hour", s.per_hour);
+  t.insert("per_day", s.per_day);
+  t.insert("breaker_s", s.breaker_s);
+  t.insert("timeout_s", s.timeout_s);
+  t.insert("status_interval_s", s.status_interval_s);
+  t.insert("dry_run", s.dry_run);
+  if (!s.state_file.empty()) t.insert("state_file", s.state_file);
   return t;
 }
 
@@ -1953,6 +2036,7 @@ std::string Config::effective_toml() const {
       t.insert("fees", std::move(fees));
       if (v.treasury.configured) t.insert("treasury", treasury_table(v.treasury));
       if (v.pool.configured) t.insert("pool", pool_table(v.pool));
+      if (v.transfers.configured) t.insert("transfers", transfers_table(v.transfers));
       for (const auto& [k, val] : v.extra) insert_typed(t, k, val);
       vs.insert(v.name, std::move(t));
     }
@@ -2221,6 +2305,25 @@ PoolHomesPlan pool_homes(const Config& cfg, const InstrumentTable& table) {
     p.plan_interval = seconds(v.pool.plan_interval_s);
     p.plan_lookback = Duration{static_cast<std::int64_t>(v.pool.plan_lookback_h * 3600e9)};
     p.plan_max_moves = static_cast<std::uint32_t>(v.pool.plan_max_moves);
+    LaneConfig& l = plan.lane[primary.value];
+    l.sweep = v.pool.sweep == "true"   ? SweepMode::On
+              : v.pool.sweep == "auto" ? SweepMode::Auto
+                                       : SweepMode::Off;
+    l.sweep_delay = milliseconds(v.pool.sweep_delay_ms);
+    l.sweep_dust = seconds(v.pool.sweep_dust_s);
+    l.sweep_retry = seconds(v.pool.sweep_retry_s);
+    const TransfersSection& tr = v.transfers;
+    l.max_in_flight = static_cast<std::uint32_t>(tr.max_in_flight);
+    l.per_minute = static_cast<std::uint32_t>(tr.per_minute);
+    l.per_hour = static_cast<std::uint32_t>(tr.per_hour);
+    l.per_day = static_cast<std::uint32_t>(tr.per_day);
+    l.breaker = seconds(tr.breaker_s);
+    l.timeout = seconds(tr.timeout_s);
+    l.status_interval = seconds(tr.status_interval_s);
+    l.dry_run = tr.dry_run;
+    l.state_file = !tr.state_file.empty() ? tr.state_file
+                                          : cfg.engine.journal_dir + "/" + cfg.engine.name + "." +
+                                                v.name + ".transfers";
     for (const auto& [symbol, account] : v.pool.homes) {
       for (const Instrument& inst : table) {
         if (inst.venue == primary && inst.symbol.view() == symbol &&

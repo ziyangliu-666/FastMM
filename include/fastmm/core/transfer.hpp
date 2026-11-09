@@ -48,6 +48,7 @@ enum class TreasuryEventKind : std::uint8_t {
   TimedOut = 4,  // unresolved past timeout_ns; still asked for
   Reserve = 5,   // reserve = true: the engine is to hold the amount out of the payer's balance
   Released = 6,  // ... and give it back: nothing was sent
+  Request = 7,   // a pool's transfer lane: the engine holds the amount and asks for the transfer
 };
 
 struct TransferRequest {
@@ -69,6 +70,8 @@ struct TransferResult {
   TransferState state = TransferState::Unknown;
   std::string venue_ref;  // the venue's id of the transfer (Binance tranId), when it gave one
   std::string detail;     // the venue's error or a description of the failure, for the log
+  int code = 0;           // the venue's error code (Binance -9000), 0 without one
+  int http_status = 0;    // the HTTP status of the answer, 0 without one (429: slow down)
 };
 
 }  // namespace fastmm

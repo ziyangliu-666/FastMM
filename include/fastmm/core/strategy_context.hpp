@@ -305,6 +305,11 @@ class StrategyContext {
   }
   // Accounts other than the home that hold a tradable amount of the instrument.
   [[nodiscard]] std::uint32_t pieces(InstrumentId id) const noexcept { return e_->pieces(id); }
+  // The pool sweeps now ([venues.<primary>.pool] sweep, core/transfer_lane.hpp): its pieces go
+  // home by internal transfer and its spot sells go to the home, so selling each account's part
+  // separately gains nothing. False in a dry run, while its breaker is open and once the day's
+  // transfers are used.
+  [[nodiscard]] bool sweeping(VenueId primary) const noexcept { return e_->sweeping(primary); }
   // Moves the instrument's home to `account` (journaled). With placement = "home" its adding
   // orders on other accounts are cancelled; the quotes go to the new home at the next requote.
   // False when its pool keeps no homes or `account` is not of the pool.
