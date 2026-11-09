@@ -154,7 +154,7 @@ void Impl::queue_balance_updates() {
 }
 
 void Impl::refresh_order_stats() {
-  const std::uint64_t open = orders_.open_count(kStrategyAccount);
+  const std::uint64_t open = orders_.open_count(kAllAccounts);
   stats_.open_orders = open;
   stats_.max_open_orders = std::max(stats_.max_open_orders, open);
   stats_.min_open_orders_since_mark = std::min(stats_.min_open_orders_since_mark, open);
@@ -413,8 +413,10 @@ void Impl::apply_fill(const SimOrder& o, Price px, Qty qty, bool maker, std::uin
 // the leaves ahead plus what is wanted), so the order named is the one that trades.
 Qty Impl::force_fill(std::string_view client_order_id, Qty want) {
   OrderRecord* rec = nullptr;
-  for (std::uint32_t s = 0; s < symbols_.size() && rec == nullptr; ++s)
-    rec = orders_.by_client_id(kStrategyAccount, s, client_order_id);
+  for (const Account& a : accounts_) {
+    for (std::uint32_t s = 0; s < symbols_.size() && rec == nullptr; ++s)
+      rec = orders_.by_client_id(a.id, s, client_order_id);
+  }
   if (rec == nullptr || rec->terminal()) return Qty{};
   const Qty qty = want.is_positive() && want < rec->leaves() ? want : rec->leaves();
   if (!qty.is_positive()) return Qty{};
@@ -425,11 +427,12 @@ Qty Impl::force_fill(std::string_view client_order_id, Qty want) {
   const Side side = rec->side;
   const Price price = rec->price;
   const Qty executed_before = rec->executed;
+  const AccountId owner = rec->account;
   Qty ahead{};
   bool found = false;
   me_->for_each_resting(instrument, side, [&](const SimOrder& o) {
     if (found) return;
-    if (o.cl_ord_id == internal && o.account == kStrategyAccount) {
+    if (o.cl_ord_id == internal && o.account == owner) {
       found = true;
       return;
     }
@@ -463,7 +466,8 @@ std::optional<OpResult> Impl::authenticate(std::string_view api_key,
                                            std::string_view payload,
                                            std::string_view signature,
                                            std::int64_t now_ms,
-                                           Account*& out) {
+                                           Account*& out,
+                                           bool master) {
   out = nullptr;
   constexpr std::string_view kBadKey = "Invalid API-key, IP, or permissions for action.";
   if (faults_.auth_fail_next > 0) {
@@ -472,7 +476,8 @@ std::optional<OpResult> Impl::authenticate(std::string_view api_key,
     return OpResult::error(401, -2015, kBadKey);
   }
   if (api_key.empty()) return OpResult::error(401, -2014, "API-key format invalid.");
-  Account* a = find_account(api_key);
+  Account* a = master ? (master_.api_key.empty() || master_.api_key != api_key ? nullptr : &master_)
+                      : find_account(api_key);
   if (a == nullptr) {
     ++stats_.key_errors;
     return OpResult::error(401, -2015, kBadKey);
@@ -489,6 +494,7 @@ std::optional<OpResult> Impl::authenticate(std::string_view api_key,
   }
   if (auto err = check_timing(params, now_ms)) return err;
   out = a;
+  if (!master) request_account_ = a;
   return std::nullopt;
 }
 
@@ -739,7 +745,8 @@ OpResult Impl::submit_new_order(Account& a, const NewOrderSpec& spec, bool test_
   }
   ++stats_.orders_accepted;
   ++stats_.orders_since_mark;
-  if (!seen_client_ids_.insert(spec.client_order_id).second) ++stats_.duplicate_client_order_ids;
+  if (!seen_client_ids_.insert(std::to_string(a.id) + "|" + spec.client_order_id).second)
+    ++stats_.duplicate_client_order_ids;
   accepted_client_ids_.push_back(spec.client_order_id);
   stats_.max_order_qty = max(stats_.max_order_qty, spec.qty);
 

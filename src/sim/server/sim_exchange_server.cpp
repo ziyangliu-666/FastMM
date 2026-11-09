@@ -56,8 +56,6 @@ Impl::Impl(SimServerConfig c)
   account_orders_1d_ = cfg_.account_orders_limit_per_day;
   if (cfg_.symbols.empty()) throw std::invalid_argument("SimExchangeServer: no symbols configured");
   if (cfg_.symbols.size() > 64) throw std::invalid_argument("SimExchangeServer: too many symbols");
-  if (cfg_.api_key.empty() || (cfg_.api_secret.empty() && cfg_.ed25519_public_key_pem.empty()))
-    throw std::invalid_argument("SimExchangeServer: api_key/api_secret must not be empty");
   if (cfg_.depth_update_ms == 0 || cfg_.driver_tick_ms == 0)
     throw std::invalid_argument("SimExchangeServer: depth_update_ms/driver_tick_ms must be > 0");
   for (const SimSymbolConfig& s : cfg_.symbols) {
@@ -80,31 +78,17 @@ Impl::Impl(SimServerConfig c)
   faults_.delay_ack_ms = cfg_.faults.delay_ack_ms;
   faults_.reject_next = cfg_.faults.reject_next_orders;
   faults_.rate_limit_next = cfg_.faults.rate_limit_next;
+  faults_.transfer = cfg_.faults.transfer;
+  transfer_rng_ = cfg_.seed ^ 0x7472'616E'7366'6572ULL;  // "transfer"
+  next_tran_id_ = static_cast<std::int64_t>(trade_id_base_) + 1;
 
-  Account acct;
-  acct.id = kStrategyAccount;
-  acct.api_key = cfg_.api_key;
-  acct.api_secret = cfg_.api_secret;
-  if (!cfg_.ed25519_public_key_pem.empty()) {
-    auto key = net::Ed25519Key::from_public_pem(cfg_.ed25519_public_key_pem);
-    if (!key.valid())
-      throw std::invalid_argument("SimExchangeServer: ed25519_public_key is not an Ed25519 PEM");
-    acct.ed25519 = std::make_shared<const net::Ed25519Key>(std::move(key));
-  }
-  if (cfg_.balances.empty()) {
-    for (const SymbolRuntime& s : symbols_) {
-      acct.balance(s.cfg.base_asset).free = Qty::from_int(100);
-      acct.balance(s.cfg.quote_asset).free = Qty::from_int(10'000'000);
-    }
-  } else {
-    for (const SimBalanceConfig& b : cfg_.balances) acct.balance(b.asset).free = b.amount;
-  }
-  accounts_.push_back(std::move(acct));
+  build_accounts();
 
   const Timestamp now = sim_now();
   me_ = std::make_unique<MatchingEngine>(symbols_.size(), this);
-  // exchangeInfo advertises EXPIRE_MAKER as the default self-trade prevention mode.
-  me_->set_stp(kStrategyAccount, StpMode::CancelMaker);
+  // exchangeInfo advertises EXPIRE_MAKER as the default self-trade prevention mode. It acts within
+  // one account: two accounts of a pool trade with each other.
+  for (const Account& a : accounts_) me_->set_stp(a.id, StpMode::CancelMaker);
   MdAggregatorConfig ac;
   ac.interval = milliseconds(static_cast<std::int64_t>(cfg_.depth_update_ms));
   ac.book_ticker = true;
@@ -130,6 +114,90 @@ Impl::Impl(SimServerConfig c)
     capture_flushed_book(static_cast<std::uint32_t>(i));
   }
   level_buf_.resize(10'000);
+}
+
+namespace {
+
+std::shared_ptr<const net::Ed25519Key> ed25519_key(const std::string& pem, std::string_view who) {
+  if (pem.empty()) return nullptr;
+  auto key = net::Ed25519Key::from_public_pem(pem);
+  if (!key.valid())
+    throw std::invalid_argument("SimExchangeServer: " + std::string(who) +
+                                " ed25519_public_key is not an Ed25519 PEM");
+  return std::make_shared<const net::Ed25519Key>(std::move(key));
+}
+
+}  // namespace
+
+// The trading accounts (the single [sim.account], or the pool's [sim.accounts.<name>] with ids
+// kStrategyAccount, kStrategyAccount + 1, ...) and the master's wallet.
+void Impl::build_accounts() {
+  auto starting_balances = [this](Account& a, const std::vector<SimBalanceConfig>& configured) {
+    if (configured.empty()) {
+      for (const SymbolRuntime& s : symbols_) {
+        a.balance(s.cfg.base_asset).free = Qty::from_int(100);
+        a.balance(s.cfg.quote_asset).free = Qty::from_int(10'000'000);
+      }
+    } else {
+      for (const SimBalanceConfig& b : configured) a.balance(b.asset).free = b.amount;
+    }
+  };
+  if (cfg_.accounts.empty()) {
+    if (cfg_.api_key.empty() || (cfg_.api_secret.empty() && cfg_.ed25519_public_key_pem.empty()))
+      throw std::invalid_argument("SimExchangeServer: api_key/api_secret must not be empty");
+    Account acct;
+    acct.id = kStrategyAccount;
+    acct.api_key = cfg_.api_key;
+    acct.api_secret = cfg_.api_secret;
+    acct.ed25519 = ed25519_key(cfg_.ed25519_public_key_pem, "[sim.account]");
+    starting_balances(acct, cfg_.balances);
+    accounts_.push_back(std::move(acct));
+  } else {
+    if (cfg_.accounts.size() > kMaxAccounts - kStrategyAccount)
+      throw std::invalid_argument("SimExchangeServer: at most " +
+                                  std::to_string(kMaxAccounts - kStrategyAccount) + " accounts");
+    accounts_.reserve(cfg_.accounts.size());
+    for (const SimAccountConfig& c : cfg_.accounts) {
+      const std::string who = "[sim.accounts." + c.name + "]";
+      if (c.name.empty() || c.api_key.empty() ||
+          (c.api_secret.empty() && c.ed25519_public_key_pem.empty()))
+        throw std::invalid_argument("SimExchangeServer: " + who + " needs a name and a key");
+      Account acct;
+      acct.id = static_cast<AccountId>(kStrategyAccount + accounts_.size());
+      acct.name = c.name;
+      acct.email = c.email.empty() ? c.name + "@sim.local" : c.email;
+      acct.api_key = c.api_key;
+      acct.api_secret = c.api_secret;
+      acct.ed25519 = ed25519_key(c.ed25519_public_key_pem, who);
+      starting_balances(acct, c.balances);
+      for (const Account& other : accounts_) {
+        if (other.api_key == acct.api_key || other.email == acct.email)
+          throw std::invalid_argument("SimExchangeServer: " + who +
+                                      " shares its key or email with " + "[sim.accounts." +
+                                      other.name + "]");
+      }
+      accounts_.push_back(std::move(acct));
+    }
+  }
+  const SimMasterConfig& m = cfg_.master;
+  master_.id = static_cast<AccountId>(0xFFFF);  // never an order's account
+  master_.name = "master";
+  master_.email = m.email;
+  if (m.configured()) {
+    if (m.api_secret.empty() && m.ed25519_public_key_pem.empty())
+      throw std::invalid_argument(
+          "SimExchangeServer: [sim.master] needs api_secret or an Ed25519 key");
+    master_.api_key = m.api_key;
+    master_.api_secret = m.api_secret;
+    master_.ed25519 = ed25519_key(m.ed25519_public_key_pem, "[sim.master]");
+  }
+  for (const SimBalanceConfig& b : m.balances) master_.balance(b.asset).free = b.amount;
+  for (const Account& a : accounts_) {
+    if (m.configured() && a.api_key == m.api_key)
+      throw std::invalid_argument("SimExchangeServer: the master key is also a trading key");
+    if (a.email == m.email)
+      throw std::invalid_argument("SimExchangeServer: an account has the master's email");
+  }
 }
 
 Impl::~Impl() {
@@ -250,7 +318,7 @@ SimServerStats Impl::snapshot_stats() {
         break;
     }
   }
-  s.open_orders = orders_.open_count(kStrategyAccount);
+  s.open_orders = orders_.open_count(kAllAccounts);
   const MatchingEngine::TopOfBook top = me_->top_of_book(InstrumentId{0});
   s.best_bid = top.bid;
   s.best_ask = top.ask;
@@ -264,7 +332,7 @@ SimServerStats Impl::snapshot_stats() {
 }
 
 void Impl::mark() {
-  stats_.min_open_orders_since_mark = orders_.open_count(kStrategyAccount);
+  stats_.min_open_orders_since_mark = orders_.open_count(kAllAccounts);
   stats_.orders_since_mark = 0;
   stats_.cancels_since_mark = 0;
   stats_.fills_since_mark = 0;
@@ -610,7 +678,7 @@ void Impl::send_malformed(bool market_data, bool ws_api) {
 
 std::vector<std::string> Impl::open_client_ids() {
   std::vector<std::string> out;
-  for (const OrderRecord* r : orders_.open_orders(kStrategyAccount, -1))
+  for (const OrderRecord* r : orders_.open_orders(kAllAccounts, -1))
     out.push_back(r->client_order_id);
   return out;
 }
@@ -851,10 +919,45 @@ std::vector<SimExchangeServer::OpenOrder> SimExchangeServer::open_orders() const
   Impl& impl = *impl_;
   return impl.call([&impl] {
     std::vector<OpenOrder> out;
-    for (const OrderRecord* r : impl.orders_.open_orders(kStrategyAccount, -1))
+    for (const OrderRecord* r : impl.orders_.open_orders(kAllAccounts, -1))
       out.push_back(OpenOrder{r->client_order_id, r->side, r->price, r->leaves()});
     return out;
   });
+}
+namespace {
+std::vector<SimExchangeServer::AssetBalance> balances_of(const Account& a) {
+  std::vector<SimExchangeServer::AssetBalance> out;
+  out.reserve(a.balances.size());
+  for (const auto& [asset, b] : a.balances) out.push_back({asset, b.free, b.locked});
+  return out;
+}
+}  // namespace
+
+std::vector<std::string> SimExchangeServer::account_names() const {
+  Impl& impl = *impl_;
+  return impl.call([&impl] {
+    std::vector<std::string> out;
+    out.reserve(impl.accounts_.size());
+    for (const Account& a : impl.accounts_) out.push_back(a.name);
+    return out;
+  });
+}
+std::vector<SimExchangeServer::AssetBalance> SimExchangeServer::balances(
+    std::string_view account) const {
+  Impl& impl = *impl_;
+  return impl.call([&impl, account] {
+    for (const Account& a : impl.accounts_) {
+      if (account.empty() || a.name == account) return balances_of(a);
+    }
+    return std::vector<AssetBalance>{};
+  });
+}
+std::vector<SimExchangeServer::AssetBalance> SimExchangeServer::master_balances() const {
+  Impl& impl = *impl_;
+  return impl.call([&impl] { return balances_of(impl.master_); });
+}
+void SimExchangeServer::set_transfer_faults(TransferFaultConfig faults) {
+  impl_->call([this, f = std::move(faults)] { impl_->faults_.transfer = f; });
 }
 void SimExchangeServer::ban_next_requests(std::uint32_t count) {
   impl_->call([this, count] { impl_->faults_.ban_next = count; });

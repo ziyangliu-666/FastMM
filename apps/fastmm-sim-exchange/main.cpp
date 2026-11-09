@@ -65,6 +65,11 @@ void print_stats(const char* label, const SimServerStats& s) {
   field("ws_api", s.ws_api_requests);
   field("rate_limited", s.rate_limited);
   field("auth_errors", s.signature_errors + s.timestamp_errors);
+  if (s.transfer_requests > 0) {
+    field("transfers", s.transfers_done);
+    field("transfers_refused", s.transfers_refused + s.transfers_failed_late);
+    field("transfers_lost", s.transfers_lost);
+  }
   line += " position=" + decimal(s.position.raw);
   line += " fees=" + decimal(s.fees.raw);
   line += " pnl=" + decimal(s.pnl.raw);
@@ -175,6 +180,14 @@ static int run(int argc, char** argv) {
                   server.tls_port(),
                   c.bind_host.c_str(),
                   server.tls_port());
+    }
+    if (!c.accounts.empty()) {
+      std::string names;
+      for (const auto& acct : c.accounts) names += (names.empty() ? "" : ", ") + acct.name;
+      std::printf(
+          "  accounts  %s%s\n",
+          names.c_str(),
+          c.master.configured() ? " (master key: /sapi/v1/sub-account/universalTransfer)" : "");
     }
     std::fflush(stdout);
 

@@ -82,6 +82,13 @@ struct SimServerStats {
   Notional fees{};
   Notional cash_flow{};  // quote received minus paid (fees included), first symbol
   Notional pnl{};        // cash_flow + position marked at the first symbol's mid
+  // internal transfers (POST /sapi/v1/sub-account/universalTransfer)
+  std::uint64_t transfer_requests = 0;       // signed with the master key
+  std::uint64_t transfers_done = 0;          // the amount moved
+  std::uint64_t transfers_refused = 0;       // 4xx: nothing moved
+  std::uint64_t transfers_failed_late = 0;   // taken, then FAILURE at a delayed execution
+  std::uint64_t transfers_lost = 0;          // carried out, the answer dropped or a 503
+  std::uint64_t transfers_rate_limited = 0;  // 429: transfer_ban_after or the UID weight
   // market data
   std::uint64_t generator_actions = 0;
   std::uint64_t trades = 0;
@@ -182,6 +189,21 @@ class SimExchangeServer {
     Qty leaves{};
   };
   [[nodiscard]] std::vector<OpenOrder> open_orders() const;
+
+  // A pool's accounts ([sim.accounts.<name>]): their names, ascending, and each one's balances.
+  // `account` empty: the first account (the single [sim.account] when there is no pool); an
+  // unknown name: nothing.
+  struct AssetBalance {
+    std::string asset;
+    Qty free{};
+    Qty locked{};
+  };
+  [[nodiscard]] std::vector<std::string> account_names() const;
+  [[nodiscard]] std::vector<AssetBalance> balances(std::string_view account = {}) const;
+  // The master account's own spot wallet ([sim.master]).
+  [[nodiscard]] std::vector<AssetBalance> master_balances() const;
+  // The transfer faults from now on ([sim.faults] transfer_*).
+  void set_transfer_faults(TransferFaultConfig faults);
 
   // Venue-side chaos.
   void ban_next_requests(std::uint32_t count);                // 418 + Retry-After, as an IP ban

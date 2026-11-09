@@ -73,6 +73,7 @@ struct ListenKey {
 struct OpResult {
   int status = 200;
   bool is_error = false;
+  bool no_reply = false;           // REST: the request is carried out and never answered
   std::int64_t retry_after_s = 0;  // 429/418: Retry-After header
   std::string body;                // result JSON or the error object {"code","msg"[,"data"]}
 
@@ -118,6 +119,8 @@ enum class RestEndpoint : std::uint8_t {
   ListenKeyKeepalive,
   ListenKeyClose,
   OrderRateLimits,
+  TransferCreate,
+  TransferHistory,
 };
 
 enum class RespType : std::uint8_t { Ack, Result, Full };
@@ -157,6 +160,21 @@ struct TradeRecord {
   bool is_maker = false;
 };
 
+enum class TransferStatus : std::uint8_t { Process, Success, Failure };
+
+// One internal transfer the master asked for, kept for the run (the history answers from here).
+// `from` / `to` point into accounts_ or at master_, both fixed after construction.
+struct TransferRecord {
+  std::int64_t tran_id = 0;
+  std::string client_tran_id;  // may be empty
+  Account* from = nullptr;
+  Account* to = nullptr;
+  std::string asset;
+  Qty amount{};
+  std::int64_t create_ms = 0;
+  TransferStatus status = TransferStatus::Process;
+};
+
 struct CapturedFill {
   Price price{};
   Qty qty{};
@@ -176,6 +194,8 @@ struct FaultState {
   std::uint32_t ban_next = 0;
   std::uint32_t auth_fail_next = 0;
   bool user_stream_muted = false;
+  TransferFaultConfig transfer;
+  std::uint64_t transfers_lost = 0;  // lost answers alternate: dropped, then a 503
   bool timestamp_once = false;
   bool rest_unresponsive = false;
   bool my_trades_unanswered = false;
@@ -207,6 +227,7 @@ struct SimExchangeServer::Impl final : public net::WsSessionHandler, public Matc
   Impl& operator=(const Impl&) = delete;
 
   // ---- lifecycle (sim_exchange_server.cpp) -----------------------------------------------
+  void build_accounts();
   bool listen();
   void start_thread();
   void stop_thread();
@@ -315,12 +336,14 @@ struct SimExchangeServer::Impl final : public net::WsSessionHandler, public Matc
                       std::string_view method,
                       const ParamList& p,
                       std::int64_t now_ms);
+  // A trading account's key, or with `master` the master's (which trades nothing).
   std::optional<OpResult> authenticate(std::string_view api_key,
                                        const ParamList& params,
                                        std::string_view payload,
                                        std::string_view signature,
                                        std::int64_t now_ms,
-                                       Account*& out);
+                                       Account*& out,
+                                       bool master = false);
   std::optional<OpResult> parse_new_order(const ParamList& p, NewOrderSpec& out);
   OpResult submit_new_order(Account& a, const NewOrderSpec& spec, bool test_only);
   CancelOutcome cancel_order(Account& a,
@@ -343,6 +366,16 @@ struct SimExchangeServer::Impl final : public net::WsSessionHandler, public Matc
   OpResult op_book_ticker(const ParamList& p);
   OpResult op_listen_key(RestEndpoint ep, const net::HttpRequest& req, const ParamList& p);
 
+  // ---- internal transfers (transfer_handlers.cpp) -----------------------------------------
+  OpResult op_transfer(const ParamList& p, std::int64_t now_ms);
+  OpResult op_transfer_history(const ParamList& p, std::int64_t now_ms);
+  // Moves the amount of transfers_[index] and announces it on both accounts' user streams;
+  // FAILURE when the payer's free balance no longer covers it (a delayed transfer).
+  void complete_transfer(std::size_t index);
+  // The account an email names: the master's wallet for an empty email or the master's own.
+  [[nodiscard]] Account* account_by_email(std::string_view email) noexcept;
+  [[nodiscard]] double next_transfer_draw() noexcept;
+
   // ---- routing (api_routes.cpp) -----------------------------------------------------------
   template <class Stream>
   void install_routes(net::HttpServer<Stream>& srv);
@@ -357,6 +390,10 @@ struct SimExchangeServer::Impl final : public net::WsSessionHandler, public Matc
   [[nodiscard]] std::uint32_t ws_api_weight(std::string_view method, const ParamList& p) const;
   [[nodiscard]] OpResult rate_limit_error(std::int64_t now_ms, bool ws_api);
   [[nodiscard]] std::string rate_limits_json(std::int64_t now_ms);
+  // The account a request acts for (its order windows in headers and rateLimits[]).
+  [[nodiscard]] Account& request_account() noexcept {
+    return request_account_ != nullptr ? *request_account_ : accounts_.front();
+  }
   // The account's ORDERS windows with their limits and counts (GET /api/v3/rateLimit/order,
   // account.rateLimits.orders).
   [[nodiscard]] std::string order_rate_limits_json(std::int64_t now_ms);
@@ -390,7 +427,14 @@ struct SimExchangeServer::Impl final : public net::WsSessionHandler, public Matc
   std::unique_ptr<MdAggregator> agg_;
   std::vector<std::unique_ptr<MarketGenerator>> generators_;
 
-  std::vector<Account> accounts_;
+  std::vector<Account> accounts_;  // the trading accounts, ids kStrategyAccount + i
+  Account master_;                 // the master's wallet; trades nothing, has no user stream
+  std::vector<TransferRecord> transfers_;
+  std::unordered_map<std::string, std::size_t> transfers_by_client_;
+  FixedWindowCounter uid_weight_1m_{60'000};  // the master's /sapi/ UID weight
+  FixedWindowCounter transfers_1m_{60'000};   // transfer_ban_after
+  std::uint64_t transfer_rng_ = 0;
+  std::int64_t next_tran_id_ = 1;
   OrderIndex orders_;
   std::vector<TradeRecord> trades_;  // every execution of the run, for GET /api/v3/myTrades
   std::map<std::string, ListenKey, std::less<>> listen_keys_;
@@ -409,6 +453,7 @@ struct SimExchangeServer::Impl final : public net::WsSessionHandler, public Matc
   std::uint64_t next_fault_order_ = 1;  // counter-orders of fill_open_order()
 
   // per-request context
+  Account* request_account_ = nullptr;
   bool in_request_ = false;
   std::uint32_t request_delay_ms_ = 0;
   std::vector<std::pair<AccountId, std::string>> pending_events_;

@@ -79,7 +79,7 @@ std::vector<OrderRecord*> OrderIndex::open_orders(AccountId account, std::int64_
   std::vector<OrderRecord*> out;
   out.reserve(orders_.size());
   for (auto& [id, r] : orders_) {
-    if (r.account != account || r.terminal()) continue;
+    if ((account != kAllAccounts && r.account != account) || r.terminal()) continue;
     if (symbol >= 0 && static_cast<std::int64_t>(r.symbol) != symbol) continue;
     out.push_back(&r);
   }
@@ -89,7 +89,7 @@ std::vector<OrderRecord*> OrderIndex::open_orders(AccountId account, std::int64_
 std::size_t OrderIndex::open_count(AccountId account) const noexcept {
   std::size_t n = 0;
   for (const auto& [id, r] : orders_) {
-    if (r.account == account && !r.terminal()) ++n;
+    if ((account == kAllAccounts || r.account == account) && !r.terminal()) ++n;
   }
   return n;
 }

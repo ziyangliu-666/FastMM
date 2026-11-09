@@ -209,6 +209,13 @@ void append_account_info(std::string& out,
                          std::int64_t maker_bps,
                          std::int64_t taker_bps,
                          std::span<const BalanceView> balances);
+// {"e":"balanceUpdate","E":ms,"a":"BTC","d":"-1.00000000","T":ms}: money in or out of the account
+// other than by a trade (here an internal transfer).
+void append_balance_update(std::string& out,
+                           std::int64_t event_ms,
+                           std::string_view asset,
+                           Qty delta,
+                           std::int64_t clear_ms);
 // {"e":"listenKeyExpired","E":ms,"listenKey":"..."}
 void append_listen_key_expired(std::string& out, std::int64_t event_ms, std::string_view key);
 

@@ -34,6 +34,39 @@ struct SimBalanceConfig {
   Qty amount{};
 };
 
+// One account of a pool ([sim.accounts.<name>]): a Binance sub-account with its own key, email,
+// balances, orders, order windows and user data streams.
+struct SimAccountConfig {
+  std::string name;
+  std::string email;  // empty: "<name>@sim.local"
+  std::string api_key;
+  std::string api_secret;                  // HMAC; unused with an Ed25519 key
+  std::string ed25519_public_key_pem;      // set: the key is an Ed25519 key
+  std::vector<SimBalanceConfig> balances;  // empty: 100 base + 10,000,000 quote per symbol
+};
+
+// The master account ([sim.master]). Its key signs internal transfers between the accounts and
+// trades nothing. Its own spot wallet is the side of a transfer that names no email.
+struct SimMasterConfig {
+  std::string email = "master@sim.local";
+  std::string api_key;  // empty: no master, every transfer answers -2015
+  std::string api_secret;
+  std::string ed25519_public_key_pem;
+  std::vector<SimBalanceConfig> balances;  // empty: an empty wallet
+
+  [[nodiscard]] bool configured() const noexcept { return !api_key.empty(); }
+};
+
+// [sim.faults] transfer_*: internal transfers (POST /sapi/v1/sub-account/universalTransfer). The
+// two probabilities are drawn per transfer from a generator seeded with SimServerConfig::seed.
+struct TransferFaultConfig {
+  double p_fail = 0.0;                      // refused with -1000, nothing moves
+  double p_lost = 0.0;                      // carried out; the answer is dropped or a 503, by turns
+  std::uint32_t delay_ms = 0;               // carried out this long after the request
+  std::uint32_t ban_after = 0;              // more than N in one minute answer 429 / -1003 (0: off)
+  std::vector<std::string> refused_assets;  // always refused with -9000
+};
+
 // [sim.faults]. Every *_after_ms entry is a one-shot relative to listen(); 0 disables it.
 struct FaultConfig {
   std::uint32_t drop_md_after_ms = 0;            // close every market-data WebSocket once
@@ -45,6 +78,7 @@ struct FaultConfig {
   std::uint32_t delay_ack_ms = 0;                // WS API order responses + their user events
   std::uint32_t reject_next_orders = 0;          // next K new orders answer -2010
   std::uint32_t rate_limit_next = 0;             // next K REST requests answer 429 / -1003
+  TransferFaultConfig transfer;
 };
 
 struct SimServerConfig {
@@ -64,6 +98,11 @@ struct SimServerConfig {
   std::string api_secret = "sim-secret";
   std::string ed25519_public_key_pem;
   std::vector<SimBalanceConfig> balances;  // empty: 100 base + 10,000,000 quote per symbol
+
+  // A pool of sub-accounts ([sim.accounts.<name>], ascending name). Non-empty: these are the
+  // trading accounts and the single account above is not used.
+  std::vector<SimAccountConfig> accounts;
+  SimMasterConfig master;
 
   // market
   std::uint64_t seed = 7;
@@ -97,6 +136,8 @@ struct SimServerConfig {
   std::uint32_t account_orders_limit_per_10s = 0;
   std::uint32_t account_orders_limit_per_day = 0;
   std::uint32_t max_recv_window_ms = 60'000;
+  // The master's UID weight per minute on /sapi/ (Binance: 180,000); a transfer costs 360.
+  std::uint32_t uid_weight_limit_per_minute = 180'000;
   std::uint32_t max_open_orders_per_symbol = 200;
 
   // WebSocket housekeeping

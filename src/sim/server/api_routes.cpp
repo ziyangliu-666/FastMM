@@ -60,7 +60,13 @@ constexpr RouteDef kRoutes[] = {
     {"POST", "/api/v3/userDataStream", RestEndpoint::ListenKeyCreate},
     {"PUT", "/api/v3/userDataStream", RestEndpoint::ListenKeyKeepalive},
     {"DELETE", "/api/v3/userDataStream", RestEndpoint::ListenKeyClose},
+    {"POST", "/sapi/v1/sub-account/universalTransfer", RestEndpoint::TransferCreate},
+    {"GET", "/sapi/v1/sub-account/universalTransfer", RestEndpoint::TransferHistory},
 };
+
+bool is_sapi_endpoint(RestEndpoint ep) noexcept {
+  return ep == RestEndpoint::TransferCreate || ep == RestEndpoint::TransferHistory;
+}
 
 constexpr std::string_view kSignedWsMethods[] = {
     "userDataStream.subscribe.signature",
@@ -125,7 +131,7 @@ std::uint32_t Impl::rest_weight(RestEndpoint ep, const ParamList& p) const {
 }
 
 std::string Impl::rate_limits_json(std::int64_t now_ms) {
-  Account& a = accounts_.front();
+  Account& a = request_account();
   const RateLimitView limits[] = {
       {"REQUEST_WEIGHT",
        "MINUTE",
@@ -149,7 +155,7 @@ std::string Impl::rate_limits_json(std::int64_t now_ms) {
 }
 
 std::string Impl::order_rate_limits_json(std::int64_t now_ms) {
-  Account& a = accounts_.front();
+  Account& a = request_account();
   const RateLimitView limits[] = {
       {"ORDERS",
        "SECOND",
@@ -198,6 +204,7 @@ net::HttpServerResponse Impl::handle_rest(const net::HttpRequest& req, RestEndpo
   ParamList params;
   parse_query(req.query, params);
   if (!req.body.empty()) parse_query(req.body, params);
+  request_account_ = nullptr;
   begin_request(0);
   OpResult r;
   if (auto banned = injected_stop(now_ms)) {
@@ -211,10 +218,20 @@ net::HttpServerResponse Impl::handle_rest(const net::HttpRequest& req, RestEndpo
     r = dispatch_rest(req, ep, params, now_ms);
   }
   end_request();
+  if (r.no_reply) {
+    ++stats_.unanswered_rest;
+    return net::HttpServerResponse::none();
+  }
   net::HttpServerResponse resp = net::HttpServerResponse::json(r.status, std::move(r.body));
-  resp.headers.emplace_back("X-MBX-USED-WEIGHT-1M", std::to_string(weight_1m_.count(now_ms)));
+  if (is_sapi_endpoint(ep)) {
+    resp.headers.emplace_back("X-SAPI-USED-IP-WEIGHT-1M", std::to_string(weight_1m_.count(now_ms)));
+    resp.headers.emplace_back("X-SAPI-USED-UID-WEIGHT-1M",
+                              std::to_string(uid_weight_1m_.count(now_ms)));
+  } else {
+    resp.headers.emplace_back("X-MBX-USED-WEIGHT-1M", std::to_string(weight_1m_.count(now_ms)));
+  }
   if (is_order_endpoint(ep)) {
-    Account& a = accounts_.front();
+    Account& a = request_account();
     resp.headers.emplace_back("X-MBX-ORDER-COUNT-10S", std::to_string(a.orders_10s.count(now_ms)));
     resp.headers.emplace_back("X-MBX-ORDER-COUNT-1D", std::to_string(a.orders_1d.count(now_ms)));
   }
@@ -254,6 +271,14 @@ OpResult Impl::dispatch_rest(const net::HttpRequest& req,
   std::string signature;
   const std::string payload = rest_signature_payload(req.query, req.body, signature);
   Account* acct = nullptr;
+  if (is_sapi_endpoint(ep)) {
+    // The master's endpoints: its key only, which trades nothing.
+    if (auto err = authenticate(
+            req.header("X-MBX-APIKEY"), params, payload, signature, now_ms, acct, true))
+      return *err;
+    return ep == RestEndpoint::TransferCreate ? op_transfer(params, now_ms)
+                                              : op_transfer_history(params, now_ms);
+  }
   if (auto err = authenticate(req.header("X-MBX-APIKEY"), params, payload, signature, now_ms, acct))
     return *err;
   switch (ep) {
@@ -314,6 +339,7 @@ void Impl::handle_ws_api(net::WsSession& s, std::string_view text) {
   WsApiRequest req;
   OpResult r;
   std::uint32_t delay = 0;
+  request_account_ = st->logon_account;
   begin_request(0);
   if (!parse_ws_api_request(text, req)) {
     r = OpResult::error(400, -1100, "Malformed request: expected {\"id\",\"method\",\"params\"}.");
@@ -404,6 +430,7 @@ OpResult Impl::dispatch_ws_api(net::WsSession& s, const WsApiRequest& req, std::
     // timestamp is still required.
     if (auto err = check_timing(p, now_ms)) return *err;
     acct = logon->logon_account;
+    request_account_ = acct;
   } else if (auto err = authenticate(
                  p.get("apiKey"), p, p.sorted_payload(), p.get("signature"), now_ms, acct)) {
     return *err;

@@ -375,6 +375,16 @@ void append_account_position(std::string& out,
   w.close();
 }
 
+void append_balance_update(std::string& out,
+                           std::int64_t event_ms,
+                           std::string_view asset,
+                           Qty delta,
+                           std::int64_t clear_ms) {
+  JsonObjectWriter w(out);
+  w.str("e", "balanceUpdate").num("E", event_ms).str("a", asset).dec("d", delta).num("T", clear_ms);
+  w.close();
+}
+
 void append_account_info(std::string& out,
                          std::int64_t update_ms,
                          std::int64_t maker_bps,

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -44,6 +45,85 @@ std::string resolve_env(std::string value) {
     return env == nullptr ? std::string{} : std::string(env);
   }
   return value;
+}
+
+std::string read_pem(const std::string& path) {
+  std::ifstream in(path);
+  if (!in) throw std::invalid_argument("sim config: cannot read " + path);
+  std::stringstream ss;
+  ss << in.rdbuf();
+  return ss.str();
+}
+
+// "<prefix><ASSET>" keys -> balances.
+std::vector<SimBalanceConfig> read_balances(const GenericSection& s, std::string_view prefix) {
+  std::vector<SimBalanceConfig> out;
+  for (const auto& [key, value] : s.values) {
+    if (!key.starts_with(prefix)) continue;
+    out.push_back(SimBalanceConfig{key.substr(prefix.size()), parse_fixed<QtyTag>(value, key)});
+  }
+  return out;
+}
+
+// A TOML string array as GenericSection keeps it ("[BTC, ETH]"), or a comma-separated string.
+std::vector<std::string> read_list(const GenericSection& s, std::string_view key) {
+  std::vector<std::string> out;
+  std::string_view text = s.values.count(std::string(key)) != 0
+                              ? std::string_view(s.values.find(std::string(key))->second)
+                              : std::string_view{};
+  if (text.starts_with('[') && text.ends_with(']')) text = text.substr(1, text.size() - 2);
+  while (!text.empty()) {
+    const std::size_t comma = text.find(',');
+    std::string_view item = text.substr(0, comma);
+    while (!item.empty() && (item.front() == ' ' || item.front() == '"')) item.remove_prefix(1);
+    while (!item.empty() && (item.back() == ' ' || item.back() == '"')) item.remove_suffix(1);
+    if (!item.empty()) out.emplace_back(item);
+    if (comma == std::string_view::npos) break;
+    text.remove_prefix(comma + 1);
+  }
+  return out;
+}
+
+double probability(const GenericSection& s, std::string_view key) {
+  const double p = s.get_double(key, 0.0);
+  if (!(p >= 0.0 && p <= 1.0))
+    throw std::invalid_argument("sim config: " + std::string(key) + " must be in [0, 1]");
+  return p;
+}
+
+// [sim.accounts.<name>] tables, ascending name.
+std::vector<SimAccountConfig> read_accounts(const GenericSection& s) {
+  static constexpr std::string_view kPrefix = "accounts.";
+  std::map<std::string, SimAccountConfig> by_name;
+  for (const auto& [key, value] : s.values) {
+    if (!key.starts_with(kPrefix)) continue;
+    const std::string_view rest = std::string_view(key).substr(kPrefix.size());
+    const std::size_t dot = rest.find('.');
+    if (dot == std::string_view::npos || dot == 0)
+      throw std::invalid_argument("sim config: " + key + " is not inside an [sim.accounts.<name>]");
+    const std::string name(rest.substr(0, dot));
+    const std::string_view field = rest.substr(dot + 1);
+    SimAccountConfig& a = by_name[name];
+    a.name = name;
+    if (field == "api_key") {
+      a.api_key = resolve_env(value);
+    } else if (field == "api_secret") {
+      a.api_secret = resolve_env(value);
+    } else if (field == "email") {
+      a.email = value;
+    } else if (field == "ed25519_public_key_file") {
+      if (const std::string path = resolve_env(value); !path.empty())
+        a.ed25519_public_key_pem = read_pem(path);
+    } else if (!field.starts_with("balances.")) {
+      throw std::invalid_argument("sim config: unknown key " + key);
+    }
+  }
+  std::vector<SimAccountConfig> out;
+  for (auto& [name, a] : by_name) {
+    a.balances = read_balances(s, "accounts." + name + ".balances.");
+    out.push_back(std::move(a));
+  }
+  return out;
 }
 
 }  // namespace
@@ -133,21 +213,26 @@ SimServerConfig SimServerConfig::from_config(const Config& cfg) {
   if (const char* k = std::getenv("FASTMM_SIM_API_SECRET"); k != nullptr && *k != '\0')
     c.api_secret = k;
   if (const std::string path = resolve_env(s.get_string("account.ed25519_public_key_file", ""));
-      !path.empty()) {
-    std::ifstream in(path);
-    if (!in) throw std::invalid_argument("sim config: cannot read " + path);
-    std::stringstream ss;
-    ss << in.rdbuf();
-    c.ed25519_public_key_pem = ss.str();
-  }
+      !path.empty())
+    c.ed25519_public_key_pem = read_pem(path);
   if (c.api_key.empty() || (c.api_secret.empty() && c.ed25519_public_key_pem.empty()))
     throw std::invalid_argument("sim config: [sim.account] api_key/api_secret are empty");
-  for (const auto& [key, value] : s.values) {
-    static constexpr std::string_view kPrefix = "account.balances.";
-    if (!key.starts_with(kPrefix)) continue;
-    c.balances.push_back(
-        SimBalanceConfig{key.substr(kPrefix.size()), parse_fixed<QtyTag>(value, key)});
+  c.balances = read_balances(s, "account.balances.");
+  c.accounts = read_accounts(s);
+  if (!c.accounts.empty()) {
+    for (const auto& [key, value] : s.values) {
+      if (key.starts_with("account."))
+        throw std::invalid_argument("sim config: [sim.account] and [sim.accounts.*] together (" +
+                                    key + "); a pool names every account");
+    }
   }
+  c.master.email = s.get_string("master.email", c.master.email);
+  c.master.api_key = resolve_env(s.get_string("master.api_key", ""));
+  c.master.api_secret = resolve_env(s.get_string("master.api_secret", ""));
+  if (const std::string path = resolve_env(s.get_string("master.ed25519_public_key_file", ""));
+      !path.empty())
+    c.master.ed25519_public_key_pem = read_pem(path);
+  c.master.balances = read_balances(s, "master.balances.");
 
   c.maker_bps = s.get_double("fees.maker_bps", c.maker_bps);
   c.taker_bps = s.get_double("fees.taker_bps", c.taker_bps);
@@ -168,6 +253,8 @@ SimServerConfig SimServerConfig::from_config(const Config& cfg) {
   c.account_orders_limit_per_day =
       get_u32(s, "limits.account_orders_per_day", c.account_orders_limit_per_day);
   c.max_recv_window_ms = get_u32(s, "limits.max_recv_window_ms", c.max_recv_window_ms);
+  c.uid_weight_limit_per_minute =
+      get_u32(s, "limits.uid_weight_per_minute", c.uid_weight_limit_per_minute);
   c.ping_interval_ms = get_u32(s, "ping_interval_ms", c.ping_interval_ms);
   c.pong_timeout_ms = get_u32(s, "pong_timeout_ms", c.pong_timeout_ms);
   c.listen_key_validity_ms = get_u32(s, "listen_key_validity_ms", c.listen_key_validity_ms);
@@ -214,6 +301,11 @@ SimServerConfig SimServerConfig::from_config(const Config& cfg) {
   f.delay_ack_ms = get_u32(s, "faults.delay_ack_ms", f.delay_ack_ms);
   f.reject_next_orders = get_u32(s, "faults.reject_next_orders", f.reject_next_orders);
   f.rate_limit_next = get_u32(s, "faults.rate_limit_next", f.rate_limit_next);
+  f.transfer.p_fail = probability(s, "faults.transfer_p_fail");
+  f.transfer.p_lost = probability(s, "faults.transfer_p_lost");
+  f.transfer.delay_ms = get_u32(s, "faults.transfer_delay_ms", f.transfer.delay_ms);
+  f.transfer.ban_after = get_u32(s, "faults.transfer_ban_after", f.transfer.ban_after);
+  f.transfer.refused_assets = read_list(s, "faults.transfer_refused_assets");
   return c;
 }
 

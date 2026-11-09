@@ -61,6 +61,9 @@ class FixedWindowCounter {
   std::uint64_t count_ = 0;
 };
 
+// OrderIndex::open_orders / open_count: every account's.
+inline constexpr AccountId kAllAccounts = 0xFFFE;
+
 // Asset amounts use the core 1e-8 fixed point (Qty) regardless of the asset.
 struct Balance {
   Qty free{};
@@ -69,6 +72,8 @@ struct Balance {
 
 struct Account {
   AccountId id = kStrategyAccount;
+  std::string name;   // [sim.accounts.<name>]; empty for the single [sim.account]
+  std::string email;  // the sub-account's email, as transfers name it
   std::string api_key;
   std::string api_secret;                          // never logged
   std::shared_ptr<const net::Ed25519Key> ed25519;  // set: an Ed25519 key (verify, session.logon)
@@ -135,7 +140,8 @@ class OrderIndex {
   // A terminal order that traded, by Binance orderId; nullptr if none.
   [[nodiscard]] const OrderRecord* past(std::int64_t id) const noexcept;
 
-  // Open (non-terminal) orders of `account`, ascending order id; symbol < 0 = all symbols.
+  // Open (non-terminal) orders of `account` (kAllAccounts: of all), ascending order id; symbol < 0
+  // = all symbols.
   [[nodiscard]] std::vector<OrderRecord*> open_orders(AccountId account, std::int64_t symbol);
   [[nodiscard]] std::size_t open_count(AccountId account) const noexcept;
   [[nodiscard]] std::size_t size() const noexcept { return orders_.size(); }
