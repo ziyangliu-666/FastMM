@@ -267,6 +267,32 @@ struct LaneStats {
   std::int64_t moved_value = 0;  // raw Notional: done transfers at the mid when they were made
 };
 
+// The pools' lanes as the status file and fastmm-top show them, summed over the pools
+// (Engine::publish_live). The breaker is the worst of the pools'.
+struct LaneStatus {
+  std::uint32_t pools = 0;
+  std::uint32_t in_flight = 0;
+  std::uint32_t used_hour = 0;  // transfers created in the last hour, and day
+  std::uint32_t used_day = 0;
+  std::uint64_t planned = 0;
+  std::uint64_t requested = 0;
+  std::uint64_t sent = 0;
+  std::uint64_t done = 0;
+  std::uint64_t done_by_flows = 0;
+  std::uint64_t failed = 0;
+  std::uint64_t unknown = 0;
+  std::uint64_t late = 0;
+  std::uint64_t trips = 0;
+  std::int64_t held_value_raw = 0;   // in flight, at the mid when made (raw quote)
+  std::int64_t moved_value_raw = 0;  // done
+  std::uint8_t breaker = 0;          // BreakerState
+  std::uint8_t sweeping = 0;         // pools sweeping now
+  std::uint8_t dry_run = 0;          // pools in a dry run
+  std::uint8_t blocked = 0;          // assets the venue does not transfer
+  std::uint32_t pad_ = 0;
+};
+static_assert(sizeof(LaneStatus) == 112);
+
 class TransferLane {
  public:
   static constexpr std::size_t kSlots = 16;

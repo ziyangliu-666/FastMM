@@ -208,6 +208,8 @@ struct EngineLiveStats {
   // The balance table, in its order (the first kMaxLiveBalances rows).
   std::uint32_t balance_count = 0;
   std::array<LiveBalance, kMaxLiveBalances> balances{};
+  // The pools' transfer lanes (core/transfer_lane.hpp).
+  LaneStatus lanes{};
   // The perp table: the instruments that have reported, in id order (the first kMaxLivePerps).
   std::uint32_t perp_count = 0;
   std::array<LivePerp, kMaxLivePerps> perps{};

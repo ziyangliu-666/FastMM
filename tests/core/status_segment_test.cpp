@@ -345,7 +345,7 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   CHECK(frame.find("fallback=5") != std::string::npos);
 
   const std::string json = format_status_json(s);
-  CHECK(json.find(R"({"kind": "engine", "version": 28,)") == 0);
+  CHECK(json.find(R"({"kind": "engine", "version": 29,)") == 0);
   CHECK(json.find(R"("engine": "binance-demo")") != std::string::npos);
   CHECK(json.find(R"("tick_to_trade": {"count": 10, "p50_ns": 106495, "p99_ns": 216053, )"
                   R"("p999_ns": 250000, "max_ns": 300000})") != std::string::npos);
@@ -505,7 +505,7 @@ TEST_CASE("core.status_segment: a gateway's snapshot round trips and shows its a
 
   const std::string json = format_status_json(got);
   INFO(json);
-  CHECK(json.find(R"({"kind": "gateway", "version": 28,)") == 0);
+  CHECK(json.find(R"({"kind": "gateway", "version": 29,)") == 0);
   CHECK(json.find(R"("gateway": "gw")") != std::string::npos);
   CHECK(json.find(R"("net_pnl": -0.25, "realized": 1.5)") != std::string::npos);
   CHECK(json.find(R"("engine": "mm-a", "pid": 1001)") != std::string::npos);
@@ -744,4 +744,24 @@ TEST_CASE("core.status_segment: reduce-only mode in the frame and the JSON form"
   frame = format_status(s, s.updated_ns, false);
   CHECK(frame.find("  REDUCE-ONLY  ") != std::string::npos);
   CHECK(frame.find("reduce     session=on") != std::string::npos);
+}
+
+TEST_CASE("core.status_segment: the pools' transfer lanes in the frame and the JSON form") {
+  StatusSnapshot s;
+  s.state = StatusRunState::Running;
+  CHECK(format_status(s, 0, false).find("transfers  ") == std::string::npos);
+  s.lanes.pools = 1;
+  s.lanes.sweeping = 1;
+  s.lanes.in_flight = 2;
+  s.lanes.used_day = 40;
+  s.lanes.requested = 42;
+  s.lanes.done = 40;
+  s.lanes.breaker = static_cast<std::uint8_t>(BreakerState::Paused);
+  const std::string frame = format_status(s, 0, false);
+  CHECK(frame.find("transfers  pools=1 sweeping=1 dry_run=0 breaker=paused in_flight=2") !=
+        std::string::npos);
+  CHECK(frame.find("day=40 requested=42") != std::string::npos);
+  CHECK(format_status_json(s).find(R"("transfers": {"pools": 1, "sweeping": 1, "dry_run": 0, )"
+                                   R"("breaker": "paused", "in_flight": 2, )") !=
+        std::string::npos);
 }

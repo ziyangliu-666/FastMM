@@ -4,7 +4,11 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+### Breaking changes
+- apps: the status file is version 29; run `fastmm-top` from the same build as `fastmm-live`.
+
 ### Added
+- apps: the status file, `fastmm-top` and Prometheus show the pools' transfers and their breaker.
 - core: `[venues.<primary>.pool] sweep = true` moves a spot piece to its home by internal transfer.
 - core: a sweeping pool sends spot sells to the home; a piece's resting sell moves at its reprice.
 - core: `[venues.<primary>.transfers]` caps a sweep's transfers per minute, hour and day.

@@ -2489,6 +2489,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     snap.flatten_state = static_cast<std::uint8_t>(live.flatten_state);
     snap.flatten_instruments_left = live.flatten_instruments_left;
     snap.flatten_orders = live.flatten_orders;
+    snap.lanes = live.lanes;
     snap.reduce_only = live.reduce_only;
     snap.reduce_only_venues = live.reduce_only_venues;
     snap.reduce_only_instruments = live.reduce_only_instruments;

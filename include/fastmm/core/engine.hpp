@@ -4574,6 +4574,36 @@ class Engine {
     }
     set_lanes_live(live);
   }
+  // The lanes for the status file.
+  void lane_status(LaneStatus& out) noexcept {
+    out = LaneStatus{};
+    for (std::size_t v = 0; v < kMaxVenues; ++v) {
+      TransferLane* lane = lanes_[v].get();
+      if (lane == nullptr) continue;
+      const LaneStats& l = lane->stats();
+      ++out.pools;
+      out.in_flight += l.in_flight;
+      out.used_hour += lane->used_hour(now_);
+      out.used_day += lane->used_day(now_);
+      out.planned += l.planned;
+      out.requested += l.requested;
+      out.sent += l.sent;
+      out.done += l.done;
+      out.done_by_flows += l.done_by_flows;
+      out.failed += l.failed;
+      out.unknown += l.unknown;
+      out.late += l.late;
+      out.trips += l.trips;
+      out.moved_value_raw += l.moved_value;
+      for (const TransferLane::Slot& t : lane->slots()) {
+        if (t.active) out.held_value_raw += t.value;
+      }
+      out.breaker = std::max(out.breaker, static_cast<std::uint8_t>(lane->breaker(now_)));
+      out.sweeping = static_cast<std::uint8_t>(out.sweeping + ((lanes_live_ >> v) & 1U));
+      out.dry_run = static_cast<std::uint8_t>(out.dry_run + (lane->config().dry_run ? 1 : 0));
+      out.blocked = static_cast<std::uint8_t>(out.blocked + l.blocked_assets);
+    }
+  }
   void set_lanes_live(std::uint32_t live) noexcept {
     lanes_live_ = live;
     lanes_live_pub_.store(live, std::memory_order_relaxed);
@@ -5493,6 +5523,7 @@ class Engine {
     live.flatten_state = flatten_state_;
     live.flatten_instruments_left = flatten_state_ == FlattenState::Off ? 0 : flatten_left();
     live.flatten_orders = stats_.flatten_orders;
+    if (lanes_on_) lane_status(live.lanes);
     live.reduce_only = ro_session_ ? 1 : 0;
     live.reduce_only_venues = ro_venues_;
     live.reduce_only_instruments = ro_count_;

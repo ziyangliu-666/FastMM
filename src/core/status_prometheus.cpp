@@ -422,6 +422,30 @@ void engine_metrics(Exposition& e, const StatusSnapshot& s) {
   e.gauge("fastmm_reduce_only_instruments",
           "instruments reduce-only mode holds (fastmm-ctl reduce-only)",
           static_cast<double>(s.reduce_only_instruments));
+  if (s.lanes.pools != 0) {
+    const LaneStatus& l = s.lanes;
+    e.gauge("fastmm_transfers_sweeping", "pools whose sweep moves pieces home now", l.sweeping);
+    e.gauge("fastmm_transfers_breaker",
+            "the worst pool's sweep breaker: 0 closed, 1 paused, 2 off",
+            l.breaker);
+    e.gauge("fastmm_transfers_in_flight", "lane transfers held and not yet resolved", l.in_flight);
+    e.gauge("fastmm_transfers_held_value",
+            "value of the base held in lane transfers, quote currency",
+            static_cast<double>(l.held_value_raw) / 1e8);
+    e.gauge("fastmm_transfers_used_hour", "lane transfers created in the last hour", l.used_hour);
+    e.gauge("fastmm_transfers_used_day", "lane transfers created in the last 24 h", l.used_day);
+    e.counter("fastmm_transfers_planned_total", "lane transfers planned in a dry run", l.planned);
+    e.counter("fastmm_transfers_requested_total", "lane transfers requested", l.requested);
+    e.counter("fastmm_transfers_done_total", "lane transfers done", l.done);
+    e.counter("fastmm_transfers_done_by_flows_total",
+              "lane transfers confirmed by both accounts' flows",
+              l.done_by_flows);
+    e.counter("fastmm_transfers_failed_total", "lane transfers refused or not found", l.failed);
+    e.counter("fastmm_transfers_unknown_total", "lane transfers with no usable answer", l.unknown);
+    e.counter("fastmm_transfers_late_total", "lane transfers unresolved past timeout_s", l.late);
+    e.counter("fastmm_transfers_trips_total", "sweep breaker trips", l.trips);
+    e.gauge("fastmm_transfers_blocked_assets", "assets the venue does not transfer", l.blocked);
+  }
   if (s.treasury.pools != 0) {
     const StatusTreasury& t = s.treasury;
     e.gauge("fastmm_treasury_in_flight",

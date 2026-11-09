@@ -384,3 +384,18 @@ TEST_CASE("core.status_prometheus: the quote table and the strategy's metrics") 
   CHECK(has(text, "fastmm_position{symbol=\"BTCUSDT\"} -0.02\n"));
   CHECK(has(text, "fastmm_strategy_metric{name=\"alloc_btc\"} 0.4\n"));
 }
+
+TEST_CASE("core.status_prometheus: the pools' transfer lanes, only with a sweep") {
+  StatusSnapshot s = sample();
+  CHECK_FALSE(has(format_status_prometheus(s, s.updated_ns), "fastmm_transfers_done_total"));
+  s.lanes.pools = 1;
+  s.lanes.sweeping = 1;
+  s.lanes.done = 7;
+  s.lanes.breaker = 1;
+  s.lanes.held_value_raw = 12'500'000'000;  // 125
+  const std::string text = format_status_prometheus(s, s.updated_ns);
+  CHECK(has(text, "fastmm_transfers_done_total 7\n"));
+  CHECK(has(text, "fastmm_transfers_sweeping 1\n"));
+  CHECK(has(text, "fastmm_transfers_breaker 1\n"));
+  CHECK(has(text, "fastmm_transfers_held_value 125\n"));
+}

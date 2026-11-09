@@ -13,6 +13,7 @@
 #include "fastmm/core/latency.hpp"
 #include "fastmm/core/quote_diag.hpp"
 #include "fastmm/core/reject_counters.hpp"
+#include "fastmm/core/transfer_lane.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -56,7 +57,7 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 //     the arms' names.
 // 27: per quote row, the instrument's home in its account pool and its pieces.
 // 28: the capacity price's refusals: priced out, and observed (would have been).
-inline constexpr std::uint32_t kStatusVersion = 28;
+inline constexpr std::uint32_t kStatusVersion = 29;
 inline constexpr std::size_t kStatusMaxArms = 16;  // kMaxAbArms
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
@@ -465,6 +466,8 @@ struct StatusSnapshot {
   StatusGateway gateway;
   // kind Engine: the pool treasuries of fastmm-live.
   StatusTreasury treasury;
+  // kind Engine: the pools' transfer lanes and sweeps (core/transfer_lane.hpp).
+  LaneStatus lanes;
   // kind Engine: every instrument in id order, and the strategy's metrics (ctx.metric).
   std::uint32_t quote_count = 0;
   std::uint32_t metric_count = 0;

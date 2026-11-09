@@ -21,7 +21,7 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`.
 1. The writer makes the counter odd, writes the snapshot, then makes it even again.
 2. A reader copies the snapshot and keeps it when the counter was even and unchanged across the copy; otherwise it retries.
 
-`magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 28) sit at the same offsets in every version. The layout is internal ([Public API](public-api.md)): read it with `fastmm-top` from the same build. Another version is refused:
+`magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 29) sit at the same offsets in every version. The layout is internal ([Public API](public-api.md)): read it with `fastmm-top` from the same build. Another version is refused:
 
 ```text
 <file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)
@@ -73,6 +73,7 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`.
 | `quote_count`, `quotes` | u32, 256 x quote entry | the quote table, one entry per instrument in the table's order ([below](#quote-entry)) |
 | `metric_count`, `metrics` | u32, 32 x {name char[24], value f64} | the numbers the strategy publishes with `ctx.metric`, in the order it first named them |
 | `gateway` | gateway block | `kind` 1 only, zero otherwise ([below](#gateway-block)) |
+| `lanes` | lane block | the pools' sweeps summed ([Sweep pieces home](../how-to/operations/sweep-pieces.md)): `pools`, `in_flight`, `used_hour`, `used_day` (u32); `planned`, `requested`, `sent`, `done`, `done_by_flows`, `failed`, `unknown`, `late`, `trips` (u64); `held_value_raw`, `moved_value_raw` (i64, quote at the mid); `breaker` (u8: 0 closed, 1 paused, 2 off, the worst pool's), `sweeping`, `dry_run`, `blocked` (u8 counts) |
 
 A `fastmm-top` session is `STALE` when `state` is running and `updated_ns` is more than 3 s old.
 

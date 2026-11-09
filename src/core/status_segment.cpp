@@ -595,6 +595,31 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                    s.param_control_applied,
                    s.param_control_published > s.param_control_applied ? "  PENDING" : "");
   }
+  if (s.lanes.pools != 0) {
+    const LaneStatus& l = s.lanes;
+    fmt::format_to(std::back_inserter(out),
+                   "transfers  pools={} sweeping={} dry_run={} breaker={} in_flight={} held={:.2f} "
+                   "hour={} day={} requested={} planned={} done={} by_flows={} failed={} "
+                   "unknown={} late={} trips={} blocked={} moved={:.2f}\n\n",
+                   l.pools,
+                   l.sweeping,
+                   l.dry_run,
+                   to_string(static_cast<BreakerState>(l.breaker)),
+                   l.in_flight,
+                   static_cast<double>(l.held_value_raw) / 1e8,
+                   l.used_hour,
+                   l.used_day,
+                   l.requested,
+                   l.planned,
+                   l.done,
+                   l.done_by_flows,
+                   l.failed,
+                   l.unknown,
+                   l.late,
+                   l.trips,
+                   l.blocked,
+                   static_cast<double>(l.moved_value_raw) / 1e8);
+  }
   if (s.treasury.pools != 0) {
     const StatusTreasury& t = s.treasury;
     fmt::format_to(std::back_inserter(out),
@@ -1329,6 +1354,32 @@ std::string format_status_json(const StatusSnapshot& s) {
                  s.treasury.timed_out,
                  s.treasury.limited,
                  s.treasury.errors);
+  fmt::format_to(it,
+                 "\"transfers\": {{\"pools\": {}, \"sweeping\": {}, \"dry_run\": {}, "
+                 "\"breaker\": \"{}\", \"in_flight\": {}, \"held_value\": {:.8f}, "
+                 "\"used_hour\": {}, \"used_day\": {}, \"planned\": {}, \"requested\": {}, "
+                 "\"sent\": {}, \"done\": {}, \"done_by_flows\": {}, \"failed\": {}, "
+                 "\"unknown\": {}, \"late\": {}, \"trips\": {}, \"blocked\": {}, "
+                 "\"moved_value\": {:.8f}}}, ",
+                 s.lanes.pools,
+                 s.lanes.sweeping,
+                 s.lanes.dry_run,
+                 to_string(static_cast<BreakerState>(s.lanes.breaker)),
+                 s.lanes.in_flight,
+                 static_cast<double>(s.lanes.held_value_raw) / 1e8,
+                 s.lanes.used_hour,
+                 s.lanes.used_day,
+                 s.lanes.planned,
+                 s.lanes.requested,
+                 s.lanes.sent,
+                 s.lanes.done,
+                 s.lanes.done_by_flows,
+                 s.lanes.failed,
+                 s.lanes.unknown,
+                 s.lanes.late,
+                 s.lanes.trips,
+                 s.lanes.blocked,
+                 static_cast<double>(s.lanes.moved_value_raw) / 1e8);
   json_underlyings(out, s.underlyings);
   out += ", ";
   json_balances(out, s);
