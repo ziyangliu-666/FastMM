@@ -459,10 +459,13 @@ BinanceVenueConfig make_binance_config(const VenueSectionView& section, bool dry
 std::string derive_sbe_ws_url(std::string_view ws_url);
 
 // Ed25519 private key PEM from `path` or the environment variable `env` (env wins). Throws
-// std::invalid_argument when it is not a PKCS#8 Ed25519 private key, unless `dry_run` (then logs).
-std::string load_ed25519_pem(const std::string& venue,
-                             const std::string& path,
-                             const std::string& env,
-                             bool dry_run);
+// std::invalid_argument when it is not a PKCS#8 Ed25519 private key, unless `dry_run` (then logs);
+// the message says which `keys` should have named one.
+std::string load_ed25519_pem(
+    const std::string& venue,
+    const std::string& path,
+    const std::string& env,
+    bool dry_run,
+    std::string_view keys = "key_type = ed25519 needs private_key_file or private_key_env");
 
 }  // namespace fastmm::venues::binance

@@ -231,7 +231,8 @@ Each account of a pool has its own balance, so one can run short of the quote as
 [venues.binance]
 kind = "binance_spot"
 transfer_api_key_env = "MASTER_TRANSFER_KEY"        # the master account's key, internal transfer only
-transfer_api_secret_env = "MASTER_TRANSFER_SECRET"
+transfer_api_secret_env = "MASTER_TRANSFER_SECRET"  # an Ed25519 key: transfer_key_type = "ed25519"
+                                                    # and transfer_private_key_file instead
 sub_account_email = "${ACCOUNT_A_EMAIL}"
 
 [venues.binance_b]
@@ -326,6 +327,9 @@ configuration (a dry run, `order_entry = "none"`, missing credentials).
 | `fetch_fees` | boolean |  | fastmm-live: fetch the account's maker and taker rates per symbol at start-up (GET /api/v3/account/commission) and use them instead of the configured fees; start-up fails when the request does (default false) |
 | `transfer_api_key_env` | string |  | pool treasury: environment variable holding the master account's API key with internal transfer enabled, used for transfers between the pool's accounts only (default none: no transfers) |
 | `transfer_api_secret_env` | string |  | environment variable holding that key's HMAC secret |
+| `transfer_key_type` | string |  | the transfer key: hmac (default) \| ed25519 |
+| `transfer_private_key_file` | string |  | the transfer key's Ed25519 private key file (PKCS#8 PEM), with transfer_key_type = ed25519 |
+| `transfer_private_key_env` | string |  | environment variable holding the transfer key's Ed25519 private key PEM (instead of transfer_private_key_file) |
 | `transfer_rest_url` | string |  | host of the transfer endpoint, /sapi/v1/sub-account/universalTransfer (default https://api.binance.com) |
 | `sub_account_email` | string |  | this account's sub-account email in a transfer; empty: the master account (default empty) |
 <!-- END config-keys -->
@@ -355,6 +359,9 @@ configuration (a dry run, `order_entry = "none"`, missing credentials).
 | `leverage` | integer |  | at start, set this leverage (1 to 125) on every enabled symbol; 0 leaves the account's (default 0) |
 | `transfer_api_key_env` | string |  | pool treasury: environment variable holding the master account's API key with internal transfer enabled, used for transfers between the pool's accounts only (default none: no transfers) |
 | `transfer_api_secret_env` | string |  | environment variable holding that key's HMAC secret |
+| `transfer_key_type` | string |  | the transfer key: hmac (default) \| ed25519 |
+| `transfer_private_key_file` | string |  | the transfer key's Ed25519 private key file (PKCS#8 PEM), with transfer_key_type = ed25519 |
+| `transfer_private_key_env` | string |  | environment variable holding the transfer key's Ed25519 private key PEM (instead of transfer_private_key_file) |
 | `transfer_rest_url` | string |  | host of the transfer endpoint, /sapi/v1/sub-account/universalTransfer (default https://api.binance.com) |
 | `sub_account_email` | string |  | this account's sub-account email in a transfer; empty: the master account (default empty) |
 <!-- END config-keys -->

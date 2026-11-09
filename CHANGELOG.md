@@ -6,6 +6,7 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ### Added
 - core: `[engine] send_token_reserve` keeps order tokens of `[risk] orders_per_sec` from every quote for the orders the strategy sends itself, so a hedge or an unwind is not refused `RateLimit` while waiting quotes take each token as it comes back.
+- venues: the Binance transfer key can be an Ed25519 key (`transfer_key_type = "ed25519"`).
 
 ## [0.11.0] - 2026-11-07
 

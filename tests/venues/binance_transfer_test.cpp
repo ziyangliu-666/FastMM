@@ -5,6 +5,7 @@
 
 #include "test_support.hpp"
 
+#include "fastmm/net/crypto.hpp"
 #include "fastmm/venues/binance/binance_venue.hpp"
 #include "fastmm/venues/binance_usdm/binance_usdm_venue.hpp"
 
@@ -269,6 +270,83 @@ TEST_CASE("binance.transfer: the connector keys name the master key's variables"
                   std::invalid_argument);
   // Without the keys there are no transfers, and the default Venue answer says so.
   CHECK_FALSE(read_transfer_settings("b", {}, "SPOT", false).usable());
+}
+
+TEST_CASE("binance.transfer: an Ed25519 master key signs the transfers") {
+  const std::string pem_file =
+      (fastmm::test::fixtures_dir() / "binance" / "ed25519-test-private.pem").string();
+  ::setenv("FASTMM_TEST_TRANSFER_KEY", "ed-master", 1);
+  std::map<std::string, std::string> extra{{"transfer_key_type", "ed25519"},
+                                           {"transfer_api_key_env", "FASTMM_TEST_TRANSFER_KEY"},
+                                           {"transfer_private_key_file", pem_file}};
+  const TransferSettings s = read_transfer_settings("binance", extra, "SPOT", false);
+  REQUIRE(s.usable());
+  CHECK(s.credentials.type == KeyType::Ed25519);
+  CHECK(s.credentials.api_key == "ed-master");
+
+  // The POST carries a base64 signature, percent-encoded, that verifies over the query before it.
+  const Signer signer(s.credentials);
+  REQUIRE(signer.usable());
+  const auto legs = transfer_legs(request("a@example.com", "b@example.com"), "SPOT");
+  BlockingRequest q;
+  REQUIRE(encode_transfer(
+      signer, legs[0], "SOL", *Notional::parse("0.001"), 1'790'000'001'000, 10'000, q));
+  CHECK(q.headers == "X-MBX-APIKEY: ed-master\r\n");
+  const std::size_t at = q.target.rfind("&signature=");
+  REQUIRE(at != std::string::npos);
+  const std::size_t start = q.target.find('?') + 1;
+  std::string sig;
+  const std::string enc = q.target.substr(at + 11);
+  for (std::size_t i = 0; i < enc.size(); ++i) {
+    if (enc[i] == '%' && i + 2 < enc.size()) {
+      sig += static_cast<char>(std::stoi(enc.substr(i + 1, 2), nullptr, 16));
+      i += 2;
+    } else {
+      sig += enc[i];
+    }
+  }
+  const auto pub =
+      net::Ed25519Key::from_public_pem(fastmm::test::fixture("binance/ed25519-test-public.pem"));
+  CHECK(pub.verify_base64(std::string_view(q.target).substr(start, at - start), sig));
+
+  // The client sends it like an HMAC one.
+  Script server;
+  server.replies.push_back(reply(200, R"({"tranId":7,"clientTranId":"fm0mabc12345"})"));
+  TransferClient client(
+      s, server.send(), []() noexcept { return std::int64_t{1'790'000'001'000}; });
+  CHECK(client.transfer(request("a@example.com", "b@example.com")).state == TransferState::Pending);
+
+  // The key's private part from an environment variable; a dry run reads nothing.
+  ::setenv("FASTMM_TEST_TRANSFER_PEM",
+           fastmm::test::fixture("binance/ed25519-test-private.pem").c_str(),
+           1);
+  extra.erase("transfer_private_key_file");
+  extra["transfer_private_key_env"] = "FASTMM_TEST_TRANSFER_PEM";
+  CHECK(read_transfer_settings("binance", extra, "SPOT", false).usable());
+  CHECK_FALSE(read_transfer_settings("binance", extra, "SPOT", true).usable());
+
+  // A file that holds no Ed25519 key, a secret where a private key belongs, a key named without
+  // its private part, and a private key without the type are refused.
+  extra.erase("transfer_private_key_env");
+  extra["transfer_private_key_file"] = (fastmm::test::fixtures_dir() / "tls" / "cert.pem").string();
+  CHECK_THROWS_AS(static_cast<void>(read_transfer_settings("b", extra, "SPOT", false)),
+                  std::invalid_argument);
+  extra["transfer_private_key_file"] = pem_file;
+  extra["transfer_api_secret_env"] = "FASTMM_TEST_TRANSFER_KEY";
+  CHECK_THROWS_AS(static_cast<void>(read_transfer_settings("b", extra, "SPOT", false)),
+                  std::invalid_argument);
+  extra.erase("transfer_api_secret_env");
+  extra.erase("transfer_private_key_file");
+  CHECK_THROWS_AS(static_cast<void>(read_transfer_settings("b", extra, "SPOT", false)),
+                  std::invalid_argument);
+  const std::map<std::string, std::string> untyped{
+      {"transfer_api_key_env", "FASTMM_TEST_TRANSFER_KEY"},
+      {"transfer_private_key_file", pem_file}};
+  CHECK_THROWS_AS(static_cast<void>(read_transfer_settings("b", untyped, "SPOT", false)),
+                  std::invalid_argument);
+  extra["transfer_key_type"] = "rsa";
+  CHECK_THROWS_AS(static_cast<void>(read_transfer_settings("b", extra, "SPOT", false)),
+                  std::invalid_argument);
 }
 
 TEST_CASE("binance.transfer: the connectors announce transfers only with the master key") {

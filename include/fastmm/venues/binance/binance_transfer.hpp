@@ -12,10 +12,11 @@
 //        master), clientTranId, startTime (the window is at most 7 days), timestamp
 //        -> {"result":[{"tranId":..,"clientTranId":..,"status":"SUCCESS",..}],"totalCount":1}
 // It needs a master-account API key with "internal transfer" enabled (spot trading or withdrawals
-// are not needed), which is why it is a key of its own (transfer_api_key_env /
-// transfer_api_secret_env) and never the account's trading key. The sub-account keys' own
-// transfer endpoints (sub-account/transfer/subToSub, subToMaster) move spot assets only and take no
-// client id, so a lost answer could not be looked up.
+// are not needed), which is why it is a key of its own and never the account's trading key: an
+// HMAC key (transfer_api_key_env / transfer_api_secret_env) or an Ed25519 one
+// (transfer_key_type = "ed25519", transfer_api_key_env / transfer_private_key_file or _env). The
+// sub-account keys' own transfer endpoints (sub-account/transfer/subToSub, subToMaster) move spot
+// assets only and take no client id, so a lost answer could not be looked up.
 //
 // The scenarios the endpoint lists are SPOT, USDT_FUTURE or COIN_FUTURE to SPOT and SPOT to SPOT,
 // USDT_FUTURE or COIN_FUTURE, between any two accounts of the master. A spot pool's transfer is one
@@ -44,7 +45,7 @@ inline constexpr std::string_view kDefaultTransferRestUrl = "https://api.binance
 struct TransferSettings {
   std::string venue;  // the [venues.<name>] the requests are logged under
   std::string rest_url = std::string(kDefaultTransferRestUrl);
-  Credentials credentials;            // the master account's key; HMAC
+  Credentials credentials;            // the master account's key; HMAC or Ed25519
   std::string account_type = "SPOT";  // the pool's wallet: SPOT | USDT_FUTURE
   std::string email;                  // this account's sub-account email; empty: the master
   int recv_window_ms = 10'000;
@@ -56,11 +57,15 @@ struct TransferSettings {
 };
 
 // The keys a Binance connector owns for transfers, read from its [venues.<name>] section:
-//   transfer_api_key_env, transfer_api_secret_env  environment variables holding the master key
+//   transfer_key_type                              hmac (default) | ed25519
+//   transfer_api_key_env                           environment variable holding the master key
+//   transfer_api_secret_env                        ... and its HMAC secret
+//   transfer_private_key_file, _env                ... or its Ed25519 private key (PKCS#8 PEM)
 //   transfer_rest_url                              the SAPI host (default api.binance.com)
 //   sub_account_email                              this account's email (empty: the master)
 // `account_type` is the connector's wallet. Throws std::invalid_argument when a variable is named
-// and not set (outside a dry run), or only one of the two is named.
+// and not set or a key file does not hold an Ed25519 key (outside a dry run), or the key is named
+// only in part.
 [[nodiscard]] TransferSettings read_transfer_settings(
     const std::string& venue,
     const std::map<std::string, std::string>& extra,

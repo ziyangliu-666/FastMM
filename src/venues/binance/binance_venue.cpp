@@ -2103,7 +2103,8 @@ std::string derive_sbe_ws_url(std::string_view ws_url) {
 std::string load_ed25519_pem(const std::string& venue,
                              const std::string& path,
                              const std::string& env,
-                             bool dry_run) {
+                             bool dry_run,
+                             std::string_view keys) {
   std::string pem;
   std::string source;
   if (!env.empty()) {
@@ -2117,9 +2118,8 @@ std::string load_ed25519_pem(const std::string& venue,
     pem = ss.str();
   }
   if (!net::Ed25519Key::from_private_pem(pem).has_private()) {
-    const std::string why = "venue '" + venue +
-                            "': key_type = ed25519 needs private_key_file or private_key_env " +
-                            "with a PKCS#8 Ed25519 private key" +
+    const std::string why = "venue '" + venue + "': " + std::string(keys) +
+                            " with a PKCS#8 Ed25519 private key" +
                             (source.empty() ? "" : " (" + source + " is not one)");
     if (!dry_run) throw std::invalid_argument(why);
     FASTMM_LOG_WARN("{}; dry run continues without order entry", why);

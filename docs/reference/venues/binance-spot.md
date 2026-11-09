@@ -179,7 +179,7 @@ A pool treasury moves assets between accounts with the master account's universa
 | look up | `GET /sapi/v1/sub-account/universalTransfer?clientTranId=…&fromEmail=…` |
 | status | `SUCCESS` done, `FAILURE` failed, otherwise pending, no row not found |
 | errors | 4xx is a refusal; 5xx or a transport error is Unknown |
-| key | a master-account HMAC key with "internal transfer" enabled, read from `transfer_api_key_env` / `transfer_api_secret_env`; used for nothing else |
+| key | a master-account key with "internal transfer" enabled, used for nothing else: HMAC from `transfer_api_key_env` / `transfer_api_secret_env`, or Ed25519 with `transfer_key_type = "ed25519"`, `transfer_api_key_env` and `transfer_private_key_file` or `transfer_private_key_env` |
 | account name | `sub_account_email`; empty means the master account |
 
 The trading keys need no transfer permission. The sub-account endpoints (`subToSub`, `subToMaster`) take no client id, so a lost answer could not be looked up.

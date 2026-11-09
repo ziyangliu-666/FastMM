@@ -3,6 +3,7 @@
 #include "fastmm/core/time.hpp"
 #include "fastmm/venues/binance/binance_params.hpp"
 #include "fastmm/venues/binance/binance_rest_decoder.hpp"
+#include "fastmm/venues/binance/binance_venue.hpp"
 
 #include <simdjson.h>
 
@@ -28,21 +29,56 @@ TransferSettings read_transfer_settings(const std::string& venue,
   s.account_type = std::string(account_type);
   s.email = get("sub_account_email");
   if (std::string url = get("transfer_rest_url"); !url.empty()) s.rest_url = std::move(url);
+  const std::string type = get("transfer_key_type");
+  if (!type.empty() && type != "hmac" && type != "ed25519")
+    throw std::invalid_argument("venue '" + venue + "': transfer_key_type must be hmac or ed25519");
+  const bool ed25519 = type == "ed25519";
   const std::string key_env = get("transfer_api_key_env");
   const std::string secret_env = get("transfer_api_secret_env");
-  if (key_env.empty() != secret_env.empty()) {
-    throw std::invalid_argument("venue '" + venue +
-                                "': transfer_api_key_env and transfer_api_secret_env go together");
+  const std::string pem_file = get("transfer_private_key_file");
+  const std::string pem_env = get("transfer_private_key_env");
+  if (ed25519) {
+    if (!secret_env.empty()) {
+      throw std::invalid_argument("venue '" + venue +
+                                  "': an Ed25519 transfer key has no transfer_api_secret_env; "
+                                  "name transfer_private_key_file or transfer_private_key_env");
+    }
+    if (key_env.empty() != (pem_file.empty() && pem_env.empty())) {
+      throw std::invalid_argument(
+          "venue '" + venue +
+          "': transfer_api_key_env and transfer_private_key_file (or _env) go together");
+    }
+  } else {
+    if (!pem_file.empty() || !pem_env.empty()) {
+      throw std::invalid_argument("venue '" + venue +
+                                  "': transfer_private_key_file and transfer_private_key_env "
+                                  "need transfer_key_type = \"ed25519\"");
+    }
+    if (key_env.empty() != secret_env.empty()) {
+      throw std::invalid_argument(
+          "venue '" + venue + "': transfer_api_key_env and transfer_api_secret_env go together");
+    }
   }
   if (key_env.empty() || dry_run) return s;
+  const auto unset = [&](const std::string& env) {
+    return std::invalid_argument("venue '" + venue + "': environment variable '" + env +
+                                 "' (the transfer key) is not set");
+  };
   const char* key = std::getenv(key_env.c_str());
-  const char* secret = std::getenv(secret_env.c_str());
-  if (key == nullptr || *key == '\0' || secret == nullptr || *secret == '\0') {
-    throw std::invalid_argument("venue '" + venue + "': environment variable '" +
-                                (key == nullptr || *key == '\0' ? key_env : secret_env) +
-                                "' (the transfer key) is not set");
-  }
+  if (key == nullptr || *key == '\0') throw unset(key_env);
   s.credentials.api_key = key;
+  if (ed25519) {
+    s.credentials.type = KeyType::Ed25519;
+    s.credentials.private_key_pem.value = load_ed25519_pem(
+        venue,
+        pem_file,
+        pem_env,
+        false,
+        "transfer_key_type = ed25519 needs transfer_private_key_file or transfer_private_key_env");
+    return s;
+  }
+  const char* secret = std::getenv(secret_env.c_str());
+  if (secret == nullptr || *secret == '\0') throw unset(secret_env);
   s.credentials.secret.value = secret;
   s.credentials.type = KeyType::Hmac;
   return s;
