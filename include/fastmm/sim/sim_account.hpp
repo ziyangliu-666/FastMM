@@ -172,9 +172,10 @@ class SimAccounts {
   }
 
   // An internal transfer between two accounts of one pool (Venue::transfer): `amount` of `asset`
-  // leaves `from`'s total and joins `to`'s at once. False, nothing moved, when either venue has no
-  // account or no row of the asset, the amount is not positive, or it is more than `from` has free.
-  // The rows are published with the next publish() of each venue.
+  // leaves `from`'s total and joins `to`'s at once; `to` starts a row of the asset when it has
+  // none. False, nothing moved, when either venue has no account, `from` has no row of the asset,
+  // the amount is not positive, or it is more than `from` has free. The rows are published with the
+  // next publish() of each venue.
   bool transfer(VenueId from, VenueId to, std::string_view asset, Notional amount) noexcept;
 
   // Money that enters (positive) or leaves the account other than by its trades: a deposit, a

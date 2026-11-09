@@ -45,7 +45,8 @@ SimAccounts::SimAccounts(const InstrumentTable& instruments,
     slot_of_venue_[a.venue.value] = static_cast<std::uint8_t>(n_slots_++);
   }
   inst_.resize(std::max<std::size_t>(n_slots_, 1) * n_inst_);
-  rows_.reserve(2 * instruments.size() * std::max<std::size_t>(n_slots_, 1) + 16);
+  // Room for every account to receive a few assets it starts without (transfer).
+  rows_.reserve(2 * instruments.size() * std::max<std::size_t>(n_slots_, 1) + 16 + 8 * n_slots_);
   for (std::uint8_t v = 0; v < kMaxVenues; ++v) {
     const std::uint8_t k = slot_of_venue_[v];
     if (k == kNoSlot) continue;
@@ -350,9 +351,19 @@ bool SimAccounts::transfer(VenueId from,
                            Notional amount) noexcept {
   if (from == to || amount.raw <= 0 || !enabled(from) || !enabled(to)) return false;
   const std::uint16_t a = find(from, asset);
-  const std::uint16_t b = find(to, asset);
-  if (a == kNone || b == kNone) return false;
+  if (a == kNone) return false;
   if (rows_[a].total + upnl(a) - rows_[a].locked < amount.raw) return false;
+  std::uint16_t b = find(to, asset);
+  if (b == kNone) {
+    // The receiver starts a row of the asset, as a venue's account does: within the capacity the
+    // constructor reserved, so nothing allocates.
+    if (rows_.size() >= rows_.capacity() || rows_.size() >= kNone) return false;
+    Row r;
+    r.venue = to;
+    r.asset = rows_[a].asset;
+    rows_.push_back(r);
+    b = static_cast<std::uint16_t>(rows_.size() - 1);
+  }
   rows_[a].total -= amount.raw;
   rows_[b].total += amount.raw;
   touch(a);

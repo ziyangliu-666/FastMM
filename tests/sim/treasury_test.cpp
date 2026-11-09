@@ -159,6 +159,23 @@ TEST_CASE("sim.treasury: an account transfers what it has free, and only within 
   CHECK(transport.accounts()->total(kMember, "USDT") == nt("40"));
 }
 
+TEST_CASE("sim.treasury: an account receives an asset it has no row of") {
+  InstrumentTable table = make_table();
+  SimClock clock{Timestamp{seconds(1'700'000'000).ns}};
+  SimTransportConfig tc;
+  REQUIRE(tc.pools.add(kMember, kPrimary));
+  tc.accounts = {SimAccountConfig{kPrimary, {SimBalance{FixedString<8>("BNB"), nt("5")}}},
+                 SimAccountConfig{kMember, {}}};
+  SimTransport transport(clock, table, tc);
+  CHECK(transport.transfer(kPrimary, kMember, "BNB", nt("2"), clock.now()) == TransferState::Done);
+  CHECK(transport.accounts()->total(kPrimary, "BNB") == nt("3"));
+  CHECK(transport.accounts()->total(kMember, "BNB") == nt("2"));
+  CHECK(transport.accounts()->free(kMember, "BNB") == nt("2"));
+  // ... and sends it on: the row and the next transfer are like any other.
+  CHECK(transport.transfer(kMember, kPrimary, "BNB", nt("2"), clock.now()) == TransferState::Done);
+  CHECK(transport.accounts()->total(kMember, "BNB") == nt("0"));
+}
+
 TEST_CASE("sim.treasury: the simulated venue refuses transfers and loses answers as told") {
   InstrumentTable table = make_table();
   SimClock clock{Timestamp{seconds(1'700'000'000).ns}};
