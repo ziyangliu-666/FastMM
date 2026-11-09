@@ -78,7 +78,7 @@ TreasuryThread::~TreasuryThread() {
 }
 
 void TreasuryThread::start() {
-  if ((pools_.empty() && planners_.empty()) || thread_.joinable()) return;
+  if ((pools_.empty() && planners_.empty() && !worker_) || thread_.joinable()) return;
   thread_ = std::thread([this] { run(); });
 }
 
@@ -86,7 +86,16 @@ Result<void, std::string> TreasuryThread::reload() {
   for (Pool& p : pools_) {
     if (auto r = p.treasury->open(); !r) return fail(r.error());
   }
+  if (worker_) return worker_->open();
   return {};
+}
+
+void TreasuryThread::set_lanes(std::unique_ptr<TransferWorker> worker,
+                               std::vector<std::unique_ptr<TreasuryPort>> ports,
+                               TransferWorker::Pull pull) {
+  worker_ = std::move(worker);
+  lane_ports_ = std::move(ports);
+  pull_ = std::move(pull);
 }
 
 void TreasuryThread::request_stop() noexcept {
@@ -102,9 +111,12 @@ void TreasuryThread::join() {
 }
 
 void TreasuryThread::step() {
+  const std::int64_t now = clock_();
+  if (worker_) worker_->step(now, pull_);
+  if (now < next_slow_ns_) return;
+  next_slow_ns_ = worker_ ? now + 1'000'000'000 : 0;
   rows_.clear();
   if (balances_) balances_(rows_);
-  const std::int64_t now = clock_();
   for (Pool& p : pools_) {
     if (stop_.load(std::memory_order_relaxed)) break;
     const TreasuryConfig& c = p.treasury->config();
@@ -146,8 +158,9 @@ void TreasuryThread::run() {
     lock.unlock();
     step();
     lock.lock();
-    cv_.wait_for(
-        lock, std::chrono::seconds(1), [this] { return stop_.load(std::memory_order_relaxed); });
+    // The lanes' worker looks every 50 ms; the treasuries and planners once a second (step).
+    const auto period = worker_ ? std::chrono::milliseconds(50) : std::chrono::milliseconds(1000);
+    cv_.wait_for(lock, period, [this] { return stop_.load(std::memory_order_relaxed); });
   }
 }
 

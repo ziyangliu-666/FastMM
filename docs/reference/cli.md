@@ -582,6 +582,9 @@ commands (one per datagram; the reply starts with ok or error)
   pool home SYM ACCOUNT [--free]           move the instrument's home to that account
                                            of its pool ([venues.<primary>.pool]) and pin
                                            it there; --free leaves it to the planner
+  pool sweep on|off|pause VENUE            the pool's sweep ([venues.<primary>.pool]
+                                           sweep): on, off, or paused for breaker_s
+  pool sweep SYM                           move the instrument's pieces home now
   flatten [--instrument SYM] [--max-slippage-bps N]  work the position off, reduce-only
   kill                                     trip the kill switch (quotes pulled, all
                                            orders cancelled; the position stays)
@@ -616,6 +619,7 @@ examples:
   fastmm-ctl --name mm flatten --max-slippage-bps 15
   fastmm-ctl --name mm reduce-only on --venue binance
   fastmm-ctl --name mm pool home BTCUSDT binance_b
+  fastmm-ctl --name mm pool sweep pause binance
   fastmm-ctl --gateway gw attachments
   fastmm-ctl --gateway gw pull --venue binance
   fastmm-ctl --gateway gw clear-kill

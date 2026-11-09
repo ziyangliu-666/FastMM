@@ -16,6 +16,9 @@
 //                     planners (core/pool_homes.hpp): each reads the engine's orders by instrument
 //                     (Engine::pool_load) and its moves reach the engine as
 //                     ControlCommand::PoolHome on the same ring, which the journal records.
+//                     And it runs the pools' transfer worker (core/transfer_worker.hpp): every
+//                     50 ms it takes the engine's lane intents (IEngineRunner::pop_transfer_intent)
+//                     and carries them out; its answers go to the engine on the same ring.
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/core/pool_homes.hpp"
@@ -23,6 +26,7 @@
 #include "fastmm/core/seqlock.hpp"
 #include "fastmm/core/status_segment.hpp"
 #include "fastmm/core/strong_id.hpp"
+#include "fastmm/core/transfer_worker.hpp"
 #include "fastmm/core/treasury.hpp"
 
 #include <atomic>
@@ -99,6 +103,12 @@ class TreasuryThread {
   // Before start(): the planners this thread runs on wall-clock time.
   void set_planners(std::vector<std::unique_ptr<HomePlanner>> planners, Load load, Emit emit);
   [[nodiscard]] std::size_t planners() const noexcept { return planners_.size(); }
+  // Before start(): the pools' transfer worker, the ports it carries transfers out through (owned
+  // here), and where it takes the engine's intents from (called on the thread).
+  void set_lanes(std::unique_ptr<TransferWorker> worker,
+                 std::vector<std::unique_ptr<TreasuryPort>> ports,
+                 TransferWorker::Pull pull);
+  [[nodiscard]] const TransferWorker* lanes() const noexcept { return worker_.get(); }
   // Homes the planners have moved or given (any thread).
   [[nodiscard]] std::uint64_t home_moves() const noexcept {
     return home_moves_.load(std::memory_order_relaxed);
@@ -128,6 +138,10 @@ class TreasuryThread {
 
   std::vector<Pool> pools_;
   std::vector<std::unique_ptr<HomePlanner>> planners_;
+  std::unique_ptr<TransferWorker> worker_;
+  std::vector<std::unique_ptr<TreasuryPort>> lane_ports_;
+  TransferWorker::Pull pull_;
+  std::int64_t next_slow_ns_ = 0;  // the treasuries' and planners' next pass (once a second)
   Load load_;
   Emit emit_;
   std::unique_ptr<PoolLoad> pool_load_;

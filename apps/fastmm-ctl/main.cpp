@@ -36,6 +36,7 @@ constexpr const char* kExamples =
     "  fastmm-ctl --name mm flatten --max-slippage-bps 15\n"
     "  fastmm-ctl --name mm reduce-only on --venue binance\n"
     "  fastmm-ctl --name mm pool home BTCUSDT binance_b\n"
+    "  fastmm-ctl --name mm pool sweep pause binance\n"
     "  fastmm-ctl --gateway gw attachments\n"
     "  fastmm-ctl --gateway gw pull --venue binance\n"
     "  fastmm-ctl --gateway gw clear-kill\n"

@@ -104,13 +104,16 @@ FEE_ASSETS = ("quote", "base", "other")
 CONTROL_COMMANDS = ("Stop", "PullQuotes", "ResumeQuotes", "TripKill", "ResetKill", "Reload",
                     "FlushStats", "RecalibrateTsc", "TripVenueKill", "Flatten", "SetLimits",
                     "Reconcile", "SetUnderlyingLimit", "TakeOver", "Transfer", "ResetLossBudget",
-                    "ReduceOnly", "PoolHome")
+                    "ReduceOnly", "PoolHome", "PoolSweep")
 # HomeSource (include/fastmm/core/pool_homes.hpp).
 HOME_SOURCES = ("operator", "planner", "strategy", "reconcile", "pin", "first", "spill")
 # ControlTransferMsg (include/fastmm/core/messages.hpp): TreasuryEventKind and TransferState.
-TREASURY_EVENTS = ("planned", "sent", "done", "failed", "timed_out", "reserve", "released")
+TREASURY_EVENTS = ("planned", "sent", "done", "failed", "timed_out", "reserve", "released",
+                   "request")
+# ControlCommand::PoolSweep's arg (include/fastmm/core/transfer_lane.hpp).
+SWEEP_ARGS = ("off", "on", "pause", "now")
 TRANSFER_STATES = ("pending", "done", "failed", "not_found", "unknown")
-ENGINE_TIMERS = {1: "max_param_age", 2: "ack sweep", 3: "flatten"}
+ENGINE_TIMERS = {1: "max_param_age", 2: "ack sweep", 3: "flatten", 7: "pool sweep"}
 
 
 def fill_fields(body: bytes) -> dict:
@@ -245,6 +248,15 @@ def decode_body(type_name: str, body: bytes, params=()) -> str:
                    f"venue_ref={fixed(57, 23)}")
             if body[5] & 1 and len(body) >= 96:  # kHeld: the engine holds the payout, by seq
                 out += f" held seq={u64(88)}"
+            if body[5] & 2:  # kLane: a pool's transfer lane
+                out += " lane"
+                if len(body) >= 102:
+                    code, http = struct.unpack_from("<iH", body, 96)
+                    if code or http:
+                        out += f" code={code} http={http}"
+        if cmd == "PoolSweep":
+            arg = u64(8)
+            out = f"command={cmd} {SWEEP_ARGS[arg] if arg < len(SWEEP_ARGS) else arg}"
         return out
     if type_name == "ParamUpdate":
         return param_update_fields(body, params)

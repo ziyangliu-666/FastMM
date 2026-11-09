@@ -1477,20 +1477,45 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   // Pool treasuries ([venues.<primary>.treasury]): their records reach the engine (and so the
   // journal) on a ring of their own, whose only producer is fm-treasury.
   // The home planners ([venues.<primary>.pool] plan_interval_s) run on the same thread and ring.
+  // The pools' sweeps ([venues.<primary>.pool] sweep) and their transfer worker run there too.
   std::vector<std::string> treasury_pools;
   std::vector<std::string> planner_pools;
+  std::vector<std::string> lane_pools;
   for (const VenueSection& v : cfg.venues) {
     if (v.treasury.enabled) treasury_pools.push_back(v.name);
     if (v.pool.configured && v.pool.plan_interval_s > 0) planner_pools.push_back(v.name);
+    if (!v.pool.configured || v.pool.sweep == "false") continue;
+    const VenueId primary = cfg.venue_id(v.name);
+    const bool key =
+        primary.value < slots.size() && slots[primary.value]->venue->caps().internal_transfer;
+    if (!key && !v.transfers.dry_run) {
+      if (v.pool.sweep == "true") {
+        std::fprintf(stderr,
+                     "%s: venues.%s.pool: sweep = true needs a connector that carries transfers "
+                     "out (transfer_api_key_env); set the key, sweep = \"auto\" or [venues.%s."
+                     "transfers] dry_run = true\n",
+                     prog,
+                     v.name.c_str(),
+                     v.name.c_str());
+        return kExitConfig;
+      }
+      FASTMM_LOG_WARN(
+          "[pool {}] sweep = \"auto\": no transfer key, so no sweep; pieces trade off "
+          "on their accounts",
+          v.name);
+      continue;
+    }
+    lane_pools.push_back(v.name);
   }
   std::unique_ptr<MsgRing> treasury_ring;
-  if (!treasury_pools.empty() || !planner_pools.empty()) {
+  if (!treasury_pools.empty() || !planner_pools.empty() || !lane_pools.empty()) {
     if (via_gateway || opts.dry_run) {
-      FASTMM_LOG_WARN("[venues.*.treasury], [venues.*.pool] planner: not run {}",
+      FASTMM_LOG_WARN("[venues.*.treasury], [venues.*.pool] planner and sweep: not run {}",
                       via_gateway ? "by a strategy attached to a gateway"
                                   : "in a dry run (no private sessions, no balances)");
       treasury_pools.clear();
       planner_pools.clear();
+      lane_pools.clear();
     } else {
       treasury_ring = std::make_unique<MsgRing>(1U << 16);
       if (!feed.add_ring(treasury_ring.get())) {
@@ -1694,6 +1719,14 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   deps.engine.await_reconcile = await_venues;
   deps.engine.pools = cfg.pool_plan();
   deps.engine.homes = pool_homes(cfg, instruments);
+  // A sweep runs only on the pools resolved above (a key, or a dry run of the lane).
+  for (std::size_t v = 0; v < deps.engine.homes.lane.size(); ++v) {
+    LaneConfig& lc = deps.engine.homes.lane[v];
+    const bool runs = std::any_of(lane_pools.begin(), lane_pools.end(), [&](const std::string& n) {
+      return cfg.venue_id(n).value == v;
+    });
+    lc.sweep = runs ? SweepMode::On : SweepMode::Off;
+  }
   for (const VenueSection& v : cfg.venues) {
     if (!v.pool_of.empty())
       FASTMM_LOG_INFO("venue {} is an account of pool {}: orders, no market data of its own",
@@ -1933,7 +1966,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   // (live/treasury_thread.hpp). The ledger of each is read now: a transfer an earlier process left
   // in flight is asked for before anything new is planned.
   std::unique_ptr<TreasuryThread> treasury;
-  if (!treasury_pools.empty() || !planner_pools.empty()) {
+  if (!treasury_pools.empty() || !planner_pools.empty() || !lane_pools.empty()) {
     std::vector<TreasuryThread::Pool> pools;
     const auto venue_of = [&slots](VenueId v) -> venues::Venue* {
       return v.value < slots.size() ? slots[v.value]->venue.get() : nullptr;
@@ -2021,6 +2054,45 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
             feed.notify();
             return true;
           });
+    }
+    if (!lane_pools.empty()) {
+      std::vector<LanePool> lanes;
+      std::vector<std::unique_ptr<TreasuryPort>> ports;
+      for (const std::string& name : lane_pools) {
+        const VenueId primary = cfg.venue_id(name);
+        LanePool lp;
+        lp.primary = primary;
+        lp.cfg = deps.engine.homes.lane_of(primary);
+        lp.members = deps.engine.pools.members(primary);
+        for (std::size_t k = 0; k < lp.members.size(); ++k)
+          lp.names[k] = cfg.venues[lp.members[k].value].name;
+        ports.push_back(std::make_unique<LiveTreasuryPort>(
+            primary, venue_of, refresh, treasury_ring.get(), [&feed] { feed.notify(); }));
+        lp.port = ports.back().get();
+        const LaneConfig& c = lp.cfg;
+        FASTMM_LOG_INFO(
+            "[transfers {}] sweep{}: delay {} ms, dust {} s, at most {} in flight, {}/min {}/h "
+            "{}/day, breaker {} s, ledger {}",
+            name,
+            c.dry_run ? " (dry run: journaled, nothing sent)" : "",
+            c.sweep_delay.ns / 1'000'000,
+            c.sweep_dust.ns / 1'000'000'000,
+            c.max_in_flight,
+            c.per_minute,
+            c.per_hour,
+            c.per_day,
+            c.breaker.ns / 1'000'000'000,
+            c.state_file);
+        lanes.push_back(std::move(lp));
+      }
+      auto worker = std::make_unique<TransferWorker>(std::move(lanes));
+      if (auto r = worker->open(); !r) {
+        std::fprintf(stderr, "%s: transfers: %s\n", prog, r.error().c_str());
+        return kExitConfig;
+      }
+      treasury->set_lanes(std::move(worker), std::move(ports), [&runner](LaneIntent& in) {
+        return runner->pop_transfer_intent(in);
+      });
     }
   }
 

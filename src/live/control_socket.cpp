@@ -50,6 +50,9 @@ constexpr std::string_view kUsage =
     "  pool home SYM ACCOUNT [--free]           move the instrument's home to that account\n"
     "                                           of its pool ([venues.<primary>.pool]) and pin\n"
     "                                           it there; --free leaves it to the planner\n"
+    "  pool sweep on|off|pause VENUE            the pool's sweep ([venues.<primary>.pool]\n"
+    "                                           sweep): on, off, or paused for breaker_s\n"
+    "  pool sweep SYM                           move the instrument's pieces home now\n"
     "  flatten [--instrument SYM] [--max-slippage-bps N]  work the position off, reduce-only\n"
     "  kill                                     trip the kill switch (quotes pulled, all\n"
     "                                           orders cancelled; the position stays)\n"
@@ -317,10 +320,31 @@ std::string control_command(std::string_view request, ControlPlane& plane) {
         0,
         std::string(verb) + " queued");
   }
+  if (verb == "pool" && !args.empty() && args[0] == "sweep") {
+    Scope scope;
+    std::uint64_t arg = kSweepNow;
+    std::string what;
+    if (args.size() == 3 && (args[1] == "on" || args[1] == "off" || args[1] == "pause")) {
+      VenueId venue = VenueId::invalid();
+      if (!plane.venue || !plane.venue(args[2], venue))
+        return error("no venue named '" + std::string(args[2]) + "'");
+      scope.venue = venue;
+      arg = args[1] == "on" ? kSweepOn : args[1] == "off" ? kSweepOff : kSweepPause;
+      what = "pool sweep " + std::string(args[1]) + " queued";
+    } else if (args.size() == 2) {
+      std::string err;
+      if (!find_instrument(plane, args[1], scope.instrument, err)) return error(err);
+      scope.venue = plane.instruments->get(scope.instrument).venue;
+      what = "pool sweep " + std::string(args[1]) + " queued";
+    } else {
+      return error("pool sweep takes on|off|pause VENUE, or SYM");
+    }
+    return submit_control(plane, ControlCommand::PoolSweep, scope, arg, what);
+  }
   if (verb == "pool") {
     const bool unpinned = args.size() == 4 && args[3] == "--free";
     if ((args.size() != 3 && !unpinned) || args[0] != "home")
-      return error("pool takes home SYM ACCOUNT [--free]");
+      return error("pool takes home SYM ACCOUNT [--free], or sweep");
     Scope scope;
     std::string err;
     if (!find_instrument(plane, args[1], scope.instrument, err)) return error(err);
