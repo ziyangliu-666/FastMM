@@ -1453,6 +1453,10 @@ class Context:
         """
         Like set_quotes with raw int prices and quantities (1e-8 scale), used as given.
         """
+    def sweeping(self, venue: typing.SupportsInt | typing.SupportsIndex = 0) -> bool:
+        """
+        The pool sweeps now ([venues.<primary>.pool] sweep): its pieces go home by internal transfer and its spot sells go to the home. False in a dry run, while its breaker is open and once the day's transfers are used.
+        """
     def venue_health(self, venue: typing.SupportsInt | typing.SupportsIndex = 0) -> VenueHealth:
         """
         Feed lag, order round trip and the feed-lag gate of a venue.

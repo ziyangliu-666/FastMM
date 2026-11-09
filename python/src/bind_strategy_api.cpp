@@ -1531,6 +1531,15 @@ void bind_strategy_api(py::module_& m) {
           py::arg("inst"),
           "Accounts other than the home that hold a tradable amount of the instrument.")
       .def(
+          "sweeping",
+          [](const ContextHandle& c, std::uint32_t venue) {
+            return c.engine().context().sweeping(venue_arg(venue));
+          },
+          py::arg("venue") = 0,
+          "The pool sweeps now ([venues.<primary>.pool] sweep): its pieces go home by internal "
+          "transfer and its spot sells go to the home. False in a dry run, while its breaker is "
+          "open and once the day's transfers are used.")
+      .def(
           "set_home",
           [](const ContextHandle& c, py::handle inst, std::uint32_t venue) {
             return c.engine().context().set_home(c.run->resolve(inst), venue_arg(venue));
