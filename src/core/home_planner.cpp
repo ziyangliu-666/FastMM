@@ -1,7 +1,6 @@
 #include "fastmm/core/pool_homes.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -10,18 +9,6 @@ namespace fastmm {
 
 namespace {
 constexpr std::uint16_t kNoSlot = 0xFFFF;
-constexpr double kHotQuantile = 0.99;
-constexpr double kMinGain = 1e-9;
-
-// The value at quantile q of `v` (sorted in place), interpolated between ranks as numpy's default.
-double quantile(std::vector<double>& v, double q) {
-  std::sort(v.begin(), v.end());
-  const double pos = q * static_cast<double>(v.size() - 1);
-  const auto lo = static_cast<std::size_t>(std::floor(pos));
-  const std::size_t hi = std::min(lo + 1, v.size() - 1);
-  const double frac = pos - static_cast<double>(lo);
-  return v[lo] + frac * (v[hi] - v[lo]);
-}
 }  // namespace
 
 HomePlanner::HomePlanner(VenueId primary, const PoolPlacement& cfg, std::span<const VenueId> pins)
@@ -91,28 +78,34 @@ std::vector<HomeMove> HomePlanner::plan(const PoolLoad& load) {
   const std::size_t n = slots_.size();
   const std::size_t accounts = load.members.size();
   if (filled_ == 0 || n == 0 || accounts < 2) return out;
-  const auto window = [&](std::size_t w) { return (head_ + capacity_ - filled_ + w) % capacity_; };
-  // The pool's busiest windows: those at or above the 99th percentile of the pool's totals.
-  std::vector<double> totals(filled_, 0.0);
-  for (std::size_t w = 0; w < filled_; ++w) {
-    const std::size_t at = window(w);
-    for (std::size_t s = 0; s < n; ++s) totals[w] += counts_[s * capacity_ + at];
-  }
-  std::vector<double> sorted = totals;
-  const double q = quantile(sorted, kHotQuantile);
-  std::vector<std::size_t> hot;
-  for (std::size_t w = 0; w < filled_; ++w) {
-    if (totals[w] >= q && totals[w] > 0.0) hot.push_back(window(w));
-  }
-  if (hot.empty()) return out;
-  const std::size_t h = hot.size();
-  std::vector<double> mx(n * h, 0.0);  // mx[s * h + k]: instrument s in hot window k
+  const std::size_t windows = filled_;
+  // x[s * windows + w]: instrument s's orders in window w, oldest first; tot[s]: their sum.
+  std::vector<double> x(n * windows, 0.0);
   std::vector<double> tot(n, 0.0);
+  double sum = 0.0;
   for (std::size_t s = 0; s < n; ++s) {
-    for (std::size_t k = 0; k < h; ++k) mx[s * h + k] = counts_[s * capacity_ + hot[k]];
-    for (std::size_t w = 0; w < filled_; ++w) tot[s] += counts_[s * capacity_ + window(w)];
+    for (std::size_t w = 0; w < windows; ++w) {
+      const double c = counts_[s * capacity_ + (head_ + capacity_ - filled_ + w) % capacity_];
+      x[s * windows + w] = c;
+      tot[s] += c;
+    }
+    sum += tot[s];
   }
-  // Each instrument's account (index in members; -1: no home) and each account's limit.
+  if (sum <= 0.0) return out;
+  std::array<double, PoolMembers::kMax> lim{};
+  double usable_lim = 0.0;
+  std::size_t usable = 0;
+  for (std::size_t a = 0; a < accounts; ++a) {
+    lim[a] = static_cast<double>(load.limit_10s[a] > 0 ? load.limit_10s[a] : kDefaultLimit);
+    if (!load.usable[a]) continue;
+    usable_lim += lim[a];
+    ++usable;
+  }
+  if (usable == 0) return out;
+  // The even level of an account's orders over the lookback in units of its limit: what each
+  // would carry if the pool's orders were split by limit.
+  const double even = sum / usable_lim;
+  // Each instrument's account (index in members; -1: no home), and each account's load by window.
   std::vector<int> at(n, -1);
   std::vector<bool> pinned_now(n, false);
   for (std::size_t j = 0; j < load.count; ++j) {
@@ -123,70 +116,46 @@ std::vector<HomeMove> HomePlanner::plan(const PoolLoad& load) {
       if (load.members[a] == load.home[j]) at[s] = static_cast<int>(a);
     }
   }
-  std::array<double, PoolMembers::kMax> lim{};
-  std::size_t usable = 0;
-  for (std::size_t a = 0; a < accounts; ++a) {
-    lim[a] = static_cast<double>(load.limit_10s[a] > 0 ? load.limit_10s[a] : kDefaultLimit);
-    usable += load.usable[a] ? 1U : 0U;
-  }
-  if (usable == 0) return out;
-  double sum = 0.0;
-  for (const double t : tot) sum += t;
-  if (sum <= 0.0) return out;
-  const double even = sum / static_cast<double>(usable);
-  std::vector<double> acc(accounts * h, 0.0);  // acc[a * h + k]
-  std::array<double, PoolMembers::kMax> day{};
-  std::array<double, PoolMembers::kMax> peak{};
+  std::vector<double> held(accounts * windows, 0.0);  // held[a * windows + w]
   const auto add = [&](std::size_t s, std::size_t a, double sign) {
-    for (std::size_t k = 0; k < h; ++k) acc[a * h + k] += sign * mx[s * h + k];
-    day[a] += sign * tot[s];
+    for (std::size_t w = 0; w < windows; ++w) held[a * windows + w] += sign * x[s * windows + w];
   };
-  const auto peak_of = [&](std::size_t a) {
-    double p = 0.0;
-    for (std::size_t k = 0; k < h; ++k) p = std::max(p, acc[a * h + k]);
-    return p;
-  };
+  std::array<double, PoolMembers::kMax> share{};  // each account's orders over its limit, summed
   for (std::size_t s = 0; s < n; ++s) {
-    if (at[s] >= 0) add(s, static_cast<std::size_t>(at[s]), 1.0);
+    if (at[s] < 0) continue;
+    const auto a = static_cast<std::size_t>(at[s]);
+    add(s, a, 1.0);
+    share[a] += tot[s] / lim[a];
   }
-  for (std::size_t a = 0; a < accounts; ++a) peak[a] = peak_of(a);
-  // The cost with peaks pk and daily loads dy.
-  const auto cost_of = [&](const std::array<double, PoolMembers::kMax>& pk,
-                           const std::array<double, PoolMembers::kMax>& dy) {
-    double p = 0.0;
-    double d = 0.0;
-    for (std::size_t a = 0; a < accounts; ++a) {
-      p = std::max(p, pk[a] / lim[a]);
-      d = std::max(d, dy[a] / even);
-    }
-    return p + d;
+  const auto phi = [](double orders, double limit) {
+    const double over = std::max(0.0, orders / limit - kShare);
+    return over * over;
   };
-  // The cost once instrument s leaves account `from` (-1: none) for account `to`.
-  const auto cost_moved = [&](std::size_t s, int from, std::size_t to) {
-    std::array<double, PoolMembers::kMax> pk = peak;
-    std::array<double, PoolMembers::kMax> dy = day;
-    if (from >= 0) {
-      const auto f = static_cast<std::size_t>(from);
-      double p = 0.0;
-      for (std::size_t k = 0; k < h; ++k) p = std::max(p, acc[f * h + k] - mx[s * h + k]);
-      pk[f] = p;
-      dy[f] -= tot[s];
+  const double bal_weight = kBalance * static_cast<double>(windows) / static_cast<double>(usable);
+  const auto bal = [&](double t) {
+    const double r = t / even;
+    return bal_weight * r * r;
+  };
+  // The change in cost when instrument s joins account a (sign 1) or leaves it (sign -1).
+  const auto delta = [&](std::size_t s, std::size_t a, double sign) {
+    double d = bal(share[a] + sign * tot[s] / lim[a]) - bal(share[a]);
+    for (std::size_t w = 0; w < windows; ++w) {
+      const double xs = x[s * windows + w];
+      if (xs == 0.0) continue;
+      const double h = held[a * windows + w];
+      d += phi(h + sign * xs, lim[a]) - phi(h, lim[a]);
     }
-    double p = 0.0;
-    for (std::size_t k = 0; k < h; ++k) p = std::max(p, acc[to * h + k] + mx[s * h + k]);
-    pk[to] = p;
-    dy[to] += tot[s];
-    return cost_of(pk, dy);
+    return d;
   };
   const auto pinned = [&](std::size_t s) { return pinned_now[s] || pin_[slots_[s].value].valid(); };
   const auto apply = [&](std::size_t s, std::size_t to) {
     const int from = at[s];
     if (from >= 0) {
       add(s, static_cast<std::size_t>(from), -1.0);
-      peak[static_cast<std::size_t>(from)] = peak_of(static_cast<std::size_t>(from));
+      share[static_cast<std::size_t>(from)] -= tot[s] / lim[static_cast<std::size_t>(from)];
     }
     add(s, to, 1.0);
-    peak[to] = peak_of(to);
+    share[to] += tot[s] / lim[to];
     at[s] = static_cast<int>(to);
     out.push_back(HomeMove{slots_[s],
                            from >= 0 ? load.members[static_cast<std::size_t>(from)] : VenueId{},
@@ -199,7 +168,7 @@ std::vector<HomeMove> HomePlanner::plan(const PoolLoad& load) {
     double best_cost = 0.0;
     for (std::size_t a = 0; a < accounts; ++a) {
       if (!load.usable[a]) continue;
-      const double c = cost_moved(s, -1, a);
+      const double c = delta(s, a, 1.0);
       if (best == accounts || c < best_cost) {
         best = a;
         best_cost = c;
@@ -209,30 +178,24 @@ std::vector<HomeMove> HomePlanner::plan(const PoolLoad& load) {
     apply(s, best);
     ++stats_.assigned;
   }
-  // Moves: one instrument off the worst account at a time, where that lowers the cost.
+  // Moves: each time the instrument and account that lower the cost most, by at least kMinGain
+  // per window.
+  const double min_gain = kMinGain * static_cast<double>(windows);
   for (std::uint32_t m = 0; m < cfg_.plan_max_moves; ++m) {
-    const double c0 = cost_of(peak, day);
-    std::size_t worst = 0;
-    double worst_score = -1.0;
-    for (std::size_t a = 0; a < accounts; ++a) {
-      const double score = peak[a] / lim[a] + day[a] / even;
-      if (score > worst_score) {
-        worst = a;
-        worst_score = score;
-      }
-    }
     std::size_t best_s = n;
     std::size_t best_to = accounts;
-    double best_cost = c0 - kMinGain;
+    double best_gain = min_gain;
     for (std::size_t s = 0; s < n; ++s) {
-      if (at[s] != static_cast<int>(worst) || tot[s] <= 0.0 || pinned(s)) continue;
+      if (at[s] < 0 || tot[s] <= 0.0 || pinned(s)) continue;
+      const auto from = static_cast<std::size_t>(at[s]);
+      const double leave = delta(s, from, -1.0);
       for (std::size_t a = 0; a < accounts; ++a) {
-        if (a == worst || !load.usable[a]) continue;
-        const double c = cost_moved(s, static_cast<int>(worst), a);
-        if (c < best_cost) {
+        if (a == from || !load.usable[a]) continue;
+        const double gain = -(leave + delta(s, a, 1.0));
+        if (gain > best_gain) {
           best_s = s;
           best_to = a;
-          best_cost = c;
+          best_gain = gain;
         }
       }
     }
@@ -240,7 +203,12 @@ std::vector<HomeMove> HomePlanner::plan(const PoolLoad& load) {
     apply(best_s, best_to);
     ++stats_.moves;
   }
-  stats_.last_cost = cost_of(peak, day);
+  double cost = 0.0;
+  for (std::size_t a = 0; a < accounts; ++a) {
+    cost += bal(share[a]);
+    for (std::size_t w = 0; w < windows; ++w) cost += phi(held[a * windows + w], lim[a]);
+  }
+  stats_.last_cost = cost / static_cast<double>(windows);
   return out;
 }
 

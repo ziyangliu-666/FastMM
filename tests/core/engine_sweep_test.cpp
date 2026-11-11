@@ -513,6 +513,25 @@ TEST_CASE("core.engine sweep: a sweeping pool sells from the home and sizes agai
   CHECK(r.transport.news().back()->hdr.venue == kB);
 }
 
+TEST_CASE("core.engine sweep: the planner counts the orders the home carries") {
+  // Home placement: every order. Balance placement with a sweep: the spot sells only, since the
+  // buys go wherever there is room.
+  for (const Placement placement : {Placement::Home, Placement::Balance}) {
+    EngineConfig cfg = make_config();
+    cfg.homes.pool[kA.value].placement = placement;
+    Rig r(cfg);
+    r.pool("0.1", "0");
+    REQUIRE(r.sell("0.05"));
+    REQUIRE(
+        r.engine->send_order(NewOrderRequest::limit(kBtc, Side::Buy, px("49000"), qt("0.001"))));
+    PoolLoad load;
+    r.engine->pool_load(kA, load);
+    REQUIRE(load.count == 2);
+    CHECK(load.instrument[0] == kBtc);
+    CHECK(load.orders[0] == (placement == Placement::Home ? 2U : 1U));
+  }
+}
+
 TEST_CASE("core.engine sweep: a piece's resting sell moves home at its next reprice") {
   Rig r(make_config());
   r.pool("0.1", "0.05");

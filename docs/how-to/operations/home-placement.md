@@ -23,7 +23,7 @@ placement = "home"
 homes = { BTCUSDT = "binance_b" }   # optional pins
 ```
 
-The other keys ([reference](../../reference/configuration.md#venuespool)) have working defaults: `reduce_accounts = 1`, `spill = "never"` and a planner that moves at most 3 homes an hour. Accounts are venue ids in the strategy API, in the order of the `[venues.*]` tables; `ctx.pool(venue)` lists a pool's, `ctx.venue_name(id)` names one.
+The other keys ([reference](../../reference/configuration.md#venuespool)) have working defaults: `reduce_accounts = 1`, `spill = "never"` and a planner that looks every 30 s and moves at most 3 homes at a time. Accounts are venue ids in the strategy API, in the order of the `[venues.*]` tables; `ctx.pool(venue)` lists a pool's, `ctx.venue_name(id)` names one.
 
 Each home buys with its own quote balance; a treasury with `targets = "demand"` keeps each account funded for its homes ([Fund each account of a pool](fund-a-pool.md)).
 
@@ -62,7 +62,9 @@ With `"flat"`, when the old home's link is back, the adding orders left on it ar
 
 With `placement = "home"` a home change cancels the instrument's adding orders on every other account; the strategy's next quotes go to the new home. What the old home holds becomes a piece and drains through the reducing orders.
 
-The planner keeps the orders each instrument sent per 10 s window over the last `plan_lookback_h`. Each plan it first gives a home to each instrument that has orders and none, then moves one instrument at a time off the account with the heaviest load, where that lowers the busiest account's share of the pool's busiest 1% of windows plus its share of all orders, up to `plan_max_moves` instruments. Pins stay.
+The planner keeps, per 10 s window over the last `plan_lookback_h`, the orders of each instrument that its home has to carry: all of them with `placement = "home"`, the spot sells where a pool with `placement = "balance"` sweeps (its buys go wherever there is room). Two things cost: an account whose homes take more than half its 10 s limit in a window, by the square of the excess, because those orders cannot go elsewhere and the account must keep room for those that can; and accounts whose shares of the homes' orders over the lookback are uneven, so that a burst, which lifts every instrument at once, lands evenly. Each plan first gives a home to each instrument that has orders and none, where it costs least, then makes up to `plan_max_moves` moves, each the instrument and account that lower the cost most, while each lowers it by a set minimum. Pins stay. An even pool sees few moves; when the load shifts, as at an exchange's open, the busy account's hottest instruments move off within a minute or two.
+
+A reducing order cannot spill the way an adding one does: the base it sells is on the home. Moving the home is how it spills, which with `sweep = true` takes the position along in one transfer.
 
 Every change is in the journal as a `PoolHome` control: a replay makes the same changes at the same points, and a backtest runs the planner on simulated time. A restarted session starts again from the pins and the reconciliation, and its planner from an empty lookback.
 

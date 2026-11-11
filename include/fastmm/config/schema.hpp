@@ -598,13 +598,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      "plan_interval_s",
      KeyType::Int,
      false,
-     "how often the planner moves homes to spread the accounts' order load, s; 0 = no planner "
-     "(default 3600)"},
+     "how often the planner moves homes to spread the orders the homes carry over the accounts' "
+     "10 s windows, s; 0 = no planner (default 30)"},
     {"venues.*.pool",
      "plan_lookback_h",
      KeyType::Float,
      false,
-     "hours of the engine's own orders the planner plans from (default 3)"},
+     "hours of the engine's own orders the planner plans from (default 1)"},
     {"venues.*.pool",
      "plan_max_moves",
      KeyType::Int,

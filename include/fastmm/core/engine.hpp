@@ -312,6 +312,16 @@ class Engine {
         sweep_cells_ = std::make_unique<SweepCells>();
         lane_out_ = std::make_unique<SpscRing<LaneIntent, kLaneRing>>();
       }
+      // The orders the planner counts are those a home carries: every order with placement =
+      // "home", a spot sell where a balance-placed pool sweeps, and every order in the observe
+      // mode (what home placement would carry).
+      for (const Instrument& inst : instruments_) {
+        if (inst.id.value >= kMaxInstruments || !cfg_.pools.pooled(inst.venue)) continue;
+        const bool swept_sells = !cfg_.homes.of(inst.venue).homes() &&
+                                 inst.venue.value < kMaxVenues && lanes_[inst.venue.value];
+        home_load_[inst.id.value] =
+            swept_sells ? (inst.is_derivative() ? 0 : kLoadSell) : (kLoadBuy | kLoadSell);
+      }
     }
   }
   Engine(const Engine&) = delete;
@@ -4155,7 +4165,7 @@ class Engine {
     queue_out(m.hdr);
     ++stats_.orders_sent;
     note_sent_order(account);
-    note_inst_order(req.instrument);
+    note_inst_order(req.instrument, req.side);
     if (FASTMM_UNLIKELY(capacity_on_)) {
       capacity_->on_send(account,
                          inst.venue,
@@ -4537,9 +4547,12 @@ class Engine {
     Qty& h = (*held_)[id.value][pool_index(primary, account)];
     h = side == Side::Buy ? h + qty : h - qty;
   }
-  // One more new order or replace of the instrument (pool_load).
-  FASTMM_FORCE_INLINE void note_inst_order(InstrumentId id) noexcept {
-    if (FASTMM_LIKELY(!homes_on_) || id.value >= kMaxInstruments) return;
+  // One more new order or replace of the instrument on `side`, counted for the planner
+  // (pool_load) when its home carries that side (home_load_).
+  FASTMM_FORCE_INLINE void note_inst_order(InstrumentId id, Side side) noexcept {
+    if (FASTMM_LIKELY(!homes_on_) || id.value >= kMaxInstruments ||
+        (home_load_[id.value] & (side == Side::Sell ? kLoadSell : kLoadBuy)) == 0)
+      return;
     std::atomic<std::uint64_t>& c = inst_orders_[id.value];
     c.store(c.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
   }
@@ -5109,7 +5122,7 @@ class Engine {
     queue_out(m.hdr);
     ++stats_.replaces_sent;
     note_sent_order(o.venue);
-    note_inst_order(o.instrument);
+    note_inst_order(o.instrument, o.side);
     if (FASTMM_UNLIKELY(capacity_on_)) {
       capacity_->on_send(
           o.venue, inst.venue, o.instrument, o.side, inst.notional(px, qty).to_double(), now.ns);
@@ -6205,8 +6218,12 @@ class Engine {
   // moves (fastmm-ctl pool home without --free); and the copy pool_load reads.
   std::array<bool, kMaxInstruments> pinned_{};
   std::array<std::atomic<bool>, kMaxInstruments> pinned_pub_{};
-  // New orders and replaces by instrument since the start, for the planner (any thread).
+  // New orders and replaces by instrument since the start, of the sides its home carries
+  // (home_load_: kLoadBuy, kLoadSell), for the planner (any thread).
   std::array<std::atomic<std::uint64_t>, kMaxInstruments> inst_orders_{};
+  static constexpr std::uint8_t kLoadBuy = 1;
+  static constexpr std::uint8_t kLoadSell = 2;
+  std::array<std::uint8_t, kMaxInstruments> home_load_{};
   // Funding needs by instrument (set_funding_need; raw Notional), for pool_funding (any thread).
   std::array<std::atomic<std::int64_t>, kMaxInstruments> need_pub_{};
   // The payout a pool treasury holds (on_transfer), by the pool's primary, and the copy

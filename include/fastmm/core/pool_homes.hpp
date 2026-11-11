@@ -21,16 +21,23 @@
 //                  the payout it holds (any thread; core/treasury.hpp)
 //   HomePlanner    the planner: pure and deterministic, off the hot path
 //
-// The planner. Every 10 s it takes the orders each instrument sent (new orders and replaces) as
-// one window, and keeps plan_lookback of them. Every plan_interval it starts from the current
-// homes, gives a home to each instrument with orders and none, and then moves at most
-// plan_max_moves instruments, each time the one off the worst account that lowers the cost most:
-//   cost = max over accounts of (its peak in the pool's busiest 1% of windows / its 10 s limit)
-//        + max over accounts of (its share of the orders / an even share)
-// where an account's load is the orders of the instruments it is home to. Pinned instruments
-// ([venues.<primary>.pool] homes, the operator's moves) never move; an account that is not usable
-// takes none. First homes are given on top of plan_max_moves. A move
-// costs nothing structural: the old home stops adding, and its part drains.
+// The planner. Every 10 s it takes the orders each instrument sent that its home carries (new
+// orders and replaces: all of them with placement = "home" or in the observe mode, the spot sells
+// where a balance-placed pool sweeps) as one window, and keeps plan_lookback of them. An account's
+// load in a window is the orders of the instruments it is home to, u = load / its 10 s limit, its
+// share r = its orders over the lookback / its limit, against what it would carry if the pool's
+// orders were split by limit, and with W windows and A usable accounts
+//   cost = sum over the windows and accounts of max(0, u - 1/2)^2  +  kBalance W / A sum of r^2
+// The first term is what binds: a home's orders cannot go elsewhere, so an account should keep
+// half its window for the orders that can. The second keeps the shares even while nothing binds,
+// so that a burst, which lifts every instrument at once, lands evenly. Every plan_interval the
+// planner starts from the current homes, gives a home to each instrument with orders and none
+// where it costs least, then makes at most plan_max_moves moves, each the one instrument and
+// account that lowers the cost most, while that lowers it by more than kMinGain per window.
+// Pinned instruments ([venues.<primary>.pool] homes, the operator's moves) never move; an account
+// that is not usable takes none. First homes are given on top of plan_max_moves. A move costs
+// little: the old home stops adding, and its part drains (or the sweep carries it in one
+// transfer), so the planner follows the load as it shifts, the open's within a minute.
 #include "fastmm/core/account_pool.hpp"
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/instrument.hpp"
@@ -141,9 +148,9 @@ struct PoolPlacement {
   // is worked off before the home's part is offered.
   std::uint8_t reduce_accounts = 1;
   HomeSpill spill = HomeSpill::Never;
-  double spill_at = 0.8;                    // spill = "busy": the share of the 10 s window
-  Duration plan_interval = seconds(3600);   // zero: no planner
-  Duration plan_lookback = seconds(10800);  // 3 h
+  double spill_at = 0.8;                   // spill = "busy": the share of the 10 s window
+  Duration plan_interval = seconds(30);    // zero: no planner
+  Duration plan_lookback = seconds(3600);  // 1 h
   std::uint32_t plan_max_moves = 3;
 
   [[nodiscard]] bool homes() const noexcept { return placement == Placement::Home; }
@@ -179,9 +186,10 @@ struct PoolLoad {
   static constexpr std::size_t kMax = kMaxInstruments;
   std::uint32_t count = 0;
   std::array<InstrumentId, kMax> instrument{};
-  std::array<std::uint64_t, kMax> orders{};  // new orders and replaces since the start
-  std::array<VenueId, kMax> home{};          // invalid: none yet
-  std::array<bool, kMax> pinned{};           // a pin or an operator's move: not moved
+  // New orders and replaces since the start, of the sides the instrument's home carries.
+  std::array<std::uint64_t, kMax> orders{};
+  std::array<VenueId, kMax> home{};  // invalid: none yet
+  std::array<bool, kMax> pinned{};   // a pin or an operator's move: not moved
   PoolMembers members;
   // Each account's 10 s order limit as its connector published it (0: not known), and whether
   // it is usable (order link live, kill switch not engaged), by index in `members`.
@@ -219,13 +227,19 @@ struct HomePlannerStats {
   std::uint64_t plans = 0;
   std::uint64_t moves = 0;     // homes changed, first homes not counted
   std::uint64_t assigned = 0;  // first homes given
-  double last_cost = 0.0;      // the cost after the last plan
+  double last_cost = 0.0;      // the cost per window after the last plan
 };
 
 class HomePlanner {
  public:
   static constexpr std::int64_t kWindowNs = 10'000'000'000;  // one window: 10 s
   static constexpr std::int64_t kDefaultLimit = 100;         // a 10 s limit not published
+  // The share of an account's 10 s window its homes' orders may take before they cost.
+  static constexpr double kShare = 0.5;
+  // The weight, per window, of the accounts' shares of the lookback's orders against an even split.
+  static constexpr double kBalance = 3e-3;
+  // A move is made when it lowers the cost by more than this per window of the lookback.
+  static constexpr double kMinGain = 1e-4;
 
   // `pins`: by instrument id, the pinned home (invalid: free to move).
   HomePlanner(VenueId primary, const PoolPlacement& cfg, std::span<const VenueId> pins = {});

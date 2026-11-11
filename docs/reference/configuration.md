@@ -186,8 +186,8 @@ Where a pool keeps each instrument's position ([Keep each position on one accoun
 | `reduce_accounts` | integer |  | accounts that may carry reducing orders of one instrument and side at once; 1 offers a piece alone until it is gone (default 1) |
 | `spill` | string |  | "never": an order for a home that is down is refused HomeUnavailable; "flat": an instrument flat over the pool and not pinned moves to the usable account with the most order window first; "busy": a spot order that adds goes to the account the balance routing picks when its home is down, past spill_at of its 10 s window, short of the balance or priced out by [capacity], and the home stays (default "never") |
 | `spill_at` | number |  | spill = "busy": the share of the home's 10 s order window, as its connector admits it, from which adding orders go to another account (default 0.8) |
-| `plan_interval_s` | integer |  | how often the planner moves homes to spread the accounts' order load, s; 0 = no planner (default 3600) |
-| `plan_lookback_h` | number |  | hours of the engine's own orders the planner plans from (default 3) |
+| `plan_interval_s` | integer |  | how often the planner moves homes to spread the orders the homes carry over the accounts' 10 s windows, s; 0 = no planner (default 30) |
+| `plan_lookback_h` | number |  | hours of the engine's own orders the planner plans from (default 1) |
 | `plan_max_moves` | integer |  | instruments the planner moves at most per plan (default 3) |
 | `homes` | table |  | { <symbol> = "<account>", ... }: pinned homes the planner and a spill never move (default none) |
 | `sweep` | any |  | true: the engine moves a spot instrument's free base on another account of the pool to its home by internal transfer, and sends reducing orders to the home; "auto": true when the primary's connector has a transfer key (default false) |
@@ -199,7 +199,7 @@ Where a pool keeps each instrument's position ([Keep each position on one accoun
 ```toml
 [venues.binance.pool]
 placement = "home"
-plan_interval_s = 3600
+plan_interval_s = 30
 homes = { BTCUSDT = "binance_b" }
 ```
 
