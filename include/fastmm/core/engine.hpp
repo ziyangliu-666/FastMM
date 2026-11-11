@@ -4661,11 +4661,14 @@ class Engine {
         SweepCell& cell = (*sweep_cells_)[id.value][k];
         const std::int64_t total = balances_->base_total(id, from);
         if (total == BalanceBook::kUnreported) continue;
-        if (total != cell.total) {
+        const std::int64_t free = balances_->free_of(from, inst.base.view());
+        // The rest is counted from the last change of either: an amount a cancel just unlocked is
+        // free on the user stream before the venue's transfers can take it (Binance -9000).
+        if (total != cell.total || free != cell.free) {
           cell.total = total;
+          cell.free = free;
           cell.changed = now_;
         }
-        const std::int64_t free = balances_->free_of(from, inst.base.view());
         if (free == BalanceBook::kUnreported || free <= 0 || now_ < cell.retry) continue;
         if (lc.dry_run && cell.planned == total) continue;
         const Duration age = now_ - cell.changed;
@@ -4838,7 +4841,8 @@ class Engine {
         }
         const bool rate = m.http_status == 429 || m.code == -1003;
         // Binance -9000: the payer has less free than asked, with the engine's hold in place.
-        if (lane.note_asset_refusal(t->asset.view(), m.code == -9000)) {
+        const bool short_balance = m.code == -9000;
+        if (lane.note_asset_refusal(t->asset.view(), short_balance)) {
           FASTMM_LOG_ERROR(
               "transfers of {} refused {} times in a row for want of balance: the "
               "pool leaves its pieces to trade off for the session",
@@ -4853,7 +4857,8 @@ class Engine {
                         m.code,
                         m.http_status);
         lane.close(*t);
-        if (lane.note_failure(now_, rate)) on_lane_trip(lane);
+        if (short_balance ? lane.note_short(now_) : lane.note_failure(now_, rate))
+          on_lane_trip(lane);
         break;
       }
       default:
@@ -6229,6 +6234,7 @@ class Engine {
   // and since when, a refused transfer's wait, and (dry run) the total it last planned from.
   struct SweepCell {
     std::int64_t total = BalanceBook::kUnreported;
+    std::int64_t free = BalanceBook::kUnreported;
     Timestamp changed{};
     Timestamp retry{};
     std::int64_t planned = BalanceBook::kUnreported;

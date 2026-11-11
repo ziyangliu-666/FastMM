@@ -627,7 +627,8 @@ inline constexpr KeySpec kConfigSchema[] = {
      "sweep_delay_ms",
      KeyType::Int,
      false,
-     "a piece is swept once its holding has not changed for this long, ms (default 3000)"},
+     "a piece is swept once its holding and the free part of it have not changed for this long, "
+     "ms (default 3000)"},
     {"venues.*.pool",
      "sweep_dust_s",
      KeyType::Int,
@@ -670,8 +671,9 @@ inline constexpr KeySpec kConfigSchema[] = {
      "breaker_s",
      KeyType::Int,
      false,
-     "the sweep pauses this long after 5 failures or 3 unknown answers in 10 minutes or a "
-     "rate-limit answer; a second trip turns it off until fastmm-ctl pool sweep on, s (default "
+     "the sweep pauses this long after 5 failures, 3 unknown answers or 10 refusals for want of "
+     "balance in 10 minutes, or a rate-limit answer; a second trip turns it off until fastmm-ctl "
+     "pool sweep on, s (default "
      "900)"},
     {"venues.*.transfers",
      "timeout_s",

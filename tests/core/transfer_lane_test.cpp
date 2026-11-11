@@ -112,6 +112,24 @@ TEST_CASE("core.transfer_lane: the breaker trips, resumes once by itself, then s
   CHECK(lane.breaker(at(9004 + 900)) == BreakerState::Closed);
 }
 
+TEST_CASE("core.transfer_lane: refusals for want of balance count apart from failures") {
+  LaneConfig c;
+  c.breaker = seconds(900);
+  TransferLane lane(VenueId{0}, c);
+  // Nine within ten minutes, with four failures besides: no trip.
+  for (int k = 0; k < 9; ++k) CHECK_FALSE(lane.note_short(at(k)));
+  for (int k = 0; k < 4; ++k) CHECK_FALSE(lane.note_failure(at(10 + k), false));
+  CHECK(lane.breaker(at(20)) == BreakerState::Closed);
+  // The tenth trips it: the engine's estimates are off across assets.
+  CHECK(lane.note_short(at(21)));
+  CHECK(lane.breaker(at(22)) == BreakerState::Paused);
+  CHECK(lane.breaker(at(21 + 900)) == BreakerState::Closed);
+  // The trip cleared the count; ten spread over more than ten minutes do not trip it.
+  for (int k = 0; k < 10; ++k) CHECK_FALSE(lane.note_short(at(1000 + 70 * k)));
+  CHECK(lane.breaker(at(2000)) == BreakerState::Closed);
+  CHECK(lane.stats().trips == 1);
+}
+
 TEST_CASE("core.transfer_lane: three refusals for want of balance in a row block an asset") {
   TransferLane lane(VenueId{0}, LaneConfig{});
   CHECK_FALSE(lane.note_asset_refusal("SOL", true));

@@ -191,7 +191,7 @@ Where a pool keeps each instrument's position ([Keep each position on one accoun
 | `plan_max_moves` | integer |  | instruments the planner moves at most per plan (default 3) |
 | `homes` | table |  | { <symbol> = "<account>", ... }: pinned homes the planner and a spill never move (default none) |
 | `sweep` | any |  | true: the engine moves a spot instrument's free base on another account of the pool to its home by internal transfer, and sends reducing orders to the home; "auto": true when the primary's connector has a transfer key (default false) |
-| `sweep_delay_ms` | integer |  | a piece is swept once its holding has not changed for this long, ms (default 3000) |
+| `sweep_delay_ms` | integer |  | a piece is swept once its holding and the free part of it have not changed for this long, ms (default 3000) |
 | `sweep_dust_s` | integer |  | an amount below the tradable minimum is swept after this long, or with the delay when the home holds a tradable amount, s (default 3600) |
 | `sweep_retry_s` | integer |  | after a refused transfer the payer's asset waits this long, s (default 30) |
 <!-- END config-keys -->
@@ -216,7 +216,7 @@ The budget and breaker of the internal transfers a pool's sweep makes (`sweep` a
 | `per_minute` | integer |  | transfers created in any minute (default 20) |
 | `per_hour` | integer |  | transfers created in any hour (default 300) |
 | `per_day` | integer |  | transfers created in any 24 h; once used, pieces trade off on their accounts (default 3000) |
-| `breaker_s` | integer |  | the sweep pauses this long after 5 failures or 3 unknown answers in 10 minutes or a rate-limit answer; a second trip turns it off until fastmm-ctl pool sweep on, s (default 900) |
+| `breaker_s` | integer |  | the sweep pauses this long after 5 failures, 3 unknown answers or 10 refusals for want of balance in 10 minutes, or a rate-limit answer; a second trip turns it off until fastmm-ctl pool sweep on, s (default 900) |
 | `timeout_s` | integer |  | an unresolved transfer this old is reported late, and one the venue has no record of fails, s (default 60) |
 | `status_interval_s` | integer |  | a transfer not confirmed by both accounts' flows is asked for this often, s (default 10) |
 | `dry_run` | boolean |  | journal and count the transfers the sweep would make; hold and send nothing, and route as without the sweep (default false) |

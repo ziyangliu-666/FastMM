@@ -32,7 +32,7 @@ To see what it would do first, set `dry_run = true` in `[venues.binance.transfer
 
 | Holding on an account other than the home | Moved |
 |---|---|
-| a tradable amount, unchanged for `sweep_delay_ms` | at once, the largest first within the budget |
+| a tradable free amount, unchanged for `sweep_delay_ms` (a fill or a cancel starts the wait again: Binance refuses to transfer an amount it has just unlocked) | at once, the largest first within the budget |
 | below the tradable minimum (dust) | after `sweep_dust_s`, or with the delay when the home holds a tradable amount |
 | locked by a resting order | not moved; the order's next reprice is a cancel and a new order at the home |
 
@@ -46,7 +46,7 @@ While the pool sweeps, `ctx.sweeping(venue)` is true and every spot sell the rou
 |---|---|
 | a refusal | the hold goes back; that account and asset wait `sweep_retry_s` |
 | three refusals of one asset in a row for want of balance | the asset is not swept for the rest of the session |
-| 5 failures or 3 lost answers in 10 minutes, or a rate-limit answer | the sweep pauses for `breaker_s`; a second trip stops it until `fastmm-ctl pool sweep on` |
+| 5 failures, 3 lost answers or 10 refusals for want of balance in 10 minutes, or a rate-limit answer | the sweep pauses for `breaker_s`; a second trip stops it until `fastmm-ctl pool sweep on` |
 | `per_day` used | no new transfers until the day's window has room |
 | a transfer unresolved after `timeout_s` | logged and counted as late; it stays held while the venue's history is asked for it |
 

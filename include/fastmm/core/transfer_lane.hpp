@@ -26,12 +26,20 @@
 // home holds a tradable amount it can be sold with. What open orders lock stays. The plan
 // (plan_sweeps) takes the largest pieces first within the budget, one transfer per asset.
 //
+// A piece rests from the last change of the payer's holding or of its free part: a cancel that
+// unlocks an amount changes only the free part, and Binance refuses a transfer of it (-9000) for a
+// moment after its user stream reports it free (live 2026-11-11: refused 40 to 250 ms after the
+// cancel, taken 2.9 s and more after it).
+//
 // The budget: transfers in any minute, hour and day (per_minute, per_hour, per_day), and at most
-// max_in_flight unresolved. The breaker: five failures or three unknown answers within ten minutes,
-// or one rate-limit answer (HTTP 429, Binance -1003), pause the sweep for breaker_s; it resumes by
-// itself once, and after a second trip stays off until the operator turns it on. Three refusals of
-// one asset in a row for want of free balance (Binance -9000), with the engine's own hold in place,
-// mark the asset as one the venue does not transfer: the session leaves its pieces to trade off.
+// max_in_flight unresolved. The breaker counts what says the venue or the link is failing: five
+// failures or three unknown answers within ten minutes, or one rate-limit answer (HTTP 429, Binance
+// -1003), pause the sweep for breaker_s; it resumes by itself once, and after a second trip stays
+// off until the operator turns it on. A refusal for want of free balance (Binance -9000) says
+// nothing moved and the payer had less than asked: it is not a failure of the venue, and counts
+// apart, tripping the breaker at ten within ten minutes (the engine's estimates are off across
+// assets). Three such refusals of one asset in a row, with the engine's own hold in place, mark the
+// asset as one the venue does not transfer: the session leaves its pieces to trade off.
 //
 // While a pool sweeps (Engine::sweeping), its reducing spot orders go to the home: a piece is swept
 // instead of sold. While it does not (sweep off, paused, dry run, the day's budget used, the asset
@@ -300,6 +308,7 @@ class TransferLane {
   static constexpr std::int64_t kBreakerWindowNs = 600'000'000'000;  // 10 minutes
   static constexpr std::uint32_t kTripFailures = 5;
   static constexpr std::uint32_t kTripUnknowns = 3;
+  static constexpr std::uint32_t kTripShorts = 10;   // refusals for want of balance
   static constexpr std::uint32_t kAssetStrikes = 3;  // refusals for want of balance in a row
 
   enum class Phase : std::uint8_t {
@@ -374,6 +383,12 @@ class TransferLane {
     if (rate_limited || within(failures_, now) >= kTripFailures) return trip(now);
     return false;
   }
+  // A refusal for want of free balance (Binance -9000). True: the breaker tripped.
+  bool note_short(Timestamp now) noexcept {
+    push(shorts_, now);
+    if (within(shorts_, now) >= kTripShorts) return trip(now);
+    return false;
+  }
   bool note_unknown(Timestamp now) noexcept {
     push(unknowns_, now);
     if (within(unknowns_, now) >= kTripUnknowns) return trip(now);
@@ -385,6 +400,7 @@ class TransferLane {
     trips_since_on_ = 0;
     failures_.fill(0);
     unknowns_.fill(0);
+    shorts_.fill(0);
   }
   void set_off() noexcept { breaker_ = BreakerState::Off; }
   void pause(Timestamp now) noexcept {
@@ -478,11 +494,13 @@ class TransferLane {
     s.count = 0;
     return s;
   }
-  static void push(std::array<std::int64_t, 8>& ring, Timestamp now) noexcept {
+  template <std::size_t N>
+  static void push(std::array<std::int64_t, N>& ring, Timestamp now) noexcept {
     std::rotate(ring.begin(), ring.begin() + 1, ring.end());
     ring.back() = now.ns;
   }
-  [[nodiscard]] static std::uint32_t within(const std::array<std::int64_t, 8>& ring,
+  template <std::size_t N>
+  [[nodiscard]] static std::uint32_t within(const std::array<std::int64_t, N>& ring,
                                             Timestamp now) noexcept {
     std::uint32_t n = 0;
     for (const std::int64_t t : ring) n += t != 0 && t > now.ns - kBreakerWindowNs ? 1U : 0U;
@@ -493,6 +511,7 @@ class TransferLane {
     ++stats_.trips;
     failures_.fill(0);
     unknowns_.fill(0);
+    shorts_.fill(0);
     if (++trips_since_on_ >= 2) {
       breaker_ = BreakerState::Off;
     } else {
@@ -512,6 +531,7 @@ class TransferLane {
   std::uint32_t trips_since_on_ = 0;
   std::array<std::int64_t, 8> failures_{};
   std::array<std::int64_t, 8> unknowns_{};
+  std::array<std::int64_t, 16> shorts_{};
   std::array<FixedString<8>, kMaxBlocked> blocked_{};
   std::size_t n_blocked_ = 0;
   std::array<Strike, 16> strikes_{};

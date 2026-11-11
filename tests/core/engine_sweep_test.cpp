@@ -179,6 +179,18 @@ struct Rig {
     end.flags = BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd;
     push(end);
   }
+  // One asset's report outside a snapshot (Binance outboundAccountPosition).
+  void report(VenueId v, const char* asset, const char* free, const char* locked) {
+    BalanceMsg m{};
+    init_header(m, EventType::Balance, InstrumentId::invalid(), v);
+    m.asset.assign(asset);
+    m.free = nt(free);
+    m.locked = nt(locked);
+    m.total = Notional::from_raw(m.free.raw + m.locked.raw);
+    m.equity = m.total;
+    m.hdr.exch_ts = clock.now();
+    push(m);
+  }
   void pool(const char* a_btc, const char* b_btc, const char* c_btc = "0") {
     snapshot(kA, a_btc, "0", "1000");
     snapshot(kB, b_btc, "0", "1000");
@@ -304,6 +316,64 @@ TEST_CASE("core.engine sweep: a piece goes home once it has rested, held until b
   CHECK(recs[0] == std::pair{TreasuryEventKind::Request, true});
   CHECK(recs[1] == std::pair{TreasuryEventKind::Sent, false});
   CHECK(recs[2] == std::pair{TreasuryEventKind::Done, true});
+}
+
+TEST_CASE("core.engine sweep: an amount a cancel unlocks rests sweep_delay before it goes") {
+  Rig r(make_config());
+  r.snapshot(kA, "0.1", "0", "1000");
+  // The piece's whole holding is locked by a resting sell for a long time: nothing to move.
+  r.report(kB, "BTC", "0", "0.05");
+  r.wait(60'000);
+  CHECK(r.intents().empty());
+  // The sell is cancelled: the holding is unchanged, its free part is new. Binance refuses a
+  // transfer of it for a moment (-9000), so it rests like a fill's amount would.
+  r.report(kB, "BTC", "0.05", "0");
+  r.wait(2750);
+  CHECK(r.intents().empty());
+  r.wait(500);
+  const auto in = r.intents();
+  REQUIRE(in.size() == 1);
+  CHECK(in[0].from == kB);
+  CHECK(in[0].amount == nt("0.05").raw);
+}
+
+TEST_CASE("core.engine sweep: refusals for want of balance do not trip the breaker as failures") {
+  Rig r(make_config());
+  r.snapshot(kA, "0.1", "1", "1000");
+  r.snapshot(kB, "0.05", "0", "1000");
+  r.snapshot(kC, "0", "0.5", "1000");
+  // Two refusals of each asset for want of balance, then one other failure: five refusals in ten
+  // minutes, of which one says the venue failed. The breaker stays closed, no asset is blocked.
+  for (int k = 0; k < 2; ++k) {
+    r.wait(k == 0 ? 3250 : 30'250);
+    const auto in = r.intents();
+    REQUIRE(in.size() == 2);
+    for (const LaneIntent& i : in)
+      r.answer(TreasuryEventKind::Failed,
+               i.seq,
+               TransferState::Failed,
+               -9000,
+               400,
+               "0",
+               i.from,
+               i.asset.view() == "BTC" ? "BTC" : "ETH");
+  }
+  r.wait(30'250);
+  auto in = r.intents();
+  REQUIRE(in.size() == 2);
+  r.answer(TreasuryEventKind::Failed,
+           in[0].seq,
+           TransferState::Failed,
+           -1000,
+           400,
+           "0",
+           in[0].from,
+           in[0].asset.view() == "BTC" ? "BTC" : "ETH");
+  CHECK(r.stats().failed == 5);
+  CHECK(r.stats().trips == 0);
+  CHECK(r.engine->sweeping(kA));
+  CHECK_FALSE(r.engine->lane(kA)->blocked("BTC"));
+  CHECK_FALSE(r.engine->lane(kA)->blocked("ETH"));
 }
 
 TEST_CASE("core.engine sweep: the in leg first, a stray flow, and two assets at once") {
