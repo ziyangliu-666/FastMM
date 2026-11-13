@@ -3,6 +3,7 @@
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/record_stream.hpp"
 #include "fastmm/core/thread_utils.hpp"
+#include "fastmm/core/time.hpp"
 
 #include <ctime>
 
@@ -153,6 +154,7 @@ void StoreThread::run() {
   Logger::instance().attach_current_thread();
   while (!stop_.load(std::memory_order_acquire)) {
     if (drain(/*force_commit=*/true) == 0) {
+      backend_->idle(wall_now().ns);
       timespec ts{0, kIdleSleepNs};  // a store is never on a latency path
       nanosleep(&ts, nullptr);
     }

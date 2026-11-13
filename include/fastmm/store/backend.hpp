@@ -144,6 +144,12 @@ class Backend {
   virtual void capacity(const CapacityRecord& /*r*/) {}
   virtual void commit() = 0;
 
+  // StoreThread calls it when the ring is empty, outside a batch, with the wall clock: a backend
+  // may do one small piece of housekeeping (the SQLite backend's [storage] retention_days) and
+  // must return within milliseconds, since records wait in the ring meanwhile. The default does
+  // nothing.
+  virtual void idle(std::int64_t /*now_ns*/) {}
+
   [[nodiscard]] virtual Result<void, std::string> session_close(const SessionClose& s) = 0;
   virtual void close() = 0;
 

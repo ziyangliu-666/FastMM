@@ -4,7 +4,8 @@
 // The mirror of JournalFileWriter: the engine writes into an SPSC MsgRing and never waits, this
 // side batches what it finds into one backend transaction. A pass over the ring commits every
 // max_batch records and whatever is left at its end, and the thread sleeps 2 ms when the ring is
-// empty; so a busy session does not commit per fill and an idle one commits within 2 ms.
+// empty; so a busy session does not commit per fill and an idle one commits within 2 ms. Before
+// it sleeps it gives the backend its idle moment (Backend::idle: the SQLite retention).
 //
 // It never signals the engine. A backend that fails counts the error and keeps going; a ring that
 // fills drops records on the engine side (EngineStats::records_dropped). Both are logged when the

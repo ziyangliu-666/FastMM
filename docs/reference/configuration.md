@@ -959,13 +959,15 @@ Read by `fastmm-shadow` and, for `enabled`, by `fastmm-live` ([Shadow sweeps](..
 
 ## `[storage]`
 
-Free-form: each backend reads its own keys ([Storage](storage.md#configuration)). The keys every backend shares:
+Free-form: each backend reads its own keys ([Storage](storage.md#configuration)). The keys every backend shares, then the SQLite backend's:
 
 | Key | Type | Required | Meaning |
 |---|---|---|---|
 | `backend` | string |  | `sqlite` or `none` (default sqlite) |
 | `ring_bytes` | integer |  | engine-to-store ring, bytes, a power of two (default 4194304) |
 | `kill_on_failure` | boolean |  | fastmm-live: trip the kill switch (`StoreFailure`) when a store write fails or the ring drops a record (default false) |
+| `path` | string |  | sqlite: the store file (default `<journal_dir>/<name>.db`) |
+| `retention_days` | integer |  | sqlite: delete orders that ended, position snapshots, markouts and rejects older than this many days, while the session runs; fills and the rows a restart reads stay ([Retention](storage.md#retention)); 0 = keep everything (default 0) |
 
 ## `[backtest]`
 

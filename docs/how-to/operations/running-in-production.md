@@ -83,6 +83,8 @@ A session writes `<journal_dir>/<name>-<session_id>.fmj`, grown in 64 MiB extent
 2. Set `[engine] journal_max_bytes` to roll over into parts (`x.fmj`, `x.1.fmj`, ...) and `journal_retention_days` to delete old files at start, or archive them yourself.
 3. Alert on free space with room for a full session ([Go-live checklist](go-live-checklist.md#the-host)).
 
+The store grows too, mostly by one row per order. `[storage] retention_days` deletes old orders, position snapshots, markouts and rejects while the session runs ([Storage](../../reference/storage.md#retention)).
+
 Each extent is reserved before it is written, so a full filesystem is an error, not a crash. The session logs `journal write failed (NoSpace): tripping the kill switch and shutting down` and exits 5. A full journal ring trips the kill switch with `JournalOverflow` ([What trips it](kill-switch-and-shutdown.md#what-trips-it)).
 
 ### Durability

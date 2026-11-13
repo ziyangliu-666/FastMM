@@ -9,9 +9,11 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -126,6 +128,13 @@ class SqliteBackend final : public Backend {
     }
     path_ = path;
     sqlite3_busy_timeout(db_, 5000);
+    if (!opts.read_only && opts.config != nullptr) {
+      retention_days_ = opts.config->get_int("retention_days", 0);
+      if (retention_days_ < 0) {
+        close();
+        return fail(std::string("retention_days must be >= 0 (0 keeps every row)"));
+      }
+    }
     if (!opts.read_only) {
       // WAL: a reader (fastmm-pnl, a notebook) never blocks the writer, and a crash recovers from
       // the log rather than losing the file. synchronous=NORMAL fsyncs the WAL at a checkpoint,
@@ -152,6 +161,7 @@ class SqliteBackend final : public Backend {
   }
 
   [[nodiscard]] Result<void, std::string> session_open(const SessionOpen& s) override {
+    session_id_ = s.session_id;
     char hash[32];
     std::snprintf(hash, sizeof hash, "%016llx", static_cast<unsigned long long>(s.config_hash));
     Bind b(ins_session_.get());
@@ -615,6 +625,33 @@ class SqliteBackend final : public Backend {
     step(ins_kill_.get(), "insert kill event");
   }
 
+  // [storage] retention_days: one chunk of the prune per call at most, in its own transaction, at
+  // least kPruneGapNs after the one before; a pass over the store every kPrunePassNs once it has
+  // caught up. See "Retention" in docs/reference/storage.md.
+  void idle(std::int64_t now_ns) override {
+    if (db_ == nullptr || in_batch_ || retention_days_ <= 0 || now_ns < prune_next_ns_) return;
+    if (prune_next_ns_ == 0) {  // the first idle moment: the session's start settles first
+      prune_next_ns_ = now_ns + kPruneFirstNs;
+      return;
+    }
+    if (prune_.empty() && !prune_start(now_ns)) {
+      prune_next_ns_ = now_ns + kPrunePassNs;
+      return;
+    }
+    if (!prune_chunk(prune_[prune_at_])) {
+      prune_end(false);
+      prune_next_ns_ = now_ns + kPrunePassNs;
+      return;
+    }
+    if (prune_[prune_at_].done) ++prune_at_;
+    if (prune_at_ < prune_.size()) {
+      prune_next_ns_ = now_ns + kPruneGapNs;
+      return;
+    }
+    prune_end(true);
+    prune_next_ns_ = now_ns + kPrunePassNs;
+  }
+
   [[nodiscard]] Result<void, std::string> session_close(const SessionClose& s) override {
     if (db_ == nullptr) return {};
     commit();
@@ -677,6 +714,10 @@ class SqliteBackend final : public Backend {
     ins_repeat_.reset();
     sel_estimates_.reset();
     upd_named_.reset();
+    for (PruneTable& t : prune_tables_) {
+      t.select.reset();
+      t.erase.reset();
+    }
     if (db_ != nullptr) {
       static_cast<void>(sqlite3_close_v2(db_));
       db_ = nullptr;
@@ -703,6 +744,200 @@ class SqliteBackend final : public Backend {
   };
 
   static constexpr std::uint32_t kAllInstruments = 0xFFFFFFFFU;
+
+  // ---- retention ----------------------------------------------------------------------------
+  //
+  // A pass lists the sessions that started before the cutoff, then walks each table of each
+  // session in key order, kPruneRows rows a chunk, with a cursor: a chunk reads at most that many
+  // rows through an index and stops at the first row newer than the cutoff, so it never scans
+  // what it keeps. Within a session the key follows time (seq, the fill's seq, an order row's
+  // insertion), so the rows after that one are newer too.
+  static constexpr std::int64_t kNsPerDay = 86'400'000'000'000LL;
+  static constexpr std::int64_t kPruneRows = 1000;                   // rows a chunk reads
+  static constexpr std::int64_t kPruneGapNs = 50'000'000;            // between chunks
+  static constexpr std::int64_t kPruneFirstNs = 60'000'000'000;      // first pass after start
+  static constexpr std::int64_t kPrunePassNs = 3'600'000'000'000LL;  // between passes
+
+  // The tables, as indexes into prune_tables_.
+  static constexpr std::size_t kOrders = 0;
+  static constexpr std::size_t kPositions = 1;
+  static constexpr std::size_t kMarkouts = 2;
+  static constexpr std::size_t kRejects = 3;
+  static constexpr std::size_t kPruneKinds = 4;
+
+  // Each select binds ?1 the session, ?2 and ?3 the cursor, ?4 the chunk, ?5 the cutoff and ?6
+  // its UTC day, and returns the row's rowid, its key (two columns), whether it is newer than the
+  // cutoff (the walk ends there), whether it may go, and its instrument. Each delete binds ?1 the
+  // rowid, ?2 the session, ?3 the instrument and ?4 the key; a parameter a statement does not use
+  // is not bound.
+  struct PruneTable {
+    Stmt select;
+    Stmt erase;
+  };
+  struct PruneItem {
+    std::size_t kind = kOrders;
+    std::uint64_t session = 0;
+    std::int64_t a = std::numeric_limits<std::int64_t>::min();
+    std::int64_t b = std::numeric_limits<std::int64_t>::min();
+    bool done = false;
+  };
+
+  // The work of a pass. A session is left whole when it is the newest of its engine other than
+  // this one (the previous session, which a restart reads); its orders are left when a restart
+  // may judge it by whether it placed one (Reader::recovery: a session that did not shut down
+  // cleanly and recorded no replayed_seq, from before schema 6). Never an open order, and never a
+  // session's last position of an instrument. False: nothing to do.
+  bool prune_start(std::int64_t now_ns) {
+    const std::int64_t span =
+        retention_days_ > now_ns / kNsPerDay ? now_ns : retention_days_ * kNsPerDay;
+    prune_cutoff_ns_ = now_ns - span;
+    prune_cutoff_day_ = utc_day(prune_cutoff_ns_);
+    prune_.clear();
+    prune_at_ = 0;
+    prune_removed_ = {};
+    Stmt st;
+    if (auto r = st.prepare(
+            db_,
+            "SELECT s.session_id, s.clean_shutdown <> 0 OR (EXISTS (SELECT 1 FROM session_venues v"
+            " WHERE v.session_id = s.session_id) AND NOT EXISTS (SELECT 1 FROM session_venues v"
+            " WHERE v.session_id = s.session_id AND v.replayed_seq IS NULL)) FROM sessions s"
+            " WHERE s.started_ns < ?2 AND s.session_id NOT IN (SELECT p.session_id FROM sessions p"
+            " WHERE p.session_id <> ?1 AND p.started_ns = (SELECT MAX(t.started_ns) FROM sessions"
+            " t WHERE t.engine = p.engine AND t.session_id <> ?1))"
+            " ORDER BY s.started_ns, s.session_id");
+        !r) {
+      prune_warn(r.error());
+      return false;
+    }
+    sqlite3_bind_int64(st.get(), 1, static_cast<std::int64_t>(session_id_));
+    sqlite3_bind_int64(st.get(), 2, prune_cutoff_ns_);
+    int rc = 0;
+    while ((rc = sqlite3_step(st.get())) == SQLITE_ROW) {
+      const auto session = static_cast<std::uint64_t>(sqlite3_column_int64(st.get(), 0));
+      if (sqlite3_column_int(st.get(), 1) != 0) prune_.push_back(PruneItem{kOrders, session});
+      prune_.push_back(PruneItem{kPositions, session});
+      prune_.push_back(PruneItem{kMarkouts, session});
+      prune_.push_back(PruneItem{kRejects, session});
+    }
+    if (rc != SQLITE_DONE) {
+      prune_warn(error_of(db_, "retention: sessions"));
+      prune_.clear();
+    }
+    return !prune_.empty();
+  }
+
+  // One chunk of `it`, in its own transaction. False on an error (rolled back).
+  bool prune_chunk(PruneItem& it) {
+    PruneTable& t = prune_tables_[it.kind];
+    struct Row {
+      std::int64_t rowid = 0;
+      std::int64_t a = 0;
+      std::int64_t b = 0;
+      std::int64_t instrument = 0;
+      bool newer = false;
+      bool may_go = false;
+    };
+    std::vector<Row> seen;
+    seen.reserve(static_cast<std::size_t>(kPruneRows));
+    if (auto r = exec(db_, "BEGIN"); !r) {
+      prune_warn(r.error());
+      return false;
+    }
+    sqlite3_stmt* sel = t.select.get();
+    sqlite3_reset(sel);
+    const int params = sqlite3_bind_parameter_count(sel);
+    const auto bind = [&](int k, std::int64_t v) {
+      if (k <= params) sqlite3_bind_int64(sel, k, v);
+    };
+    bind(1, static_cast<std::int64_t>(it.session));
+    bind(2, it.a);
+    bind(3, it.b);
+    bind(4, kPruneRows);
+    bind(5, prune_cutoff_ns_);
+    if (params >= 6)
+      sqlite3_bind_text(sel,
+                        6,
+                        prune_cutoff_day_.data(),
+                        static_cast<int>(prune_cutoff_day_.size()),
+                        SQLITE_TRANSIENT);
+    int rc = 0;
+    while ((rc = sqlite3_step(sel)) == SQLITE_ROW) {
+      seen.push_back(Row{sqlite3_column_int64(sel, 0),
+                         sqlite3_column_int64(sel, 1),
+                         sqlite3_column_int64(sel, 2),
+                         sqlite3_column_int64(sel, 5),
+                         sqlite3_column_int(sel, 3) != 0,
+                         sqlite3_column_int(sel, 4) != 0});
+    }
+    sqlite3_reset(sel);
+    bool ok = rc == SQLITE_DONE;
+    if (!ok) prune_warn(error_of(db_, "retention: select"));
+    it.done = static_cast<std::int64_t>(seen.size()) < kPruneRows;
+    sqlite3_stmt* del = t.erase.get();
+    const int del_params = sqlite3_bind_parameter_count(del);
+    std::uint64_t removed = 0;
+    for (const Row& row : seen) {
+      if (!ok) break;
+      if (row.newer) {
+        it.done = true;
+        break;
+      }
+      it.a = row.a;
+      it.b = row.b;
+      if (!row.may_go) continue;
+      sqlite3_reset(del);
+      sqlite3_bind_int64(del, 1, row.rowid);
+      if (del_params >= 4) {
+        sqlite3_bind_int64(del, 2, static_cast<std::int64_t>(it.session));
+        sqlite3_bind_int64(del, 3, row.instrument);
+        sqlite3_bind_int64(del, 4, row.a);
+      }
+      if (sqlite3_step(del) != SQLITE_DONE) {
+        prune_warn(error_of(db_, "retention: delete"));
+        ok = false;
+        break;
+      }
+      removed += static_cast<std::uint64_t>(sqlite3_changes(db_));
+    }
+    if (del != nullptr) sqlite3_reset(del);
+    if (!ok) {
+      static_cast<void>(exec(db_, "ROLLBACK"));
+      return false;
+    }
+    if (auto r = exec(db_, "COMMIT"); !r) {
+      prune_warn(r.error());
+      static_cast<void>(exec(db_, "ROLLBACK"));
+      return false;
+    }
+    prune_removed_[it.kind] += removed;
+    return true;
+  }
+
+  void prune_end(bool complete) {
+    std::uint64_t total = 0;
+    for (const std::uint64_t n : prune_removed_) total += n;
+    if (total != 0) {
+      FASTMM_LOG_INFO(
+          "store: retention removed {} order(s), {} position(s), {} markout(s), {} reject(s) older "
+          "than {} day(s){}",
+          prune_removed_[kOrders],
+          prune_removed_[kPositions],
+          prune_removed_[kMarkouts],
+          prune_removed_[kRejects],
+          retention_days_,
+          complete ? "" : " before an error stopped the pass");
+    }
+    prune_.clear();
+    prune_at_ = 0;
+  }
+
+  // A failed prune is logged once and retried at the next pass; it is not a store error, since
+  // no record was lost.
+  void prune_warn(const std::string& e) {
+    if (prune_warned_) return;
+    prune_warned_ = true;
+    FASTMM_LOG_WARN("store: retention: {}", std::string_view(e));
+  }
 
   // A record's [ab] arm (Order::arm, ParamUpdateMsg::arm): its name, NULL for none.
   void bind_arm(Bind& b, std::uint8_t arm) const {
@@ -1049,6 +1284,28 @@ class SqliteBackend final : public Backend {
          " funding_raw=pnl_daily.funding_raw+excluded.funding_raw,"
          " unrealized_raw=excluded.unrealized_raw, qty_raw=excluded.qty_raw,"
          " last_ns=excluded.last_ns"},
+        // Retention (prune_chunk). An order goes once it ended before the cutoff; its row's `day`
+        // is the day it was inserted, so it follows rowid. Through orders_open.
+        {&prune_tables_[kOrders].select,
+         "SELECT rowid, rowid, 0, day >= ?6, updated_ns < ?5, 0 FROM orders WHERE session_id = ?1"
+         " AND terminal = 1 AND rowid > ?2 ORDER BY rowid LIMIT ?4"},
+        {&prune_tables_[kOrders].erase, "DELETE FROM orders WHERE rowid = ?1"},
+        // A position snapshot goes unless it is the session's last of its instrument.
+        {&prune_tables_[kPositions].select,
+         "SELECT rowid, seq, 0, ts_ns >= ?5, 1, instrument_id FROM positions WHERE session_id = ?1"
+         " AND seq > ?2 ORDER BY seq LIMIT ?4"},
+        {&prune_tables_[kPositions].erase,
+         "DELETE FROM positions WHERE rowid = ?1 AND EXISTS (SELECT 1 FROM positions q WHERE"
+         " q.session_id = ?2 AND q.instrument_id = ?3 AND q.seq > ?4)"},
+        {&prune_tables_[kMarkouts].select,
+         "SELECT rowid, fill_seq, horizon_ms, fill_ns >= ?5, 1, 0 FROM markouts WHERE"
+         " session_id = ?1 AND (fill_seq, horizon_ms) > (?2, ?3) ORDER BY fill_seq, horizon_ms"
+         " LIMIT ?4"},
+        {&prune_tables_[kMarkouts].erase, "DELETE FROM markouts WHERE rowid = ?1"},
+        {&prune_tables_[kRejects].select,
+         "SELECT rowid, seq, 0, ts_ns >= ?5, 1, 0 FROM rejects WHERE session_id = ?1 AND seq > ?2"
+         " ORDER BY seq LIMIT ?4"},
+        {&prune_tables_[kRejects].erase, "DELETE FROM rejects WHERE rowid = ?1"},
     };
     for (const Prep& p : preps) {
       if (auto r = p.stmt->prepare(db_, p.sql); !r) return fail(r.error());
@@ -1101,6 +1358,17 @@ class SqliteBackend final : public Backend {
   Stmt upd_named_;
   std::vector<std::string> accounts_;  // each instrument's venue name, by dense id
   bool warned_repeat_ = false;
+  // Retention: [storage] retention_days (0: off), this session, and the pass under way.
+  std::int64_t retention_days_ = 0;
+  std::uint64_t session_id_ = 0;
+  std::array<PruneTable, kPruneKinds> prune_tables_;
+  std::vector<PruneItem> prune_;
+  std::size_t prune_at_ = 0;
+  std::int64_t prune_next_ns_ = 0;
+  std::int64_t prune_cutoff_ns_ = 0;
+  std::string prune_cutoff_day_;
+  std::array<std::uint64_t, kPruneKinds> prune_removed_{};
+  bool prune_warned_ = false;
 };
 
 }  // namespace

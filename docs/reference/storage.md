@@ -30,6 +30,7 @@ backend = "sqlite"        # "none" disables the store
 path = "runs/mm1.db"      # sqlite: default "<[engine] journal_dir>/<[engine] name>.db"
 ring_bytes = 4194304      # engine-to-store ring, a power of two (default 4194304)
 kill_on_failure = false   # trip the kill switch when a write fails or a record is dropped
+retention_days = 0        # sqlite: delete old orders, snapshots, markouts and rejects (0: keep)
 ```
 
 | Key | Backend | Meaning |
@@ -38,6 +39,7 @@ kill_on_failure = false   # trip the kill switch when a write fails or a record 
 | `ring_bytes` | all | bytes of the ring the engine writes records into, a power of two (default 4194304) |
 | `kill_on_failure` | all | `fastmm-live` trips the kill switch (`StoreFailure`) on each new failed write or dropped record (default false) |
 | `path` | sqlite | store file (default `<journal_dir>/<engine name>.db`) |
+| `retention_days` | sqlite | delete rows older than this many days ([Retention](#retention)); 0 keeps everything (default 0) |
 
 `backend = "none"` allocates no ring and starts no thread. A backend that cannot be opened stops the session before it trades, with exit code 3.
 
@@ -96,6 +98,29 @@ The SQLite backend opens the file with `journal_mode=WAL` and `synchronous=NORMA
 | the process dies inside a batch | nothing of that batch: it rolls back whole |
 | power loss | the batches up to the last checkpoint; the journal holds the rest |
 | a reader during a session | a reader never blocks the writer or sees half a batch |
+
+## Retention
+
+The store grows by one row per order, and an order-heavy session writes millions a week. `retention_days` on the SQLite backend deletes rows older than that many days from the four tables that grow with orders and fills. It is off by default: what is deleted is gone from every query, and how much history to keep is the operator's call.
+
+| Table | Deleted | Kept |
+|---|---|---|
+| `orders` | an order that ended (`terminal = 1`) and last changed before the cutoff | open orders, whatever their age |
+| `positions` | a snapshot taken before the cutoff | each session's last snapshot of each instrument |
+| `markouts` | a markout of a fill made before the cutoff | |
+| `rejects` | a refusal recorded before the cutoff | |
+
+Two kinds of session are skipped. The newest session of each `[engine] name`, other than the one running, keeps every row: it is the one a restart reads. A session that did not shut down cleanly and has no `replayed_seq` (from before version 6) keeps its orders, since a restart judges by them whether it got past its replay. Fills, funding payments, the day roll-up, kill events, parameter and limit changes, capacity and the session rows are never deleted: the PnL, the duplicate check and the replay's resume point are computed from them, and they are small.
+
+The `fm-store` thread does the work when the ring is empty, never the engine thread. The first pass starts a minute after the session's first idle moment and the next an hour after one ends. A pass reads at most 1000 rows per chunk, in key order through an index, and deletes what may go in its own transaction; chunks are at least 50 ms apart, so records wait at most one chunk in the ring and a first pass over millions of old rows takes some minutes. Each pass that deleted something logs a line:
+
+```text
+store: retention removed 1830421 order(s), 402118 position(s), 0 markout(s), 9120 reject(s) older than 7 day(s)
+```
+
+A failed chunk is rolled back, logged once as a warning, and retried at the next pass; it is not a store error and does not trip `kill_on_failure`.
+
+SQLite reuses the space of deleted rows for new ones but does not return it to the filesystem: the file stops growing at about the size `retention_days` of rows takes, and does not shrink. To shrink it, stop the session and run `sqlite3 <path> VACUUM`, which needs free space for a second copy of the file. The deleted rows are still in the journals for as long as those are kept (`[engine] journal_retention_days`).
 
 ## Schema
 
@@ -376,7 +401,7 @@ One row per `[risk]` key a `fastmm-ctl limits` changed, keyed `(session_id, seq,
 
 3. Read your keys in `Backend::open` from `BackendOptions`: the `[storage]` section verbatim, `[engine] name` and `[engine] journal_dir`.
 
-`fastmm::store::register_builtin_backends()` adds the backends FastMM ships. Every call runs off the engine thread and may allocate, in this order: `open`, `session_open`, `instruments`, then `begin`, records and `commit` repeatedly, then `session_close` and `close`. A `Reader` opens the store read-only and answers `sessions`, `fills`, `orders`, `pnl`, `funding`, `positions` and `recovery`; each query takes a `QueryFilter` and returns string rows.
+`fastmm::store::register_builtin_backends()` adds the backends FastMM ships. Every call runs off the engine thread and may allocate, in this order: `open`, `session_open`, `instruments`, then `begin`, records and `commit` repeatedly, with `idle` between batches when the ring is empty (housekeeping that must take milliseconds at most; the default does nothing), then `session_close` and `close`. A `Reader` opens the store read-only and answers `sessions`, `fills`, `orders`, `pnl`, `funding`, `positions` and `recovery`; each query takes a `QueryFilter` and returns string rows.
 
 ## Recovery at start-up
 
