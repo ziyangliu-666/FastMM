@@ -3,6 +3,8 @@
 #include "fastmm/core/log.hpp"
 #include "fastmm/live/session.hpp"
 
+#include <fmt/format.h>
+
 #include <x86intrin.h>
 
 #include <algorithm>
@@ -242,6 +244,7 @@ void net_loop(std::span<VenueSlot* const> group,
   Logger::instance().attach_current_thread();
   for (VenueSlot* s : group) {
     s->venue->connect(*s->reactor);
+    connect_md_copies(*s);
     s->reactor->set_after_event(&send_queued_orders, s);
   }
   const bool busy = spin == SpinMode::Busy;
@@ -294,6 +297,7 @@ void net_loop(std::span<VenueSlot* const> group,
     }
   }
   for (VenueSlot* s : group) {
+    disconnect_md_copies(*s);
     s->venue->disconnect();
     s->reactor->run_once(0);
   }
@@ -303,6 +307,165 @@ void net_loop(
     VenueSlot& s, int cpu, std::size_t index, SpinMode spin, bool shared_cpu, bool spin_dedicated) {
   VenueSlot* const one[] = {&s};
   net_loop(std::span<VenueSlot* const>(one), cpu, index, spin, shared_cpu, spin_dedicated);
+}
+
+std::vector<CopyCore> md_copy_cores(const Config& cfg, int engine_cpu) {
+  std::vector<CopyCore> out;
+  std::vector<int> seen;  // one entry per copy thread: (venue, core) pairs flattened to cores
+  for (const VenueSection& v : cfg.venues) {
+    std::vector<int> mine;
+    for (const int c : v.md_copy_cpus) {
+      if (c >= 0 && std::find(mine.begin(), mine.end(), c) == mine.end()) mine.push_back(c);
+    }
+    seen.insert(seen.end(), mine.begin(), mine.end());
+  }
+  const std::span<const int> net(cfg.engine.net_cpus);
+  for (const int c : seen) {
+    if (std::find_if(out.begin(), out.end(), [c](const CopyCore& k) { return k.cpu == c; }) !=
+        out.end())
+      continue;
+    const bool shared = c == engine_cpu || std::find(net.begin(), net.end(), c) != net.end() ||
+                        std::count(seen.begin(), seen.end(), c) > 1;
+    out.push_back(
+        {c, cfg.spin_mode() == SpinMode::Busy || (cfg.engine.net_spin_dedicated && !shared)});
+  }
+  return out;
+}
+
+void wire_md_copies(VenueSlot& s,
+                    std::size_t index,
+                    const Config& cfg,
+                    net::ReactorBackend backend,
+                    MdCopyThreads* threads) {
+  const VenueSection& v = cfg.venues[index];
+  const std::uint32_t asked = s.venue->md_copies_requested();
+  const int n =
+      std::max(v.md_copies, static_cast<int>(std::min<std::uint32_t>(asked, kMaxMdCopies)));
+  if (n == 0) return;
+  if (asked != 0 && v.md_copies != 0 && std::cmp_not_equal(asked, v.md_copies))
+    FASTMM_LOG_WARN("{}: md_copies = {} and the connector's own key asks for {}; opening {}",
+                    v.name,
+                    v.md_copies,
+                    asked,
+                    n);
+  if (threads == nullptr && !v.md_copy_cpus.empty())
+    FASTMM_LOG_WARN("{}: md_copy_cpus is not used here; the copies run on the venue's thread",
+                    v.name);
+  const std::vector<CopyCore> cores = md_copy_cores(cfg, cfg.engine.cpu);
+  s.md_filter = std::make_unique<venues::UpdateFilter>();
+  for (int k = 0; k < n; ++k) {
+    MdCopyThread* t = nullptr;
+    bool made = false;
+    if (threads != nullptr && std::cmp_less(k, v.md_copy_cpus.size())) {
+      const int cpu = v.md_copy_cpus[static_cast<std::size_t>(k)];
+      const std::string name =
+          cpu >= 0 ? fmt::format("fm-mdc-{}-{}", index, cpu) : fmt::format("fm-mdc-{}-u", index);
+      for (auto& x : *threads) {
+        if (x->name == name) t = x.get();
+      }
+      if (t == nullptr) {
+        auto nt = std::make_unique<MdCopyThread>();
+        nt->name = name;
+        nt->cpu = cpu;
+        for (const CopyCore& c : cores) {
+          if (c.cpu == cpu) nt->never_block = c.never_block;
+        }
+        nt->reactor = std::make_unique<net::Reactor>(backend);
+        nt->ring = std::make_unique<MsgRing>(ring_size(cfg.engine.md_ring_bytes));
+        nt->sink.attach(nt->ring.get(), venues::SinkPolicy::Drop);
+        t = nt.get();
+        threads->push_back(std::move(nt));
+        made = true;
+      }
+    }
+    std::unique_ptr<venues::MdCopy> copy =
+        s.venue->make_md_copy(t != nullptr ? t->sink : s.md_sink, *s.md_filter);
+    if (copy == nullptr) {
+      if (made) threads->pop_back();
+      if (k == 0) {
+        FASTMM_LOG_WARN("{}: the connector opens no market-data copies here; md_copies ignored",
+                        v.name);
+        s.md_filter.reset();
+      }
+      return;
+    }
+    if (t != nullptr) {
+      t->copies.push_back(std::move(copy));
+    } else {
+      s.md_copies.push_back(std::move(copy));
+    }
+  }
+  FASTMM_LOG_INFO("{}: {} market-data cop{} ({} on the venue's thread)",
+                  v.name,
+                  n,
+                  n == 1 ? "y" : "ies",
+                  s.md_copies.size());
+}
+
+void connect_md_copies(VenueSlot& s) {
+  for (auto& c : s.md_copies) c->connect(*s.reactor);
+}
+
+void disconnect_md_copies(VenueSlot& s) {
+  for (auto& c : s.md_copies) c->disconnect();
+}
+
+namespace {
+
+// fm-mdc-*: the copies' reactor, blocking for at most kNetMaxBlockMs between frames unless the
+// thread never blocks; the engine is notified after anything was pushed.
+void md_copy_loop(MdCopyThread& t) {
+  set_thread_name(t.name.c_str());
+  pin_to_cpu(t.cpu);
+  Logger::instance().attach_current_thread();
+  for (auto& c : t.copies) c->connect(*t.reactor);
+  std::uint64_t pushed = 0;
+  while (!t.stop.load(std::memory_order_relaxed)) {
+    static_cast<void>(t.reactor->run_once(t.never_block ? 0 : kNetMaxBlockMs));
+    if (Waker* const consumer = t.consumer; consumer != nullptr) {
+      if (const std::uint64_t p = t.sink.pushed(); p != pushed) {
+        pushed = p;
+        consumer->notify();
+      }
+    }
+  }
+  for (auto& c : t.copies) c->disconnect();
+  static_cast<void>(t.reactor->run_once(0));
+}
+
+}  // namespace
+
+void start_md_copy_threads(MdCopyThreads& threads) {
+  for (auto& t : threads) t->thread = std::thread([p = t.get()] { md_copy_loop(*p); });
+}
+
+void stop_md_copy_threads(MdCopyThreads& threads) {
+  for (auto& t : threads) {
+    t->stop.store(true, std::memory_order_relaxed);
+    t->reactor->wake();
+  }
+  for (auto& t : threads) {
+    if (t->thread.joinable()) t->thread.join();
+    log_md_copies(t->copies);
+  }
+}
+
+void log_md_copies(std::span<const std::unique_ptr<venues::MdCopy>> copies) {
+  for (const auto& c : copies) {
+    const venues::MdCopyStats st = c->stats();
+    const std::uint64_t carried = st.first + st.late;
+    FASTMM_LOG_INFO(
+        "{}: {} frames; delivered {} of its {} updates first ({:.1f}%); dropped {}, malformed "
+        "{}, reconnects {}",
+        c->name(),
+        st.messages,
+        st.first,
+        carried,
+        carried == 0 ? 0.0 : 100.0 * static_cast<double>(st.first) / static_cast<double>(carried),
+        st.dropped,
+        st.malformed,
+        st.reconnects);
+  }
 }
 
 void start_net_threads(VenueSlots& slots, const Config& cfg, int engine_cpu) {

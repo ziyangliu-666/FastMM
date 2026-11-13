@@ -163,13 +163,16 @@ These `[engine]` keys are off by default. When the process lacks the permission 
 | Key | Effect | Section |
 |---|---|---|
 | `cpu`, `net_cpus` | pin the engine and network threads | [Cores](#cores) |
+| `aux_cpus` | place every other thread | [Cores](#cores) |
 | `cpu_dma_latency_us` | keep CPUs out of slow idle states | [Idle states](#idle-states) |
 | `log_irq_affinity` | log where NIC interrupts land | [NIC interrupts](#nic-interrupts) |
 | `rt_priority`, `net_rt_priority` | `SCHED_FIFO` for the hot threads | [Real-time scheduling](#real-time-scheduling) |
 
 ### Cores
 
-Before its hot threads start, `fastmm-live` moves every other thread of the process off the CPUs in `[engine] cpu` and `net_cpus`; if those are all the CPUs it may use, off `cpu` alone. Threads started later inherit the mask. The log shows `thread affinity: <n> thread(s) of this process moved to CPUs <list>`. `fastmm-gateway` does the same for `net_cpus`.
+Before its hot threads start, `fastmm-live` moves every other thread of the process (journal, store, audit, treasury, resolvers, main) to the CPUs in `[engine] aux_cpus`. Without `aux_cpus` they go to every CPU the process may use except `cpu`, `net_cpus` and the venues' `md_copy_cpus`. When those take every CPU, the other threads share the cores of network threads that block when idle, and only if every network thread polls do they share a polling core; a warning says which. Threads started later inherit the mask. The log shows `thread affinity: <n> thread(s) of this process moved to CPUs <list>`. `fastmm-gateway` does the same for `net_cpus`.
+
+A thread that polls is preempted by every other thread that lands on its core, thousands of times a second when the store and audit threads are busy, and each time its market data waits. With no core to spare, give the host more cores, or name in `aux_cpus` the core whose network thread can best take the turns.
 
 The start-up `topology:` lines name each hot thread with its CPU, the cores online and where the other threads may run. A warning follows for each problem:
 
@@ -184,6 +187,20 @@ The start-up `topology:` lines name each hot thread with its CPU, the cores onli
 Count one hot thread for the engine and one per venue. Five accounts on one venue plus a hedge venue make seven: seven physical cores and one more for everything else, 16 vCPUs on a VM where CPU n and n + 8 share a core.
 
 Venues that `net_cpus` puts on one core, other than the engine's, share one polling network thread when it polls (`spin_mode = "busy"`, or `"adaptive"` with `net_spin_dedicated = true`). It gives each venue its turn and never sleeps, so an order waits at most for the other venues' turns. The topology line shows them as one thread (`net 1 (spot_b) + net 2 (spot_c)`). Without polling, each venue keeps its own thread.
+
+### Redundant market data
+
+`[venues.<name>] md_copies = n` opens `n` more connections that carry the venue's top-of-book streams again (Binance and Binance USDⓈ-M: the bookTicker streams). Each update reaches the engine once: whichever connection delivers it first pushes it, and the others drop it by the update id. A push server that stalls, or a network thread that waits for its core, then costs nothing while another connection delivers.
+
+By default the copies run on the venue's own network thread, so they cover a slow connection but not a slow thread. `md_copy_cpus` gives copy `k` a thread of its own on that core, with its own ring into the engine:
+
+```toml
+[venues.binance_usdm]
+md_copies = 2
+md_copy_cpus = [5, 6]   # copy 1 on core 5, copy 2 on core 6; the venue's thread keeps its own md connection
+```
+
+When the session stops, each copy logs how many of its updates it delivered first: `binance_usdm: md copy 1: ... delivered 40210 of its 98311 updates first (40.9%)`. A copy that is never first adds nothing.
 
 ### Idle states
 

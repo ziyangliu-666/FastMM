@@ -206,6 +206,7 @@ void inline_loop(Inline& in, int cpu) {
   pin_to_cpu(cpu);
   Logger::instance().attach_current_thread();
   s.venue->connect(*s.reactor);
+  connect_md_copies(s);
   if (!in.runner->run_inline(&inline_poll, &in)) {
     FASTMM_LOG_ERROR("the strategy's runner cannot run inline ([engine] threading = \"single\")");
     in.unsupported.store(true);
@@ -215,6 +216,7 @@ void inline_loop(Inline& in, int cpu) {
   s.md_sink.set_drain_hook(nullptr, nullptr, false);
   s.order_sink.set_drain_hook(nullptr, nullptr, false);
   for (int i = 0; i < 20; ++i) s.reactor->run_once(5);
+  disconnect_md_copies(s);
   s.venue->disconnect();
   s.reactor->run_once(0);
 }
@@ -1468,6 +1470,8 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   TscCalibration last_tsc = clock.calibration();  // main thread's copy of the latest publish
   LiveTransport transport;
   RingFeed feed;
+  // [venues.*] md_copy_cpus: market-data copies on threads of their own (venue_slot.hpp).
+  MdCopyThreads copy_threads;
   feed.set_budget_per_ring(cfg.engine.feed_budget_per_ring);
   // Attached and adaptive: the engine sleeps on a futex in the gateway's wake page, which the
   // gateway's network threads and this process's producers all notify.
@@ -1559,9 +1563,19 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     VenueSlot& s = *slots[i];
     const VenueId vid{static_cast<std::uint8_t>(i)};
     wire_venue_slot(s, vid, cfg, net_backend, symbols, instruments, &tsc_pub);
+    // Copies with cores of their own get threads and rings of their own; single: the engine thread
+    // runs them with the venue.
+    const std::size_t copy_threads_before = copy_threads.size();
+    wire_md_copies(s, i, cfg, net_backend, cfg.single_threaded() ? nullptr : &copy_threads);
     // Orders first: order events must not wait behind a burst of market data.
     static_cast<void>(feed.add_ring(s.order_ring.get()));
     static_cast<void>(feed.add_ring(s.md_ring.get()));
+    for (std::size_t k = copy_threads_before; k < copy_threads.size(); ++k) {
+      if (!feed.add_ring(copy_threads[k]->ring.get())) {
+        std::fprintf(stderr, "%s: too many engine input rings (md_copy_cpus)\n", prog);
+        return kExitConfig;
+      }
+    }
     const bool replace = s.venue->caps().supports_replace && cfg.venues[i].supports_replace;
     transport.set_venue(vid, s.outbound.get(), replace);
     transport.set_budget_source(vid, &s.venue->budget_source());
@@ -2121,8 +2135,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
 
   // ---- threads --------------------------------------------------------------------------
   // Single: the engine thread runs the network loop and net_cpus is ignored.
-  confine_other_threads(
-      cfg.engine.cpu, single ? std::span<const int>{} : std::span<const int>(cfg.engine.net_cpus));
+  confine_other_threads(cpu_layout(cfg, cfg.engine.cpu, !single));
   log_topology(cfg, single, slots);
   // Threads started from here on (journal, network, engine) inherit the timer slack.
   if (cfg.engine.timer_slack_ns > 0) {
@@ -2373,7 +2386,11 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     for (auto& s : slots) {
       if (cfg.spin_mode() == SpinMode::Adaptive) s->consumer = &feed.waker();
     }
+    for (auto& t : copy_threads) {
+      if (cfg.spin_mode() == SpinMode::Adaptive) t->consumer = &feed.waker();
+    }
     start_net_threads(slots, cfg, cfg.engine.cpu);
+    start_md_copy_threads(copy_threads);
     engine_thread = std::thread([&] { runner->run(); });
     for (std::size_t i = 0; i < slots.size(); ++i) {
       if (!slots[i]->thread.joinable()) continue;  // its group's thread is an earlier venue's
@@ -3329,6 +3346,8 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   for (auto& s : slots) {
     if (s->thread.joinable()) s->thread.join();
   }
+  stop_md_copy_threads(copy_threads);
+  for (auto& s : slots) log_md_copies(s->md_copies);
   if (const LaneStatus l = runner->live_stats().lanes; l.pools != 0) {
     FASTMM_LOG_INFO(
         "fastmm-live: transfers requested={} planned={} done={} by_flows={} failed={} unknown={} "

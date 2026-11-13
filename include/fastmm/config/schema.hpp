@@ -48,6 +48,14 @@ inline constexpr KeySpec kConfigSchema[] = {
      "the engine's; otherwise, with spin_mode = \"adaptive\", a thread whose core it shares with "
      "the engine or another network thread blocks when idle instead of spinning (default [])"},
     {"engine",
+     "aux_cpus",
+     KeyType::IntArray,
+     false,
+     "fastmm-live, fastmm-gateway: CPU cores of the threads that are not the engine's or a "
+     "network thread's (journal, store, audit, treasury, resolvers, main); empty = every core but "
+     "cpu, net_cpus and the venues' md_copy_cpus, or, when those take every core, every core but "
+     "cpu and the cores of network threads that never block, with a warning (default [])"},
+    {"engine",
      "spin_mode",
      KeyType::String,
      false,
@@ -421,6 +429,20 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "the venue's connections leave this host from this network interface's address; exclusive "
      "with source_ip (default: the kernel chooses)"},
+    {"venues.*",
+     "md_copies",
+     KeyType::Int,
+     false,
+     "redundant market-data connections carrying the venue's top-of-book streams again; each "
+     "update reaches the engine once, from whichever connection delivered it first (connectors "
+     "with copies: binance, binance_usdm; 0 to 8, default 0)"},
+    {"venues.*",
+     "md_copy_cpus",
+     KeyType::IntArray,
+     false,
+     "fastmm-live: CPU cores of network threads of their own for the copies, one per copy in "
+     "order; copies given the same core share a thread, -1 = a thread not pinned; copies past the "
+     "end of the list run on the venue's network thread (default [], all of them do)"},
     {"venues.*",
      "fill_audit_interval_s",
      KeyType::Int,

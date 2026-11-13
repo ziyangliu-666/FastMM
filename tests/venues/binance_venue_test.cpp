@@ -10,9 +10,11 @@
 #include "fastmm/core/time.hpp"
 #include "fastmm/net/crypto.hpp"
 #include "fastmm/venues/binance/generated/binance_stream_sbe.hpp"
+#include "fastmm/venues/md_copy.hpp"
 
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -753,6 +755,70 @@ TEST_CASE(
     reactor.run_once(0);
   }
   api.stop();
+  h.srv.stop();
+}
+
+TEST_CASE("binance.venue: market-data copies of the bookTickers, first copy wins") {
+  Harness h;
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  RecordingSink md(8U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  {
+    BinanceVenue venue(VenueId{0}, h.config(true));
+    REQUIRE(venue.load_reference_data(instruments));
+    REQUIRE(symbols.build(instruments));
+    venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    const InstrumentId ids[] = {InstrumentId{0}};
+    venue.subscribe(ids);
+    CHECK(venue.md_feed()->ticker_target() == "/stream?streams=btcusdt@bookTicker");
+    UpdateFilter filter;
+    std::unique_ptr<MdCopy> copy = venue.make_md_copy(md.sink, filter);
+    REQUIRE(copy != nullptr);
+    venue.connect(reactor);
+    copy->connect(reactor);
+    REQUIRE(pump_until(reactor, [&] {
+      return venue.md_feed()->synced_count() == 1 && h.srv.open_count("/stream") == 2;
+    }));
+    const auto ticker = [](int u) {
+      return std::string(R"({"stream":"btcusdt@bookTicker","data":{"u":)") + std::to_string(u) +
+             R"(,"s":"BTCUSDT","b":"70000.00000000","B":"1.50000000","a":"70000.10000000","A":"2.00000000"}})";
+    };
+    h.srv.send_to("/stream", ticker(200));
+    h.srv.send_to("/stream", ticker(201));
+    REQUIRE(pump_until(
+        reactor, [&] { return venue.md_feed()->stats().stale_tickers + copy->stats().late == 2; }));
+    Collected mc;
+    mc.take(md);
+    CHECK(mc.count(EventType::BookTicker) == 2);
+    copy->disconnect();
+    venue.disconnect();
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("binance.venue: no market-data copies with md_format = sbe") {
+  Harness h;
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  RecordingSink md(1U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  SymbolTable symbols;
+  BinanceVenueConfig cfg = h.config(true);
+  cfg.md_format = MdFormat::Sbe;
+  BinanceVenue venue(VenueId{0}, std::move(cfg));
+  REQUIRE(venue.load_reference_data(instruments));
+  REQUIRE(symbols.build(instruments));
+  venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+  const InstrumentId ids[] = {InstrumentId{0}};
+  venue.subscribe(ids);
+  UpdateFilter filter;
+  CHECK(venue.make_md_copy(md.sink, filter) == nullptr);
+  CHECK(venue.md_feed()->update_filter() == nullptr);
   h.srv.stop();
 }
 

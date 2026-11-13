@@ -62,8 +62,8 @@ constexpr VenueKeySpec kBinanceUsdmKeys[] = {
     {"md_ticker_conns",
      KeyType::Int,
      false,
-     "extra connections carrying only the bookTicker streams; the first copy of each update is "
-     "used, which takes the occasional slow push server out of the path (0 to 8, default 0)"},
+     "the older spelling of md_copies: bookTicker-only connections; with both set, the larger "
+     "count is opened (0 to 8, default 0)"},
     {"ws_private_url",
      KeyType::String,
      false,

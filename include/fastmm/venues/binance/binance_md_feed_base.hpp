@@ -13,6 +13,7 @@
 #include "fastmm/venues/binance/binance_depth_sync.hpp"
 #include "fastmm/venues/event_sink.hpp"
 #include "fastmm/venues/feed.hpp"
+#include "fastmm/venues/md_copy.hpp"
 #include "fastmm/venues/symbology.hpp"
 
 #include <array>
@@ -34,8 +35,8 @@ struct MdFeedStats {
   std::uint64_t unknown_symbol = 0;
   std::uint64_t snapshots_ok = 0;
   std::uint64_t snapshots_failed = 0;
-  std::uint64_t stale_tickers =
-      0;  // a bookTicker no newer than one already pushed (redundant feed)
+  // A bookTicker another connection had delivered already, or older than one pushed (md_copies).
+  std::uint64_t stale_tickers = 0;
 };
 
 // Parser: decode(json, recv, t0, out) and decode_depth_snapshot(json, id, recv, t0, out).
@@ -75,10 +76,12 @@ class BasicBinanceMdFeed {
   }
   [[nodiscard]] std::span<const InstrumentId> instruments() const noexcept { return ids_; }
 
-  // Several connections carry the same bookTicker streams (BinanceUsdmVenueConfig::
-  // md_ticker_conns): the first copy of each update id is pushed, the rest and anything older are
-  // counted in stale_tickers. The update id ("u") is the order book's, increasing per symbol.
-  void set_ticker_dedup(bool on) noexcept { dedup_tickers_ = on; }
+  // Other connections carry the same bookTicker streams (md_copies, venues/md_copy.hpp): only the
+  // first copy of each update id is pushed, the rest and anything older are counted in
+  // stale_tickers. The update id ("u") is the order book's, increasing per symbol. nullptr: no
+  // copies, every bookTicker is pushed.
+  void set_update_filter(UpdateFilter* filter) noexcept { filter_ = filter; }
+  [[nodiscard]] UpdateFilter* update_filter() const noexcept { return filter_; }
 
   // ---- MarketDataFeed ----------------------------------------------------------------------
   ParseStatus on_message(std::string_view json, std::int64_t rx_ts) noexcept {
@@ -112,13 +115,10 @@ class BasicBinanceMdFeed {
       ++stats_.pushed;
       return ParseStatus::Ok;
     }
-    if (r.kind == MdKind::BookTicker && dedup_tickers_ && h->instrument.value < kMaxInstruments) {
-      std::uint64_t& last = ticker_seq_[h->instrument.value];
-      if (h->venue_seq <= last) {
-        ++stats_.stale_tickers;
-        return ParseStatus::Ok;
-      }
-      last = h->venue_seq;
+    if (r.kind == MdKind::BookTicker && filter_ != nullptr &&
+        !filter_->first(r.kind, h->instrument, h->venue_seq)) {
+      ++stats_.stale_tickers;
+      return ParseStatus::Ok;
     }
     if (!sink_.push(*h)) {
       ++stats_.dropped;
@@ -226,8 +226,7 @@ class BasicBinanceMdFeed {
   std::array<std::int16_t, kMaxInstruments> index_{};
   std::vector<std::unique_ptr<Sync>> syncs_;
   std::vector<InstrumentId> ids_;
-  bool dedup_tickers_ = false;
-  std::array<std::uint64_t, kMaxInstruments> ticker_seq_{};  // last bookTicker u pushed
+  UpdateFilter* filter_ = nullptr;
   alignas(64) std::byte scratch_[kDecoderScratchBytes];
   MdFeedStats stats_;
 };

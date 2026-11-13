@@ -966,6 +966,33 @@ TEST_CASE("core.config: the fill audit is off by default and checked when set") 
                        ConfigError);
 }
 
+TEST_CASE("core.config: md_copies, md_copy_cpus and aux_cpus") {
+  const Config none = Config::parse(audit_toml(""));
+  CHECK(none.venues[0].md_copies == 0);
+  CHECK(none.venues[0].md_copy_cpus.empty());
+  CHECK(none.engine.aux_cpus.empty());
+  CHECK(none.effective_toml().find("md_cop") == std::string::npos);
+  const Config on = Config::parse(audit_toml("md_copies = 3\nmd_copy_cpus = [5, -1]\n"));
+  CHECK(on.venues[0].md_copies == 3);
+  CHECK(on.venues[0].md_copy_cpus == std::vector<int>{5, -1});
+  const Config back = Config::parse(on.effective_toml());
+  CHECK(back.venues[0].md_copies == 3);
+  CHECK(back.venues[0].md_copy_cpus == std::vector<int>{5, -1});
+  CHECK(on.redacted().find("md_copy_cpus = [5, -1]") != std::string::npos);
+  CHECK_THROWS_WITH_AS(Config::parse(audit_toml("md_copies = 9\n")),
+                       doctest::Contains("md_copies must be 0 to 8"),
+                       ConfigError);
+  CHECK_THROWS_WITH_AS(Config::parse(audit_toml("md_copies = 1\nmd_copy_cpus = [2, 3]\n")),
+                       doctest::Contains("names 2 cores for 1 md_copies"),
+                       ConfigError);
+  const Config aux = Config::parse("[engine]\naux_cpus = [0, 4]\n" + audit_toml(""));
+  CHECK(aux.engine.aux_cpus == std::vector<int>{0, 4});
+  CHECK(Config::parse(aux.effective_toml()).engine.aux_cpus == std::vector<int>{0, 4});
+  CHECK_THROWS_WITH_AS(Config::parse("[engine]\naux_cpus = [-1]\n" + audit_toml("")),
+                       doctest::Contains("aux_cpus entries must be CPU numbers"),
+                       ConfigError);
+}
+
 TEST_CASE("core.config: source_ip and source_interface are checked as written") {
   const Config none = Config::parse(audit_toml(""));
   CHECK(none.venues[0].source_ip.empty());

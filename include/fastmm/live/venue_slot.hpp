@@ -24,6 +24,7 @@
 #include "fastmm/live/paper_venue.hpp"
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/venues/event_sink.hpp"
+#include "fastmm/venues/md_copy.hpp"
 #include "fastmm/venues/registry.hpp"
 #include "fastmm/venues/symbology.hpp"
 #include "fastmm/venues/venue.hpp"
@@ -33,6 +34,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
@@ -68,6 +70,11 @@ struct VenueSlot {
   Waker* consumer = nullptr;
   std::atomic<bool> stop{false};
   std::atomic<std::uint64_t> order_overflows{0};
+  // Redundant market data ([venues.*] md_copies): the filter every copy and the venue's own feed
+  // ask, and the copies this slot's network thread runs (pushing into md_sink). Copies on threads
+  // of their own are in an MdCopyThread.
+  std::unique_ptr<venues::UpdateFilter> md_filter;
+  std::vector<std::unique_ptr<venues::MdCopy>> md_copies;
   Hook hook = nullptr;  // set before the thread starts
   Pending pending = nullptr;
   void* hook_ctx = nullptr;
@@ -100,6 +107,54 @@ void wire_venue_slot(VenueSlot& s,
                      const venues::SymbolTable& symbols,
                      const InstrumentTable& instruments,
                      const Seqlocked<TscCalibration>* tsc);
+
+// Copies of a venue's market data on a network thread of their own ([venues.*] md_copy_cpus):
+// their reactor, the ring they push into (the engine reads it like a venue's md ring) and the
+// thread, fm-mdc-<venue>-<core>.
+struct MdCopyThread {
+  std::string name;
+  int cpu = -1;
+  bool never_block = false;  // spin_mode = "busy", or net_spin_dedicated on a core of its own
+  std::unique_ptr<net::Reactor> reactor;
+  std::unique_ptr<MsgRing> ring;
+  venues::EventSink sink;
+  std::vector<std::unique_ptr<venues::MdCopy>> copies;
+  // Notified after the copies pushed (the engine's feed waker), or nullptr when the engine never
+  // blocks. Set before the thread starts.
+  Waker* consumer = nullptr;
+  std::atomic<bool> stop{false};
+  std::thread thread;
+};
+using MdCopyThreads = std::vector<std::unique_ptr<MdCopyThread>>;
+
+// After wire_venue_slot (main thread): the copies of venue `index`, the larger of [venues.*]
+// md_copies and Venue::md_copies_requested(). Copy k with a core in md_copy_cpus goes to the
+// MdCopyThread of that core in `threads` (made here, one per distinct core; the caller adds its
+// ring to the engine's feed and starts it); the others, and every copy when `threads` is nullptr
+// (threading = "single", fastmm-gateway), run on the slot's own thread. A connector without copies
+// gets a warning and none.
+void wire_md_copies(VenueSlot& s,
+                    std::size_t index,
+                    const Config& cfg,
+                    net::ReactorBackend backend,
+                    MdCopyThreads* threads);
+// The slot's own copies, on its network thread, next to Venue::connect / disconnect.
+void connect_md_copies(VenueSlot& s);
+void disconnect_md_copies(VenueSlot& s);
+// Starts, and stops and joins, the copy threads. Stopping logs each copy's counts: how many
+// updates it delivered first and how many after another connection.
+void start_md_copy_threads(MdCopyThreads& threads);
+void stop_md_copy_threads(MdCopyThreads& threads);
+// The counts of one venue's copies on its own thread (stop_md_copy_threads logs the others).
+void log_md_copies(std::span<const std::unique_ptr<venues::MdCopy>> copies);
+// The core of every copy thread of the configuration ([venues.*] md_copy_cpus, >= 0), and whether
+// its thread never blocks: spin_mode = "busy", or net_spin_dedicated on a core shared with neither
+// the engine (`engine_cpu`) nor a network or another copy thread.
+struct CopyCore {
+  int cpu = -1;
+  bool never_block = false;
+};
+[[nodiscard]] std::vector<CopyCore> md_copy_cores(const Config& cfg, int engine_cpu);
 
 // LiveTransport's wake hook context: the slots, and whether the network threads never block.
 struct Wake {

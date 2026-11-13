@@ -27,6 +27,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -34,6 +35,9 @@
 #include <vector>
 
 namespace fastmm::venues {
+
+class MdCopy;        // venues/md_copy.hpp
+class UpdateFilter;  // venues/md_copy.hpp
 
 struct VenueCaps {
   bool supports_replace = false;   // Binance cancelReplace / Bybit amend
@@ -234,6 +238,17 @@ class Venue {
   virtual bool defer_private() { return false; }
   virtual void enable_private() {}
   virtual void subscribe(std::span<const InstrumentId> instruments) = 0;
+
+  // Redundant market data ([venues.<name>] md_copies, venues/md_copy.hpp): one more connection
+  // carrying the subscribed instruments' top-of-book (and trade) streams, which pushes into `sink`
+  // what `filter` lets through. From the first call on, the venue's own feed asks `filter` too, so
+  // each update reaches the engine once, from whichever connection delivered it first. Main
+  // thread, after subscribe() and before connect(); the copy is connected on the thread that runs
+  // it. nullptr: the connector has no copies (the default), or none in its present configuration.
+  virtual std::unique_ptr<MdCopy> make_md_copy(EventSink& sink, UpdateFilter& filter);
+  // Copies the connector's own keys ask for (binance_usdm md_ticker_conns, the older spelling of
+  // md_copies); the session opens the larger of this and md_copies.
+  [[nodiscard]] virtual std::uint32_t md_copies_requested() const noexcept { return 0; }
 
   // Periodic housekeeping (listenKey keepalive, app-level pings, clock offset refresh,
   // snapshot retries). The backend calls it about once per second; venues may also arm

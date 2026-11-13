@@ -8,6 +8,7 @@
 #include "fastmm/venues/blocking_http.hpp"
 #include "fastmm/venues/connector_common.hpp"
 #include "fastmm/venues/decimal.hpp"
+#include "fastmm/venues/md_copy.hpp"
 #include "fastmm/venues/order_events.hpp"
 #include "fastmm/venues/padded_json.hpp"
 
@@ -606,7 +607,6 @@ void BinanceUsdmVenue::attach(const SymbolTable& symbols,
       SnapshotRequester{&BinanceUsdmVenue::snapshot_requester, this},
       cfg_.min_snapshot_interval_ns);
   md_feed_->set_log_name(cfg_.name);
-  md_feed_->set_ticker_dedup(cfg_.md_ticker_conns > 0);
   user_parser_ = std::make_unique<BinanceUsdmUserParser>(symbols, instruments, id_);
   user_parser_->set_symbol_venue(md_venue_);
   encoder_ = std::make_unique<BinanceUsdmOrderEncoder>(signer_, symbols, cfg_.recv_window_ms);
@@ -639,10 +639,8 @@ void BinanceUsdmVenue::subscribe(std::span<const InstrumentId> instruments) {
     // The stream lists live in the URLs: reopen the market-data connections.
     md_conn_.close();
     trades_conn_.close();
-    close_tickers();
     open_md();
     open_trades();
-    open_tickers();
   }
 }
 
@@ -678,7 +676,6 @@ void BinanceUsdmVenue::connect(net::Reactor& reactor) {
   if (!pool_member()) {  // a member reads no market data: the primary has the books
     open_md();
     open_trades();
-    open_tickers();
   }
   if (!cfg_.dry_run) {
     if (cfg_.ws_order_api) open_order();
@@ -714,7 +711,6 @@ void BinanceUsdmVenue::disconnect() {
   }
   md_conn_.close();
   trades_conn_.close();
-  close_tickers();
   user_conn_.close();
   order_conn_.close();
   // Replies to requests aborted by the reset are ignored: a later connect() starts afresh.
@@ -749,18 +745,21 @@ void BinanceUsdmVenue::open_trades() {
   trades_conn_.connect();
 }
 
-void BinanceUsdmVenue::open_tickers() {
-  if (subscribed_.empty()) return;
+// A bookTicker-only connection over the subscribed symbols: the depth stream's 100 ms bursts are
+// not in it for the tickers to queue behind.
+std::unique_ptr<MdCopy> BinanceUsdmVenue::make_md_copy(EventSink& sink, UpdateFilter& filter) {
+  if (md_feed_ == nullptr || pool_member() || subscribed_.empty()) return nullptr;
+  md_feed_->set_update_filter(&filter);
   const std::string url = stream_root() + md_feed_->ticker_target();
-  const std::size_t n = std::min<std::size_t>(cfg_.md_ticker_conns, kMaxTickerConns);
-  for (std::size_t i = 0; i < n; ++i) {
-    ticker_conns_[i].open(*reactor_, ws_config(url, kMdDeadMs), ticker_handler_);
-    ticker_conns_[i].connect();
-  }
-}
-
-void BinanceUsdmVenue::close_tickers() {
-  for (auto& c : ticker_conns_) c.close();
+  return std::make_unique<WsMdCopy<BinanceUsdmMdParser>>(
+      fmt::format("{}: md copy {}", cfg_.name, ++md_copies_),
+      ws_config(url, kMdDeadMs),
+      sink,
+      filter,
+      std::vector<std::string>{},
+      *symbols_,
+      id_,
+      kMdCopyParserBytes);
 }
 
 void BinanceUsdmVenue::open_user() {
@@ -854,27 +853,6 @@ void BinanceUsdmVenue::on_trades_state(net::ConnState s) {
     FASTMM_LOG_INFO("{}: trades channel -> Live", cfg_.name);
   } else if (mapped == ConnState::Disconnected && prev != ConnState::Connecting) {
     FASTMM_LOG_WARN("{}: trades channel -> Disconnected", cfg_.name);
-  }
-}
-
-// The ticker connections are copies of the md connection's bookTickers: one going down loses
-// nothing the others do not carry, so it is logged and left to reconnect.
-void BinanceUsdmVenue::on_ticker_state(net::ConnState s) {
-  const ConnState mapped = map_conn_state(s);
-  if (mapped == ConnState::Live) {
-    FASTMM_LOG_INFO("{}: ticker channel -> Live", cfg_.name);
-  } else if (mapped == ConnState::Disconnected) {
-    FASTMM_LOG_WARN("{}: ticker channel -> Disconnected", cfg_.name);
-  }
-}
-
-void BinanceUsdmVenue::on_ticker_text(std::string_view t, std::int64_t ts) {
-  const ParseStatus st = md_feed_->on_message(t, ts);
-  ++stats_.md_messages;
-  if (st == ParseStatus::Malformed) {
-    ++stats_.md_malformed;
-  } else if (st == ParseStatus::Overflow) {
-    ++stats_.md_dropped;
   }
 }
 

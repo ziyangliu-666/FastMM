@@ -150,6 +150,7 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   bool defer_private() override;
   void enable_private() override;
   void subscribe(std::span<const InstrumentId> instruments) override;
+  std::unique_ptr<MdCopy> make_md_copy(EventSink& sink, UpdateFilter& filter) override;
   void on_timer(std::int64_t now_ns) override;
   void resync_books() override;
   void on_wake() override;
@@ -354,6 +355,7 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   net::Reactor* reactor_ = nullptr;
 
   std::unique_ptr<BinanceMdFeed> md_feed_;
+  std::uint32_t md_copies_ = 0;  // made by make_md_copy, for their names
   std::unique_ptr<BinanceUserParser> user_parser_;
   std::unique_ptr<BinanceOrderEncoder> encoder_;
   std::unique_ptr<BinanceWsApiDecoder> ws_api_decoder_;

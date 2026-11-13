@@ -6,6 +6,7 @@
 #include "fastmm/venues/blocking_http.hpp"
 #include "fastmm/venues/connector_common.hpp"
 #include "fastmm/venues/decimal.hpp"
+#include "fastmm/venues/md_copy.hpp"
 #include "fastmm/venues/order_events.hpp"
 #include "fastmm/venues/padded_json.hpp"
 
@@ -526,6 +527,31 @@ void BinanceVenue::open_md() {
   if (sbe) c.extra_headers = api_key_header(signer_.api_key());
   md_conn_.open(*reactor_, c, md_handler_);
   md_conn_.connect();
+}
+
+// A bookTicker-only JSON connection over the subscribed symbols. Not with md_format = "sbe": its
+// bestBidAsk stamps the event time, the JSON bookTicker none, and a book fed by both would mix
+// them.
+std::unique_ptr<MdCopy> BinanceVenue::make_md_copy(EventSink& sink, UpdateFilter& filter) {
+  if (md_feed_ == nullptr || pool_member() || subscribed_.empty()) return nullptr;
+  if (cfg_.md_format == MdFormat::Sbe) {
+    FASTMM_LOG_WARN("{}: md_copies needs md_format = \"json\"; no copies opened", cfg_.name);
+    return nullptr;
+  }
+  const auto base = net::Url::parse(cfg_.ws_url);
+  if (!base) return nullptr;
+  std::string path(base->path);
+  if (path == "/" || path.empty()) path = "/stream";
+  md_feed_->set_update_filter(&filter);
+  return std::make_unique<WsMdCopy<BinanceMdParser>>(
+      fmt::format("{}: md copy {}", cfg_.name, ++md_copies_),
+      ws_config(origin_of(*base) + md_feed_->ticker_target(path), /*manual_subscribe=*/false),
+      sink,
+      filter,
+      std::vector<std::string>{},
+      *symbols_,
+      id_,
+      kMdCopyParserBytes);
 }
 
 void BinanceVenue::open_user() {

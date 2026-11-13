@@ -7,6 +7,7 @@
 #include "fastmm/strategies/ab_test.hpp"
 
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 #include <toml++/toml.hpp>
 
 #include <arpa/inet.h>
@@ -20,6 +21,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <utility>
 
 namespace fastmm {
 
@@ -764,6 +766,13 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
       for (const auto& n : *arr)
         e.net_cpus.push_back(static_cast<int>(n.value_or<std::int64_t>(-1)));
     }
+    if (const auto* arr = t->get_as<toml::array>("aux_cpus")) {
+      for (const auto& n : *arr) {
+        const std::int64_t c = n.value_or<std::int64_t>(-1);
+        if (c < 0 || c >= 1024) fail_at(n, "aux_cpus entries must be CPU numbers, 0 to 1023");
+        e.aux_cpus.push_back(static_cast<int>(c));
+      }
+    }
     get(*t, "spin_mode", e.spin_mode);
     if (e.spin_mode != "busy" && e.spin_mode != "adaptive")
       fail_at(*t->get("spin_mode"), "spin_mode must be busy|adaptive");
@@ -951,6 +960,20 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
                 fmt::format("venues.{}.source_interface '{}' is longer than an interface name",
                             name.str(),
                             v.source_interface));
+      get(*t, "md_copies", v.md_copies);
+      if (v.md_copies < 0 || v.md_copies > kMaxMdCopies)
+        fail_at(*t->get("md_copies"),
+                fmt::format("venues.{}.md_copies must be 0 to {}", name.str(), kMaxMdCopies));
+      if (const auto* arr = t->get_as<toml::array>("md_copy_cpus")) {
+        for (const auto& n : *arr)
+          v.md_copy_cpus.push_back(static_cast<int>(n.value_or<std::int64_t>(-1)));
+        if (std::cmp_greater(v.md_copy_cpus.size(), v.md_copies))
+          fail_at(*t->get("md_copy_cpus"),
+                  fmt::format("venues.{}.md_copy_cpus names {} cores for {} md_copies",
+                              name.str(),
+                              v.md_copy_cpus.size(),
+                              v.md_copies));
+      }
       get(*t, "fill_audit_interval_s", v.fill_audit_interval_s);
       get(*t, "fill_audit_lag_s", v.fill_audit_lag_s);
       get(*t, "fill_audit_mode", v.fill_audit_mode);
@@ -1620,6 +1643,10 @@ std::string Config::redacted() const {
     kv("recv_window_ms", v.recv_window_ms);
     if (!v.source_ip.empty()) kq("source_ip", v.source_ip);
     if (!v.source_interface.empty()) kq("source_interface", v.source_interface);
+    if (v.md_copies > 0) kv("md_copies", v.md_copies);
+    if (!v.md_copy_cpus.empty())
+      fmt::format_to(
+          std::back_inserter(out), "md_copy_cpus = [{}]\n", fmt::join(v.md_copy_cpus, ", "));
     if (v.fill_audit_interval_s > 0) {
       kv("fill_audit_interval_s", v.fill_audit_interval_s);
       kv("fill_audit_lag_s", v.fill_audit_lag_s);
@@ -1947,6 +1974,11 @@ std::string Config::effective_toml() const {
   toml::array cpus;
   for (int c : engine.net_cpus) cpus.push_back(static_cast<std::int64_t>(c));
   e.insert("net_cpus", std::move(cpus));
+  if (!engine.aux_cpus.empty()) {
+    toml::array aux;
+    for (int c : engine.aux_cpus) aux.push_back(static_cast<std::int64_t>(c));
+    e.insert("aux_cpus", std::move(aux));
+  }
   e.insert("spin_mode", engine.spin_mode);
   e.insert("net_backend", engine.net_backend);
   e.insert("threading", engine.threading);
@@ -2025,6 +2057,12 @@ std::string Config::effective_toml() const {
       t.insert("recv_window_ms", static_cast<std::int64_t>(v.recv_window_ms));
       if (!v.source_ip.empty()) t.insert("source_ip", v.source_ip);
       if (!v.source_interface.empty()) t.insert("source_interface", v.source_interface);
+      if (v.md_copies > 0) t.insert("md_copies", static_cast<std::int64_t>(v.md_copies));
+      if (!v.md_copy_cpus.empty()) {
+        toml::array copy_cpus;
+        for (int c : v.md_copy_cpus) copy_cpus.push_back(static_cast<std::int64_t>(c));
+        t.insert("md_copy_cpus", std::move(copy_cpus));
+      }
       if (v.fill_audit_interval_s > 0) {
         t.insert("fill_audit_interval_s", static_cast<std::int64_t>(v.fill_audit_interval_s));
         t.insert("fill_audit_lag_s", static_cast<std::int64_t>(v.fill_audit_lag_s));

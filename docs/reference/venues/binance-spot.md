@@ -19,6 +19,7 @@
 |---|---|---|
 | md | `<ws_url>?streams=<sym>@depth@100ms/<sym>@bookTicker/<sym>@trade` | JSON combined stream |
 | md, `md_format = "sbe"` | `<sbe_ws_url>?streams=<sym>@depth/<sym>@bestBidAsk/<sym>@trade` | binary SBE frames |
+| copies, `md_copies` > 0 | `<ws_url>?streams=<sym>@bookTicker`, up to 8 more connections; JSON only | best bid and offer; the first copy of each update is used ([redundant market data](../../how-to/operations/running-in-production.md#redundant-market-data)) |
 | user | `<ws_api_url>`, subscribed with `userDataStream.subscribe.signature` (HMAC) or `session.logon` then `userDataStream.subscribe` (Ed25519) | `executionReport`, `outboundAccountPosition`, `balanceUpdate` |
 | order | `<ws_api_url>` | `order.place`, `order.cancel`, `order.amend.keepPriority`, `order.cancelReplace`, `openOrders.status`, `openOrders.cancelAll` |
 | rest | `<rest_url>` | reference data, depth snapshots, clock, open orders, fee rates, REST order entry, kill-switch cancel-all |

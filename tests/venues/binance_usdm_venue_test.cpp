@@ -10,6 +10,7 @@
 
 #include "fastmm/core/time.hpp"
 #include "fastmm/net/crypto.hpp"
+#include "fastmm/venues/md_copy.hpp"
 #include "fastmm/venues/registry.hpp"
 
 #include <algorithm>
@@ -1211,7 +1212,7 @@ TEST_CASE("binance_usdm.venue: markPrice on the market connection with fundingIn
   h.srv.stop();
 }
 
-TEST_CASE("binance_usdm.venue: md_ticker_conns copies of the bookTickers, first copy wins") {
+TEST_CASE("binance_usdm.venue: market-data copies of the bookTickers, first copy wins") {
   Harness h;
   InstrumentTable instruments;
   REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
@@ -1229,7 +1230,16 @@ TEST_CASE("binance_usdm.venue: md_ticker_conns copies of the bookTickers, first 
   const InstrumentId ids[] = {InstrumentId{0}};
   venue.subscribe(ids);
   CHECK(venue.md_feed()->ticker_target() == "/public/stream?streams=btcusdt@bookTicker");
+  CHECK(venue.md_copies_requested() == 2);  // md_ticker_conns, the older spelling of md_copies
+  UpdateFilter filter;
+  std::unique_ptr<MdCopy> copies[] = {venue.make_md_copy(md.sink, filter),
+                                      venue.make_md_copy(md.sink, filter)};
+  REQUIRE(copies[0] != nullptr);
+  REQUIRE(copies[1] != nullptr);
+  CHECK(copies[1]->name() == "fake-usdm: md copy 2");
+  CHECK(venue.md_feed()->update_filter() == &filter);
   venue.connect(reactor);
+  for (auto& c : copies) c->connect(reactor);
   REQUIRE(pump_until(reactor, [&] {
     return venue.md_feed()->synced_count() == 1 && h.srv.open_count("/public/stream") == 3;
   }));
@@ -1247,19 +1257,27 @@ TEST_CASE("binance_usdm.venue: md_ticker_conns copies of the bookTickers, first 
     mc.take(md);
     return mc.count(EventType::BookTicker);
   };
+  // Updates some connection had delivered already, or older than one pushed.
+  const auto late = [&] {
+    return venue.md_feed()->stats().stale_tickers + copies[0]->stats().late +
+           copies[1]->stats().late;
+  };
   // Every connection carries the update: the engine gets it once.
   h.srv.send_to("/public/stream", ticker(500, "70000.00"));
-  REQUIRE(pump_until(reactor, [&] { return venue.md_feed()->stats().stale_tickers == 2; }));
+  REQUIRE(pump_until(reactor, [&] { return late() == 2; }));
   CHECK(tickers() == 1);
   // An older update after a newer one is dropped; a newer one passes.
   h.srv.send_to("/public/stream", ticker(499, "69999.00"));
   h.srv.send_to("/public/stream", ticker(501, "70001.00"));
-  REQUIRE(pump_until(reactor, [&] { return venue.md_feed()->stats().stale_tickers == 7; }));
+  REQUIRE(pump_until(reactor, [&] { return late() == 7; }));
   CHECK(tickers() == 2);
+  // 3 updates on 3 connections: 9 copies, 2 pushed (500 and 501), 7 dropped.
+  CHECK(copies[0]->stats().messages + copies[1]->stats().messages == 6);
   const auto* last = mc.last<BookTickerMsg>(EventType::BookTicker);
   REQUIRE(last != nullptr);
   CHECK(last->hdr.venue_seq == 501);
   CHECK(last->bid_px == Price::from_decimal("70001.00").value());
+  for (auto& c : copies) c->disconnect();
   venue.disconnect();
   reactor.run_once(0);
   h.srv.stop();

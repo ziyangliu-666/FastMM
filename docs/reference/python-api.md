@@ -633,7 +633,7 @@ Before any venue is contacted, `run_live` applies the parameters, compiles the h
 
 - SIGINT and SIGTERM stop the session; `KeyboardInterrupt` is not raised. The session replaces the process's handlers and restores them when it returns.
 - While the session starts, loading venue reference data and fees, SIGINT ends the process at once, as in `fastmm-live`.
-- Before the engine starts, every thread of the process is limited to the CPUs not in `[engine] cpu` and `net_cpus`, numpy's BLAS threads included. Later threads inherit that; without pinned CPUs nothing changes.
+- Before the engine starts, every thread of the process is limited to `[engine] aux_cpus`, or without it to the CPUs not in `[engine] cpu`, `net_cpus` and `md_copy_cpus`, numpy's BLAS threads included. Later threads inherit that; without pinned CPUs nothing changes.
 - Thread-count variables such as `OPENBLAS_NUM_THREADS` act only when set before numpy loads.
 - `strategy.publish` works from `on_start` until the session stops; after that it returns `False`.
 

@@ -3497,7 +3497,7 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
   TscCalibrator tsc_calibrator;
   const Seqlocked<TscCalibration> tsc_pub(tsc_calibrator.start());
   const net::ReactorBackend net_backend = resolve_net_backend(cfg);
-  for (std::size_t i = 0; i < slots.size(); ++i)
+  for (std::size_t i = 0; i < slots.size(); ++i) {
     wire_venue_slot(*slots[i],
                     VenueId{static_cast<std::uint8_t>(i)},
                     cfg,
@@ -3505,6 +3505,9 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
                     symbols,
                     instruments,
                     &tsc_pub);
+    // The copies run on the venue's thread and push into its md sink, which the gateway forwards.
+    wire_md_copies(*slots[i], i, cfg, net_backend, nullptr);
+  }
 
   // The network threads' sleeping flags, in a page every attachment maps.
   const int net_page_fd = gw::create_wake_page();
@@ -3589,7 +3592,7 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
     return gateway.command(request);
   };
   const GatewaySignals signals;
-  confine_other_threads(-1, cfg.engine.net_cpus);
+  confine_other_threads(cpu_layout(cfg, -1, true));
   start_net_threads(slots, cfg, -1);
   FASTMM_LOG_INFO(
       "fastmm-gateway: {} venue(s), {} instrument(s), dry_run={}, net={}, orders_per_sec={}, "
@@ -3687,6 +3690,7 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
   }
   for (auto& s : slots) {
     if (s->thread.joinable()) s->thread.join();
+    log_md_copies(s->md_copies);
   }
   gateway.log_counters();
   gateway.check_trip();

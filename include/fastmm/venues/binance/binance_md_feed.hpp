@@ -41,6 +41,12 @@ class BinanceMdFeed : public BasicBinanceMdFeed<BinanceMdParser, BinanceDepthSyn
                              format_ == MdFormat::Sbe ? std::span(kSbe) : std::span(kJson));
   }
 
+  // "/stream?streams=btcusdt@bookTicker": a redundant connection's streams (md_copies, JSON).
+  [[nodiscard]] std::string ticker_target(std::string_view base_path = "/stream") const {
+    static constexpr std::array<const char*, 1> kTicker = {"@bookTicker"};
+    return stream_target_for(base_path, kTicker);
+  }
+
   // One SBE binary frame (md_format = "sbe"). A trade frame can yield several TradeMsgs.
   ParseStatus on_binary(std::span<const std::byte> frame, std::int64_t rx_ts) noexcept {
     ++stats_.messages;
@@ -60,6 +66,11 @@ class BinanceMdFeed : public BasicBinanceMdFeed<BinanceMdParser, BinanceDepthSyn
           }
           // depth<N> partial books are not used for synchronisation (diff + REST snapshot is).
           if (kind == MdKind::BookSnapshot) return;
+          if (kind == MdKind::BookTicker && filter_ != nullptr &&
+              !filter_->first(kind, h.instrument, h.venue_seq)) {
+            ++stats_.stale_tickers;
+            return;
+          }
           if (!sink_.push(h)) {
             ++stats_.dropped;
             overflow = true;

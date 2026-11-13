@@ -39,7 +39,9 @@ Messages are quoted as the code writes them: `<...>` stands for a value, and `<v
 | `fastmm: py:<Class>.<hook> raised an exception (engine time <n> ns); kill switch tripped: StrategyError` (exit 6 with `on_kill = "exit"`) | The hook raised, for example an index outside a book array | Reproduce it in a backtest with the session's journal |
 | `fastmm: a live session is already running in this process; run one session per process` (RuntimeError) | `run_live` was called while another session runs | Run the second session in another process |
 | `fastmm: this process was forked while a live session was running and cannot run one; ...` (RuntimeError) | A child process started with `fork` during a session | Use the `spawn` or `forkserver` start method |
-| `thread affinity unchanged: every CPU this process may use is pinned in [engine] cpu or net_cpus` | No CPU is left for the process's other threads; they keep their affinity | Leave at least one CPU unpinned |
+| `thread affinity: no CPU is free of the engine and the network threads ...: the other threads share CPUs <list> with ...` | `cpu`, `net_cpus` and `md_copy_cpus` take every CPU; the other threads preempt network threads | Leave a CPU unpinned, set `[engine] aux_cpus`, or run on a host with more cores |
+| `thread affinity: [engine] aux_cpus takes in CPU <n> where the engine or a network thread polls` | `aux_cpus` names a polling core | Name another core |
+| `<venue>: the connector opens no market-data copies here; md_copies ignored` | The connector has no copies, or not in this configuration (a pool member; Binance with `md_format = "sbe"`) | Remove `md_copies` |
 
 ## Reference data
 

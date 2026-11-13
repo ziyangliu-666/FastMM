@@ -18,7 +18,7 @@
 | Channel | Endpoint | Purpose |
 |---|---|---|
 | md | `<ws_url>/public/stream?streams=<sym>@depth@100ms/<sym>@bookTicker` | depth diffs, best bid and offer |
-| ticker, `md_ticker_conns` > 0 | `<ws_url>/public/stream?streams=<sym>@bookTicker`, up to 8 more connections | best bid and offer; the first copy of each update is used ([redundant feeds](../codecs/nasdaq.md#moldudp64)) |
+| copies, `md_copies` > 0 | `<ws_url>/public/stream?streams=<sym>@bookTicker`, up to 8 more connections, on the venue's thread or their own (`md_copy_cpus`) | best bid and offer; the first copy of each update is used ([redundant market data](../../how-to/operations/running-in-production.md#redundant-market-data)); `md_ticker_conns` is the older spelling |
 | trades | `<ws_url>/market/stream?streams=<sym>@aggTrade` | aggregate trades |
 | mark | `<sym>@markPrice@1s` on `/market` | mark, index, funding ([below](#mark-index-and-funding)) |
 | user | `<ws_private_url>/ws/<listenKey>`, default `<ws_url>/private` | `ORDER_TRADE_UPDATE`, `ACCOUNT_UPDATE`, `listenKeyExpired` |

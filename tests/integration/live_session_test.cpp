@@ -376,26 +376,75 @@ TEST_CASE("live session: the slow-tier watchdog notices a slow thread that ended
   CHECK_FALSE(live::thread_alive(tid.load()));
 }
 
-TEST_CASE("live session: spare_cpus keeps the other threads off the pinned CPUs") {
+TEST_CASE("live session: aux_cpus_for keeps the other threads off the pinned CPUs") {
   using V = std::vector<int>;
+  const auto layout = [](int engine, V hot, V polling = {}, V aux = {}) {
+    live::CpuLayout l;
+    l.engine = engine;
+    l.hot = std::move(hot);
+    l.polling = std::move(polling);
+    l.aux = std::move(aux);
+    return l;
+  };
+  const auto cpus = [](const live::AuxPlacement& p) { return p.cpus; };
   const V four{0, 1, 2, 3};
   // Nothing pinned, or nothing pinned among the allowed CPUs: unchanged.
-  CHECK(live::spare_cpus(four, -1, V{}) == four);
-  CHECK(live::spare_cpus(four, -1, V{-1, -1}) == four);
-  CHECK(live::spare_cpus(V{0, 2}, 1, V{3}) == V{0, 2});
-  // The engine's and the network threads' CPUs, repeated or not.
-  CHECK(live::spare_cpus(four, 1, V{}) == V{0, 2, 3});
-  CHECK(live::spare_cpus(four, 1, V{2, -1}) == V{0, 3});
-  CHECK(live::spare_cpus(four, -1, V{2, 2}) == V{0, 1, 3});
-  CHECK(live::spare_cpus(four, 1, V{1}) == V{0, 2, 3});
-  // Hot threads on every CPU: off the engine's alone.
-  CHECK(live::spare_cpus(four, 1, V{2, 0, 0, 0, 0, 3}) == V{0, 2, 3});
-  CHECK(live::spare_cpus(V{1, 2}, 1, V{2}) == V{2});
-  // Nothing left: the engine's CPU is the only one, or the network threads cover all and the
-  // engine is not pinned.
-  CHECK(live::spare_cpus(V{1}, 1, V{}).empty());
-  CHECK(live::spare_cpus(four, -1, V{0, 1, 2, 3}).empty());
-  CHECK(live::spare_cpus(V{}, 1, V{2}).empty());
+  CHECK(cpus(live::aux_cpus_for(four, layout(-1, {}))) == four);
+  CHECK(cpus(live::aux_cpus_for(V{0, 2}, layout(1, {3}))) == V{0, 2});
+  // The engine's and the network threads' CPUs.
+  CHECK(cpus(live::aux_cpus_for(four, layout(1, {}))) == V{0, 2, 3});
+  CHECK(cpus(live::aux_cpus_for(four, layout(1, {2}))) == V{0, 3});
+  CHECK(live::aux_cpus_for(four, layout(1, {2})).warning.empty());
+  // Hot threads on every CPU: off the engine's and the polling ones, with a warning.
+  const live::AuxPlacement crowded = live::aux_cpus_for(four, layout(1, {2, 0, 3}, {2, 3}));
+  CHECK(crowded.cpus == V{0});
+  CHECK(crowded.warning.find("aux_cpus") != std::string::npos);
+  // Every one of them polling: off the engine's alone, still with a warning.
+  const live::AuxPlacement polling = live::aux_cpus_for(four, layout(1, {0, 2, 3}, {0, 2, 3}));
+  CHECK(polling.cpus == V{0, 2, 3});
+  CHECK_FALSE(polling.warning.empty());
+  // Only the engine's CPU: nowhere to go.
+  CHECK(cpus(live::aux_cpus_for(V{1}, layout(1, {}))).empty());
+  // [engine] aux_cpus decides, within the allowed CPUs; a polling core in it is warned about.
+  CHECK(cpus(live::aux_cpus_for(four, layout(1, {2, 0, 3}, {2, 3}, {0, 5}))) == V{0});
+  CHECK(live::aux_cpus_for(four, layout(1, {2, 0, 3}, {2, 3}, {0})).warning.empty());
+  CHECK_FALSE(live::aux_cpus_for(four, layout(1, {2, 3}, {3}, {0, 3})).warning.empty());
+  const live::AuxPlacement nowhere = live::aux_cpus_for(four, layout(1, {}, {}, {7}));
+  CHECK(nowhere.cpus.empty());
+  CHECK_FALSE(nowhere.warning.empty());
+}
+
+TEST_CASE("live session: cpu_layout reads the pinned and polling cores of a configuration") {
+  using V = std::vector<int>;
+  Config cfg;
+  for (int i = 0; i < 4; ++i) {
+    VenueSection v;
+    v.name = "v" + std::to_string(i);
+    cfg.venues.push_back(v);
+  }
+  cfg.engine.cpu = 1;
+  cfg.engine.net_cpus = {2, 0, 0, 3};
+  cfg.engine.spin_mode = "adaptive";
+  // Adaptive: two venues on core 0 share it, so their threads block; 2 and 3 do not poll either.
+  live::CpuLayout l = live::cpu_layout(cfg, 1, true);
+  CHECK(l.engine == 1);
+  CHECK(l.hot == V{2, 0, 3});
+  CHECK(l.polling.empty());
+  // net_spin_dedicated: 2 and 3 poll, and so does the one thread of the venues on 0.
+  cfg.engine.net_spin_dedicated = true;
+  l = live::cpu_layout(cfg, 1, true);
+  CHECK(l.polling == V{2, 0, 3});
+  // Copy threads count; one on a core of its own polls, one beside a network thread does not.
+  cfg.venues[3].md_copies = 2;
+  cfg.venues[3].md_copy_cpus = {5, 3};
+  l = live::cpu_layout(cfg, 1, true);
+  CHECK(l.hot == V{2, 0, 3, 5});
+  CHECK(std::find(l.polling.begin(), l.polling.end(), 5) != l.polling.end());
+  // The engine thread runs the network loop: only its core.
+  cfg.engine.aux_cpus = {4};
+  l = live::cpu_layout(cfg, 1, false);
+  CHECK(l.hot.empty());
+  CHECK(l.aux == V{4});
 }
 
 TEST_CASE("live session: confine_threads moves every thread to the given CPUs") {
@@ -422,7 +471,9 @@ TEST_CASE("live session: confine_threads moves every thread to the given CPUs") 
 
   CHECK(live::process_cpus() == allowed);
   CHECK_FALSE(live::confine_threads(std::vector<int>{-1}).error.empty());  // no CPU
-  const std::vector<int> spare = live::spare_cpus(allowed, first, std::vector<int>{});
+  live::CpuLayout without_first;
+  without_first.engine = first;
+  const std::vector<int> spare = live::aux_cpus_for(allowed, without_first).cpus;
   const live::ConfineResult r = live::confine_threads(spare);
   CHECK(r.error.empty());
   CHECK(r.threads >= 2);

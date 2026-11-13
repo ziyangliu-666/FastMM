@@ -37,6 +37,8 @@
 namespace fastmm {
 
 inline constexpr std::size_t kMaxVenuesConfig = 8;  // == kMaxVenues (transport.hpp)
+// The most redundant market-data connections a venue opens ([venues.*] md_copies).
+inline constexpr int kMaxMdCopies = 8;
 // The shortest [venues.<name>] fill_audit_interval_s: an audit reads every subscribed symbol.
 inline constexpr int kMinFillAuditIntervalS = 10;
 
@@ -60,6 +62,9 @@ struct EngineSection {
   std::string name = "fastmm";
   int cpu = -1;
   std::vector<int> net_cpus;
+  // Cores of every other thread (live/thread_affinity.hpp); empty: the cores no hot thread is
+  // pinned to.
+  std::vector<int> aux_cpus;
   std::string spin_mode = "adaptive";
   // Carry the previous session's positions over from the store (venues that replay executions).
   bool restore_position = true;
@@ -232,6 +237,11 @@ struct VenueSection {
   // the venue's trade history with the fills the store holds for this venue, up to
   // fill_audit_lag_s ago. 0: off. "report" only reports a difference; "book" also books the
   // executions the engine missed, through the execution replay.
+  // Redundant market-data connections (venues/md_copy.hpp) and the cores of their threads: copy k
+  // runs on a thread of its own pinned to md_copy_cpus[k], or on the venue's network thread past
+  // the end of the list.
+  int md_copies = 0;
+  std::vector<int> md_copy_cpus;
   int fill_audit_interval_s = 0;
   int fill_audit_lag_s = 180;
   std::string fill_audit_mode = "report";

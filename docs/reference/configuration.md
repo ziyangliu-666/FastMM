@@ -23,6 +23,7 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `name` | string |  | session name, used in logs, journal file names and the status file (default "fastmm") |
 | `cpu` | integer |  | CPU core of the engine thread; -1 = not pinned (default -1) |
 | `net_cpus` | integer array |  | CPU cores of the network threads, one per venue in order; venues given the same core run on one thread when it polls (spin_mode = "busy", or net_spin_dedicated) and the core is not the engine's; otherwise, with spin_mode = "adaptive", a thread whose core it shares with the engine or another network thread blocks when idle instead of spinning (default []) |
+| `aux_cpus` | integer array |  | fastmm-live, fastmm-gateway: CPU cores of the threads that are not the engine's or a network thread's (journal, store, audit, treasury, resolvers, main); empty = every core but cpu, net_cpus and the venues' md_copy_cpus, or, when those take every core, every core but cpu and the cores of network threads that never block, with a warning (default []) |
 | `spin_mode` | string |  | busy (spin forever) \| adaptive (spin briefly, then block until work arrives; use on WSL2 and laptops) (default adaptive) |
 | `net_backend` | string |  | event loop of fastmm-live and fastmm-sim-exchange: epoll \| io_uring (Linux 5.13 or newer; falls back to epoll with a warning) (default epoll) |
 | `threading` | string |  | fastmm-live: split (engine and network threads, rings between them) \| single (one venue; its network loop, the engine and order sending run on the engine thread, cpu; net_cpus is ignored) (default split) |
@@ -103,6 +104,8 @@ One table per venue; `<name>` is how instruments refer to it.
 | `recv_window_ms` | integer |  | validity window of signed requests, ms (default 3000) |
 | `source_ip` | string |  | the venue's connections leave this host from this address, IPv4 or IPv6; it must be one of the host's (default: the kernel chooses) |
 | `source_interface` | string |  | the venue's connections leave this host from this network interface's address; exclusive with source_ip (default: the kernel chooses) |
+| `md_copies` | integer |  | redundant market-data connections carrying the venue's top-of-book streams again; each update reaches the engine once, from whichever connection delivered it first (connectors with copies: binance, binance_usdm; 0 to 8, default 0) |
+| `md_copy_cpus` | integer array |  | fastmm-live: CPU cores of network threads of their own for the copies, one per copy in order; copies given the same core share a thread, -1 = a thread not pinned; copies past the end of the list run on the venue's network thread (default [], all of them do) |
 | `fill_audit_interval_s` | integer |  | fastmm-live compares the venue's trade history with the stored fills this often, s; 0 = off (default 0, at least 10) |
 | `fill_audit_lag_s` | integer |  | a fill audit reads up to this long ago, s, so the execution replay has booked what it will (default 180) |
 | `fill_audit_mode` | string |  | "report" logs and counts what differs; "book" also books the executions the engine missed (default "report") |
@@ -389,7 +392,7 @@ configuration (a dry run, `order_entry = "none"`, missing credentials).
 | `private_key_file` | string |  | Ed25519 private key file (PKCS#8 PEM), with key_type = ed25519 |
 | `private_key_env` | string |  | environment variable holding the Ed25519 private key PEM (instead of private_key_file) |
 | `order_rate_threshold` | number |  | share of the venue's order-count limits (10 s, 1 d) the connector fills before it refuses an order; the request weight stays at 0.9 (default 0.9) |
-| `md_ticker_conns` | integer |  | extra connections carrying only the bookTicker streams; the first copy of each update is used, which takes the occasional slow push server out of the path (0 to 8, default 0) |
+| `md_ticker_conns` | integer |  | the older spelling of md_copies: bookTicker-only connections; with both set, the larger count is opened (0 to 8, default 0) |
 | `ws_private_url` | string |  | private WebSocket URL; empty = derived from ws_url |
 | `position_from_account_update` | boolean |  | correct the engine position from ACCOUNT_UPDATE when it differs from the fills (default true) |
 | `one_way_mode` | boolean |  | at start, switch an account in hedge mode to one-way mode when it holds no position and no open order (default false: a hedge-mode account refuses to start) |

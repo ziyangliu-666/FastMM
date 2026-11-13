@@ -140,7 +140,7 @@ Two tools in `bin/bench/` replay an ITCH 5.0 file in Nasdaq's sample format:
 
 ## MoldUDP64
 
-A MoldUDP64 feed is sent twice, on lines A and B. The network thread passes the first copy of each packet to the engine, so a packet lost on one line comes from the other. Binance USDⓈ-M applies the same rule to bookTicker streams over `md_ticker_conns` connections:
+A MoldUDP64 feed is sent twice, on lines A and B. The network thread passes the first copy of each packet to the engine, so a packet lost on one line comes from the other. Binance and Binance USDⓈ-M apply the same rule to bookTicker streams over `md_copies` connections:
 
 <video class="fastmm-video" autoplay loop muted playsinline preload="metadata" poster="../../../assets/anim/redundant-feeds.jpg" src="../../../assets/anim/redundant-feeds.mp4"></video>
 

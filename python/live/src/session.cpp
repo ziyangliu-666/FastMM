@@ -136,10 +136,10 @@ py::dict load_config(const std::string& path, bool allow_inline_secrets) {
   out["warnings"] = cfg.warnings;
   out["orders_per_sec"] = cfg.risk_limits().orders_per_sec;
   out["max_param_age_ms"] = cfg.strategy.max_param_age_ms;
-  out["spare_cpus"] = live::spare_cpus(
-      live::process_cpus(),
-      cfg.engine.cpu,
-      cfg.single_threaded() ? std::span<const int>{} : std::span<const int>(cfg.engine.net_cpus));
+  out["spare_cpus"] =
+      live::aux_cpus_for(live::process_cpus(),
+                         live::cpu_layout(cfg, cfg.engine.cpu, !cfg.single_threaded()))
+          .cpus;
   return out;
 }
 
