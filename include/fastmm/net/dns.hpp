@@ -31,6 +31,8 @@ ResolveResult resolve_sync(std::string_view host, std::uint16_t port);
 
 inline constexpr std::size_t kMaxResolverThreads = 4;
 
+class EndpointHost;
+
 namespace detail {
 struct ResolveTarget;  // the reactor results go to, until the AsyncResolver is destroyed
 }
@@ -48,6 +50,9 @@ class AsyncResolver {
   // Thread-safe. `cb` runs on the reactor thread (via post) once the lookup completes. A numeric
   // host is answered through the same post, without a helper.
   void resolve(std::string host, std::uint16_t port, Callback cb);
+  // The same through endpoint selection (net/endpoint_selector.hpp): the helper looks the host up
+  // and probes its addresses, and `cb` gets them fastest first.
+  void resolve(std::shared_ptr<EndpointHost> host, Callback cb);
 
  private:
   std::shared_ptr<detail::ResolveTarget> target_;

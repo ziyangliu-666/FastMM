@@ -1019,6 +1019,38 @@ TEST_CASE("core.config: md_copies, md_copy_cpus and aux_cpus") {
                        ConfigError);
 }
 
+TEST_CASE("core.config: endpoint selection, for the engine and per venue") {
+  const Config none = Config::parse(audit_toml(""));
+  CHECK_FALSE(none.engine.endpoint_select);
+  CHECK(none.engine.endpoint_probe_interval_s == 300);
+  CHECK(none.engine.endpoint_probe_samples == 8);
+  CHECK(none.engine.endpoint_spread_us == 20);
+  CHECK(none.engine.endpoint_switch_us == 50);
+  CHECK_FALSE(none.venues[0].endpoint_select.has_value());
+  const Config on = Config::parse(
+      "[engine]\nendpoint_select = true\nendpoint_probe_interval_s = 60\n"
+      "endpoint_probe_samples = 20\nendpoint_spread_us = 5\nendpoint_switch_us = 0\n" +
+      audit_toml("endpoint_select = false\n"));
+  CHECK(on.engine.endpoint_select);
+  CHECK(on.engine.endpoint_probe_interval_s == 60);
+  CHECK(on.engine.endpoint_probe_samples == 20);
+  CHECK(on.engine.endpoint_spread_us == 5);
+  CHECK(on.engine.endpoint_switch_us == 0);
+  CHECK(on.venues[0].endpoint_select == false);
+  const Config back = Config::parse(on.effective_toml());
+  CHECK(back.engine.endpoint_select);
+  CHECK(back.engine.endpoint_probe_interval_s == 60);
+  CHECK(back.engine.endpoint_probe_samples == 20);
+  CHECK(back.venues[0].endpoint_select == false);
+  CHECK(on.redacted().find("endpoint_select = false") != std::string::npos);
+  CHECK_THROWS_WITH_AS(Config::parse("[engine]\nendpoint_probe_samples = 0\n" + audit_toml("")),
+                       doctest::Contains("endpoint_probe_samples must be 1 to 100"),
+                       ConfigError);
+  CHECK_THROWS_WITH_AS(Config::parse("[engine]\nendpoint_switch_us = -1\n" + audit_toml("")),
+                       doctest::Contains("endpoint_switch_us must be 0"),
+                       ConfigError);
+}
+
 TEST_CASE("core.config: source_ip and source_interface are checked as written") {
   const Config none = Config::parse(audit_toml(""));
   CHECK(none.venues[0].source_ip.empty());

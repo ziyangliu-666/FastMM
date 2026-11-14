@@ -54,6 +54,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -73,6 +74,8 @@ struct CoinbaseVenueConfig {
   std::string ca_file;
   // [venues.<name>] source_ip / source_interface: every connection goes out from it.
   net::SourceAddress source;
+  // [venues.<name>] endpoint_select: nullopt follows [engine] endpoint_select.
+  std::optional<bool> select_endpoint;
   bool dry_run = false;
   bool emit_ack_from_response = true;
   bool cancel_on_order_channel_loss = true;  // the user channel: orders are reported there

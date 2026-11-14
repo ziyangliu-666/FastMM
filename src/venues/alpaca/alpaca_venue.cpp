@@ -111,6 +111,7 @@ net::ConnectionConfig AlpacaVenue::ws_config(const std::string& url) const {
   c.tls.ca_file = cfg_.ca_file;
   c.tls.insecure = cfg_.insecure_tls;
   c.source = cfg_.source;
+  c.select_endpoint = cfg_.select_endpoint;
   c.stale_ms = cfg_.stale_ms;
   c.dead_ms = cfg_.dead_ms;
   c.heartbeat_interval_ms = cfg_.ping_ms;

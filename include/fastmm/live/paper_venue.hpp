@@ -11,6 +11,7 @@
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/core/strong_id.hpp"
+#include "fastmm/venues/md_copy.hpp"
 #include "fastmm/venues/symbology.hpp"
 #include "fastmm/venues/venue.hpp"
 
@@ -77,6 +78,14 @@ class PaperVenue final : public venues::Venue {
   void request_open_orders() override;
   bool cancel_all() override;
   [[nodiscard]] venues::VenueStatus status() const noexcept override { return inner_->status(); }
+  // Market-data copies are the connector's; a dry run opens them as a live session does.
+  std::unique_ptr<venues::MdCopy> make_md_copy(venues::EventSink& sink,
+                                               venues::UpdateFilter& filter) override {
+    return inner_->make_md_copy(sink, filter);
+  }
+  [[nodiscard]] std::uint32_t md_copies_requested() const noexcept override {
+    return inner_->md_copies_requested();
+  }
 
   // The instruments this venue has had paper orders for, in id order. Any thread.
   [[nodiscard]] std::vector<PaperQuotes> quotes() const;

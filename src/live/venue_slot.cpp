@@ -2,6 +2,8 @@
 
 #include "fastmm/core/log.hpp"
 #include "fastmm/live/session.hpp"
+#include "fastmm/net/endpoint_selector.hpp"
+#include "fastmm/venues/registry.hpp"
 
 #include <fmt/format.h>
 
@@ -57,6 +59,19 @@ int make_venue_slots(const Config& cfg,
                      const char* prog,
                      VenueSlots& slots,
                      bool paper) {
+  // Before any connector makes a connection: endpoint selection is read when one is made.
+  const net::EndpointSelectConfig endpoints = venues::endpoint_select_config(cfg.engine);
+  net::EndpointSelector::instance().configure(endpoints);
+  for (const VenueSection& v : cfg.venues) {
+    if (!v.endpoint_select.value_or(endpoints.enabled)) continue;
+    FASTMM_LOG_INFO(
+        "{}: endpoint selection on: {} connects per address, probed again every {} s, moves when "
+        "{} us slower",
+        v.name,
+        endpoints.samples,
+        endpoints.probe_interval_s,
+        endpoints.switch_us);
+  }
   for (std::size_t i = 0; i < cfg.venues.size(); ++i) {
     auto slot = std::make_unique<VenueSlot>();
     // The source address must be one this host has: a bind to another fails every connect.

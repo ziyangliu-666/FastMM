@@ -5,12 +5,17 @@
 
 #include "test_support.hpp"
 
+#include "fastmm/net/endpoint_selector.hpp"
 #include "fastmm/net/http_server.hpp"
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/net/tcp_socket.hpp"
 
 #include <chrono>
 #include <cstdint>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -51,7 +56,8 @@ bool run_until(net::Reactor& reactor, Pred pred, int timeout_ms) {
 struct Server {
   explicit Server(net::Reactor& reactor)
       : http(reactor, [](net::TcpSocket&& s) { return net::PlainStream(std::move(s)); }) {
-    http.route("GET", "/time", [](const net::HttpRequest&) {
+    http.route("GET", "/time", [this](const net::HttpRequest&) {
+      ++times;
       return net::HttpServerResponse::json(200, R"({"serverTime":1})");
     });
     http.route("DELETE", "/order", [](const net::HttpRequest& req) {
@@ -69,6 +75,7 @@ struct Server {
   std::string url() const { return "http://127.0.0.1:" + std::to_string(http.port()); }
 
   net::HttpServer<net::PlainStream> http;
+  int times = 0;  // GET /time served
 };
 
 RestChannelConfig config(const std::string& url, std::uint32_t timeout_ms) {
@@ -233,4 +240,62 @@ TEST_CASE("venues.rest_channel: a full lane refuses, the other lane still takes 
   REQUIRE(run_until(reactor, [&] { return o1.done; }, 1000));
   CHECK(o1.status == 200);
   CHECK_FALSE(r3.done);
+}
+
+TEST_CASE(
+    "venues.rest_channel: endpoint selection connects to the fastest address and fails over") {
+  net::Reactor reactor;
+  Server slow(reactor);
+  auto fast = std::make_unique<Server>(reactor);
+  const std::uint16_t fast_port = fast->http.port();
+  // venue.test answers both servers' addresses; connects to `fast` take 100 us, to `slow` 300 us.
+  std::mutex mutex;
+  std::map<std::uint16_t, std::int64_t> rtt_us{{slow.http.port(), 300}, {fast_port, 100}};
+  net::EndpointHooks hooks;
+  hooks.resolve = [&](std::string_view, std::uint16_t) {
+    net::ResolveResult r;
+    r.addrs = {net::SockAddr::loopback_v4(slow.http.port()), net::SockAddr::loopback_v4(fast_port)};
+    return r;
+  };
+  hooks.connect_ns = [&](const net::SockAddr& peer,
+                         const net::SourceAddress&,
+                         std::uint32_t) -> std::optional<std::int64_t> {
+    const std::lock_guard lock(mutex);
+    return rtt_us.at(peer.port()) * 1000;
+  };
+  net::EndpointSelectConfig sc;
+  sc.samples = 2;
+  sc.probe_interval_s = 0;
+  net::EndpointSelector::instance().configure(sc, hooks);
+
+  RestChannelConfig cfg = config("http://venue.test:" + std::to_string(slow.http.port()), 1500);
+  cfg.select_endpoint = true;
+  RestChannel rest(reactor, cfg);
+  Reply first;
+  REQUIRE(rest.request("GET", "/time", {}, {}, capture(first)));
+  REQUIRE(run_until(reactor, [&] { return first.done; }, 2000));
+  CHECK(first.status == 200);
+  CHECK(fast->times == 1);
+  CHECK(slow.times == 0);
+
+  // The fast server goes: the request on its connection fails, the next one connects to the other
+  // address although the probes still rank the gone one first.
+  fast.reset();
+  Reply lost;
+  REQUIRE(rest.request("GET", "/time", {}, {}, capture(lost)));
+  REQUIRE(run_until(reactor, [&] { return lost.done; }, 2000));
+  Reply next;
+  REQUIRE(run_until(
+      reactor,
+      [&] {
+        if (next.done && next.status == 200) return true;
+        if (next.done || rest.queued() == 0) {
+          next = Reply{};
+          REQUIRE(rest.request("GET", "/time", {}, {}, capture(next)));
+        }
+        return false;
+      },
+      4000));
+  CHECK(slow.times == 1);
+  net::EndpointSelector::instance().configure({});
 }

@@ -41,6 +41,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -57,6 +58,8 @@ struct AlpacaVenueConfig {
   bool insecure_tls = false;
   std::string ca_file;
   net::SourceAddress source;
+  // [venues.<name>] endpoint_select: nullopt follows [engine] endpoint_select.
+  std::optional<bool> select_endpoint;
   bool dry_run = false;
   bool trades = true;  // subscribe to trades as well as quotes
   EncoderOptions orders{};

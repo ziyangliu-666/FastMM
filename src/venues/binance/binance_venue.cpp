@@ -163,6 +163,7 @@ net::ConnectionConfig BinanceVenue::ws_config(const std::string& url, bool manua
   c.url = url;
   c.tls.ca_file = cfg_.ca_file;
   c.source = cfg_.source;
+  c.select_endpoint = cfg_.select_endpoint;
   c.tls.insecure = cfg_.insecure_tls;
   c.stale_ms = cfg_.stale_ms;
   // Binance sends a WebSocket ping every 20 s (web-socket-streams.md / web-socket-api.md
@@ -203,6 +204,7 @@ Result<void, std::string> BinanceVenue::load_reference_data(InstrumentTable& ins
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
   opts.source = cfg_.source;
+  opts.select_endpoint = cfg_.select_endpoint;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   HttpReply reply;
@@ -298,6 +300,7 @@ Result<std::vector<VenueFee>, std::string> BinanceVenue::account_fees(
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
   opts.source = cfg_.source;
+  opts.select_endpoint = cfg_.select_endpoint;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   try {

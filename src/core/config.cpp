@@ -861,6 +861,20 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     if (e.net_rt_priority < 0 || e.net_rt_priority > 99)
       fail_at(*t->get("net_rt_priority"), "net_rt_priority must be 0 (off) or 1..99");
     get(*t, "log_irq_affinity", e.log_irq_affinity);
+    get(*t, "endpoint_select", e.endpoint_select);
+    get(*t, "endpoint_probe_interval_s", e.endpoint_probe_interval_s);
+    if (e.endpoint_probe_interval_s < 0 || e.endpoint_probe_interval_s > 86'400)
+      fail_at(*t->get("endpoint_probe_interval_s"),
+              "endpoint_probe_interval_s must be 0 (off) to 86400");
+    get(*t, "endpoint_probe_samples", e.endpoint_probe_samples);
+    if (e.endpoint_probe_samples < 1 || e.endpoint_probe_samples > 100)
+      fail_at(*t->get("endpoint_probe_samples"), "endpoint_probe_samples must be 1 to 100");
+    get(*t, "endpoint_spread_us", e.endpoint_spread_us);
+    if (e.endpoint_spread_us < 0 || e.endpoint_spread_us > 1'000'000)
+      fail_at(*t->get("endpoint_spread_us"), "endpoint_spread_us must be 0 to 1000000");
+    get(*t, "endpoint_switch_us", e.endpoint_switch_us);
+    if (e.endpoint_switch_us < 0 || e.endpoint_switch_us > 1'000'000)
+      fail_at(*t->get("endpoint_switch_us"), "endpoint_switch_us must be 0 (never) to 1000000");
     get(*t, "restore_position", e.restore_position);
     get(*t, "min_requote_ticks", e.min_requote_ticks);
     get(*t, "min_requote_interval_ms", e.min_requote_interval_ms);
@@ -969,6 +983,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
                 fmt::format("venues.{}.source_interface '{}' is longer than an interface name",
                             name.str(),
                             v.source_interface));
+      v.endpoint_select = (*t)["endpoint_select"].value<bool>();
       get(*t, "md_copies", v.md_copies);
       if (v.md_copies < 0 || v.md_copies > kMaxMdCopies)
         fail_at(*t->get("md_copies"),
@@ -1657,6 +1672,7 @@ std::string Config::redacted() const {
     kv("recv_window_ms", v.recv_window_ms);
     if (!v.source_ip.empty()) kq("source_ip", v.source_ip);
     if (!v.source_interface.empty()) kq("source_interface", v.source_interface);
+    if (v.endpoint_select) kv("endpoint_select", *v.endpoint_select);
     if (v.md_copies > 0) kv("md_copies", v.md_copies);
     if (!v.md_copy_cpus.empty())
       fmt::format_to(
@@ -2035,6 +2051,12 @@ std::string Config::effective_toml() const {
   e.insert("rt_priority", static_cast<std::int64_t>(engine.rt_priority));
   e.insert("net_rt_priority", static_cast<std::int64_t>(engine.net_rt_priority));
   e.insert("log_irq_affinity", engine.log_irq_affinity);
+  e.insert("endpoint_select", engine.endpoint_select);
+  e.insert("endpoint_probe_interval_s",
+           static_cast<std::int64_t>(engine.endpoint_probe_interval_s));
+  e.insert("endpoint_probe_samples", static_cast<std::int64_t>(engine.endpoint_probe_samples));
+  e.insert("endpoint_spread_us", static_cast<std::int64_t>(engine.endpoint_spread_us));
+  e.insert("endpoint_switch_us", static_cast<std::int64_t>(engine.endpoint_switch_us));
   e.insert("restore_position", engine.restore_position);
   e.insert("min_requote_ticks", static_cast<std::int64_t>(engine.min_requote_ticks));
   e.insert("min_requote_interval_ms", static_cast<std::int64_t>(engine.min_requote_interval_ms));
@@ -2076,6 +2098,7 @@ std::string Config::effective_toml() const {
       t.insert("recv_window_ms", static_cast<std::int64_t>(v.recv_window_ms));
       if (!v.source_ip.empty()) t.insert("source_ip", v.source_ip);
       if (!v.source_interface.empty()) t.insert("source_interface", v.source_interface);
+      if (v.endpoint_select) t.insert("endpoint_select", *v.endpoint_select);
       if (v.md_copies > 0) t.insert("md_copies", static_cast<std::int64_t>(v.md_copies));
       if (!v.md_copy_cpus.empty()) {
         toml::array copy_cpus;

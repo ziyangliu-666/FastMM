@@ -1,6 +1,7 @@
 #include "fastmm/net/dns.hpp"
 
 #include "fastmm/core/thread_utils.hpp"
+#include "fastmm/net/endpoint_selector.hpp"
 
 #include <netdb.h>
 
@@ -93,10 +94,12 @@ class ResolverPool {
   void submit(std::shared_ptr<detail::ResolveTarget> target,
               std::string host,
               std::uint16_t port,
-              AsyncResolver::Callback cb) {
+              AsyncResolver::Callback cb,
+              std::shared_ptr<EndpointHost> endpoints = nullptr) {
     {
       const std::lock_guard lock(mutex_);
-      queue_.push_back(Job{std::move(target), std::move(host), port, std::move(cb)});
+      queue_.push_back(
+          Job{std::move(target), std::move(host), port, std::move(cb), std::move(endpoints)});
       if (idle_ < queue_.size() && threads_.size() < kMaxResolverThreads)
         threads_.emplace_back([this](const std::stop_token& st) { work(st); });
     }
@@ -111,6 +114,7 @@ class ResolverPool {
     std::string host;
     std::uint16_t port = 0;
     AsyncResolver::Callback cb;
+    std::shared_ptr<EndpointHost> endpoints;  // set: look up and probe through it
   };
 
   void work(const std::stop_token& st) {
@@ -129,7 +133,8 @@ class ResolverPool {
       }
       // A resolver destroyed while its lookup waited needs no lookup.
       if (!job.target->alive()) continue;
-      ResolveResult result = resolve_sync(job.host, job.port);
+      ResolveResult result =
+          job.endpoints ? job.endpoints->refresh() : resolve_sync(job.host, job.port);
       if (st.stop_requested()) return;
       detail::ResolveTarget::deliver(job.target, std::move(job.cb), std::move(result));
     }
@@ -162,6 +167,11 @@ void AsyncResolver::resolve(std::string host, std::uint16_t port, Callback cb) {
     return;
   }
   ResolverPool::instance().submit(target_, std::move(host), port, std::move(cb));
+}
+
+void AsyncResolver::resolve(std::shared_ptr<EndpointHost> host, Callback cb) {
+  const std::uint16_t port = host->port();
+  ResolverPool::instance().submit(target_, std::string{}, port, std::move(cb), std::move(host));
 }
 
 }  // namespace fastmm::net

@@ -42,6 +42,7 @@ template <class Cfg>
   o.insecure_tls = cfg.insecure_tls;
   o.timeout_ms = cfg.http_timeout_ms;
   if constexpr (requires { cfg.source; }) o.source = cfg.source;
+  if constexpr (requires { cfg.select_endpoint; }) o.select_endpoint = cfg.select_endpoint;
   return o;
 }
 

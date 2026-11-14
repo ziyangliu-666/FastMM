@@ -212,6 +212,7 @@ net::ConnectionConfig BinanceUsdmVenue::ws_config(const std::string& url,
   c.url = url;
   c.tls.ca_file = cfg_.ca_file;
   c.source = cfg_.source;
+  c.select_endpoint = cfg_.select_endpoint;
   c.tls.insecure = cfg_.insecure_tls;
   c.stale_ms = cfg_.stale_ms;
   c.dead_ms = std::max<std::uint32_t>(cfg_.dead_ms, min_dead_ms);
@@ -299,6 +300,7 @@ Result<void, std::string> BinanceUsdmVenue::load_reference_data(InstrumentTable&
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
   opts.source = cfg_.source;
+  opts.select_endpoint = cfg_.select_endpoint;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   HttpReply reply;
@@ -355,6 +357,7 @@ void BinanceUsdmVenue::load_funding_intervals(const std::vector<Instrument*>& mi
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
   opts.source = cfg_.source;
+  opts.select_endpoint = cfg_.select_endpoint;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   HttpReply reply;
@@ -401,6 +404,7 @@ std::string BinanceUsdmVenue::account_checks(const std::vector<Instrument*>& min
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
   opts.source = cfg_.source;
+  opts.select_endpoint = cfg_.select_endpoint;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   try {

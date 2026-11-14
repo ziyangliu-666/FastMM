@@ -131,6 +131,7 @@ net::ConnectionConfig LighterVenue::ws_config(bool manual_subscribe) const {
   c.tls.ca_file = cfg_.ca_file;
   c.tls.insecure = cfg_.insecure_tls;
   c.source = cfg_.source;
+  c.select_endpoint = cfg_.select_endpoint;
   c.stale_ms = cfg_.stale_ms;
   c.dead_ms = std::max<std::uint32_t>(cfg_.dead_ms, cfg_.ping_interval_ms * 2 + 5000);
   c.backoff = cfg_.backoff;

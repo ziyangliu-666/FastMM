@@ -94,6 +94,7 @@ std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactor
   lighter::LighterVenueConfig c = lighter::make_lighter_config(s, opts.dry_run);
   c.record_raw_dir = opts.record_raw_dir;
   c.source = source_address(s);
+  c.select_endpoint = s.endpoint_select;
   return std::make_unique<lighter::LighterVenue>(id, std::move(c));
 }
 

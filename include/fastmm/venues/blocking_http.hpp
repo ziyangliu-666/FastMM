@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -49,6 +50,9 @@ struct BlockingHttpOptions {
   // production in 2026-09 (1 MiB is the streaming client's default).
   std::size_t recv_capacity = std::size_t{16} * 1024 * 1024;
   net::SourceAddress source;  // where the connection leaves this host from; empty: anywhere
+  // Endpoint selection (net/endpoint_selector.hpp): the fastest address first; nullopt: the
+  // process's default.
+  std::optional<bool> select_endpoint;
 };
 
 class BlockingHttp {

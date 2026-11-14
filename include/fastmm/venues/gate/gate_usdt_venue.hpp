@@ -64,6 +64,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -80,6 +81,8 @@ struct GateUsdtVenueConfig {
   std::string ca_file;
   // [venues.<name>] source_ip / source_interface: every connection goes out from it.
   net::SourceAddress source;
+  // [venues.<name>] endpoint_select: nullopt follows [engine] endpoint_select.
+  std::optional<bool> select_endpoint;
   bool dry_run = false;
   bool ws_order_api = true;
   bool emit_ack_from_response = true;

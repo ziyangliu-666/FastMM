@@ -59,6 +59,7 @@ std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactor
   coinbase::CoinbaseVenueConfig c = coinbase::make_coinbase_config(s, opts.dry_run);
   c.record_raw_dir = opts.record_raw_dir;
   c.source = source_address(s);
+  c.select_endpoint = s.endpoint_select;
   return std::make_unique<coinbase::CoinbaseExchangeVenue>(id, std::move(c));
 }
 

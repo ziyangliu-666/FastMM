@@ -1,6 +1,7 @@
 #include "fastmm/venues/blocking_http.hpp"
 
 #include "fastmm/net/dns.hpp"
+#include "fastmm/net/endpoint_selector.hpp"
 #include "fastmm/net/http_client.hpp"
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/net/tls_stream.hpp"
@@ -63,7 +64,19 @@ BlockingHttp::~BlockingHttp() = default;
 
 std::string BlockingHttp::connect() {
   if (addrs_.empty()) {
-    net::ResolveResult res = net::resolve_sync(host_, port_);
+    // With endpoint selection the host's addresses fastest first, probed now unless a connection
+    // of the venue has done it already.
+    net::EndpointSelector& sel = net::EndpointSelector::instance();
+    const std::shared_ptr<net::EndpointHost> endpoints =
+        sel.selects(opts_.select_endpoint) ? sel.host(host_, port_, opts_.source) : nullptr;
+    net::ResolveResult res;
+    if (endpoints && endpoints->probed()) {
+      res.addrs = endpoints->ranked();
+    } else if (endpoints) {
+      res = endpoints->refresh();
+    } else {
+      res = net::resolve_sync(host_, port_);
+    }
     if (!res.ok()) return "resolve failed: " + res.error_text();
     net::keep_reachable(opts_.source, res.addrs);
     if (res.addrs.empty()) return "no address of " + host_ + " in the family of the source address";

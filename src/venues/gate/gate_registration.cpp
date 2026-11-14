@@ -73,6 +73,7 @@ std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactor
   gate::GateUsdtVenueConfig c = gate::make_gate_usdt_config(s, opts.dry_run);
   c.record_raw_dir = opts.record_raw_dir;
   c.source = source_address(s);
+  c.select_endpoint = s.endpoint_select;
   return std::make_unique<gate::GateUsdtVenue>(id, std::move(c));
 }
 

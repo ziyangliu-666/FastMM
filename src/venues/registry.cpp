@@ -224,6 +224,12 @@ void validate_venues(const Config& cfg, const VenueRegistry& r) {
                       s.name,
                       e.name));
     }
+    if (s.endpoint_select.value_or(false) && !e.caps.bind_source) {
+      throw ConfigError(
+          fmt::format("venues.{}.endpoint_select: connector '{}' does not select its endpoints",
+                      s.name,
+                      e.name));
+    }
     if (s.treasury.enabled && !s.treasury.dry_run && !e.caps.internal_transfer) {
       throw ConfigError(
           fmt::format("venues.{}.treasury: connector '{}' has no internal transfers; "

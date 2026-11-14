@@ -18,9 +18,16 @@
 // messages during the overlap (market-data consumers must tolerate duplicates, which the
 // book-sync FSM does by sequence number). Sends target the newest session from its
 // on_ws_open onwards so subscriptions land on the right socket.
+//
+// Endpoint selection (net/endpoint_selector.hpp, cfg.select_endpoint): every lookup also probes
+// the host's addresses, each session connects to the address the host's EndpointHost picks, a
+// session that fails before it is up marks its address failed so the next attempt takes another,
+// and a connection that rolls over (max_lifetime_ms) moves to a faster address by the same
+// make-before-break when its own falls behind.
 #include "fastmm/net/backoff.hpp"
 #include "fastmm/net/byte_stream.hpp"
 #include "fastmm/net/dns.hpp"
+#include "fastmm/net/endpoint_selector.hpp"
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/net/source_address.hpp"
 #include "fastmm/net/tls_stream.hpp"
@@ -74,6 +81,9 @@ struct ConnectionConfig {
   // Where the connection leaves this host from (net/source_address.hpp); empty: anywhere. Only
   // the venue's addresses of a family the source has are tried.
   SourceAddress source;
+  // Endpoint selection for this connection: true or false, or nullopt for the process's default
+  // (EndpointSelector::selects). Only for a host name; a numeric address is used as it is.
+  std::optional<bool> select_endpoint;
   bool manual_auth = false;       // handler calls auth_done()
   bool manual_subscribe = false;  // handler calls subscribe_done()
   std::string extra_headers;      // "Name: value\r\n" block for the upgrade request
@@ -108,6 +118,7 @@ struct ConnectionStats {
   std::uint64_t bytes_rx = 0;
   std::uint64_t bytes_tx = 0;
   std::uint64_t drops = 0;
+  std::uint64_t endpoint_moves = 0;  // rollovers to a faster address (endpoint selection)
 };
 
 template <ByteStream Stream, ConnectionHandler Handler>
@@ -137,6 +148,8 @@ class Connection {
     }
     tls_ = tls;
     host_ = std::string(url_.host);
+    if (EndpointSelector& sel = EndpointSelector::instance(); sel.selects(cfg_.select_endpoint))
+      endpoints_ = sel.host(host_, url_.port, cfg_.source);
     // Sized by the URL: a combined-stream path of many symbols is several kilobytes, and a fixed
     // buffer too small for it left the target empty and the connection never upgrading.
     target_.resize(url_.path.size() + url_.query.size() + 1);
@@ -212,6 +225,13 @@ class Connection {
   std::int64_t last_rx_ns() const noexcept { return last_rx_ns_; }
   const Url& url() const noexcept { return url_; }
   const ConnectionConfig& config() const noexcept { return cfg_; }
+  // The address the live (or connecting) session went to; nullopt without one.
+  std::optional<SockAddr> peer() const noexcept {
+    if (active_ == nullptr) return std::nullopt;
+    return active_->addr;
+  }
+  // The host's endpoint selection; nullptr when the connection does not select.
+  const std::shared_ptr<EndpointHost>& endpoints() const noexcept { return endpoints_; }
 
   // Accumulated counters plus the live sessions' running totals.
   ConnectionStats stats() const noexcept {
@@ -261,6 +281,10 @@ class Connection {
     WsClient<Stream, SessionEvents> ws;
     Phase phase = Phase::Connecting;
     std::int64_t live_at_ns = 0;
+    SockAddr addr;        // the peer it connected to
+    bool leased = false;  // counted on addr by endpoints_ until retired
+    bool rollover = false;
+    EndpointChoice choice;
   };
 
   // ------------------------------------------------------------------------ state helpers
@@ -281,7 +305,7 @@ class Connection {
     set_state(ConnState::Resolving);
     const std::uint64_t gen = ++resolve_gen_;
     std::weak_ptr<int> alive = alive_;
-    resolver_.resolve(host_, url_.port, [this, gen, alive](ResolveResult r) {
+    auto done = [this, gen, alive](ResolveResult r) {
       if (alive.expired() || gen != resolve_gen_ || user_closed_) return;
       if (!r.ok()) {
         schedule_backoff();
@@ -295,7 +319,12 @@ class Connection {
       }
       addr_index_ = 0;
       open_session(/*rollover=*/false);
-    });
+    };
+    if (endpoints_) {
+      resolver_.resolve(endpoints_, std::move(done));
+    } else {
+      resolver_.resolve(host_, url_.port, std::move(done));
+    }
   }
 
   Stream make_stream(TcpSocket&& sock) {
@@ -307,11 +336,25 @@ class Connection {
   }
 
   void open_session(bool rollover) {
-    const SockAddr& addr = addrs_[addr_index_ % addrs_.size()];
-    ++addr_index_;
+    SockAddr addr;
+    EndpointChoice choice;
+    if (endpoints_) {
+      // Leased now, before the connect, so copies starting together spread out.
+      std::optional<EndpointChoice> c = endpoints_->acquire(/*lease=*/true);
+      choice = c ? *c : EndpointChoice{addrs_[addr_index_++ % addrs_.size()]};
+      addr = choice.addr;
+    } else {
+      addr = addrs_[addr_index_ % addrs_.size()];
+      ++addr_index_;
+    }
+    const bool leased = endpoints_ && choice.users > 0;
     TcpSocket sock;
     const std::optional<SockAddr> local = source_bind_address(cfg_.source, addr.family());
     if (sock.connect(addr, local ? &*local : nullptr) == ConnectStatus::Error) {
+      if (endpoints_) {
+        endpoints_->failed(addr);
+        if (leased) endpoints_->release(addr);
+      }
       if (rollover) {
         schedule_rollover_retry();
       } else {
@@ -324,6 +367,10 @@ class Connection {
     sock.set_rcvbuf(4 * 1024 * 1024);
     auto session = std::make_unique<Session>(*this, make_stream(std::move(sock)));
     Session* raw = session.get();
+    raw->addr = addr;
+    raw->leased = leased;
+    raw->rollover = rollover;
+    raw->choice = choice;
     (rollover ? pending_ : active_) = std::move(session);
     if (!rollover) set_state(ConnState::Connecting);
     arm_connect_timer();
@@ -376,6 +423,11 @@ class Connection {
     arm_health_timer();
     arm_heartbeat_timer();
     arm_lifetime_timer();
+    if (endpoints_) {
+      log_endpoint_choice(s.rollover ? "ws rollover" : "ws", *endpoints_, s.choice);
+      endpoint_gen_ = endpoints_->generation();
+      arm_endpoint_timer();
+    }
   }
 
   // ------------------------------------------------------------------------------ traffic
@@ -397,6 +449,8 @@ class Connection {
   // graveyard and deleted from the reactor loop instead of synchronously.
   void on_session_end(Session& s) {
     if (s.phase == Phase::Dead) return;
+    // A session that never came up: its address is passed over by the next attempt.
+    if (endpoints_ && s.phase != Phase::Live && !user_closed_) endpoints_->failed(s.addr);
     s.phase = Phase::Dead;
     retire(s);
     if (&s == pending_.get()) {
@@ -427,6 +481,10 @@ class Connection {
     stats_.bytes_tx += w.bytes_tx;
     stats_.drops += w.drops;
     s.ws.close();
+    if (s.leased) {
+      s.leased = false;
+      endpoints_->release(s.addr);
+    }
   }
 
   void schedule_backoff() {
@@ -481,6 +539,27 @@ class Connection {
     });
   }
 
+  // A connection that can roll over looks at its host's probes when they change, and moves when
+  // its address has fallen switch_us behind the fastest or left the lookups.
+  void arm_endpoint_timer() {
+    cancel(endpoint_timer_);
+    if (cfg_.max_lifetime_ms == 0) return;
+    const EndpointSelectConfig& ec = endpoints_->config();
+    if (ec.move_check_ms == 0) return;
+    endpoint_timer_ = reactor_.add_timer_after(ms_to_ns(ec.move_check_ms), [this] {
+      endpoint_timer_ = kInvalidTimer;
+      if (!is_live()) return;
+      if (const std::uint64_t g = endpoints_->generation(); g != endpoint_gen_ && !pending_) {
+        endpoint_gen_ = g;
+        if (endpoints_->should_move(active_->addr)) {
+          ++stats_.endpoint_moves;
+          start_rollover();
+        }
+      }
+      arm_endpoint_timer();
+    });
+  }
+
   void start_rollover() {
     if (!is_live() || pending_ || addrs_.empty()) return;
     ++stats_.rollovers;
@@ -527,6 +606,7 @@ class Connection {
     cancel(health_timer_);
     cancel(heartbeat_timer_);
     cancel(lifetime_timer_);
+    cancel(endpoint_timer_);
   }
   // close(): sessions go to the graveyard (we may be inside one of their callbacks).
   // Destructor: everything is deleted now; destroying a Connection from inside its own
@@ -562,6 +642,8 @@ class Connection {
   std::uint64_t resolve_gen_ = 0;
   std::vector<SockAddr> addrs_;
   std::size_t addr_index_ = 0;
+  std::shared_ptr<EndpointHost> endpoints_;  // set: endpoint selection
+  std::uint64_t endpoint_gen_ = 0;           // the host's generation last looked at
   std::unique_ptr<Session> active_;
   std::unique_ptr<Session> pending_;
   Session* corked_ = nullptr;  // between cork() and uncork()
@@ -576,6 +658,7 @@ class Connection {
   TimerId heartbeat_timer_ = kInvalidTimer;
   TimerId lifetime_timer_ = kInvalidTimer;
   TimerId backoff_timer_ = kInvalidTimer;
+  TimerId endpoint_timer_ = kInvalidTimer;
 };
 
 }  // namespace fastmm::net

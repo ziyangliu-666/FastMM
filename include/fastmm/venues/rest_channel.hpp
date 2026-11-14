@@ -18,8 +18,14 @@
 // that moved its addresses is found again. Lookups run off the net thread (net::AsyncResolver):
 // the first starts when the channel is made.
 //
+// With endpoint selection (net/endpoint_selector.hpp, select_endpoint) the lookups also probe the
+// host's addresses and each connection goes to the fastest; an address a connection could not be
+// made to is passed over by the next. A lane keeps its connection while it lasts: it moves to a
+// faster address when it next connects.
+//
 // Requests are std::function/std::string based: control path only.
 #include "fastmm/net/dns.hpp"
+#include "fastmm/net/endpoint_selector.hpp"
 #include "fastmm/net/http_client.hpp"
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/net/source_address.hpp"
@@ -29,6 +35,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <memory>
 #include <optional>
@@ -47,6 +54,7 @@ struct RestChannelConfig {
   std::uint32_t timeout_ms = 5000;  // per request once written; the connect and the lookup too
   std::size_t max_queue = 8;        // per lane, the request in flight included
   net::SourceAddress source;        // where the connection leaves this host from; empty: anywhere
+  std::optional<bool> select_endpoint;  // endpoint selection; nullopt: the process's default
 };
 
 // Queue room for a connector's REST channel with `symbols` subscribed: every connector fans some
@@ -67,6 +75,7 @@ template <class Cfg>
   rc.timeout_ms = cfg.http_timeout_ms;
   rc.max_queue = rest_queue_for(symbols);
   if constexpr (requires { cfg.source; }) rc.source = cfg.source;
+  if constexpr (requires { cfg.select_endpoint; }) rc.select_endpoint = cfg.select_endpoint;
   return rc;
 }
 
@@ -88,6 +97,9 @@ class RestChannel {
     prefix_ = url->path == "/" ? std::string{} : std::string(url->path);
     while (!prefix_.empty() && prefix_.back() == '/') prefix_.pop_back();
     if (use_tls_) tls_ctx_ = net::TlsContext::shared_client(cfg_.ca_file, cfg_.insecure_tls);
+    if (net::EndpointSelector& sel = net::EndpointSelector::instance();
+        sel.selects(cfg_.select_endpoint))
+      endpoints_ = sel.host(host_, port_, cfg_.source);
     start_resolve();
   }
   ~RestChannel() {
@@ -179,7 +191,8 @@ class RestChannel {
     std::deque<Pending> waiting;  // not handed to a client yet
     std::unique_ptr<PlainClient> plain;
     std::unique_ptr<TlsClient> tls;
-    bool busy = false;  // a request is with the client, its callback has not run
+    bool busy = false;   // a request is with the client, its callback has not run
+    net::SockAddr addr;  // the peer of the connection
   };
 
   static constexpr std::size_t index(RestLane lane) noexcept {
@@ -294,6 +307,7 @@ class RestChannel {
           (l.plain && l.plain->established()) || (l.tls && l.tls->established());
       if (closed && !established && r.error != net::NetError::Canceled) {
         addrs_stale_ = true;
+        if (endpoints_) endpoints_->failed(l.addr);
         if (user) user(r);
         fail_waiting(l, r.error, r.error_detail);
         schedule_pump();
@@ -313,10 +327,22 @@ class RestChannel {
       return false;
     }
     net::TcpSocket sock;
-    const net::SockAddr& addr = addrs_[addr_index_++ % addrs_.size()];
+    net::SockAddr addr = addrs_[addr_index_++ % addrs_.size()];
+    if (endpoints_) {
+      if (const std::optional<net::EndpointChoice> c = endpoints_->acquire(/*lease=*/false)) {
+        addr = c->addr;
+        if (!same_peer(addr, logged_)) {
+          logged_ = addr;
+          net::log_endpoint_choice(
+              lane == RestLane::Orders ? "rest orders" : "rest", *endpoints_, *c);
+        }
+      }
+    }
+    l.addr = addr;
     const std::optional<net::SockAddr> local = net::source_bind_address(cfg_.source, addr.family());
     if (sock.connect(addr, local ? &*local : nullptr) == net::ConnectStatus::Error) {
       addrs_stale_ = true;
+      if (endpoints_) endpoints_->failed(addr);
       fail_waiting(l, net::NetError::Syscall, "connect failed");
       return false;
     }
@@ -351,6 +377,7 @@ class RestChannel {
                         (l.tls && l.tls->state() == net::HttpClientState::Closed);
     if (closed) {
       addrs_stale_ = true;
+      if (endpoints_) endpoints_->failed(addr);
       fail_waiting(l, net::NetError::Syscall, "connect failed");
       return false;
     }
@@ -364,7 +391,7 @@ class RestChannel {
     resolving_ = true;
     ++lookups_;
     std::weak_ptr<int> alive = alive_;
-    resolver_.resolve(host_, port_, [this, alive](net::ResolveResult r) {
+    auto done = [this, alive](net::ResolveResult r) {
       if (alive.expired()) return;
       resolving_ = false;
       cancel_resolve_timer();
@@ -382,7 +409,16 @@ class RestChannel {
       addrs_stale_ = false;
       pump(RestLane::Control);
       pump(RestLane::Orders);
-    });
+    };
+    if (endpoints_) {
+      resolver_.resolve(endpoints_, std::move(done));
+    } else {
+      resolver_.resolve(host_, port_, std::move(done));
+    }
+  }
+
+  static bool same_peer(const net::SockAddr& a, const net::SockAddr& b) noexcept {
+    return a.len == b.len && std::memcmp(&a.storage, &b.storage, a.len) == 0;
   }
 
   // A lookup that hangs (an unreachable DNS server) fails the requests waiting for it after the
@@ -414,6 +450,8 @@ class RestChannel {
   std::shared_ptr<const net::TlsContext> tls_ctx_;
   std::array<Lane, kLanes> lanes_;
   net::AsyncResolver resolver_;
+  std::shared_ptr<net::EndpointHost> endpoints_;  // set: endpoint selection
+  net::SockAddr logged_;                          // the address the last log line named
   std::vector<net::SockAddr> addrs_;
   std::size_t addr_index_ = 0;
   bool addrs_stale_ = false;

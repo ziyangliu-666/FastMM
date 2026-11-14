@@ -120,6 +120,7 @@ net::ConnectionConfig BybitVenue::ws_config(const std::string& url,
   c.url = url;
   c.tls.ca_file = cfg_.ca_file;
   c.source = cfg_.source;
+  c.select_endpoint = cfg_.select_endpoint;
   c.tls.insecure = cfg_.insecure_tls;
   c.stale_ms = cfg_.stale_ms;
   // Our own {"op":"ping"} every ping_interval_ms is answered, so the dead threshold must
@@ -143,6 +144,7 @@ Result<void, std::string> BybitVenue::load_reference_data(InstrumentTable& instr
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
   opts.source = cfg_.source;
+  opts.select_endpoint = cfg_.select_endpoint;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   try {
@@ -282,6 +284,7 @@ void BybitVenue::check_margin_mode() {
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
   opts.source = cfg_.source;
+  opts.select_endpoint = cfg_.select_endpoint;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   std::string err;
@@ -315,6 +318,7 @@ std::string BybitVenue::check_position_mode(const std::vector<Instrument*>& mine
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
   opts.source = cfg_.source;
+  opts.select_endpoint = cfg_.select_endpoint;
   opts.insecure_tls = cfg_.insecure_tls;
   opts.timeout_ms = cfg_.http_timeout_ms;
   try {

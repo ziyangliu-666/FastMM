@@ -122,6 +122,13 @@ struct EngineSection {
   int net_rt_priority = 0;
   // fastmm-live: log the NICs' interrupt CPUs against the pinned ones.
   bool log_irq_affinity = false;
+  // Endpoint selection (net/endpoint_selector.hpp): connect to the fastest of a venue host's
+  // addresses. endpoint_select is the default of every venue; the rest tune the probes.
+  bool endpoint_select = false;
+  int endpoint_probe_interval_s = 300;
+  int endpoint_probe_samples = 8;
+  int endpoint_spread_us = 20;
+  int endpoint_switch_us = 50;
   int min_requote_ticks = 1;
   int min_requote_interval_ms = 50;
   int min_qty_bps = 8000;
@@ -239,6 +246,8 @@ struct VenueSection {
   // network interface (net/source_address.hpp). Empty: the kernel chooses.
   std::string source_ip;
   std::string source_interface;
+  // Endpoint selection for this venue's connections; nullopt: [engine] endpoint_select.
+  std::optional<bool> endpoint_select;
   // Fill audit (live/fill_auditor.hpp): every fill_audit_interval_s seconds fastmm-live compares
   // the venue's trade history with the fills the store holds for this venue, up to
   // fill_audit_lag_s ago. 0: off. "report" only reports a difference; "book" also books the

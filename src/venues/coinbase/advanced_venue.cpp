@@ -111,6 +111,7 @@ net::ConnectionConfig CoinbaseAdvancedVenue::ws_config(const std::string& url,
   c.url = url;
   c.tls.ca_file = cfg_.ca_file;
   c.source = cfg_.source;
+  c.select_endpoint = cfg_.select_endpoint;
   c.tls.insecure = cfg_.insecure_tls;
   c.stale_ms = cfg_.stale_ms;
   c.dead_ms = cfg_.dead_ms;

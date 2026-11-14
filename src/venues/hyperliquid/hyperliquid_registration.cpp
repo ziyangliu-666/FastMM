@@ -84,6 +84,7 @@ std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactor
   hyperliquid::HyperliquidVenueConfig c = hyperliquid::make_hyperliquid_config(s, opts.dry_run);
   c.record_raw_dir = opts.record_raw_dir;
   c.source = source_address(s);
+  c.select_endpoint = s.endpoint_select;
   return std::make_unique<hyperliquid::HyperliquidVenue>(id, std::move(c));
 }
 

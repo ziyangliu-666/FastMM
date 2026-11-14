@@ -126,6 +126,7 @@ std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactor
   c.pool_of = opts.pool_of;
   c.share_ip_weight = opts.pooled;
   c.source = source_address(s);
+  c.select_endpoint = s.endpoint_select;
   return std::make_unique<binance::BinanceVenue>(id, std::move(c));
 }
 

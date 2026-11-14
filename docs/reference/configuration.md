@@ -62,6 +62,11 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `rt_priority` | integer |  | fastmm-live: SCHED_FIFO priority 1..99 of the engine thread (with threading = "single" it also runs the network loop); needs CAP_SYS_NICE or ulimit -r at least as high, a warning otherwise; a busy-spinning FIFO thread starves the kernel's threads on its core unless the core is isolated; 0 = the default scheduler (default 0) |
 | `net_rt_priority` | integer |  | fastmm-live: SCHED_FIFO priority 1..99 of the network threads, as rt_priority; ignored with threading = "single"; 0 = the default scheduler (default 0) |
 | `log_irq_affinity` | boolean |  | fastmm-live: at start, log each network interface's queue interrupts with the CPUs they may run on and which of them are cpu or net_cpus, and warn about any that may run on the engine's CPU; read only (default false) |
+| `endpoint_select` | boolean |  | fastmm-live, fastmm-gateway: connect to the fastest of each venue host's addresses, as measured by TCP connects to every address the lookups return; the default of every [venues.<name>] endpoint_select (default false) |
+| `endpoint_probe_interval_s` | integer |  | with endpoint selection: how often a background thread looks the hosts in use up again and probes their addresses, s; connections also probe whenever they connect; 0 = only then (default 300) |
+| `endpoint_probe_samples` | integer |  | with endpoint selection: TCP connects to each address per probe, ranked by their median, 1 to 100 (default 8) |
+| `endpoint_spread_us` | integer |  | with endpoint selection: addresses this close to the fastest count as fast, and a new connection takes the one of them with the fewest connections, so a venue's md_copies spread over them, us (default 20) |
+| `endpoint_switch_us` | integer |  | with endpoint selection: a live connection that rolls over (Binance) moves to the fastest address, make-before-break, once its own is this much slower or no lookup returns it; others move when they next connect; 0 = never moves, us (default 50) |
 | `min_requote_ticks` | integer |  | keep a resting quote whose price is within this many ticks of the desired price (default 1) |
 | `min_requote_interval_ms` | integer |  | change the same quote slot at most this often, ms (default 50) |
 | `min_qty_bps` | integer |  | keep a resting quote whose remaining quantity covers this share of the desired quantity, bps (default 8000 = 80 %) |
@@ -109,6 +114,7 @@ One table per venue; `<name>` is how instruments refer to it.
 | `recv_window_ms` | integer |  | validity window of signed requests, ms (default 3000) |
 | `source_ip` | string |  | the venue's connections leave this host from this address, IPv4 or IPv6; it must be one of the host's (default: the kernel chooses) |
 | `source_interface` | string |  | the venue's connections leave this host from this network interface's address; exclusive with source_ip (default: the kernel chooses) |
+| `endpoint_select` | boolean |  | connect to the fastest of each of the venue's host's addresses ([engine] endpoint_probe_interval_s and the other endpoint_ keys tune it); the connections keep the host name for TLS and HTTP (default: [engine] endpoint_select) |
 | `md_copies` | integer |  | redundant market-data connections carrying the venue's top-of-book streams again; each update reaches the engine once, from whichever connection delivered it first (connectors with copies: binance, binance_usdm; 0 to 8, default 0) |
 | `md_copy_cpus` | integer array |  | fastmm-live: CPU cores of network threads of their own for the copies, one per copy in order; copies given the same core share a thread, -1 = a thread not pinned; copies past the end of the list run on the venue's network thread (default [], all of them do) |
 | `fill_audit_interval_s` | integer |  | fastmm-live compares the venue's trade history with the stored fills this often, s; 0 = off (default 0, at least 10) |

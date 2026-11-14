@@ -281,6 +281,40 @@ inline constexpr KeySpec kConfigSchema[] = {
      "run on and which of them are cpu or net_cpus, and warn about any that may run on the "
      "engine's CPU; read only (default false)"},
     {"engine",
+     "endpoint_select",
+     KeyType::Bool,
+     false,
+     "fastmm-live, fastmm-gateway: connect to the fastest of each venue host's addresses, as "
+     "measured by TCP connects to every address the lookups return; the default of every "
+     "[venues.<name>] endpoint_select (default false)"},
+    {"engine",
+     "endpoint_probe_interval_s",
+     KeyType::Int,
+     false,
+     "with endpoint selection: how often a background thread looks the hosts in use up again and "
+     "probes their addresses, s; connections also probe whenever they connect; 0 = only then "
+     "(default 300)"},
+    {"engine",
+     "endpoint_probe_samples",
+     KeyType::Int,
+     false,
+     "with endpoint selection: TCP connects to each address per probe, ranked by their median, "
+     "1 to 100 (default 8)"},
+    {"engine",
+     "endpoint_spread_us",
+     KeyType::Int,
+     false,
+     "with endpoint selection: addresses this close to the fastest count as fast, and a new "
+     "connection takes the one of them with the fewest connections, so a venue's md_copies spread "
+     "over them, us (default 20)"},
+    {"engine",
+     "endpoint_switch_us",
+     KeyType::Int,
+     false,
+     "with endpoint selection: a live connection that rolls over (Binance) moves to the fastest "
+     "address, make-before-break, once its own is this much slower or no lookup returns it; "
+     "others move when they next connect; 0 = never moves, us (default 50)"},
+    {"engine",
      "min_requote_ticks",
      KeyType::Int,
      false,
@@ -448,6 +482,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "the venue's connections leave this host from this network interface's address; exclusive "
      "with source_ip (default: the kernel chooses)"},
+    {"venues.*",
+     "endpoint_select",
+     KeyType::Bool,
+     false,
+     "connect to the fastest of each of the venue's host's addresses ([engine] "
+     "endpoint_probe_interval_s and the other endpoint_ keys tune it); the connections keep the "
+     "host name for TLS and HTTP (default: [engine] endpoint_select)"},
     {"venues.*",
      "md_copies",
      KeyType::Int,

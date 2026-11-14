@@ -62,6 +62,7 @@ std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactor
   bybit::BybitVenueConfig c = bybit::make_bybit_config(s, opts.dry_run);
   c.record_raw_dir = opts.record_raw_dir;
   c.source = source_address(s);
+  c.select_endpoint = s.endpoint_select;
   return std::make_unique<bybit::BybitVenue>(id, std::move(c));
 }
 

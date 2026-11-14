@@ -55,6 +55,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -81,6 +82,8 @@ struct BinanceVenueConfig {
   std::string ca_file;
   // [venues.<name>] source_ip / source_interface: every connection goes out from it.
   net::SourceAddress source;
+  // [venues.<name>] endpoint_select: nullopt follows [engine] endpoint_select.
+  std::optional<bool> select_endpoint;
   UserStreamMode user_stream = UserStreamMode::Auto;
   bool dry_run = false;  // public market data only: no user/order channels
   // A pool member ([venues.<x>] pool_of): the venue whose instruments this account trades. The

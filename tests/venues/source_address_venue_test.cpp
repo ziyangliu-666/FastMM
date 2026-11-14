@@ -1,8 +1,11 @@
 // [venues.<name>] source_ip / source_interface in the connectors: the REST channel and the
 // blocking requests leave from the source address, the registry refuses a connector that cannot
-// bind, and Binance accounts count request weight per source address.
+// bind, and Binance accounts count request weight per source address. Endpoint selection
+// ([venues.<name>] endpoint_select) goes the same way: the blocking requests connect to the
+// fastest address, and a connector that cannot select refuses it.
 #include "test_support.hpp"
 
+#include "fastmm/net/endpoint_selector.hpp"
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/net/tcp_socket.hpp"
 #include "fastmm/venues/binance/binance_venue.hpp"
@@ -11,6 +14,8 @@
 #include "fastmm/venues/rest_channel.hpp"
 
 #include <chrono>
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -130,4 +135,50 @@ TEST_CASE("venues.source_address: a connector that cannot bind refuses the setti
   const VenueEntry* binance = VenueRegistry::instance().find("binance_spot");
   REQUIRE(binance != nullptr);
   CHECK(binance->caps.bind_source);
+}
+
+TEST_CASE("venues.endpoint_select: blocking requests go to the fastest address") {
+  net::TcpSocket slow = net::TcpSocket::listen(net::SockAddr::loopback_v4(0));
+  net::TcpSocket fast = net::TcpSocket::listen(net::SockAddr::loopback_v4(0));
+  REQUIRE((slow.valid() && fast.valid()));
+  const std::uint16_t slow_port = slow.local_addr()->port();
+  const std::uint16_t fast_port = fast.local_addr()->port();
+  net::EndpointHooks hooks;
+  hooks.resolve = [&](std::string_view, std::uint16_t) {
+    net::ResolveResult r;
+    r.addrs = {net::SockAddr::loopback_v4(slow_port), net::SockAddr::loopback_v4(fast_port)};
+    return r;
+  };
+  hooks.connect_ns = [&](const net::SockAddr& peer, const net::SourceAddress&, std::uint32_t) {
+    return std::optional<std::int64_t>(peer.port() == fast_port ? 100'000 : 300'000);
+  };
+  net::EndpointSelectConfig sc;
+  sc.probe_interval_s = 0;
+  net::EndpointSelector::instance().configure(sc, hooks);
+
+  BlockingHttpOptions bo;
+  bo.timeout_ms = 300;
+  bo.connect_timeout_ms = 300;
+  bo.select_endpoint = true;
+  std::thread t([&] {
+    BlockingHttp http("http://venue.test:" + std::to_string(slow_port), bo);
+    static_cast<void>(http.get("/api/v3/time"));
+  });
+  CHECK(accept_peer(fast) == "127.0.0.1");
+  t.join();
+  net::EndpointSelector::instance().configure({});
+}
+
+TEST_CASE("venues.endpoint_select: a connector that cannot select refuses the setting") {
+  register_builtin_venues();
+  VenueSection s;
+  s.name = "feed";
+  s.kind = "nasdaq_itch";
+  Config cfg;
+  s.endpoint_select = false;  // saying no is always fine
+  cfg.venues.push_back(s);
+  validate_venues(cfg);
+  cfg.venues[0].endpoint_select = true;
+  CHECK_THROWS_WITH_AS(
+      validate_venues(cfg), doctest::Contains("does not select its endpoints"), ConfigError);
 }

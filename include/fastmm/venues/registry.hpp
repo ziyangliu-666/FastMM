@@ -22,6 +22,7 @@
 // tables out of the registration files so a venue's keys land in the configuration reference.
 #include "fastmm/config/config.hpp"
 #include "fastmm/config/schema.hpp"
+#include "fastmm/net/endpoint_selector.hpp"
 #include "fastmm/net/source_address.hpp"
 #include "fastmm/venues/venue.hpp"
 
@@ -39,6 +40,18 @@ namespace fastmm::venues {
 // [venues.<x>] source_ip / source_interface as a net::SourceAddress.
 [[nodiscard]] inline net::SourceAddress source_address(const VenueSection& s) {
   return net::SourceAddress{s.source_ip, s.source_interface};
+}
+
+// [engine] endpoint_select and its endpoint_ keys as the process's endpoint selection
+// (net/endpoint_selector.hpp); [venues.<x>] endpoint_select overrides `enabled` per venue.
+[[nodiscard]] inline net::EndpointSelectConfig endpoint_select_config(const EngineSection& e) {
+  net::EndpointSelectConfig c;
+  c.enabled = e.endpoint_select;
+  c.probe_interval_s = static_cast<std::uint32_t>(e.endpoint_probe_interval_s);
+  c.samples = static_cast<std::uint32_t>(e.endpoint_probe_samples);
+  c.spread_us = static_cast<std::uint32_t>(e.endpoint_spread_us);
+  c.switch_us = static_cast<std::uint32_t>(e.endpoint_switch_us);
+  return c;
 }
 
 struct VenueFactoryOptions {
@@ -78,7 +91,8 @@ struct VenueCapabilities {
   // path alone, for the primary's instruments, without market data of its own.
   bool account_pools = false;
   // Binds every outbound connection (WebSocket, REST, the blocking control requests) to the
-  // section's source address ([venues.<x>] source_ip / source_interface, net/source_address.hpp).
+  // section's source address ([venues.<x>] source_ip / source_interface, net/source_address.hpp),
+  // and selects their endpoints ([venues.<x>] endpoint_select, net/endpoint_selector.hpp).
   bool bind_source = false;
   // Can move an asset between the accounts of a pool (Venue::transfer,
   // VenueCaps::internal_transfer) once it is given the credentials: a pool treasury

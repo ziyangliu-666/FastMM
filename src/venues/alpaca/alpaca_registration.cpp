@@ -49,6 +49,7 @@ std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactor
   alpaca::AlpacaVenueConfig c = alpaca::make_alpaca_config(s, opts.dry_run);
   c.record_raw_dir = opts.record_raw_dir;
   c.source = source_address(s);
+  c.select_endpoint = s.endpoint_select;
   return std::make_unique<alpaca::AlpacaVenue>(id, std::move(c));
 }
 

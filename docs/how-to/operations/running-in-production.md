@@ -166,6 +166,7 @@ These `[engine]` keys are off by default. When the process lacks the permission 
 |---|---|---|
 | `cpu`, `net_cpus` | pin the engine and network threads | [Cores](#cores) |
 | `aux_cpus` | place every other thread | [Cores](#cores) |
+| `endpoint_select` | connect to the fastest of a venue's addresses | [Venue addresses](#venue-addresses) |
 | `cpu_dma_latency_us` | keep CPUs out of slow idle states | [Idle states](#idle-states) |
 | `log_irq_affinity` | log where NIC interrupts land | [NIC interrupts](#nic-interrupts) |
 | `rt_priority`, `net_rt_priority` | `SCHED_FIFO` for the hot threads | [Real-time scheduling](#real-time-scheduling) |
@@ -203,6 +204,36 @@ md_copy_cpus = [5, 6]   # copy 1 on core 5, copy 2 on core 6; the venue's thread
 ```
 
 When the session stops, each copy logs how many of its updates it delivered first: `binance_usdm: md copy 1: ... delivered 40210 of its 98311 updates first (40.9%)`. A copy that is never first adds nothing.
+
+### Venue addresses
+
+A venue's host name stands for several addresses, and from one host they are not equally near. From a Tokyo cloud host, each Binance host name resolved to 4 to 8 addresses at a time, from a larger set that rotates between lookups; a TCP connect took 170 to 200 µs to most of them and about 90 µs more to the rest. The system resolver hands out whichever comes first, so some connections sit on a slow address for their whole life.
+
+With `endpoint_select = true` each connection to a host name goes to the fastest address instead:
+
+```toml
+[engine]
+endpoint_select = true         # every venue; or set it per venue under [venues.<name>]
+endpoint_probe_interval_s = 300
+endpoint_probe_samples = 8
+endpoint_switch_us = 50
+```
+
+Every lookup's addresses are added to those the host already had, and each is probed with `endpoint_probe_samples` TCP connects, closed with a reset at once; the median ranks it. A connection probes when it connects and on every reconnect, and a background thread probes every host in use each `endpoint_probe_interval_s`, off the network threads. An address no lookup has returned for three intervals (at least 10 minutes) is dropped.
+
+A new connection takes the fastest address. Addresses within `endpoint_spread_us` of it count as equally fast, and among those it takes the one with the fewest connections, so the [market-data copies](#redundant-market-data) of a venue land on different addresses. When a connection to an address fails before it is up (connect, TLS, WebSocket upgrade), the next attempt takes the next address, and the failed one is skipped for a minute. A live connection that rolls over (Binance and Binance USDⓈ-M, which roll over before the 24-hour cut) moves to the fastest address by the same make-before-break once its own is `endpoint_switch_us` slower or has left the lookups; other connections, and the REST connections, move when they next connect. TLS and the HTTP `Host` header keep the host name, so certificates are checked as before. Every connector that takes `source_ip` takes `endpoint_select`, and the probes leave from that source address.
+
+The log names the address each connection took:
+
+```text
+binance_usdm: endpoint selection on: 8 connects per address, probed again every 300 s, moves when 50 us slower
+ws fstream.binance.com:443 -> 18.180.152.40:443 connect 182 us, fastest 182 us of 8 addresses, 1 here
+rest orders fapi.binance.com:443 -> 13.193.171.142:443 connect 170 us, fastest 170 us of 8 addresses, 1 here
+endpoints stream.binance.com:9443: 9 addresses, fastest 54.249.96.217:9443 171 us, slowest reachable 287 us
+ws rollover stream.binance.com:9443 -> 54.249.96.217:9443 connect 171 us, fastest 171 us of 9 addresses, 2 here
+```
+
+A `ws` line comes with each WebSocket connection that goes live, a `rest` line when a REST channel connects to a different address than before, an `endpoints` line when a background probe finds a new fastest address, and a `ws rollover` line when a connection moved. `here` counts the WebSocket connections on that address. To check the result from outside, compare the peers of the process's connections with the probe: `ss -tnp | grep fastmm-live`.
 
 ### Idle states
 
