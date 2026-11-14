@@ -88,6 +88,24 @@ Only fills of orders placed through `set_quotes` count, and only those orders ar
 
 The inputs are the fills the engine consumes and its clock, both journaled, so a replay holds the same side at the same events and sends the same cancels. The guard keeps its last 16 instruments per side in fixed arrays and allocates nothing.
 
+## Hazard groups
+
+Instruments priced off one factor are picked off together. When the factor moves, a taker hits the stale quote on one of them, then on the next, and the run across the group takes tens of milliseconds. The first fill is evidence about every other quote on that side of the group, and it arrives before most of the run has traded. A hazard group acts on it.
+
+A `[[risk.hazard]]` table names the members and a `threshold`. Each side of the group has one score: the sum of the evidence so far, each piece halving every `half_life_ms`. Evidence is
+
+- a maker fill of one of our quotes on a member: its notional times the member's weight;
+- a public print that reaches a quote of ours on a member, when it arrives before the fill's own report (`prints`). The two are copies of one match, and whichever comes second adds only the quantity the first did not;
+- whatever the strategy adds with `ctx.hazard_add(group, side, amount)`, in the same units: a move of the instrument its quotes are priced from, for example. A negative amount takes evidence back.
+
+Evidence that takes the score to the threshold pulls the side: the engine cancels the members' quotes on it at once and the quote manager places none there for `hold_ms`. Evidence that still finds the score at the threshold restarts the hold. When it ends, the first event after it puts the strategy's last quotes back, each through the usual checks, order tokens and capacity price. Cancels need no order token, so a pull is never held back by `[risk] orders_per_sec`; the quotes that come back leave `[engine] send_token_reserve` for the orders the strategy sends itself.
+
+A threshold below the notional of one quote pulls the group on any fill. One of a few quotes waits for a sweep of that size or for fills on several members within a half-life. The fill-cluster guard above counts instruments instead and covers every instrument of the session; the two can run together, and a side is held while either holds it.
+
+`mode = "log"` keeps the score and the holds and sends nothing. The log has a line when a side would have been pulled, with the number of members quoting on it; a line for each quote fill that arrives while it would have held, with its notional and the venue's time of the match relative to the pull; and a line when the hold would have ended, with their count and notional. A fill matched later than a cancel takes to reach the venue is one the pull would have avoided. In `"pull"` mode the same lines show the fills the pull was too late for. `ctx.hazard(group)` reports the same counts, and `fastmm-top` shows a held side as `hazard`.
+
+Only orders placed through `set_quotes` count and are pulled. The inputs are the fills and trades the engine consumes, the strategy's calls and the engine clock, so a replay pulls the same sides at the same events.
+
 ## Balance check
 
 Check 22 refuses an order that the account's free balance on its venue does not cover. The engine keeps one balance row per venue and asset: the base and quote of each spot instrument, the settlement asset of each derivative, and an account row for venues that report account-wide margin.

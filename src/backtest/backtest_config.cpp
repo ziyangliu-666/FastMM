@@ -453,6 +453,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   b.warnings = cfg.warnings;
   check_backtest_keys(bt);
   b.engine.fx = b.fx_plan(b.instruments);
+  b.engine.hazard = hazard_config(cfg, b.instruments, b.venue_names);
   b.underlying = cfg.risk.underlying;
   b.engine.underlying = b.underlying_plan(b.instruments);
   b.set_seed(static_cast<std::uint64_t>(bt.get_int("seed", sm.get_int("seed", 1))));

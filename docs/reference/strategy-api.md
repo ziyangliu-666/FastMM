@@ -274,6 +274,10 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().risk_headroom(InstrumentId{}))
 static_assert(std::same_as<decltype(lvalue<Ctx>().venue_health(VenueId{})), VenueHealthView>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().order_budget(VenueId{})), OrderBudget>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().fill_cluster()), FillClusterView>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().hazard_groups()), std::uint32_t>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().hazard_group(InstrumentId{})), std::uint32_t>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().hazard(0U)), HazardView>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().hazard_add(0U, Side::Buy, 1.0)), void>);
 ```
 
 | Method | Returns | Journaled |
@@ -283,6 +287,10 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().fill_cluster()), FillClusterVi
 | `venue_health(venue)` | `VenueHealthView`: feed lag and order round trip | yes |
 | `order_budget(venue)` | `OrderBudget`: the local rate limiter and the venue's own order counts | only `local_tokens` |
 | `fill_cluster()` | `FillClusterView`: the sides the [fill-cluster guard](../explanation/risk-model.md#fill-cluster-guard) holds | yes |
+| `hazard_groups()` | the number of [hazard groups](../explanation/risk-model.md#hazard-groups), numbered in the order of `[[risk.hazard]]` | yes |
+| `hazard_group(id)` | the group the instrument is a member of, `Hazard::kNoGroup` for none | yes |
+| `hazard(group)` | `HazardView`: the group's score and the sides it holds | yes |
+| `hazard_add(group, side, amount)` | nothing: adds evidence to one side's score | yes |
 
 `fees(id)` is the instrument's `maker_bps` / `taker_bps`, else its venue's `[venues.<x>.fees]`. With `fetch_fees` it is the account's own rates ([Binance Spot](venues/binance-spot.md#fee-rates)). A backtest charges these; a live venue reports each fill's commission itself.
 
@@ -325,6 +333,20 @@ All fields are zero before the first sample. `venue_health` costs one lookup; `r
 | `held[0]`, `held[1]` | the guard holds the bids, the asks: `set_quotes` places nothing on that side until the hold ends, then the engine puts the last quotes back |
 | `held_until[0]`, `held_until[1]` | engine time the hold ends, unless a fill extends it |
 | `engagements[0]`, `engagements[1]` | times the guard engaged on each side |
+
+`hazard_add` takes an amount in the units of the group's `threshold`. Evidence that takes the score to the threshold pulls the side before the call returns, so a `set_quotes` after it already places nothing there. A negative amount lowers the score, not below zero. A group that does not exist takes nothing.
+
+| `HazardView` field | Meaning |
+|---|---|
+| `enabled` | the group exists |
+| `threshold`, `log_only` | its `threshold`, and whether its `mode` is `"log"` |
+| `score[0]`, `score[1]` | the score of the bids, the asks, decayed to now |
+| `held[0]`, `held[1]` | the group holds the side: `set_quotes` places nothing on it on the members until the hold ends. In log mode: it would |
+| `held_since[0]`, `held_since[1]` | engine time the side was pulled |
+| `held_until[0]`, `held_until[1]` | engine time the hold ends, unless evidence restarts it |
+| `engagements[0]`, `engagements[1]` | times the score reached the threshold on a side that was not held |
+| `held_fills[0]`, `held_fills[1]` | quote fills that arrived on a held side |
+| `held_notional[0]`, `held_notional[1]` | their notional |
 
 | `OrderBudget` field | Meaning |
 |---|---|

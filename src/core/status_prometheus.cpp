@@ -172,8 +172,9 @@ void underlying_metrics(Exposition& e,
 
 // The quote table, per instrument and side: fastmm_quote_obstacle (the QuoteBlock code: 0 quoting,
 // 1 not wanted, 2 quoting off, 3 pulled, 4 venue killed, 5 feed lag, 6 backoff, 7 starved,
-// 8 refused, 9 pending) and its age, the asked and working quantities and the strategy's budget;
-// fastmm_position per instrument; fastmm_strategy_metric{name} for each ctx.metric.
+// 8 refused, 9 pending, 10 fill cluster, 11 hazard) and its age, the asked and working quantities
+// and the strategy's budget; fastmm_position per instrument; fastmm_strategy_metric{name} for each
+// ctx.metric.
 void quote_metrics(Exposition& e, const StatusSnapshot& s) {
   const std::uint32_t n = std::min<std::uint32_t>(s.quote_count, kStatusMaxQuotes);
   if (n != 0) {

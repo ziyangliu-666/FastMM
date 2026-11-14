@@ -7,6 +7,7 @@
 #include "fastmm/core/fees.hpp"
 #include "fastmm/core/fill_cluster.hpp"
 #include "fastmm/core/fx.hpp"
+#include "fastmm/core/hazard.hpp"
 #include "fastmm/core/perp_book.hpp"
 #include "fastmm/core/pool_homes.hpp"
 #include "fastmm/core/quote_manager.hpp"
@@ -122,6 +123,10 @@ struct EngineConfig {
   // side over that many instruments within the window hold the side everywhere for the hold
   // (core/fill_cluster.hpp; names 0: off).
   FillClusterConfig fill_cluster;
+  // [[risk.hazard]]: groups of instruments with a hazard score per side; evidence that takes it to
+  // the group's threshold pulls that side's quotes on the members for the hold (core/hazard.hpp;
+  // none: off).
+  HazardConfig hazard;
   QuoteParams quotes;
   // [accounting]: the settlement currencies and their FX sources (inactive: nothing converted).
   FxPlan fx;

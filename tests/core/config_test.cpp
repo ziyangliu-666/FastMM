@@ -1112,6 +1112,137 @@ TEST_CASE("core.config: [risk] fill_cluster keys, their range and the effective 
   CHECK_THROWS_AS(Config::parse("[risk]\nfill_cluster_hold_ms = -1\n"), ConfigError);
 }
 
+TEST_CASE("core.config: [[risk.hazard]] groups, their members and the effective configuration") {
+  const Config none = Config::parse(kMinimal);
+  CHECK(none.risk.hazard.empty());
+  CHECK(none.effective_toml().find("hazard") == std::string::npos);
+  CHECK(none.redacted().find("hazard") == std::string::npos);
+  const std::string base = R"(
+[venues.a]
+kind = "sim"
+[venues.b]
+kind = "sim"
+[[instruments]]
+venue = "a"
+symbol = "X"
+tick = "0.01"
+lot = "0.001"
+[[instruments]]
+venue = "a"
+symbol = "Y"
+tick = "0.01"
+lot = "0.001"
+[[instruments]]
+venue = "b"
+symbol = "Y"
+tick = "0.01"
+lot = "0.001"
+[[instruments]]
+venue = "b"
+symbol = "Z"
+tick = "0.01"
+lot = "0.001"
+[strategy]
+name = "basic_mm"
+[strategy.groups]
+pair = ["X", "a:Y"]
+)";
+  const std::string text = base + R"(
+[[risk.hazard]]
+name = "semis"
+instruments = ["pair"]
+threshold = 600
+half_life_ms = 12.5
+hold_ms = 250
+side = "bid"
+prints = false
+mode = "log"
+[risk.hazard.weights]
+"a:Y" = 0.5
+[[risk.hazard]]
+name = "rest"
+instruments = ["b:Y", "Z"]
+threshold = 1.5
+)";
+  const Config on = Config::parse(text);
+  REQUIRE(on.risk.hazard.size() == 2);
+  const std::vector<std::string> venues{"a", "b"};
+  const Config back = Config::parse(on.effective_toml());
+  for (const Config* c : {&on, &back}) {
+    const InstrumentTable table = load_instruments(*c);
+    const HazardConfig h = hazard_config(*c, table, venues);
+    REQUIRE(h.groups.size() == 2);
+    const HazardGroupConfig& g = h.groups[0];
+    CHECK(g.name == "semis");
+    REQUIRE(g.members.size() == 2);
+    CHECK(g.members[0] == InstrumentId{0});
+    CHECK(g.members[1] == InstrumentId{1});
+    CHECK(g.weights[0] == 1.0);
+    CHECK(g.weights[1] == 0.5);
+    CHECK(g.threshold == 600.0);
+    CHECK(g.half_life == Duration{12'500'000});
+    CHECK(g.hold == milliseconds(250));
+    CHECK(g.sides[0]);
+    CHECK_FALSE(g.sides[1]);
+    CHECK_FALSE(g.prints);
+    CHECK(g.log_only);
+    const HazardGroupConfig& d = h.groups[1];
+    REQUIRE(d.members.size() == 2);
+    CHECK(d.members[0] == InstrumentId{2});
+    CHECK(d.members[1] == InstrumentId{3});
+    CHECK(d.half_life == milliseconds(20));
+    CHECK(d.hold == milliseconds(500));
+    CHECK(d.sides[0]);
+    CHECK(d.sides[1]);
+    CHECK(d.prints);
+    CHECK_FALSE(d.log_only);
+  }
+  CHECK(on.redacted().find("[[risk.hazard]]") != std::string::npos);
+  CHECK(on.redacted().find("threshold = 600") != std::string::npos);
+
+  const auto bad = [&](const std::string& group) { return Config::parse(base + group); };
+  const auto resolve = [&](const std::string& group) {
+    const Config c = bad(group);
+    const InstrumentTable table = load_instruments(c);
+    return hazard_config(c, table, venues);
+  };
+  CHECK_THROWS_WITH_AS(bad("[[risk.hazard]]\nname = \"g\"\ninstruments = [\"X\"]\nthreshold = 0\n"),
+                       doctest::Contains("threshold must be > 0"),
+                       ConfigError);
+  CHECK_THROWS_WITH_AS(bad("[[risk.hazard]]\nname = \"g\"\ninstruments = [\"X\"]\n"),
+                       doctest::Contains("missing required key 'risk.hazard[].threshold'"),
+                       ConfigError);
+  CHECK_THROWS_WITH_AS(bad("[[risk.hazard]]\nname = \"g\"\ninstruments = [\"X\"]\n"
+                           "threshold = 1\nmode = \"shadow\"\n"),
+                       doctest::Contains("mode must be"),
+                       ConfigError);
+  CHECK_THROWS_WITH_AS(bad("[[risk.hazard]]\nname = \"g\"\ninstruments = [\"X\"]\n"
+                           "threshold = 1\nhalf_life = 3\n"),
+                       doctest::Contains("unknown key 'risk.hazard[].half_life'"),
+                       ConfigError);
+  CHECK_THROWS_WITH_AS(bad("[risk]\nhazard = 3\n"),
+                       doctest::Contains("must be [[risk.hazard]] tables"),
+                       ConfigError);
+  CHECK_THROWS_WITH_AS(
+      resolve("[[risk.hazard]]\nname = \"g\"\ninstruments = [\"Q\"]\nthreshold = 1\n"),
+      doctest::Contains("no instrument 'Q'"),
+      ConfigError);
+  CHECK_THROWS_WITH_AS(
+      resolve("[[risk.hazard]]\nname = \"g\"\ninstruments = [\"Y\"]\nthreshold = 1\n"),
+      doctest::Contains("more than one venue"),
+      ConfigError);
+  CHECK_THROWS_WITH_AS(
+      resolve("[[risk.hazard]]\nname = \"g\"\ninstruments = [\"X\"]\nthreshold = 1\n"
+              "[[risk.hazard]]\nname = \"h\"\ninstruments = [\"pair\"]\nthreshold = 1\n"),
+      doctest::Contains("X is already in group 'g'"),
+      ConfigError);
+  CHECK_THROWS_WITH_AS(
+      resolve("[[risk.hazard]]\nname = \"g\"\ninstruments = [\"X\"]\nthreshold = 1\n"
+              "[risk.hazard.weights]\nZ = 2\n"),
+      doctest::Contains("weights names 'Z', not a member"),
+      ConfigError);
+}
+
 TEST_CASE("core.config: reduce_only in [risk] and per venue survives the effective configuration") {
   const Config off = Config::parse(pool_toml(""));
   CHECK_FALSE(off.risk.reduce_only);

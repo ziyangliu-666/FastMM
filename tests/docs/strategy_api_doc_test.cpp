@@ -196,6 +196,10 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().risk_headroom(InstrumentId{}))
 static_assert(std::same_as<decltype(lvalue<Ctx>().venue_health(VenueId{})), VenueHealthView>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().order_budget(VenueId{})), OrderBudget>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().fill_cluster()), FillClusterView>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().hazard_groups()), std::uint32_t>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().hazard_group(InstrumentId{})), std::uint32_t>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().hazard(0U)), HazardView>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().hazard_add(0U, Side::Buy, 1.0)), void>);
 // [end:venue_state]
 
 // ---- the capacity price ------------------------------------------------------------------------

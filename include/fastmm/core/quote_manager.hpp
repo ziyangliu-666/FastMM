@@ -45,11 +45,11 @@
 //     instrument joins a queue the engine re-applies (retry_priced()) when the price falls. A move
 //     towards the touch buys its gain (the level's value less its keep value); a move away from it
 //     cancels for free and buys its New as a new order;
-//   * hold_side() (the engine's fill-cluster guard, core/fill_cluster.hpp) holds one side on every
-//     instrument: pull_side() cancels what rests there, reconcile() and every retry treat the
-//     side's levels as empty while the desired quotes keep them, a target recorded for a pending
-//     order on the side is not placed, and reapply() puts the last desired quotes back when the
-//     hold ends;
+//   * hold_side() holds one side on every instrument (the engine's fill-cluster guard,
+//     core/fill_cluster.hpp) or on one (its hazard groups, core/hazard.hpp): pull_side() cancels
+//     what rests there, reconcile() and every retry treat the side's levels as empty while the
+//     desired quotes keep them, a target recorded for a pending order on the side is not placed,
+//     and reapply() puts the last desired quotes back when the hold ends;
 //   * a New or Replace the placer holds back for want of an order token (QuoteAction::rate_limited)
 //     is neither a reject nor a backoff: the instrument joins a FIFO of starved instruments, and
 //     the engine re-applies their last desired quotes (retry()) in that order as tokens come back,
@@ -286,7 +286,7 @@ class QuoteManager {
       std::uint32_t used = 0;
       for (std::uint32_t lvl = 0; lvl < n; ++lvl) {
         Slot& slot = st.slots[s][lvl];
-        const bool has_want = !side_held_[s] && lvl < want.size() && want[lvl].qty.is_positive();
+        const bool has_want = !held(st, side) && lvl < want.size() && want[lvl].qty.is_positive();
         actions += reconcile_slot(inst,
                                   st,
                                   oms,
@@ -371,6 +371,14 @@ class QuoteManager {
   void hold_side(Side side, bool on) noexcept { side_held_[static_cast<std::size_t>(side)] = on; }
   [[nodiscard]] bool side_held(Side side) const noexcept {
     return side_held_[static_cast<std::size_t>(side)];
+  }
+  // The same for one instrument (the engine's hazard groups, core/hazard.hpp): the side is held
+  // while either hold is on.
+  void hold_side(InstrumentId id, Side side, bool on) noexcept {
+    state_[id.value].side_held[static_cast<std::size_t>(side)] = on;
+  }
+  [[nodiscard]] bool side_held(InstrumentId id, Side side) const noexcept {
+    return state_[id.value].side_held[static_cast<std::size_t>(side)];
   }
   // Cancels the instrument's working quotes on `side`, now; one still pending is cancelled when its
   // ack arrives. The other side and the desired quotes stay as they are. Returns the actions
@@ -523,19 +531,18 @@ class QuoteManager {
       if (slot.apply_want &&
           (u.prev == OrderState::PendingNew || u.prev == OrderState::PendingReplace)) {
         slot.apply_want = false;
-        static_cast<void>(
-            reconcile_slot(inst,
-                           st,
-                           oms,
-                           side,
-                           lvl,
-                           slot,
-                           side_held_[static_cast<std::size_t>(side)] ? Level{} : slot.want,
-                           slot.want_account,
-                           slot.want_value,
-                           slot.want_keep,
-                           now,
-                           place));
+        static_cast<void>(reconcile_slot(inst,
+                                         st,
+                                         oms,
+                                         side,
+                                         lvl,
+                                         slot,
+                                         held(st, side) ? Level{} : slot.want,
+                                         slot.want_account,
+                                         slot.want_value,
+                                         slot.want_keep,
+                                         now,
+                                         place));
       }
       return;
     }
@@ -548,7 +555,7 @@ class QuoteManager {
     slot.awaiting_terminal = false;
     if (st.pulled || st.paused || !slot.apply_want) return;
     slot.apply_want = false;
-    if (!slot.want.qty.is_positive() || side_held_[static_cast<std::size_t>(side)]) return;
+    if (!slot.want.qty.is_positive() || held(st, side)) return;
     if (backing_off(st, side, now)) {
       kept_backoff(st, inst.id, side);
       return;
@@ -608,6 +615,7 @@ class QuoteManager {
     bool pulled = false;
     bool paused = false;     // pause_quotes(): orders held where they rest until resume()
     bool resumable = false;  // paused or pulled with keep_desired: resume() re-applies `desired`
+    bool side_held[2] = {};  // hold_side(id, side)
     bool venue_no_replace = false;    // the venue cannot amend in place (set_replace)
     bool replace = false;             // supports_replace && !venue_no_replace
     Duration backoff[2] = {};         // current backoff per side (0 = none)
@@ -617,6 +625,10 @@ class QuoteManager {
     Timestamp retry_at{kNever};       // queued in backed_off_: a held-back side's backoff ends
   };
 
+  [[nodiscard]] bool held(const InstState& st, Side side) const noexcept {
+    const auto i = static_cast<std::size_t>(side);
+    return side_held_[i] || st.side_held[i];
+  }
   [[nodiscard]] static bool backing_off(const InstState& st, Side side, Timestamp now) noexcept {
     const auto i = static_cast<std::size_t>(side);
     return st.backoff[i].ns > 0 && now < st.blocked_until[i];

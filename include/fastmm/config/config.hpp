@@ -16,6 +16,7 @@
 #include "fastmm/core/fees.hpp"
 #include "fastmm/core/fill_cluster.hpp"
 #include "fastmm/core/fx.hpp"
+#include "fastmm/core/hazard.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/perp_book.hpp"
 #include "fastmm/core/pool_homes.hpp"
@@ -335,6 +336,21 @@ struct AbSection {
   [[nodiscard]] bool enabled() const noexcept { return !arms.empty(); }
 };
 
+// One [[risk.hazard]] table (core/hazard.hpp).
+struct HazardSection {
+  std::string name;
+  // Members: a symbol, "venue:symbol" or a group of [strategy.groups].
+  std::vector<std::string> instruments;
+  // "venue:symbol" or "symbol" = weight; a member not listed weighs 1.
+  std::map<std::string, double> weights;
+  std::string side = "both";  // "bid" | "ask" | "both"
+  double threshold = 0.0;
+  double half_life_ms = 20.0;
+  int hold_ms = 500;
+  bool prints = true;
+  std::string mode = "pull";  // "pull" | "log"
+};
+
 struct RiskSection {
   std::string max_order_qty;
   std::string max_order_notional;
@@ -357,6 +373,8 @@ struct RiskSection {
   int fill_cluster_names = 0;
   int fill_cluster_window_ms = 500;
   int fill_cluster_hold_ms = 500;
+  // [[risk.hazard]]: the hazard groups (core/hazard.hpp); none: off.
+  std::vector<HazardSection> hazard;
   bool check_balance = true;  // refuse what the venue's balance cannot cover
   // A keyed fastmm-live session starts without max_position (or max_order_notional) and
   // max_loss only with this set.
@@ -535,6 +553,12 @@ InstrumentTable load_instruments(const Config& cfg);
 // [venues.<primary>.pool] of every pool, and the pinned homes (`homes`) by the id each instrument
 // has in `table`.
 PoolHomesPlan pool_homes(const Config& cfg, const InstrumentTable& table);
+
+// [[risk.hazard]] with the members resolved in `table` (`venue_names` naming its venue ids). Throws
+// ConfigError for a member that names no instrument or one that two groups share.
+HazardConfig hazard_config(const Config& cfg,
+                           const InstrumentTable& table,
+                           std::span<const std::string> venue_names);
 
 // The fee rates of each instrument: its [[instruments]] maker_bps / taker_bps, else its venue's
 // [venues.<x>.fees]; the first venue's are the default for ids outside the configuration. Without

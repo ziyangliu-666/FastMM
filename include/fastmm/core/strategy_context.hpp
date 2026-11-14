@@ -11,6 +11,7 @@
 #include "fastmm/core/fees.hpp"
 #include "fastmm/core/fill_cluster.hpp"
 #include "fastmm/core/fixed_point.hpp"
+#include "fastmm/core/hazard.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/oms.hpp"
 #include "fastmm/core/order.hpp"
@@ -239,6 +240,20 @@ class StrategyContext {
   // now, until when, and how often it has engaged. While a side is held, set_quotes places nothing
   // on it; the engine puts the last quotes back when the hold ends.
   [[nodiscard]] FillClusterView fill_cluster() const noexcept { return e_->fill_cluster(); }
+  // The hazard groups ([[risk.hazard]], core/hazard.hpp), numbered in the order of the
+  // configuration. hazard_group: the group an instrument is a member of, Hazard::kNoGroup for
+  // none. hazard: a group's score, held sides and counts. hazard_add: evidence for one side of a
+  // group, in the units of its threshold; a negative amount takes evidence back. Evidence that
+  // takes the score to the threshold pulls the side before the call returns, and set_quotes places
+  // nothing on it until the hold ends.
+  [[nodiscard]] std::uint32_t hazard_groups() const noexcept { return e_->hazard_groups(); }
+  [[nodiscard]] std::uint32_t hazard_group(InstrumentId id) const noexcept {
+    return e_->hazard_group(id);
+  }
+  [[nodiscard]] HazardView hazard(std::uint32_t group) const noexcept { return e_->hazard(group); }
+  void hazard_add(std::uint32_t group, Side side, double amount) noexcept {
+    e_->hazard_add(group, side, amount);
+  }
   // What the [risk] rate limit and the venue's own limits still admit (core/order_budget.hpp):
   // the local token bucket, and the venue's order counts and request weight by window as its
   // connector last published them (live only; venue_known is false elsewhere).

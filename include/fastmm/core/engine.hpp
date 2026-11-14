@@ -59,6 +59,7 @@
 #include "fastmm/core/engine_config.hpp"
 #include "fastmm/core/engine_runner.hpp"
 #include "fastmm/core/fill_cluster.hpp"
+#include "fastmm/core/hazard.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/latency.hpp"
@@ -256,6 +257,8 @@ class Engine {
     }
     quotes_.set_params(qp);
     cluster_.configure(cfg_.fill_cluster);
+    hazard_.configure(cfg_.hazard, kMaxInstruments);
+    hazard_on_ = hazard_.enabled();
     if (records_.enabled()) {
       for (const std::int64_t ms : cfg.markout_ms) {
         if (ms <= 0 || markouts_.size() == kMaxMarkoutHorizons) continue;
@@ -720,6 +723,19 @@ class Engine {
     return health_.view(v, now());
   }
   [[nodiscard]] FillClusterView fill_cluster() const noexcept { return cluster_.view(); }
+  // ctx.hazard_groups, hazard_group, hazard, hazard_add: the hazard groups (core/hazard.hpp).
+  [[nodiscard]] std::uint32_t hazard_groups() const noexcept { return hazard_.groups(); }
+  [[nodiscard]] std::uint32_t hazard_group(InstrumentId id) const noexcept {
+    return hazard_.group_of(id);
+  }
+  [[nodiscard]] HazardView hazard(std::uint32_t group) const noexcept {
+    return hazard_.view(group, now());
+  }
+  void hazard_add(std::uint32_t group, Side side, double amount) noexcept {
+    if (group >= hazard_.groups()) return;
+    enter_api();
+    hazard_evidence(group, side, amount);
+  }
   // ctx.order_budget: the [risk] bucket's whole tokens, and the venue's windows where the transport
   // carries them (LiveTransport: the connector's publication; a backtest has none). The windows
   // count the new orders and replaces sent to the account that the publication had not seen yet
@@ -1369,6 +1385,7 @@ class Engine {
     if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
     if (FASTMM_UNLIKELY(quotes_.backoff_due(now_))) retry_backed_off();
     if (FASTMM_UNLIKELY(cluster_on_) && cluster_.lift_due(now_)) lift_fill_cluster();
+    if (FASTMM_UNLIKELY(hazard_on_) && hazard_.lift_due(now_)) lift_hazard();
     if (FASTMM_UNLIKELY(capacity_on_)) capacity_clock();
     dispatch(h);
     after_hooks(quoting_before);
@@ -1650,6 +1667,114 @@ class Engine {
     flush_out();
   }
 
+  // ---- the hazard groups (core/hazard.hpp) ----------------------------------------------------
+  // Evidence for one side of a group. When it takes the score to the threshold the group's quotes
+  // on that side are cancelled now and held (QuoteManager::hold_side) until the hold runs out; a
+  // group in log mode only says so.
+  void hazard_evidence(std::uint32_t g, Side side, double amount) noexcept {
+    if (FASTMM_LIKELY(hazard_.add(g, side, amount, now_) != Hazard::Outcome::Engaged)) return;
+    on_hazard(g, side);
+  }
+  FASTMM_NOINLINE void on_hazard(std::uint32_t g, Side side) noexcept {
+    const bool log_only = hazard_.log_only(g);
+    const HazardView v = hazard_.view(g, now_);
+    const std::size_t i = side == Side::Buy ? 0U : 1U;
+    std::uint32_t resting = 0;
+    Placer place{this};
+    for (const InstrumentId id : hazard_.members(g)) {
+      if (!instruments_.contains(id)) continue;
+      resting += resting_quotes(id, side) > 0 ? 1U : 0U;
+      if (log_only) continue;
+      quotes_.hold_side(id, side, true);
+      quotes_.pull_side(instruments_.get(id), side, oms_, now_, place);
+    }
+    FASTMM_LOG_INFO("hazard {}: {} score {:.1f} reached {:.1f}; {} on {} instruments {} for {} ms",
+                    hazard_.name(g),
+                    side == Side::Buy ? "bid" : "ask",
+                    v.score[i],
+                    v.threshold,
+                    side == Side::Buy ? "bids" : "asks",
+                    resting,
+                    log_only ? "would be pulled" : "pulled",
+                    hazard_.hold(g).millis());
+    if (!log_only) flush_out();
+  }
+  // Holds that ran out: the strategy's last quotes go back on the members that quote.
+  FASTMM_NOINLINE void lift_hazard() noexcept {
+    Placer place{this};
+    bool placed = false;
+    hazard_.lift(now_, [&](std::uint32_t g, Side side) noexcept {
+      const HazardView v = hazard_.view(g, now_);
+      const std::size_t i = side == Side::Buy ? 0U : 1U;
+      FASTMM_LOG_INFO("hazard {}: {} hold over; {} quote fills, {:.1f} notional arrived while {}",
+                      hazard_.name(g),
+                      side == Side::Buy ? "bid" : "ask",
+                      v.held_fills[i] - hazard_seen_[g][i].fills,
+                      v.held_notional[i] - hazard_seen_[g][i].notional,
+                      hazard_.log_only(g) ? "it would have held" : "held");
+      hazard_seen_[g][i] = {v.held_fills[i], v.held_notional[i]};
+      if (hazard_.log_only(g)) return;
+      for (const InstrumentId id : hazard_.members(g)) {
+        if (!instruments_.contains(id)) continue;
+        quotes_.hold_side(id, side, false);
+        if (quoting_enabled(id)) quotes_.reapply(instruments_.get(id), oms_, now_, place);
+      }
+      placed = true;
+    });
+    if (placed) flush_out();
+  }
+  // The leaves of our quotes working on `side` of `id` at `px` or better (0: at any price).
+  [[nodiscard]] std::int64_t resting_quotes(InstrumentId id,
+                                            Side side,
+                                            Price px = Price{}) const noexcept {
+    std::int64_t leaves = 0;
+    for (std::uint32_t lvl = 0; lvl < kMaxQuoteLevels; ++lvl) {
+      const Handle<Order> h = quotes_.slot_handle(id, side, lvl);
+      if (!h.valid() || !oms_.is_live(h)) continue;
+      const Order& o = oms_.get(h);
+      if (px.raw != 0 && (side == Side::Buy ? o.price.raw < px.raw : o.price.raw > px.raw))
+        continue;
+      if (o.leaves_qty().raw > 0) leaves += o.leaves_qty().raw;
+    }
+    return leaves;
+  }
+  // A public print on a member: what it reached of the quotes we rest on the side it hit counts,
+  // unless the fill's own report came first (Hazard::print_qty).
+  FASTMM_NOINLINE void hazard_print(const TradeMsg& t) noexcept {
+    const InstrumentId id = t.hdr.instrument;
+    const Side side = opposite(t.aggressor);
+    const std::int64_t fresh =
+        hazard_.print_qty(id, side, t.qty.raw, resting_quotes(id, side, t.price), now_);
+    if (fresh <= 0) return;
+    const double notional =
+        instruments_.get(id).notional(t.price, Qty::from_raw(fresh)).to_double();
+    hazard_evidence(hazard_.group_of(id), side, notional * hazard_.weight(id));
+  }
+  // A maker fill of a quote on a member.
+  FASTMM_NOINLINE void hazard_fill(const Instrument& inst,
+                                   Side side,
+                                   const OrderFillMsg& f) noexcept {
+    const double notional = inst.notional(f.price, f.qty).to_double();
+    const std::uint32_t g = hazard_.group_of(inst.id);
+    if (FASTMM_UNLIKELY(hazard_.held(g, side))) {
+      // A fill on a held side: one a pull was too late for, or, in log mode, one it may have
+      // avoided. The venue's time of the match says which.
+      const HazardView v = hazard_.view(g, now_);
+      FASTMM_LOG_INFO("hazard {}: {} fill on {} of {:.1f} notional, matched {} us after the {}",
+                      hazard_.name(g),
+                      side == Side::Buy ? "bid" : "ask",
+                      inst.symbol.view(),
+                      notional,
+                      (f.hdr.exch_ts - v.held_since[side == Side::Buy ? 0U : 1U]).ns / 1000,
+                      hazard_.log_only(g) ? "pull it would have made" : "pull");
+    }
+    const std::int64_t fresh = hazard_.fill_qty(inst.id, side, f.qty.raw, notional, now_);
+    if (fresh <= 0) return;
+    const double part =
+        fresh >= f.qty.raw ? notional : inst.notional(f.price, Qty::from_raw(fresh)).to_double();
+    hazard_evidence(g, side, part * hazard_.weight(inst.id));
+  }
+
   // An FX source's mid ([accounting]): its currency's rate, for the PnL totals from now on and for
   // the orders it prices. A book that stops being valid leaves the totals at the last rate (a loss
   // already booked stays measured) and refuses new exposure in that currency until it is back.
@@ -1666,6 +1791,9 @@ class Engine {
     if (known_instrument) {
       risk_.on_trade(id, t.price);
       if (FASTMM_UNLIKELY(queue_on_)) queue_on_trade(t);
+      if (FASTMM_UNLIKELY(hazard_on_) && t.has_aggressor() &&
+          hazard_.wants_print(id, opposite(t.aggressor)))
+        hazard_print(t);
     }
     track_feed_lag(t.hdr);
     const Cycles t2 = clock_.cycles();
@@ -1862,6 +1990,7 @@ class Engine {
       return QuoteBlock::Pulled;
     if (health_.gated(inst.venue, now_)) return QuoteBlock::FeedLag;
     if (quotes_.side_held(side)) return QuoteBlock::FillCluster;
+    if (quotes_.side_held(id, side)) return QuoteBlock::Hazard;
     // The QuoteManager keeps an order whose leaves cover min_qty_bps of the target.
     if (static_cast<Int128>(working_qty) * 10'000 >=
         static_cast<Int128>(t.asked_qty_raw) * quotes_.params().min_qty_bps)
@@ -2606,6 +2735,10 @@ class Engine {
           (f.flags & OrderFillMsg::kReplayed) == 0 &&
           QuoteManager::is_quote_tag(u.order.user_tag) && cluster_.on_fill(id, side, now_))
         on_fill_cluster(side);
+      if (FASTMM_UNLIKELY(hazard_on_) && f.liquidity == Liquidity::Maker && u.known &&
+          (f.flags & OrderFillMsg::kReplayed) == 0 &&
+          QuoteManager::is_quote_tag(u.order.user_tag) && hazard_.group_of(id) != Hazard::kNoGroup)
+        hazard_fill(inst, side, f);
     } else if (stats_.unknown_instrument_fills++ == 0) {
       FASTMM_LOG_WARN("fill on instrument {} outside the instrument table is not booked", id.value);
     }
@@ -3634,6 +3767,7 @@ class Engine {
       if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
       if (FASTMM_UNLIKELY(quotes_.backoff_due(now_))) retry_backed_off();
       if (FASTMM_UNLIKELY(cluster_on_) && cluster_.lift_due(now_)) lift_fill_cluster();
+      if (FASTMM_UNLIKELY(hazard_on_) && hazard_.lift_due(now_)) lift_hazard();
       if (FASTMM_UNLIKELY(capacity_on_)) capacity_clock();
       call_batch_end();
       after_hooks(quoting_before);
@@ -3713,6 +3847,7 @@ class Engine {
     if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
     if (FASTMM_UNLIKELY(quotes_.backoff_due(now_))) retry_backed_off();
     if (FASTMM_UNLIKELY(cluster_on_) && cluster_.lift_due(now_)) lift_fill_cluster();
+    if (FASTMM_UNLIKELY(hazard_on_) && hazard_.lift_due(now_)) lift_hazard();
     if (FASTMM_UNLIKELY(capacity_on_)) capacity_clock();
     if (ack_timer) {
       sweep_acks();
@@ -6209,6 +6344,15 @@ class Engine {
   // [risk] fill_cluster_names: the fill-cluster guard (core/fill_cluster.hpp).
   FillCluster cluster_;
   bool cluster_on_ = cfg_.fill_cluster.enabled();
+  // [[risk.hazard]]: the hazard groups (core/hazard.hpp).
+  Hazard hazard_;
+  bool hazard_on_ = false;
+  // The held-fill counts at each side's last lift, for the log line of the next.
+  struct HazardSeen {
+    std::uint64_t fills = 0;
+    double notional = 0.0;
+  };
+  std::array<std::array<HazardSeen, 2>, HazardConfig::kMaxGroups> hazard_seen_{};
   QuoteManager quotes_;
   QuotePresence presence_;
   TimerWheel<> timers_;

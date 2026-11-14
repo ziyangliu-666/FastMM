@@ -802,11 +802,45 @@ Every limit is off when it is `0` or omitted. A `fastmm-live` session that trade
 | `fill_cluster_names` | integer |  | the fill-cluster guard: when maker fills of our quotes on one side cover this many distinct instruments within fill_cluster_window_ms, that side's quotes are pulled on every instrument for fill_cluster_hold_ms, then put back (0 to 16; default 0: off) |
 | `fill_cluster_window_ms` | integer |  | the fill-cluster guard's window, ms (default 500) |
 | `fill_cluster_hold_ms` | integer |  | how long the fill-cluster guard holds the side after the last fill that completed a cluster, ms (default 500) |
+| `hazard` | any |  | [[risk.hazard]] tables, 16 at most: groups of instruments whose quotes on one side are pulled together when evidence that the side is being picked off reaches a threshold (default: none) |
 | `check_balance` | boolean |  | refuse an order the venue's reported balance, less this session's orders and fills since, cannot cover; off for a venue until it reports balances (default true) |
 | `reduce_only` | boolean |  | start in reduce-only mode for every instrument: orders that would take a position further from zero are refused until fastmm-ctl reduce-only off (default false) |
 | `allow_unlimited` | boolean |  | let fastmm-live trade with real keys without max_position (or max_order_notional) and max_loss; without it such a session refuses to start, exit code 3 (default false) |
 | `underlying` | table |  | one [risk.underlying.BTC] table per base asset: a net position limit over every instrument and venue that trades it |
 <!-- END config-keys -->
+
+### `[[risk.hazard]]`
+
+A group of instruments whose quotes on one side are pulled together when evidence that the side is being picked off reaches `threshold`. [Risk model](../explanation/risk-model.md#hazard-groups) describes the score.
+
+```toml
+[[risk.hazard]]
+name = "semis"
+instruments = ["NVDAUSDT", "AMDUSDT", "MUUSDT"]
+threshold = 500      # quote notional of our fills, each piece halving every half_life_ms
+half_life_ms = 20
+hold_ms = 500
+side = "bid"
+mode = "log"         # "pull" once the log shows what it would have pulled
+```
+
+<!-- BEGIN config-keys risk.hazard[] -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `name` | string | yes | group name, for the log |
+| `instruments` | string array | yes | the members: "symbol", "venue:symbol" or the name of a [strategy.groups] group; an instrument belongs to one hazard group at most |
+| `weights` | table |  | [risk.hazard.weights] "symbol" or "venue:symbol" = number: what a unit of notional on that member adds to the score (default 1 for each member) |
+| `threshold` | number | yes | the score that pulls a side, in quote notional times weight; the score is the sum of the evidence, each piece halving every half_life_ms |
+| `half_life_ms` | number |  | half-life of the score, ms (default 20) |
+| `hold_ms` | integer |  | how long the side stays pulled after the last evidence that found the score at the threshold, ms (default 500) |
+| `side` | string |  | the sides the group scores and pulls: "bid", "ask" or "both" (default "both") |
+| `prints` | boolean |  | count a public print that reaches a quote of ours when it arrives before the fill's own report (default true) |
+| `mode` | string |  | "pull" cancels the side's quotes and holds it; "log" keeps the score and only logs what it would have pulled and the fills that arrived meanwhile (default "pull") |
+<!-- END config-keys -->
+
+- An entry of `instruments` that names a `[strategy.groups]` group stands for its members.
+- `[risk.hazard.weights]` belongs to the `[[risk.hazard]]` table above it.
+- Not adjustable at run time.
 
 ### `[risk.underlying.<BASE>]`
 

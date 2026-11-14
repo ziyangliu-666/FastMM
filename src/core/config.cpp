@@ -5,6 +5,7 @@
 #include "fastmm/config/schema.hpp"
 #include "fastmm/core/journal.hpp"
 #include "fastmm/strategies/ab_test.hpp"
+#include "fastmm/strategies/param_overrides.hpp"
 
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -13,6 +14,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -1218,6 +1220,56 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
                                     FillClusterConfig::kMaxNames));
     if (r.fill_cluster_window_ms < 0 || r.fill_cluster_hold_ms < 0)
       throw ConfigError("risk.fill_cluster_window_ms and fill_cluster_hold_ms must be >= 0");
+    if (const toml::node* hz = t->get("hazard")) {
+      const toml::array* list = hz->as_array();
+      if (list == nullptr || !list->is_array_of_tables())
+        fail_at(*hz, "risk.hazard must be [[risk.hazard]] tables");
+      if (list->size() > HazardConfig::kMaxGroups)
+        fail_at(*hz,
+                fmt::format("[[risk.hazard]]: {} groups at most, got {}",
+                            HazardConfig::kMaxGroups,
+                            list->size()));
+      for (const toml::node& node : *list) {
+        const toml::table& h = *node.as_table();
+        validate_table(h, "risk.hazard[]");
+        HazardSection g;
+        get(h, "name", g.name);
+        if (!plain_name(g.name, 32, "_-."))
+          fail_at(*h.get("name"),
+                  "risk.hazard.name must be 1 to 32 letters, digits, '_', '-' or '.'");
+        for (const HazardSection& other : r.hazard) {
+          if (other.name == g.name)
+            fail_at(*h.get("name"), fmt::format("risk.hazard: two groups are named '{}'", g.name));
+        }
+        for (const toml::node& m : *h.get("instruments")->as_array())
+          g.instruments.push_back(m.value_or(std::string{}));
+        if (g.instruments.empty())
+          fail_at(*h.get("instruments"), "risk.hazard.instruments must name an instrument");
+        if (const auto* w = h.get_as<toml::table>("weights")) {
+          for (const auto& [k, v] : *w) {
+            const std::optional<double> x = v.value<double>();
+            if (!x || !(*x >= 0.0))
+              fail_at(v, fmt::format("risk.hazard.weights.\"{}\" must be a number >= 0", k.str()));
+            g.weights[std::string(k.str())] = *x;
+          }
+        }
+        get(h, "threshold", g.threshold);
+        if (!(g.threshold > 0.0)) fail_at(*h.get("threshold"), "risk.hazard.threshold must be > 0");
+        get(h, "half_life_ms", g.half_life_ms);
+        if (!(g.half_life_ms > 0.0))
+          fail_at(*h.get("half_life_ms"), "risk.hazard.half_life_ms must be > 0");
+        get(h, "hold_ms", g.hold_ms);
+        if (g.hold_ms < 0) fail_at(*h.get("hold_ms"), "risk.hazard.hold_ms must be >= 0");
+        get(h, "side", g.side);
+        if (g.side != "bid" && g.side != "ask" && g.side != "both")
+          fail_at(*h.get("side"), "risk.hazard.side must be \"bid\", \"ask\" or \"both\"");
+        get(h, "prints", g.prints);
+        get(h, "mode", g.mode);
+        if (g.mode != "pull" && g.mode != "log")
+          fail_at(*h.get("mode"), "risk.hazard.mode must be \"pull\" or \"log\"");
+        r.hazard.push_back(std::move(g));
+      }
+    }
     get(*t, "check_balance", r.check_balance);
     get(*t, "allow_unlimited", r.allow_unlimited);
     get(*t, "reduce_only", r.reduce_only);
@@ -1817,6 +1869,20 @@ std::string Config::redacted() const {
     fmt::format_to(std::back_inserter(out), "\n[risk.underlying.{}]\n", k);
     kq("max_net", v);
   }
+  for (const HazardSection& g : risk.hazard) {
+    out += "\n[[risk.hazard]]\n";
+    kq("name", g.name);
+    kv("instruments", fmt::format("[\"{}\"]", fmt::join(g.instruments, "\", \"")));
+    kv("threshold", g.threshold);
+    kv("half_life_ms", g.half_life_ms);
+    kv("hold_ms", g.hold_ms);
+    kq("side", g.side);
+    kv("prints", g.prints);
+    kq("mode", g.mode);
+    if (g.weights.empty()) continue;
+    out += "\n[risk.hazard.weights]\n";
+    for (const auto& [k, v] : g.weights) kv(fmt::format("\"{}\"", k), v);
+  }
   if (capacity.configured) {
     out += "\n[capacity]\n";
     kq("mode", capacity.mode);
@@ -2241,6 +2307,30 @@ std::string Config::effective_toml() const {
     r.insert("fill_cluster_window_ms", static_cast<std::int64_t>(risk.fill_cluster_window_ms));
     r.insert("fill_cluster_hold_ms", static_cast<std::int64_t>(risk.fill_cluster_hold_ms));
   }
+  // Only when set, so a configuration without it keeps its effective text and hash.
+  if (!risk.hazard.empty()) {
+    toml::array groups;
+    for (const HazardSection& g : risk.hazard) {
+      toml::table t;
+      t.insert("name", g.name);
+      toml::array members;
+      for (const std::string& m : g.instruments) members.push_back(m);
+      t.insert("instruments", std::move(members));
+      if (!g.weights.empty()) {
+        toml::table w;
+        for (const auto& [k, v] : g.weights) w.insert(k, v);
+        t.insert("weights", std::move(w));
+      }
+      t.insert("threshold", g.threshold);
+      t.insert("half_life_ms", g.half_life_ms);
+      t.insert("hold_ms", static_cast<std::int64_t>(g.hold_ms));
+      t.insert("side", g.side);
+      t.insert("prints", g.prints);
+      t.insert("mode", g.mode);
+      groups.push_back(std::move(t));
+    }
+    r.insert("hazard", std::move(groups));
+  }
   if (!risk.check_balance) r.insert("check_balance", false);
   if (risk.allow_unlimited) r.insert("allow_unlimited", true);
   if (risk.reduce_only) r.insert("reduce_only", true);
@@ -2366,6 +2456,50 @@ std::string Config::effective_toml() const {
   std::ostringstream ss;
   ss << root << "\n";
   return ss.str();
+}
+
+HazardConfig hazard_config(const Config& cfg,
+                           const InstrumentTable& table,
+                           std::span<const std::string> venue_names) {
+  HazardConfig out;
+  std::vector<std::string> owner(kMaxInstruments);
+  for (const HazardSection& g : cfg.risk.hazard) {
+    HazardGroupConfig c;
+    c.name = g.name;
+    c.threshold = g.threshold;
+    c.half_life = Duration{static_cast<std::int64_t>(g.half_life_ms * 1e6)};
+    c.hold = milliseconds(g.hold_ms);
+    c.sides = {g.side != "ask", g.side != "bid"};
+    c.prints = g.prints;
+    c.log_only = g.mode == "log";
+    for (const std::string& key : g.instruments) {
+      const std::vector<InstrumentId> ids =
+          resolve_scope(key, cfg.strategy.groups, table, venue_names);
+      if (ids.empty())
+        throw ConfigError(fmt::format("risk.hazard '{}': no instrument '{}'", g.name, key));
+      for (const InstrumentId id : ids) {
+        if (!owner[id.value].empty())
+          throw ConfigError(fmt::format("risk.hazard '{}': {} is already in group '{}'",
+                                        g.name,
+                                        table.get(id).symbol.view(),
+                                        owner[id.value]));
+        owner[id.value] = g.name;
+        c.members.push_back(id);
+        c.weights.push_back(1.0);
+      }
+    }
+    for (const auto& [key, w] : g.weights) {
+      const std::vector<InstrumentId> ids = resolve_scope(key, {}, table, venue_names);
+      const auto at = ids.empty() ? c.members.end()
+                                  : std::find(c.members.begin(), c.members.end(), ids.front());
+      if (at == c.members.end())
+        throw ConfigError(
+            fmt::format("risk.hazard '{}': weights names '{}', not a member", g.name, key));
+      c.weights[static_cast<std::size_t>(at - c.members.begin())] = w;
+    }
+    out.groups.push_back(std::move(c));
+  }
+  return out;
 }
 
 PoolHomesPlan pool_homes(const Config& cfg, const InstrumentTable& table) {
