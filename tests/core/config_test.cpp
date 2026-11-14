@@ -3,6 +3,7 @@
 #include "test_support.hpp"
 
 #include "fastmm/config/env_subst.hpp"
+#include "fastmm/core/engine_config.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -397,6 +398,31 @@ TEST_CASE("core.config: [engine] on_kill defaults to exit, accepts stay and reje
   CHECK_THROWS_WITH_AS(Config::parse("[engine]\non_kill = \"restart\"\n"),
                        doctest::Contains("on_kill must be exit|stay"),
                        ConfigError);
+}
+
+TEST_CASE("core.config: [engine] base_flows, base_flows_settle_s and base_flows_from") {
+  const Config none = Config::parse("[engine]\n");
+  CHECK(none.engine.base_flows == "off");
+  CHECK(none.engine.base_flows_settle_s == 30);
+  CHECK(none.engine.base_flows_from == "session");
+  const Config on = Config::parse(
+      "[engine]\nbase_flows = \"adjust\"\nbase_flows_settle_s = 60\nbase_flows_from = \"zero\"\n");
+  CHECK(on.warnings.empty());
+  const Config back = Config::parse(on.effective_toml());
+  CHECK(back.engine.base_flows == "adjust");
+  CHECK(back.engine.base_flows_settle_s == 60);
+  CHECK(back.engine.base_flows_from == "zero");
+  CHECK(on.effective_hash() != none.effective_hash());
+  CHECK(base_flows_of(on.engine.base_flows) == BaseFlows::Adjust);
+  CHECK(base_flows_of("report") == BaseFlows::Report);
+  CHECK(base_flows_of(none.engine.base_flows) == BaseFlows::Off);
+  CHECK_THROWS_WITH_AS(Config::parse("[engine]\nbase_flows = \"book\"\n"),
+                       doctest::Contains("base_flows must be off|report|adjust"),
+                       ConfigError);
+  CHECK_THROWS_WITH_AS(Config::parse("[engine]\nbase_flows_from = \"start\"\n"),
+                       doctest::Contains("base_flows_from must be session|zero"),
+                       ConfigError);
+  CHECK_THROWS_AS(Config::parse("[engine]\nbase_flows_settle_s = -1\n"), ConfigError);
 }
 
 TEST_CASE("core.config: [engine] threading is split or single, and single takes one venue") {

@@ -169,6 +169,20 @@ class PositionTracker {
     book(id, &Totals::fees, fee);
   }
 
+  // A change of the position that no trade made (a token dividend, an airdrop, a deposit or a
+  // withdrawal of the asset; Engine base flows), booked as a fill of `delta` (signed) at `px` with
+  // no fee. At the mark it moves no PnL: what enters adds to the position at its value, what leaves
+  // realises the open position's PnL on it. It is not a trade: gross_traded and fills stay.
+  void adjust(InstrumentId id, Qty delta, Price px, const Instrument& inst) noexcept {
+    if (delta.is_zero()) return;
+    Position& p = pos_[id.value];
+    const Qty gross = p.gross_traded;
+    const std::uint32_t fills = p.fills;
+    on_fill(id, delta.is_negative() ? Side::Sell : Side::Buy, px, delta.abs(), Notional{}, inst);
+    p.gross_traded = gross;
+    p.fills = fills;
+  }
+
   // A funding payment on the instrument's position, in its settlement currency (negative paid,
   // positive received). It is realized PnL, not a fee: it is not a cost of trading but the carry of
   // holding the position, and a position that is never traded pays it all the same. funding() and

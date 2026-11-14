@@ -187,3 +187,27 @@ TEST_CASE("core.position: contract multiplier scales pnl") {
   CHECK(t[fut.id].realized == nt("60"));
   CHECK(t[fut.id].unrealized == Notional{});
 }
+
+TEST_CASE("core.position: adjust books a change no trade made at a price, without a fee") {
+  const Instrument inst = spot();
+  PositionTracker t;
+  const InstrumentId id = inst.id;
+  t.on_fill(id, Side::Buy, px("100"), qt("2"), nt("0.1"), inst);
+  t.mark(id, px("110"), inst);
+  const Notional before = t.net_pnl();
+  // A credit at the mark: the PnL stays, the average moves towards the mark.
+  t.adjust(id, qt("0.5"), px("110"), inst);
+  CHECK(t[id].qty == qt("2.5"));
+  CHECK(t[id].avg_px == px("102"));
+  CHECK(t.net_pnl() == before);
+  CHECK(t[id].fills == 1);
+  CHECK(t[id].gross_traded == qt("2"));
+  CHECK(t[id].fees == nt("0.1"));
+  // A debit at the mark realises the open PnL on what leaves; the total stays.
+  t.adjust(id, qt("-0.5"), px("110"), inst);
+  CHECK(t[id].qty == qt("2"));
+  CHECK(t[id].realized == nt("4"));
+  CHECK(t.net_pnl() == before);
+  t.adjust(id, Qty{}, px("110"), inst);
+  CHECK(t[id].qty == qt("2"));
+}

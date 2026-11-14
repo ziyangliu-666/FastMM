@@ -623,14 +623,38 @@ TEST_CASE("core.engine sweep: the budget caps the transfers, dust waits, the ope
   CHECK(in[0].asset.view() == "ETH");
   r.flow(kC, "ETH", "-0.5");
   r.flow(kA, "ETH", "0.5");
-  // Dust on a home with nothing to sell it with waits sweep_dust; the operator moves it at once.
-  r.snapshot(kA, "0", "1.5", "1000");
-  r.snapshot(kB, "0.00001", "0", "1000");
+  // Dust on a home with nothing to sell it with waits sweep_dust; the operator moves it at once,
+  // all but what is under a lot.
+  r.snapshot(kA, "0.15", "0", "1000");
+  r.snapshot(kB, "0", "0.00015", "1000");
   r.wait(70'000);
   CHECK(r.intents().empty());
-  r.sweep(kSweepNow, kBtc);
+  r.sweep(kSweepNow, kEth);
   r.wait(250);
   in = r.intents();
   REQUIRE(in.size() == 1);
-  CHECK(in[0].amount == nt("0.00001").raw);
+  CHECK(in[0].asset.view() == "ETH");
+  CHECK(in[0].amount == nt("0.0001").raw);
+}
+
+TEST_CASE("core.engine sweep: what is under a lot stays where it is") {
+  Rig r(make_config());
+  // A piece, and the residue of a dividend paid in tokens on top of it.
+  r.pool("0.1", "0.05001753");
+  r.wait(3250);
+  auto in = r.intents();
+  REQUIRE(in.size() == 1);
+  CHECK(in[0].amount == nt("0.05").raw);
+  r.answer(TreasuryEventKind::Sent, in[0].seq, TransferState::Pending);
+  r.flow(kB, "BTC", "-0.05");
+  r.flow(kA, "BTC", "0.05");
+  CHECK(r.stats().done == 1);
+  CHECK(r.total(kB) == nt("0.00001753"));
+  // Not as dust, and not when the operator asks.
+  r.wait(3'700'000);
+  CHECK(r.intents().empty());
+  r.sweep(kSweepNow, kBtc);
+  r.wait(250);
+  CHECK(r.intents().empty());
+  CHECK(r.total(kB) == nt("0.00001753"));
 }

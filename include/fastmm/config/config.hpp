@@ -140,6 +140,12 @@ struct EngineSection {
   // "all" cancels every one; "own" only those whose client order id FastMM minted with an epoch
   // up to this session's, and leaves the rest (manual orders, another program's) alone.
   std::string cancel_unknown = "all";
+  // A change of a spot instrument's base asset on its accounts that no fill or transfer of the
+  // engine's made (EngineConfig::base_flows): "off" | "report" | "adjust"; how long a change must
+  // hold first; and what it is measured from: "session" (the first settled offset) or "zero".
+  std::string base_flows = "off";
+  int base_flows_settle_s = 30;
+  std::string base_flows_from = "session";
 };
 
 struct FeesSection {

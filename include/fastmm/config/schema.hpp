@@ -351,6 +351,25 @@ inline constexpr KeySpec kConfigSchema[] = {
      "open orders the engine does not know, found on its symbols at start-up and after a "
      "reconnect: all (cancel every one; the account must be FastMM's alone) | own (cancel only "
      "those with a FastMM client order id of this engine's epochs) (default all)"},
+    {"engine",
+     "base_flows",
+     KeyType::String,
+     false,
+     "a change of a spot instrument's base asset on its accounts that no fill and no transfer of "
+     "the engine's made (a token dividend, an airdrop, a deposit): off | report (log and journal "
+     "it) | adjust (and book it to the position at the mid) (default off)"},
+    {"engine",
+     "base_flows_settle_s",
+     KeyType::Int,
+     false,
+     "how long such a change must hold before it counts, s (default 30)"},
+    {"engine",
+     "base_flows_from",
+     KeyType::String,
+     false,
+     "what base_flows measures the accounts' balance against the position from: session (the "
+     "difference when the session's balances first settle) | zero (the position is to equal the "
+     "balance, a difference at the start included) (default session)"},
     // [venues.<name>]
     {"venues.*",
      "kind",

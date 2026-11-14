@@ -169,7 +169,11 @@ struct EngineStats {
   std::uint64_t home_spills = 0;           // adding orders spill = "busy" sent off their home
   std::uint64_t priced_out = 0;            // orders and moves refused PricedOut ([capacity])
   std::uint64_t treasury_records = 0;  // pool treasury transfer steps (ControlCommand::Transfer)
-  std::uint64_t flatten_orders = 0;    // reduce-only orders a flatten sent
+  // [engine] base_flows: changes of a base asset no fill or transfer made, and those the position
+  // took (base_flows = "adjust").
+  std::uint64_t base_flows = 0;
+  std::uint64_t base_flows_booked = 0;
+  std::uint64_t flatten_orders = 0;  // reduce-only orders a flatten sent
   std::uint64_t steps = 0;
   std::uint64_t clock_reanchors = 0;     // TscClock picked up a recalibration continuously
   std::uint64_t clock_steps = 0;         // ... or had to step (old mapping off by > threshold)
@@ -206,6 +210,9 @@ class Engine {
   // The pools' sweep (core/transfer_lane.hpp), every kSweepPeriod.
   static constexpr std::uint8_t kSweepTimer = 7;
   static constexpr Duration kSweepPeriod = milliseconds(250);
+  // [engine] base_flows: the base assets' balances against the positions, every kFlowPeriod.
+  static constexpr std::uint8_t kFlowTimer = 8;
+  static constexpr Duration kFlowPeriod = seconds(1);
 
   Engine(const EngineConfig& cfg,
          const InstrumentTable& instruments,
@@ -271,6 +278,7 @@ class Engine {
     }
     risk_.set_underlying(cfg.underlying);
     balances_->build(instruments_, cfg.fees, cfg.balance, &cfg_.pools);
+    if (cfg.base_flows != BaseFlows::Off) build_flows();
     perp_.configure(cfg.perp);
     // Venues whose positions wait for their first reconciliation: only those an instrument trades,
     // and the members of their pools.
@@ -468,6 +476,7 @@ class Engine {
       if (cfg_.checkpoint_interval.ns > 0)
         checkpoint_timer_ = timers_.add(now_, cfg_.checkpoint_interval, /*repeat=*/true);
     }
+    if (!flows_.empty()) flow_timer_ = timers_.add(now_, kFlowPeriod, /*repeat=*/true);
     flush_out();
     unlatch_clock();
     hide_own_all();
@@ -1476,6 +1485,8 @@ class Engine {
       journal_checkpoint();  // replay of the journal's checkpoint
     } else if (t.engine == kSweepTimer) {
       sweep_tick();  // replay of the pools' sweep
+    } else if (t.engine == kFlowTimer) {
+      flow_tick();  // replay of the base flows' look
     } else if (t.engine != 0) {
       check_param_age();  // replay of the engine's max_param_age timer
     } else {
@@ -3043,6 +3054,8 @@ class Engine {
       case ControlCommand::PoolSweep:
         on_pool_sweep(c);
         break;
+      case ControlCommand::BaseFlow:
+        break;  // the engine's own record (flow_tick): a replay finds the flow again
       case ControlCommand::ResetLossBudget:
         reset_loss_budget();
         break;
@@ -3668,8 +3681,10 @@ class Engine {
     const bool state_timer = state_timer_.valid() && id == state_timer_;
     const bool checkpoint_timer = checkpoint_timer_.valid() && id == checkpoint_timer_;
     const bool sweep_timer = sweep_timer_.valid() && id == sweep_timer_;
+    const bool flow_timer = flow_timer_.valid() && id == flow_timer_;
     const bool engine_timer = ack_timer || flatten_timer || state_timer || checkpoint_timer ||
-                              sweep_timer || (param_timer_.valid() && id == param_timer_);
+                              sweep_timer || flow_timer ||
+                              (param_timer_.valid() && id == param_timer_);
     // Journal a synthetic TimerMsg so replay reproduces the strategy's timer calls.
     if (journal_.enabled()) {
       TimerMsg t{};
@@ -3680,6 +3695,7 @@ class Engine {
                  : state_timer      ? kStateTimer
                  : checkpoint_timer ? kCheckpointTimer
                  : sweep_timer      ? kSweepTimer
+                 : flow_timer       ? kFlowTimer
                  : engine_timer     ? 1
                                     : 0;
       t.user_data = user_data;
@@ -3708,6 +3724,8 @@ class Engine {
       journal_checkpoint();
     } else if (sweep_timer) {
       sweep_tick();
+    } else if (flow_timer) {
+      flow_tick();
     } else if (engine_timer) {
       param_timer_ = TimerId{};  // a one-shot timer is freed once it has fired
       flush_out();
@@ -4683,9 +4701,14 @@ class Engine {
           cell.changed = now_;
         }
         if (free == BalanceBook::kUnreported || free <= 0 || now_ < cell.retry) continue;
+        // Less than a lot over a multiple of it stays where it is: no order can trade it on any
+        // account, and moving it would only carry it from home to home (a token dividend, a fee
+        // taken in the base asset).
+        const std::int64_t amount = inst.lot.is_positive() ? free - free % inst.lot.raw : free;
+        if (amount <= 0) continue;
         if (lc.dry_run && cell.planned == total) continue;
         const Duration age = now_ - cell.changed;
-        const bool dust = !tradable(inst, Qty::from_raw(free), mid);
+        const bool dust = !tradable(inst, Qty::from_raw(amount), mid);
         const bool due =
             now_asked || (dust ? age >= lc.sweep_dust || (home_sells && age >= lc.sweep_delay)
                                : age >= lc.sweep_delay);
@@ -4695,8 +4718,8 @@ class Engine {
         c.from = from;
         c.to = h;
         c.asset = inst.base;
-        c.amount = free;
-        c.value = mid.is_positive() ? inst.notional(mid, Qty::from_raw(free)).to_double() : 0.0;
+        c.amount = amount;
+        c.value = mid.is_positive() ? inst.notional(mid, Qty::from_raw(amount)).to_double() : 0.0;
         c.dust = dust;
       }
     }
@@ -4983,6 +5006,151 @@ class Engine {
                     : c.arg == kSweepPause ? "paused"
                                            : "now",
                     to_string(lane.breaker(now_)));
+  }
+
+  // ---- base flows ([engine] base_flows) ---------------------------------------------------------
+  //
+  // A spot instrument's position and its accounts' balance of the base asset move together: a fill
+  // moves both, a transfer of the engine's between the pool's accounts moves neither's total. What
+  // moves the balance alone is a flow the engine did not make: a token dividend credited as tokens,
+  // an airdrop, a venue's adjustment, a deposit or a withdrawal. Once a second, for every base
+  // asset of a pool's spot instruments, the accounts' total less the position of its instruments
+  // (the offset) is measured; a change of it that holds base_flows_settle is a flow. "report" logs
+  // and journals it; "adjust" books it to the position as well (PositionTracker::adjust, at the
+  // mid), so the position follows the venue. A missed fill looks the same until the venue's
+  // executions book it; the position then follows the balance back, a flow the other way.
+  //
+  // No look while the balances are not live or a venue reconciles, while a pool account's order
+  // link is down or one of its balances is unreported, or while a transfer of the asset is in
+  // flight. An asset that is also an instrument's quote or settlement currency on the venue moves
+  // with those trades: it is not watched.
+
+  // One base asset of a pool's spot instruments: its offset, and since when that has held.
+  static constexpr std::int64_t kNoOffset = std::numeric_limits<std::int64_t>::min();
+  struct FlowGroup {
+    VenueId primary{};
+    FixedString<8> asset{};
+    InstrumentId first{};             // the instrument a flow is booked to
+    std::vector<InstrumentId> insts;  // every spot instrument of the pool with this base
+    std::int64_t baseline = 0;        // the offset that is no flow
+    bool based = false;               // baseline is set
+    std::int64_t last = kNoOffset;    // the offset at the last look
+    Timestamp since{};                // ... unchanged since
+    std::int64_t reported = 0;        // the flow last reported (base_flows = "report")
+    std::int64_t balance = 0;         // the accounts' total and the position at the last look
+    std::int64_t position = 0;
+  };
+
+  void build_flows() {
+    for (const Instrument& inst : instruments_) {
+      if (inst.is_derivative() || inst.id.value >= kMaxInstruments || inst.base.empty()) continue;
+      FlowGroup* g = nullptr;
+      for (FlowGroup& x : flows_) {
+        if (x.primary == inst.venue && same_currency(x.asset.view(), inst.base.view())) g = &x;
+      }
+      if (g == nullptr) {
+        g = &flows_.emplace_back();
+        g->primary = inst.venue;
+        g->asset = inst.base;
+        g->first = inst.id;
+        g->based = cfg_.base_flows_from_zero;
+      }
+      g->insts.push_back(inst.id);
+    }
+    std::erase_if(flows_, [&](const FlowGroup& g) {
+      for (const Instrument& inst : instruments_) {
+        if (inst.venue != g.primary) continue;
+        const std::string_view other =
+            inst.is_derivative() ? inst.settlement_ccy() : inst.quote.view();
+        if (same_currency(other, g.asset.view())) return true;
+      }
+      return false;
+    });
+  }
+  // The offset of `g` now (its balance and position kept for the record); kNoOffset when it cannot
+  // be measured.
+  [[nodiscard]] std::int64_t flow_offset(FlowGroup& g) noexcept {
+    const VenueId primary = g.primary;
+    const std::string_view asset = g.asset.view();
+    if (primary.value < kMaxVenues) {
+      if (lanes_[primary.value] != nullptr && lanes_[primary.value]->busy(asset)) return kNoOffset;
+      const TransferHold& h = transfer_holds_[primary.value];
+      if (h.active && same_currency(h.asset.view(), asset)) return kNoOffset;
+    }
+    std::int64_t balance = 0;
+    for (const VenueId v : cfg_.pools.members(primary)) {
+      if ((order_link_down_ & venue_mask(v)) != 0) return kNoOffset;
+      const std::int64_t total = balances_->base_total(g.first, v);
+      if (total == BalanceBook::kUnreported) return kNoOffset;
+      balance += total;
+    }
+    std::int64_t position = 0;
+    for (const InstrumentId id : g.insts) position += positions_.get(id).qty.raw;
+    g.balance = balance;
+    g.position = position;
+    return balance - position;
+  }
+  FASTMM_NOINLINE void flow_tick() noexcept {
+    const bool measurable = balances_live_ && !reconciling();
+    for (FlowGroup& g : flows_) {
+      const std::int64_t off = measurable ? flow_offset(g) : kNoOffset;
+      if (off == kNoOffset || off != g.last) {
+        g.last = off;
+        g.since = now_;
+        continue;
+      }
+      if (now_ - g.since < cfg_.base_flows_settle) continue;
+      if (!g.based) {
+        g.baseline = off;
+        g.based = true;
+        continue;
+      }
+      const std::int64_t flow = off - g.baseline;
+      if (flow == 0) {
+        g.reported = 0;
+        continue;
+      }
+      if (cfg_.base_flows == BaseFlows::Report && flow == g.reported) continue;  // said once
+      g.reported = flow;
+      on_base_flow(g, flow);
+    }
+  }
+  void on_base_flow(FlowGroup& g, std::int64_t flow) noexcept {
+    const bool book = cfg_.base_flows == BaseFlows::Adjust;
+    const Instrument& inst = instruments_.get(g.first);
+    ++stats_.base_flows;
+    FASTMM_LOG_WARN(
+        "{}: {} {} {} that no fill or transfer explains: the accounts hold {}, the position is {}; "
+        "{}",
+        venue_name(g.primary),
+        Qty::from_raw(flow < 0 ? -flow : flow),
+        g.asset.view(),
+        flow < 0 ? "left" : "came in",
+        Qty::from_raw(g.balance),
+        Qty::from_raw(g.position),
+        book ? "booked to the position" : "reported only ([engine] base_flows = \"report\")");
+    if (journal_.enabled()) {
+      ControlBaseFlowMsg m{};
+      init_header(m, EventType::Control, g.first, g.primary);
+      m.hdr.flags |= EventHeader::kSynthetic;
+      m.hdr.recv_ts = now_;
+      m.command = ControlCommand::BaseFlow;
+      m.flags = book ? ControlBaseFlowMsg::kBooked : 0;
+      m.arg = static_cast<std::uint64_t>(flow);
+      m.balance = g.balance;
+      m.position = g.position;
+      m.asset = g.asset;
+      if (!journal_.record(m.hdr)) ++stats_.journal_overflows;
+    }
+    if (!book) return;
+    ++stats_.base_flows_booked;
+    const Position& p = positions_.get(g.first);
+    Price px = books_[g.first.value].mid();
+    if (!px.is_positive()) px = p.last_mark.is_positive() ? p.last_mark : p.avg_px;
+    positions_.adjust(g.first, Qty::from_raw(flow), px, inst);
+    g.last = kNoOffset;
+    emit_position(g.first);
+    if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
   }
 
   // The pool account a new order on `inst` goes from (EngineConfig::pools). The request's own
@@ -6259,6 +6427,9 @@ class Engine {
   using SweepCells = std::array<std::array<SweepCell, PoolMembers::kMax>, kMaxInstruments>;
   std::unique_ptr<SweepCells> sweep_cells_;
   std::array<bool, kMaxInstruments> sweep_now_{};  // fastmm-ctl pool sweep SYMBOL
+  // [engine] base_flows: the base assets watched (FlowGroup).
+  std::vector<FlowGroup> flows_;
+  TimerId flow_timer_{};
   // Intents and notices for the transfer worker (core/transfer_worker.hpp).
   std::unique_ptr<SpscRing<LaneIntent, kLaneRing>> lane_out_;
   std::array<std::atomic<std::uint64_t>, kMaxVenues> hold_seq_pub_{};

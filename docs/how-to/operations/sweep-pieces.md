@@ -35,8 +35,9 @@ To see what it would do first, set `dry_run = true` in `[venues.binance.transfer
 | a tradable free amount, unchanged for `sweep_delay_ms` (a fill or a cancel starts the wait again: Binance refuses to transfer an amount it has just unlocked) | at once, the largest first within the budget |
 | below the tradable minimum (dust) | after `sweep_dust_s`, or with the delay when the home holds a tradable amount |
 | locked by a resting order | not moved; the order's next reprice is a cancel and a new order at the home |
+| less than a lot over a multiple of it (a dividend paid in tokens, a fee taken in the base asset) | never; no order can trade it, so it stays on its account |
 
-Each transfer moves the account's free balance of the asset, as the engine estimates it. It is held out of that estimate from the moment the engine decides on it, so no order is sized against it. The engine confirms it from both accounts' balance updates on their user streams, or from the venue's transfer history when those do not come. A pool has one transfer of an asset in flight at a time.
+Each transfer moves the account's free balance of the asset, as the engine estimates it, down to a whole number of lots. It is held out of that estimate from the moment the engine decides on it, so no order is sized against it. The engine confirms it from both accounts' balance updates on their user streams, or from the venue's transfer history when those do not come. A pool has one transfer of an asset in flight at a time.
 
 While the pool sweeps, `ctx.sweeping(venue)` is true and every spot sell the routing places goes to the home. A sell that names its account goes there, as before.
 

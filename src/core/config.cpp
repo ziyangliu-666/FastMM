@@ -884,6 +884,15 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "cancel_unknown", e.cancel_unknown);
     if (e.cancel_unknown != "all" && e.cancel_unknown != "own")
       fail_at(*t->get("cancel_unknown"), "cancel_unknown must be all|own");
+    get(*t, "base_flows", e.base_flows);
+    if (e.base_flows != "off" && e.base_flows != "report" && e.base_flows != "adjust")
+      fail_at(*t->get("base_flows"), "base_flows must be off|report|adjust");
+    get(*t, "base_flows_settle_s", e.base_flows_settle_s);
+    if (e.base_flows_settle_s < 0)
+      fail_at(*t->get("base_flows_settle_s"), "base_flows_settle_s must be >= 0");
+    get(*t, "base_flows_from", e.base_flows_from);
+    if (e.base_flows_from != "session" && e.base_flows_from != "zero")
+      fail_at(*t->get("base_flows_from"), "base_flows_from must be session|zero");
     for (std::size_t b : {e.md_ring_bytes, e.order_ring_bytes, e.journal_ring_bytes}) {
       if ((b & (b - 1)) != 0 || b < 64)
         throw ConfigError("engine ring sizes must be powers of two >= 64", line_of(*t), col_of(*t));
@@ -1624,6 +1633,11 @@ std::string Config::redacted() const {
   kv("supports_replace", engine.supports_replace);
   kq("on_kill", engine.on_kill);
   if (engine.cancel_unknown != "all") kq("cancel_unknown", engine.cancel_unknown);
+  if (engine.base_flows != "off") {
+    kq("base_flows", engine.base_flows);
+    kv("base_flows_settle_s", engine.base_flows_settle_s);
+    kq("base_flows_from", engine.base_flows_from);
+  }
   for (const auto& v : venues) {
     fmt::format_to(std::back_inserter(out), "\n[venues.{}]\n", v.name);
     kq("kind", v.kind);
@@ -2037,6 +2051,11 @@ std::string Config::effective_toml() const {
   e.insert("on_kill", engine.on_kill);
   // Only when set, so a configuration without it keeps its effective text and hash.
   if (engine.cancel_unknown != "all") e.insert("cancel_unknown", engine.cancel_unknown);
+  if (engine.base_flows != "off") {
+    e.insert("base_flows", engine.base_flows);
+    e.insert("base_flows_settle_s", engine.base_flows_settle_s);
+    e.insert("base_flows_from", engine.base_flows_from);
+  }
   root.insert("engine", std::move(e));
 
   if (!venues.empty()) {

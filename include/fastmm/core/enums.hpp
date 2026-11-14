@@ -520,6 +520,11 @@ enum class ControlCommand : std::uint8_t {
   // kSweepPause or kSweepNow (hdr.instrument: the instrument whose pieces go home at the next
   // look). From the operator (fastmm-ctl pool sweep).
   PoolSweep = 18,
+  // A change of a spot instrument's base asset on its accounts that no fill and no transfer of the
+  // engine's made ([engine] base_flows): a token dividend, an airdrop, a venue's adjustment, a
+  // deposit. The message is a ControlBaseFlowMsg, a record the engine journals (kSynthetic): a
+  // replay finds the flow again from the balances.
+  BaseFlow = 19,
 };
 [[nodiscard]] constexpr std::string_view to_string(ControlCommand c) noexcept {
   switch (c) {
@@ -561,6 +566,8 @@ enum class ControlCommand : std::uint8_t {
       return "PoolHome";
     case ControlCommand::PoolSweep:
       return "PoolSweep";
+    case ControlCommand::BaseFlow:
+      return "BaseFlow";
   }
   return "?";
 }

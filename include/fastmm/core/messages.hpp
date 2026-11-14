@@ -588,6 +588,33 @@ static_assert(offsetof(ControlTransferMsg, command) == offsetof(ControlMsg, comm
               offsetof(ControlTransferMsg, code) == 160 &&
               offsetof(ControlTransferMsg, http_status) == 164);
 
+// ControlCommand::BaseFlow: a change of the base asset of spot instrument hdr.instrument on the
+// accounts of pool hdr.venue (the primary) that the engine's fills and transfers do not explain
+// ([engine] base_flows). `arg` is the change (raw Qty, two's complement: negative left the
+// accounts), `balance` the accounts' total of `asset` and `position` the position of the
+// instrument(s) of that base before it (raw); kBooked: the position took it. The engine journals it
+// as a record (kSynthetic); a replay finds it again.
+struct ControlBaseFlowMsg {
+  static constexpr std::uint8_t kBooked = 1;
+
+  EventHeader hdr;
+  ControlCommand command;
+  std::uint8_t flags;  // kBooked
+  std::uint8_t pad0_[6];
+  std::uint64_t arg;
+  std::int64_t balance;   // 80
+  std::int64_t position;  // 88
+  FixedString<8> asset;   // 96
+  std::uint8_t pad_[23];  // 105 -> 128
+};
+static_assert(sizeof(ControlBaseFlowMsg) == sizeof(ControlMsg) &&
+              std::is_trivially_copyable_v<ControlBaseFlowMsg>);
+static_assert(offsetof(ControlBaseFlowMsg, command) == offsetof(ControlMsg, command) &&
+              offsetof(ControlBaseFlowMsg, arg) == offsetof(ControlMsg, arg) &&
+              offsetof(ControlBaseFlowMsg, balance) == 80 &&
+              offsetof(ControlBaseFlowMsg, position) == 88 &&
+              offsetof(ControlBaseFlowMsg, asset) == 96);
+
 struct ConnectionStateMsg {
   EventHeader hdr;
   ConnState state;

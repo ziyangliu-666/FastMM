@@ -1263,6 +1263,66 @@ TEST_CASE("hotpath.noalloc: engine sweeps a pool's pieces through its transfer l
   CHECK(engine->lane(VenueId{0})->stats().done_by_flows == done);
 }
 
+TEST_CASE("hotpath.noalloc: engine finds and books a pool's base flows") {
+  InstrumentTable table;
+  Instrument btc = make_inst();
+  btc.base = "BTC";
+  btc.quote = "USDT";
+  btc.venue = VenueId{0};
+  REQUIRE(table.add(btc));
+  SimClock clock{Timestamp{seconds(1000).ns}};
+  NullTransport transport;
+  InlineFeed feed{1 << 20};
+  MsgRing journal_ring{1 << 22};
+  BasicMM strategy;
+  REQUIRE_FALSE(strategy.configure({{"half_spread_bps", "10"},
+                                    {"quote_qty", "0.01"},
+                                    {"max_inventory", "0.05"},
+                                    {"levels", "1"}}));
+  EngineConfig cfg;
+  cfg.risk.max_order_qty = qt("1");
+  cfg.risk.max_open_orders = 16;
+  REQUIRE(cfg.pools.add(VenueId{1}, VenueId{0}));
+  cfg.base_flows = BaseFlows::Adjust;
+  cfg.base_flows_settle = seconds(1);
+  cfg.base_flows_from_zero = true;
+  using E = Engine<BasicMM, SimClock, NullTransport, InlineFeed>;
+  auto engine = std::make_unique<E>(cfg, table, clock, transport, feed, strategy, &journal_ring);
+  engine->warm_up();
+  engine->start();
+  std::int64_t btc_raw = qt("0.02").raw;
+  auto push_balance = [&](VenueId v, const char* asset, std::int64_t raw) {
+    BalanceMsg m{};
+    init_header(m, EventType::Balance, InstrumentId::invalid(), v);
+    m.asset.assign(asset);
+    m.free = Notional::from_raw(raw);
+    m.total = m.free;
+    m.equity = m.free;
+    m.hdr.exch_ts = clock.now();
+    m.hdr.recv_ts = clock.now();
+    REQUIRE(feed.push(m.hdr));
+  };
+  push_balance(VenueId{0}, "USDT", Notional::from_decimal("500").value().raw);
+  push_balance(VenueId{0}, "BTC", 0);
+  push_balance(VenueId{1}, "BTC", btc_raw);
+  while (engine->step() > 0) {
+  }
+  {
+    NoAllocScope guard(true);
+    for (std::uint64_t i = 0; i < 60; ++i) {
+      clock.advance(milliseconds(250));
+      if (i % 10 == 5) {
+        btc_raw += 1753;  // a credit no fill made
+        push_balance(VenueId{1}, "BTC", btc_raw);
+      }
+      while (engine->step() > 0) {
+      }
+    }
+  }
+  CHECK(engine->stats().base_flows_booked >= 5);
+  CHECK(engine->position(InstrumentId{0}).qty.raw == btc_raw);
+}
+
 namespace {
 // Asks for a checkpoint at every book, with 64 KiB of state from StateWriter.
 class Checkpointing : public StrategyBase<BasicMMParams> {

@@ -104,7 +104,7 @@ FEE_ASSETS = ("quote", "base", "other")
 CONTROL_COMMANDS = ("Stop", "PullQuotes", "ResumeQuotes", "TripKill", "ResetKill", "Reload",
                     "FlushStats", "RecalibrateTsc", "TripVenueKill", "Flatten", "SetLimits",
                     "Reconcile", "SetUnderlyingLimit", "TakeOver", "Transfer", "ResetLossBudget",
-                    "ReduceOnly", "PoolHome", "PoolSweep")
+                    "ReduceOnly", "PoolHome", "PoolSweep", "BaseFlow")
 # HomeSource (include/fastmm/core/pool_homes.hpp).
 HOME_SOURCES = ("operator", "planner", "strategy", "reconcile", "pin", "first", "spill")
 # ControlTransferMsg (include/fastmm/core/messages.hpp): TreasuryEventKind and TransferState.
@@ -113,7 +113,7 @@ TREASURY_EVENTS = ("planned", "sent", "done", "failed", "timed_out", "reserve", 
 # ControlCommand::PoolSweep's arg (include/fastmm/core/transfer_lane.hpp).
 SWEEP_ARGS = ("off", "on", "pause", "now")
 TRANSFER_STATES = ("pending", "done", "failed", "not_found", "unknown")
-ENGINE_TIMERS = {1: "max_param_age", 2: "ack sweep", 3: "flatten", 7: "pool sweep"}
+ENGINE_TIMERS = {1: "max_param_age", 2: "ack sweep", 3: "flatten", 7: "pool sweep", 8: "base flows"}
 
 
 def fill_fields(body: bytes) -> dict:
@@ -257,6 +257,10 @@ def decode_body(type_name: str, body: bytes, params=()) -> str:
         if cmd == "PoolSweep":
             arg = u64(8)
             out = f"command={cmd} {SWEEP_ARGS[arg] if arg < len(SWEEP_ARGS) else arg}"
+        if cmd == "BaseFlow" and len(body) >= 41:  # ControlBaseFlowMsg
+            out = (f"command={cmd} {fixed_string(body[32:41], 8)} flow={dec(q(8))} "
+                   f"accounts={dec(q(16))} position={dec(q(24))} "
+                   f"{'booked' if body[1] & 1 else 'reported'}")
         return out
     if type_name == "ParamUpdate":
         return param_update_fields(body, params)

@@ -17,9 +17,22 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fastmm {
+
+// [engine] base_flows: what the engine does with a change of a spot instrument's base asset that
+// neither its fills nor its transfers made (Engine::flow_tick).
+enum class BaseFlows : std::uint8_t {
+  Off = 0,     // not looked for
+  Report = 1,  // logged and journaled; the position stays
+  Adjust = 2,  // ... and the position takes it, valued at the mid
+};
+// The value of [engine] base_flows ("off", "report", "adjust"; anything else is off).
+[[nodiscard]] constexpr BaseFlows base_flows_of(std::string_view s) noexcept {
+  return s == "adjust" ? BaseFlows::Adjust : s == "report" ? BaseFlows::Report : BaseFlows::Off;
+}
 
 struct EngineConfig {
   std::uint64_t session_id = 0;
@@ -71,6 +84,14 @@ struct EngineConfig {
   // OMS does not know is cancelled only when its client order id is FastMM's with an epoch from
   // 1 to session_epoch; any other is left alone. False ("all"): every one is cancelled.
   bool cancel_unknown_own = false;
+  // [engine] base_flows, base_flows_settle_s, base_flows_from: for every base asset of the spot
+  // instruments (one that is no instrument's quote), the accounts' total of it less the position
+  // of its instruments is measured once a second; a change that holds for base_flows_settle is a
+  // flow. Measured from the session's first settled value, or from zero (from_zero: the position
+  // is to equal the accounts' balance, an offset at the start included).
+  BaseFlows base_flows = BaseFlows::Off;
+  Duration base_flows_settle = seconds(30);
+  bool base_flows_from_zero = false;
   // [engine] queue_conservatism (a backtest: [backtest] queue_conservatism), in bps of 1: how much
   // of a level's shrink ahead of our order the queue estimate (StrategyContext::queue_ahead)
   // credits to cancels ahead of it. 10000: none.

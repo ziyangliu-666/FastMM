@@ -25,6 +25,8 @@ What to set before a keyed session runs unattended, and what the engine does on 
 | session realised PnL | starts at zero; the previous session's is logged and kept in the store |
 | a running flatten | abandoned ([Operating a running session](operate-a-running-session.md#a-restart-during-a-flatten)) |
 
+Balance changes that are not trades never reach the position on their own: a tokenized stock's dividend paid as extra tokens, an airdrop, a venue's correction. A check that compares the position with the venue's balance then fails at the next start. `[engine] base_flows = "adjust"` books each such change of a spot base asset to the position at the mid, and `base_flows_from = "zero"` also books a difference found at the start ([Configuration](../../reference/configuration.md#engine)).
+
 The executions replayed on start include fills of orders resting when the process died and trades made on the account outside FastMM. Two states make a start exit 9: a missing epoch file while the store holds sessions, and a stored position the newest session booked twice into, unless the venue reports its own ([Runbook](runbook.md#a-start-refuses-the-state-it-carries-over)).
 
 The shipped systemd unit restarts after a crash ([Deploy](deploy.md#run-under-systemd)). To replace a running process with a new build or configuration, hand it over instead of stopping it first ([Hand over a running session](hand-over-a-session.md)). The new process loads its reference data while the old one trades, and `[engine] instance_lock` keeps them from trading at once.

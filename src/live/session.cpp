@@ -1692,6 +1692,9 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   deps.engine.flatten_timeout = milliseconds(cfg.engine.flatten_timeout_ms);
   deps.engine.flatten_slippage_bps = cfg.engine.flatten_slippage_bps;
   deps.engine.cancel_unknown_own = cfg.engine.cancel_unknown == "own";
+  deps.engine.base_flows = base_flows_of(cfg.engine.base_flows);
+  deps.engine.base_flows_settle = seconds(cfg.engine.base_flows_settle_s);
+  deps.engine.base_flows_from_zero = cfg.engine.base_flows_from == "zero";
   deps.engine.queue_conservatism_bps = std::llround(cfg.engine.queue_conservatism * 10'000.0);
   deps.engine.max_param_age = milliseconds(cfg.strategy.max_param_age_ms);
   deps.engine.markout_ms = cfg.engine.markout_ms;
