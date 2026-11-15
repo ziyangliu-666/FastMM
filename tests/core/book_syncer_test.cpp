@@ -214,6 +214,42 @@ TEST_CASE("core.book_syncer: binance futures first live delta after an empty buf
   CHECK(sink.events.back() == "delta:106-110");
 }
 
+// The snapshot is often the state right after a batch the syncer never saw (REST depth is current
+// to the 100 ms batch): the next event starts after L and names it as pu. It follows the snapshot.
+TEST_CASE("core.book_syncer: binance futures first delta may follow the snapshot by pu") {
+  SUBCASE("live, nothing buffered") {
+    RecordingSink sink;
+    BookSyncer<BinanceFuturesSyncTraits, RecordingSink> s(sink);
+    s.start();
+    s.on_snapshot(snapshot(100));
+    s.on_delta(delta(120, 130, 100));
+    CHECK(s.synced());
+    CHECK(s.resync_count() == 0);
+    CHECK(sink.events.back() == "delta:120-130");
+    s.on_delta(delta(131, 140, 130));
+    CHECK(s.last_update_id() == 140);
+  }
+  SUBCASE("buffered before the snapshot: replayed, not fetched again") {
+    RecordingSink sink;
+    BookSyncer<BinanceFuturesSyncTraits, RecordingSink> s(sink);
+    s.start();
+    s.on_delta(delta(120, 130, 100));
+    s.on_snapshot(snapshot(100));
+    CHECK(s.synced());
+    CHECK(s.resync_count() == 0);
+    CHECK(sink.events == std::vector<std::string>{"request", "snap:100", "delta:120-130"});
+  }
+  SUBCASE("neither brackets nor follows the snapshot: a gap") {
+    RecordingSink sink;
+    BookSyncer<BinanceFuturesSyncTraits, RecordingSink> s(sink);
+    s.start();
+    s.on_snapshot(snapshot(100));
+    s.on_delta(delta(120, 130, 110));
+    CHECK_FALSE(s.synced());
+    CHECK(s.resync_count() == 1);
+  }
+}
+
 // A gap is noticed on the update after the missing one. That update is the stream's next, and the
 // snapshot requested for the gap is often taken inside its range (Binance's REST depth is current
 // to within the 100 ms batch): it must be kept, or the snapshot looks older than the buffer

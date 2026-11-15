@@ -160,6 +160,30 @@ TEST_CASE("binance_usdm.depth_sync: a new stream's snapshot is requested after i
   CHECK(sync.last_update_id() == 11704574198161ULL);
 }
 
+// Production, 2026-11-15 11:37:09Z (USARUSDT, the public connection had just rolled over): a quiet
+// book's snapshot was the state after its last batch, and the next event began after it with pu
+// naming it: "book resync (sequence gap): book at update 12122385943775, next update
+// U=12122386255694 u=12122386255694 pu=12122385943775". Most of the session's ~130 resyncs an hour
+// were this, in bursts over the whole universe after each rollover. The ids below are that event's.
+TEST_CASE("binance_usdm.depth_sync: a quiet book's next event follows its snapshot by pu") {
+  constexpr std::uint64_t kL = 12122385943775ULL;
+  constexpr std::uint64_t kNext = 12122386255694ULL;
+  RecordingSink rs;
+  Requests req;
+  UsdmDepthSync sync(InstrumentId{0}, VenueId{0}, rs.sink, {&Requests::on_request, &req});
+  const std::int64_t now = 100 * kSec;
+  sync.start(now);
+  sync.on_timer(now + UsdmDepthSync::kStreamWait);
+  REQUIRE(req.ids.size() == 1);
+  sync.on_snapshot(snapshot(kL), now + UsdmDepthSync::kStreamWait);
+  REQUIRE(sync.synced());
+  sync.on_delta(delta(kNext, kNext, kL), now + 2 * kSec);
+  CHECK(sync.synced());
+  CHECK(sync.resync_count() == 0);
+  CHECK(sync.last_update_id() == kNext);
+  CHECK(req.ids.size() == 1);
+}
+
 // A book that does not change sends no event: its snapshot is requested kStreamWait after start.
 TEST_CASE("binance_usdm.depth_sync: a quiet stream gets its snapshot after kStreamWait") {
   RecordingSink rs;

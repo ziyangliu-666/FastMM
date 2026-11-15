@@ -50,7 +50,7 @@ The book follows the Spot procedure ([Depth sync](binance-spot.md#depth-sync)) w
 | snapshot | `GET /fapi/v1/depth?symbol=S&limit=L`, once the stream's first delta is buffered and the snapshot fits the bulk share of the minute's 2400 weight |
 | snapshot depth `L` | `depth_limit`; else 1000 (weight 20) with up to 10 symbols, 100 (weight 5) above |
 | drop | deltas with `u` below `lastUpdateId` |
-| first applied delta | `U <= lastUpdateId <= u` |
+| first applied delta | `U <= lastUpdateId <= u`, or `pu` equals `lastUpdateId` |
 | later deltas | `pu` equals the previous `u` |
 | mismatch | `ConnectionState{Resyncing}` and a new snapshot, at most once per 2 s |
 | a delta over 1024 levels a side | keeps the levels nearest the touch |

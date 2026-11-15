@@ -14,8 +14,9 @@
 // (venues/perp_state.hpp) on the market-data sink.
 //
 // Book sync ("How to manage a local order book correctly", USDⓈ-M): buffer deltas, GET
-// /fapi/v1/depth, drop u < lastUpdateId, the first applied delta has U <= lastUpdateId <= u, and
-// every later delta's pu equals the previous u (BinanceFuturesSyncTraits in book_syncer.hpp).
+// /fapi/v1/depth, drop u < lastUpdateId, the first applied delta has U <= lastUpdateId <= u or
+// pu == lastUpdateId, and every later delta's pu equals the previous u (BinanceFuturesSyncTraits in
+// book_syncer.hpp).
 #include "fastmm/venues/binance/binance_md_feed_base.hpp"
 #include "fastmm/venues/binance_usdm/binance_usdm_md_parser.hpp"
 

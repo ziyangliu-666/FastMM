@@ -82,8 +82,13 @@ struct BinanceSpotSyncTraits {
   static constexpr bool is_snapshot_marker(const BookDeltaMsg&) noexcept { return false; }
 };
 
-// Binance USDT-M futures: first applied delta must have U <= L and u >= L; afterwards each
-// delta's pu must equal the previous delta's u.
+// Binance USDT-M futures: first applied delta must have U <= L and u >= L, or follow the snapshot
+// directly (pu == L); afterwards each delta's pu must equal the previous delta's u.
+//
+// The REST depth is current to the stream's 100 ms batch, so L is often the u of a batch that went
+// out before the stream (re)started or before the buffer was reset, and the next event begins after
+// L. It does not bracket L, but its pu names L: it is the update that follows the snapshot. Without
+// the pu rule a quiet book resynced on its first event after every snapshot, 2 s away each time.
 struct BinanceFuturesSyncTraits {
   static constexpr bool kNeedsRestSnapshot = true;
   static constexpr bool kBuffersDeltas = true;
@@ -91,7 +96,7 @@ struct BinanceFuturesSyncTraits {
     return d.last_update_id < snap;
   }
   static constexpr bool first_applies(const BookDeltaMsg& d, std::uint64_t snap) noexcept {
-    return d.first_update_id <= snap && d.last_update_id >= snap;
+    return (d.first_update_id <= snap && d.last_update_id >= snap) || d.prev_update_id == snap;
   }
   static constexpr bool next_applies(const BookDeltaMsg& d, std::uint64_t prev_u) noexcept {
     return d.prev_update_id == prev_u;
