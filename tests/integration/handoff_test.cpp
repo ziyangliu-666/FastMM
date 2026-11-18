@@ -344,6 +344,14 @@ TEST_CASE("control: a running session answers a command as it arrives") {
   const pid_t pid = start(f, log, {});
   REQUIRE_MESSAGE(wait_until([&] { return fx.server.stats().orders_accepted > 0; }, 60000),
                   "the session never traded: " << fastmm::test::read_file(log));
+  // The control socket opens after trading starts, so the first order can come before it.
+  REQUIRE(wait_until(
+      [&] {
+        std::string reply;
+        return live::control_request(ctl_of(f), "help", 2000, reply) ==
+               live::ControlReply::Answered;
+      },
+      10000));
   std::vector<std::int64_t> us;
   for (int i = 0; i < 40; ++i) {
     std::string reply;
