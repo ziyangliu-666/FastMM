@@ -2,6 +2,38 @@
 
 All notable changes are recorded here (Keep a Changelog format).
 
+## [0.14.0] - 2026-11-19
+
+A group of instruments priced off one factor can pull one side of its quotes at once when it is
+being picked off, and a venue's market data can arrive over redundant connections on threads of
+their own, each connected to the fastest of its host's addresses.
+
+### Added
+- core: `[[risk.hazard]]` pulls one side of a group's quotes once its score reaches `threshold`.
+- core: a hazard group with `mode = "log"` logs the sides it would pull and sends nothing.
+- core: `ctx.hazard_add(group, side, amount)` adds evidence; `ctx.hazard(group)` reads it.
+- core: `[engine] base_flows` reports or books base-asset balance changes no fill or transfer made.
+- venues: `[venues.<name>] md_copies` opens redundant top-of-book connections on Binance and USD-M.
+- venues: `md_copy_cpus` runs each market-data copy on a network thread of its own.
+- net: `endpoint_select` connects each venue connection to the fastest of its host's addresses.
+- net: `[engine] endpoint_probe_interval_s` and the other `endpoint_` keys tune the probes.
+- apps: `[engine] aux_cpus` places the threads that are not the engine's or a network thread's.
+- apps: `fastmm-top` and Prometheus show a side held by a hazard group as `hazard`.
+- store: `[storage] retention_days` deletes old orders, snapshots, markouts and rejects.
+- tools: `journal_dump.py` prints `BaseFlow` records.
+
+### Changed
+- core: the home planner balances the orders each home carries against each account's window.
+- core: `plan_interval_s` defaults to 30 and `plan_lookback_h` to 1.
+- core: a sweep waits `sweep_delay_ms` after the free part of a piece last changed, too.
+- core: refusals for want of balance trip the sweep's breaker at ten in ten minutes.
+- core: the sweep moves free balance rounded down to the lot.
+- venues: Binance USD-M `md_ticker_conns` is the older spelling of `md_copies`.
+- apps: with every core pinned, other threads avoid the cores of polling network threads.
+
+### Fixed
+- venues: a Binance USD-M depth event whose `pu` is the snapshot's `lastUpdateId` no longer resyncs.
+
 ## [0.13.0] - 2026-11-09
 
 A pool of accounts can keep each spot position on its home by itself: the engine moves the pieces
