@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -22,6 +23,14 @@ std::string usdm_ticker(std::uint64_t u, const char* bid) {
   return std::string(R"({"stream":"btcusdt@bookTicker","data":{"e":"bookTicker","u":)") +
          std::to_string(u) + R"(,"s":"BTCUSDT","b":")" + bid +
          R"(","B":"1.000","a":"70010.00","A":"2.000","T":1789469121938,"E":1789469121940}})";
+}
+
+// The parsers read up to kJsonPadding bytes past the text, as the receive buffers allow; a
+// literal or a std::string has none behind it (AVX-512 simdjson reads 64 bytes at a time).
+template <class Copy>
+ParseStatus send(Copy& copy, std::string_view text) {
+  const PaddedJson padded(text);
+  return copy.on_text(padded.view());
 }
 
 }  // namespace
@@ -74,19 +83,20 @@ TEST_CASE("md_copy: WsMdCopy pushes the first copy of a bookTicker and counts th
   WsMdCopy<binance_usdm::BinanceUsdmMdParser> copy(
       "test: md copy 1", cfg, md.sink, filter, {}, u.symbols, VenueId{0}, kMdCopyParserBytes);
   CHECK(copy.name() == "test: md copy 1");
-  CHECK(copy.on_text(usdm_ticker(500, "70000.00")) == ParseStatus::Ok);
-  CHECK(copy.on_text(usdm_ticker(500, "70000.00")) == ParseStatus::Ok);  // another connection's
-  CHECK(copy.on_text(usdm_ticker(499, "69999.00")) == ParseStatus::Ok);
+  CHECK(send(copy, usdm_ticker(500, "70000.00")) == ParseStatus::Ok);
+  CHECK(send(copy, usdm_ticker(500, "70000.00")) == ParseStatus::Ok);  // another connection's
+  CHECK(send(copy, usdm_ticker(499, "69999.00")) == ParseStatus::Ok);
   // Another connection delivered 501 first: this copy's is late.
   CHECK(filter.first(MdKind::BookTicker, InstrumentId{0}, 501));
-  CHECK(copy.on_text(usdm_ticker(501, "70001.00")) == ParseStatus::Ok);
-  CHECK(copy.on_text(usdm_ticker(502, "70002.00")) == ParseStatus::Ok);
+  CHECK(send(copy, usdm_ticker(501, "70001.00")) == ParseStatus::Ok);
+  CHECK(send(copy, usdm_ticker(502, "70002.00")) == ParseStatus::Ok);
   // Not a top or a trade: ignored.
   CHECK(
-      copy.on_text(
+      send(
+          copy,
           R"({"stream":"btcusdt@depth@100ms","data":{"e":"depthUpdate","E":1,"T":1,"s":"BTCUSDT","U":1,"u":2,"pu":0,"b":[],"a":[]}})") ==
       ParseStatus::Ignored);
-  CHECK(copy.on_text("{not json") == ParseStatus::Malformed);
+  CHECK(send(copy, "{not json") == ParseStatus::Malformed);
   const auto all = md.drain();
   REQUIRE(all.size() == 2);
   CHECK(RecordingSink::as<BookTickerMsg>(all[0]).hdr.venue_seq == 500);
