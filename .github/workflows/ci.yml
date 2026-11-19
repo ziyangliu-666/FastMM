@@ -89,8 +89,11 @@ jobs:
           key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }}
       - name: configure (compile_commands.json)
         run: cmake --preset debug -DFASTMM_BUILD_BENCH=OFF
-      - name: clang-tidy (bugprone-* and performance-* fail the job)
-        run: RUN_CLANG_TIDY=run-clang-tidy-18 ./scripts/tidy.sh build/debug
+      - name: clang-tidy (bugprone-* and performance-*, the checks that fail the job)
+        # The advisory checks (readability-*, modernize-*, clang-analyzer-*, ...) took more than
+        # half of the 30-45 minutes and print some 12,000 warnings nobody reads here; run them
+        # locally with ./scripts/tidy.sh.
+        run: RUN_CLANG_TIDY=run-clang-tidy-18 ./scripts/tidy.sh build/debug --errors-only
 
   gcc:
     needs: plan
@@ -201,7 +204,9 @@ jobs:
     needs: plan
     if: needs.plan.outputs.full == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    # With the ccache entry kept (job ccache-entries) gcc-asan takes about 25 minutes. Without it
+    # the build alone is 50-70 minutes and the tests 20, so 120 is the room for a cold cache.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -380,3 +385,44 @@ jobs:
           python examples/python/strategies/basic_mm_exact.py
           python examples/python/strategies/basic_mm_hot.py
           python examples/python/strategies/skew_mm.py
+
+  ccache-entries:
+    # hendrikmuhs/ccache-action saves a new entry per run, named by the time. The repository's
+    # caches are capped at 10 GB, evicted least recently used first, and an entry nobody reads for
+    # 7 days goes too: the pushes' copies and the week between two scheduled runs left the weekly
+    # jobs (build-test, optional-codecs) with no cache, and a cold gcc-asan build alone takes 50-70
+    # minutes. This job keeps only the newest entry of each key on the ref, and on every push to
+    # main reads the weekly jobs' entries so they last to the next scheduled run.
+    needs: [lint, clang-tidy, gcc, bench-budgets, build-test, optional-codecs, autobahn, docker, python]
+    if: always() && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write
+    strategy:
+      matrix:
+        key: [gcc-release, gcc-asan, clang-release, clang-tsan, optional-codecs]
+    steps:
+      - name: keep the weekly entry
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-${{ matrix.key }}-keep
+          restore-keys: ccache-${{ matrix.key }}-
+          lookup-only: true
+      - name: delete superseded entries
+        if: matrix.key == 'gcc-release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          seen=" "
+          gh cache list -R "$GITHUB_REPOSITORY" --ref "$GITHUB_REF" --key ccache- -L 100 \
+              --sort created_at --order desc --json id,key --jq '.[] | "\(.id) \(.key)"' |
+            while read -r id key; do
+              name=${key%-????-??-??T*}
+              if [[ "$seen" == *" $name "* ]]; then
+                echo "delete $key"; gh cache delete -R "$GITHUB_REPOSITORY" "$id"
+              else
+                seen="$seen$name "
+              fi
+            done
