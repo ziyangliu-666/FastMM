@@ -129,6 +129,7 @@ TEST_CASE("sim_exchange kill switch: with on_kill = stay the session keeps runni
   const live::LiveOptions o = session_options("kill-stay");
   bool killed_while_running = false;
   bool still_running = false;
+  int state_after = -1;
   std::thread watcher([&] {
     StatusSnapshot s;
     const bool killed = wait_until(
@@ -138,14 +139,17 @@ TEST_CASE("sim_exchange kill switch: with on_kill = stay the session keeps runni
       // Far longer than the control loop's 50 ms check plus a 250 ms status publication: a
       // session that exits on kill would be stopping or stopped by now.
       std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-      still_running = read_status(o.status_path, s) && s.state == StatusRunState::Running &&
-                      (s.kill_flags & 1U) != 0;
+      // A read can land on a publication in progress and fail; read until one succeeds.
+      still_running = wait_until([&] { return read_status(o.status_path, s); }, 2000) &&
+                      s.state == StatusRunState::Running && (s.kill_flags & 1U) != 0;
+      state_after = static_cast<int>(s.state);
     }
     ::kill(::getpid(), SIGTERM);  // run_live's handler: the normal shutdown
   });
   const int rc = live::run_live(cfg, o);
   watcher.join();
   CHECK(killed_while_running);
+  INFO("status state 1.5 s after the kill: " << state_after);
   CHECK(still_running);
   CHECK(rc == live::kExitOk);
   StatusSnapshot st;
