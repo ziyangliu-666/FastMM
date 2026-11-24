@@ -661,8 +661,7 @@ class Engine {
   [[nodiscard]] bool quoting_enabled(InstrumentId id) const noexcept {
     if (!quoting_enabled() || !instruments_.contains(id)) return false;
     const Instrument& inst = instruments_.get(id);
-    return inst_pulled_[id.value] == 0 && !not_trading_[id.value] &&
-           !venue_is_pulled(inst.venue) &&
+    return inst_pulled_[id.value] == 0 && !not_trading_[id.value] && !venue_is_pulled(inst.venue) &&
            !risk_.venue_killed(inst.venue) && !health_.gated(inst.venue, now());
   }
   // The [[windows]] open now, bit per window in the configuration's order, and the next instant
