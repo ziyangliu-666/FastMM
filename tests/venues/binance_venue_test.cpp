@@ -65,7 +65,12 @@ std::string query_param(const std::string& query, const std::string& key) {
 struct Harness {
   FakeVenueServer srv;
   std::string exchange_info = fastmm::test::fixture("binance/exchange_info.json");
-  std::mutex info_mu;                        // exchange_info, once the fake serves
+  std::mutex info_mu;  // exchange_info, once the fake serves
+  // Symbols the venue lists no more (info_mu): a read that names one answers -1121, as Binance
+  // answers a symbols=[...] list with one of them in it.
+  std::vector<std::string> delisted;
+  std::atomic<int> info_batch{0};            // exchangeInfo?symbols=[...]
+  std::atomic<int> info_single{0};           // exchangeInfo?symbol=X
   std::atomic<bool> place_lot_error{false};  // order.place answers -1013 Filter failure: LOT_SIZE
   std::atomic<int> depth_requests{0};
   std::atomic<std::uint64_t> depth_last_update_id{100};  // the snapshot's lastUpdateId
@@ -108,8 +113,18 @@ struct Harness {
     exchange_info.replace(exchange_info.find(recorded),
                           recorded.size(),
                           R"("serverTime":)" + std::to_string(wall_now().ns / 1'000'000));
-    srv.route("GET", "/api/v3/exchangeInfo", [this](const net::HttpRequest&) {
+    srv.route("GET", "/api/v3/exchangeInfo", [this](const net::HttpRequest& r) {
       const std::lock_guard lock(info_mu);
+      const std::string q(r.query);
+      ++(q.find("symbols=") != std::string::npos ? info_batch : info_single);
+      for (const std::string& gone : delisted) {
+        // symbols=["A","B"] percent-encoded quotes the names; symbol=A ends at '&' or the end.
+        const bool named = q.find("%22" + gone + "%22") != std::string::npos ||
+                           q.find("\"" + gone + "\"") != std::string::npos ||
+                           query_param(q, "symbol") == gone;
+        if (named)
+          return net::HttpServerResponse::json(400, R"({"code":-1121,"msg":"Invalid symbol."})");
+      }
       return net::HttpServerResponse::json(200, exchange_info);
     });
     srv.route("GET", "/api/v3/time", [](const net::HttpRequest&) {
@@ -2001,6 +2016,97 @@ TEST_CASE("binance.venue: a LOT_SIZE refusal asks for the rules again") {
   CHECK(m->cause == InstrumentRulesMsg::kRefusal);
   CHECK(m->lot == Qty::from_decimal("0.01").value());
   CHECK(m->status == TradingStatus::Trading);
+}
+
+TEST_CASE("binance.venue: a delisted symbol in the batched rules read is found and closed") {
+  Harness h;
+  const std::vector<std::string> bases = six_symbols(h);
+  InstrumentTable instruments;
+  add_instruments(instruments, {bases[0], bases[1], bases[2]});
+  BinanceVenueConfig c = h.config(false);
+  c.rules_refresh_ns = 0;
+  auto venue = std::make_unique<BinanceVenue>(VenueId{0}, c);
+  REQUIRE(venue->load_reference_data(instruments));
+  SymbolTable symbols;
+  REQUIRE(symbols.build(instruments));
+  RecordingSink md{8U << 20};
+  RecordingSink orders{1U << 20, SinkPolicy::Spin};
+  MsgRing outbound{1U << 16};
+  net::Reactor reactor;
+  Collected oc;
+  venue->attach(symbols, instruments, md.sink, orders.sink, &outbound);
+  const InstrumentId ids[] = {InstrumentId{0}, InstrumentId{1}, InstrumentId{2}};
+  venue->subscribe(ids);
+  venue->connect(reactor);
+  const auto pump = [&](auto&& done) {
+    return pump_until(
+        reactor,
+        [&] {
+          static_cast<void>(md.drain());
+          oc.take(orders);
+          return done();
+        },
+        15000);
+  };
+  REQUIRE(pump([&] {
+    std::size_t live = 0;
+    for (const auto& m : oc.all) {
+      if (RecordingSink::type_of(m) == EventType::ConnectionState &&
+          RecordingSink::as<ConnectionStateMsg>(m).state == ConnState::Live)
+        ++live;
+    }
+    return live >= 2;
+  }));
+  const InstrumentId eth{1};
+  {
+    const std::lock_guard lock(h.info_mu);
+    h.delisted.push_back("ETHUSDT");
+  }
+  // SOL goes into a break meanwhile: its one-symbol read reports it.
+  h.edit_info(R"("symbol":"SOLUSDT","status":"TRADING")", R"("symbol":"SOLUSDT","status":"BREAK")");
+  const int batch0 = h.info_batch.load();
+  // The batch is refused; the connector reads the three one by one on its own, closes ETH, and
+  // takes SOL's break from its one-symbol read.
+  REQUIRE(venue->refresh_rules());
+  REQUIRE(pump([&] {
+    return !venue->rules().in_flight() && h.info_single.load() >= 3 && !venue->rules().trading(eth);
+  }));
+  CHECK(h.info_batch.load() == batch0 + 1);
+  CHECK(h.info_single.load() == 3);
+  CHECK(venue->rules().trading(InstrumentId{0}));
+  CHECK_FALSE(venue->rules().trading(InstrumentId{2}));
+  CHECK(venue->rules().last(eth).status == TradingStatus::Closed);
+  std::size_t eth_closed = 0;
+  for (const auto& m : oc.all) {
+    if (RecordingSink::type_of(m) != EventType::InstrumentRules) continue;
+    const auto& r = RecordingSink::as<InstrumentRulesMsg>(m);
+    if (r.hdr.instrument == eth && r.status == TradingStatus::Closed) ++eth_closed;
+  }
+  CHECK(eth_closed == 1);
+
+  // The batch goes on without ETH, and the venue answers it.
+  h.edit_info(R"("symbol":"SOLUSDT","status":"BREAK")", R"("symbol":"SOLUSDT","status":"TRADING")");
+  REQUIRE(pump([&] { return !venue->rules().in_flight(); }));
+  REQUIRE(venue->refresh_rules());
+  REQUIRE(
+      pump([&] { return !venue->rules().in_flight() && venue->rules().trading(InstrumentId{2}); }));
+  CHECK(h.info_batch.load() == batch0 + 2);
+  CHECK(h.info_single.load() == 3);
+  CHECK_FALSE(venue->rules().trading(eth));
+  venue->disconnect();
+  reactor.run_once(0);
+}
+
+TEST_CASE("binance.venue: the first periodic rules read comes a period after the start-up read") {
+  Harness h;
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  BinanceVenue venue(VenueId{0}, h.config(false));
+  REQUIRE(venue.load_reference_data(instruments));
+  const std::int64_t now = net::Reactor::now_ns();
+  CHECK_FALSE(venue.rules().due(now));
+  CHECK_FALSE(venue.rules().due(now + RulesWatch::kDefaultPeriodNs / 2));
+  CHECK(venue.rules().due(now + RulesWatch::kDefaultPeriodNs));
 }
 
 TEST_CASE("binance.venue: a symbol not trading at start-up is kept, halted, not disabled") {

@@ -256,6 +256,7 @@ Result<void, std::string> BinanceVenue::load_reference_data(InstrumentTable& ins
                        inst->symbol.view(),
                        f->status);
     rules_.seed(inst->id, rules_of(*inst));
+    rules_.read_at(now_ns());
     if (!f->post_only_allowed)
       FASTMM_LOG_WARN(
           "{}: {} does not allow LIMIT_MAKER (post-only)", cfg_.name, inst->symbol.view());
@@ -289,23 +290,37 @@ Result<void, std::string> BinanceVenue::load_reference_data(InstrumentTable& ins
 
 // GET /api/v3/exchangeInfo for the session's symbols, as load_reference_data() read them (weight
 // 20), on the REST connection; the reply goes through on_rules_reply(). A pool member reads them
-// for its own cancel-all and reports nothing: the primary does.
+// for its own cancel-all and reports nothing: the primary does. After the batch was refused with
+// -1121 (a symbol the venue no longer lists, which makes it answer for none), the reads are
+// GET /api/v3/exchangeInfo?symbol=<one> for each instrument in turn, as the rate limiter's bulk
+// share allows, until the symbols it refuses are known; the batch then goes on without them.
 bool BinanceVenue::refresh_rules() {
   constexpr std::uint32_t kExchangeInfoWeight = 20;
   const std::int64_t now = now_ns();
-  if (rest_ == nullptr || rest_hard_stopped_ || rules_target_.empty() || rules_.in_flight())
-    return false;
+  if (rest_ == nullptr || rest_hard_stopped_ || rules_.in_flight()) return false;
+  const InstrumentId probed = rules_probe_.empty() ? InstrumentId{} : rules_probe_.back();
+  std::string target;
+  if (probed.valid()) {
+    if (instruments_ == nullptr || !instruments_->contains(probed)) {
+      rules_probe_.pop_back();
+      return false;
+    }
+    target = "/api/v3/exchangeInfo?symbol=" + std::string(instruments_->get(probed).symbol.view());
+  } else {
+    if (rules_target_.empty()) return false;
+    target = rules_target_;
+  }
   if (!rate_.can_send(kExchangeInfoWeight, now, false, RateLimiter::kBulkShare)) return false;
   rules_.started(now);
   std::weak_ptr<int> alive = alive_;
   const bool queued =
-      rest_->request("GET", rules_target_, {}, {}, [this, alive](const net::HttpResponse& r) {
+      rest_->request("GET", target, {}, {}, [this, alive, probed](const net::HttpResponse& r) {
         if (alive.expired()) return;
         rules_.finished();
         if (r.error == net::NetError::Canceled) return;
         ++stats_.rest_requests;
         note_rate_headers(r);
-        on_rules_reply(r);
+        on_rules_reply(r, probed);
       });
   if (!queued) {
     rules_.finished();
@@ -315,13 +330,67 @@ bool BinanceVenue::refresh_rules() {
   return true;
 }
 
-void BinanceVenue::on_rules_reply(const net::HttpResponse& r) {
+void BinanceVenue::build_rules_target() {
+  rules_target_.clear();
+  if (instruments_ == nullptr) return;
+  std::string list = "[";
+  std::size_t n = 0;
+  for (const Instrument& inst : *instruments_) {
+    if (inst.venue != md_venue_ || !rules_.seeded(inst.id) || delisted_[inst.id.value]) continue;
+    if (n++ > 0) list += ',';
+    list += '"';
+    list += inst.symbol.view();
+    list += '"';
+  }
+  list += ']';
+  if (n == 0) return;
+  char enc[2048];
+  const std::size_t len = net::percent_encode(list, enc);
+  if (len != 0) rules_target_ = "/api/v3/exchangeInfo?symbols=" + std::string(enc, len);
+}
+
+void BinanceVenue::on_rules_reply(const net::HttpResponse& r, InstrumentId probed) {
+  // -1121 Invalid symbol: on the batch, one of its symbols is listed no more and the venue answers
+  // for none of them; on a one-symbol read, that symbol is the one.
+  constexpr int kInvalidSymbol = -1121;
   if (!r.ok()) {
     ++stats_.rest_errors;
     int code = 0;
     std::string msg;
     static_cast<void>(decode_rest_error(r.body, code, msg));
-    // -1121 Invalid symbol: one of them is listed no more, and the venue answers for none.
+    if (code == kInvalidSymbol && probed.valid()) {
+      rules_probe_.pop_back();
+      delisted_[probed.value] = true;
+      VenueRules v = rules_.last(probed);
+      v.status = TradingStatus::Closed;
+      const bool changed =
+          rules_.update(pool_member() ? nullptr : order_sink_, md_venue_, probed, v);
+      FASTMM_LOG_ERROR("{}: {} is not listed on the venue ({}): closed{}",
+                       cfg_.name,
+                       instruments_->get(probed).symbol.view(),
+                       msg,
+                       changed ? "" : " already");
+      if (rules_probe_.empty()) build_rules_target();
+      return;
+    }
+    if (code == kInvalidSymbol && !probed.valid() && rules_probe_.empty() &&
+        instruments_ != nullptr) {
+      for (const Instrument& inst : *instruments_) {
+        if (inst.venue == md_venue_ && rules_.seeded(inst.id) && !delisted_[inst.id.value])
+          rules_probe_.push_back(inst.id);
+      }
+      FASTMM_LOG_WARN(
+          "{}: exchangeInfo refused the session's symbols ({} {}); reading the {} of them one by "
+          "one to find the one the venue no longer lists",
+          cfg_.name,
+          code,
+          msg,
+          rules_probe_.size());
+      return;
+    }
+    // Anything else: the rules stay as they were. A search for a delisted symbol stops; the next
+    // periodic batch read starts it again if the venue still refuses the batch.
+    if (probed.valid()) rules_probe_.clear();
     FASTMM_LOG_WARN("{}: exchangeInfo failed: status={} code={} {}; the rules stay as they were",
                     cfg_.name,
                     r.status,
@@ -335,10 +404,19 @@ void BinanceVenue::on_rules_reply(const net::HttpResponse& r) {
     FASTMM_LOG_WARN("{}: exchangeInfo: {}; the rules stay as they were", cfg_.name, err);
     return;
   }
+  apply_rules(info, probed);
+  if (probed.valid()) {
+    rules_probe_.pop_back();
+    if (rules_probe_.empty()) build_rules_target();
+  }
+}
+
+void BinanceVenue::apply_rules(const ExchangeInfo& info, InstrumentId only) {
   if (instruments_ == nullptr) return;
   EventSink* sink = pool_member() ? nullptr : order_sink_;
   for (const Instrument& inst : *instruments_) {
-    if (inst.venue != md_venue_ || !rules_.seeded(inst.id)) continue;
+    if (inst.venue != md_venue_ || !rules_.seeded(inst.id) || delisted_[inst.id.value]) continue;
+    if (only.valid() && inst.id != only) continue;
     const SymbolFilters* f = nullptr;
     for (const SymbolFilters& sf : info.symbols) {
       if (iequals_symbol(sf.symbol, inst.symbol.view())) f = &sf;
@@ -2164,7 +2242,8 @@ void BinanceVenue::on_timer(std::int64_t now) {
     }
   }
   if (clock_resync_wanted_ || now - clock_sync_ns_ >= kClockResyncNs) request_server_time();
-  if (rules_.due(now)) static_cast<void>(refresh_rules());
+  // After a -1121, the one-symbol reads go on as the rate limiter allows.
+  if (!rules_probe_.empty() || rules_.due(now)) static_cast<void>(refresh_rules());
   reconcile_.on_timer(now);
   // The execution replay: a retry 5 s after an incomplete one (the next reconnect may be hours
   // away), and one a minute while all is well, which keeps the watermark within what the OMS can

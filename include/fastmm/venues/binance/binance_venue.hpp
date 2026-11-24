@@ -33,7 +33,9 @@
 // Trading rules (venues/instrument_rules.hpp): GET /api/v3/exchangeInfo for the session's symbols
 // again every rules_refresh_s, and after the venue refused an order or a cancel for a filter
 // (-1013 LOT_SIZE, PRICE_FILTER, NOTIONAL; -1111) or for the symbol's status ("Market is closed"),
-// at most once in RulesWatch::kRefusalGapNs.
+// at most once in RulesWatch::kRefusalGapNs. The period counts from the start-up read. A batch
+// refused with -1121 (a symbol no longer listed) is read again one symbol at a time; the symbols
+// refused alone are closed and left out of the batch.
 // A symbol whose status is not TRADING is halted (BREAK, HALT, AUCTION_MATCH, PRE_TRADING,
 // POST_TRADING) or closed (END_OF_DAY); the kill switch's cancel-all skips it.
 #include "fastmm/core/containers/open_hash_map.hpp"
@@ -45,6 +47,7 @@
 #include "fastmm/venues/binance/binance_error_map.hpp"
 #include "fastmm/venues/binance/binance_md_feed.hpp"
 #include "fastmm/venues/binance/binance_order_encoder.hpp"
+#include "fastmm/venues/binance/binance_rest_decoder.hpp"
 #include "fastmm/venues/binance/binance_transfer.hpp"
 #include "fastmm/venues/binance/binance_user_parser.hpp"
 #include "fastmm/venues/connection_slot.hpp"
@@ -58,6 +61,7 @@
 #include "fastmm/venues/rest_channel.hpp"
 #include "fastmm/venues/venue.hpp"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -275,8 +279,13 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
                     int code,
                     std::string_view msg,
                     std::int64_t retry_after_ms);
-  // The exchangeInfo reply of a refresh_rules() read.
-  void on_rules_reply(const net::HttpResponse& r);
+  // The exchangeInfo reply of a refresh_rules() read: of the batch, or with `probed` valid, of the
+  // one-symbol read of that instrument.
+  void on_rules_reply(const net::HttpResponse& r, InstrumentId probed);
+  // The rules `info` gives each instrument it is asked for (`only` valid: that one alone).
+  void apply_rules(const ExchangeInfo& info, InstrumentId only);
+  // The batch target again, without the delisted instruments; empty when none is left.
+  void build_rules_target();
   // A venue refusal for an instrument's rules or status asks for a read (RulesWatch::want).
   void note_refusal(RejectReason reason, int code) noexcept;
   void emit_reject(
@@ -400,6 +409,10 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   // one load_reference_data() used).
   RulesWatch rules_;
   std::string rules_target_;
+  // After -1121 on the batched read, the instruments still to read one by one (the last first),
+  // and those the venue no longer lists: closed, and left out of the batch from then on.
+  std::vector<InstrumentId> rules_probe_;
+  std::array<bool, kMaxInstruments> delisted_{};
 
   int depth_limit_ = 1000;  // the snapshot depth in use (cfg_.depth_limit or auto_depth_limit)
   // Venue order id -> the client order id this session gave it, so an execution the trade history

@@ -78,6 +78,9 @@ class RulesWatch {
   void started(std::int64_t now_ns) noexcept;
   void finished() noexcept { in_flight_ = false; }
   [[nodiscard]] bool in_flight() const noexcept { return in_flight_; }
+  // The venue's rules were read at `now_ns` outside a refresh (load_reference_data): the period
+  // counts from then, so the first periodic read is one period after the start, not at once.
+  void read_at(std::int64_t now_ns) noexcept { last_read_ns_ = now_ns; }
   // A read's rules for `id`. When they differ from the last ones, an InstrumentRulesMsg goes into
   // `sink` (none when `sink` is null: a pool member reads only for trading()) and they become the
   // last ones. Returns the fields that changed (zero: none, or `id` was never seeded). A rule the

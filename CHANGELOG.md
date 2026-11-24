@@ -18,6 +18,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: `on_instrument_rules(ctx, id, m)` runs after a rules change; Python gets `inst.trading`.
 - venues: `Venue::refresh_rules()` reads the trading rules again while the session runs.
 - venues: Binance Spot reads `exchangeInfo` every `rules_refresh_s` (60 s) and after a filter refusal.
+- venues: a Binance Spot rules read refused with `-1121` finds the delisted symbol one by one and closes it.
 - venues: Binance Spot's kill-switch cancel-all skips a symbol that is not trading.
 - live: `[venues.<name>] rules_mismatch` adopts, warns about or refuses start-up rule differences.
 - apps: `fastmm-top` and Prometheus show a side of a halted instrument as `not_trading`.

@@ -24,7 +24,7 @@ An instrument whose venue status is not trading at start-up is kept in the table
 
 | Connector | Reads the rules again | Key |
 |---|---|---|
-| `binance` | `GET /api/v3/exchangeInfo` for the session's symbols (weight 20) | `rules_refresh_s`: every 60 s by default, at least 10, 0 for none |
+| `binance` | `GET /api/v3/exchangeInfo` for the session's symbols (weight 20) | `rules_refresh_s`: every 60 s by default, counted from the start-up read, at least 10, 0 for none |
 | the others | no | |
 
 A connector that reads them again also reads them after the venue refused an order or a cancel for a rule or for the symbol's status, at most once every 5 s: on Binance, `-1013 Filter failure` (`LOT_SIZE`, `PRICE_FILTER`, `NOTIONAL`), `-1111` and `Market is closed`.
@@ -45,7 +45,7 @@ While an instrument does not trade, the connector's kill-switch cancel-all skips
 | `BREAK`, `HALT`, `AUCTION_MATCH`, `PRE_TRADING`, `POST_TRADING` | halted |
 | `END_OF_DAY`, or the symbol missing from the reply | closed |
 
-If the reply is an error, for example `-1121` after the venue removed a symbol, the rules stay as they were and the next read tries again.
+Binance answers a read that names a symbol it no longer lists with `-1121 Invalid symbol` for all of them. The connector then reads each symbol on its own (`exchangeInfo?symbol=`, weight 20 each, as the rate limit allows), closes the ones the venue refuses, applies the others' rules, and goes on reading the rest in one request. A closed symbol stays closed until the session restarts. Any other error leaves the rules as they were, and the next read tries again.
 
 ## What a change does not move
 
