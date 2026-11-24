@@ -5,17 +5,22 @@
 #include <fmt/format.h>
 
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <zstd.h>
 
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <climits>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -152,6 +157,9 @@ bool JournalFileWriter::open_part() noexcept {
     set_failed(JournalError::OpenFailed);
     return false;
   }
+  // Held until the part is closed: the archiver (core/journal_archive.hpp), of this process or
+  // another engine's sharing the directory, leaves a part it cannot lock alone.
+  static_cast<void>(::flock(fd_, LOCK_EX | LOCK_NB));
   closed_ = false;
   reserved_ = 0;
   file_size_ = 0;
@@ -370,7 +378,10 @@ std::size_t prune_journals(const std::string& dir, int days, std::string* error)
   for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
     if (ec) break;
     if (!entry.is_regular_file(ec) || ec) continue;
-    if (entry.path().extension() != ".fmj") continue;
+    const std::string name = entry.path().filename().string();
+    const bool journal = name.size() > 4 && name.compare(name.size() - 4, 4, ".fmj") == 0;
+    const bool archive = name.size() > 8 && name.compare(name.size() - 8, 8, ".fmj.zst") == 0;
+    if (!journal && !archive) continue;
     const auto mtime = entry.last_write_time(ec);
     if (ec) {
       ec.clear();
@@ -390,6 +401,117 @@ std::size_t prune_journals(const std::string& dir, int days, std::string* error)
 }
 
 // ---- JournalReader ----------------------------------------------------------------------
+
+namespace {
+
+bool is_archive(std::string_view path) noexcept {
+  return path.size() > 4 && path.substr(path.size() - 4) == ".zst";
+}
+
+// A file with no name to decompress an archive into: in the archive's directory, else in $TMPDIR
+// or /tmp. -1 when none of them takes one (a file system without O_TMPFILE).
+int scratch_file(const char* path) noexcept {
+  char dir[PATH_MAX];
+  const char* slash = std::strrchr(path, '/');
+  const auto n = static_cast<std::size_t>(slash == nullptr ? 0 : slash - path);
+  if (slash == nullptr) {
+    std::memcpy(dir, ".", 2);
+  } else if (n == 0) {
+    std::memcpy(dir, "/", 2);
+  } else if (n < sizeof dir) {
+    std::memcpy(dir, path, n);
+    dir[n] = '\0';
+  } else {
+    dir[0] = '\0';
+  }
+  const int flags = O_TMPFILE | O_RDWR | O_CLOEXEC;
+  int fd = dir[0] != '\0' ? ::open(dir, flags, 0600) : -1;
+  if (fd >= 0) return fd;
+  const char* tmp = std::getenv("TMPDIR");
+  if (tmp != nullptr && tmp[0] != '\0') fd = ::open(tmp, flags, 0600);
+  return fd >= 0 ? fd : ::open("/tmp", flags, 0600);
+}
+
+// The whole of the zstd file `path` decompressed into a file with no name (scratch_file) and
+// mapped read-only, as a journal file is: its pages are the kernel's to drop and read again, so a
+// source that opens every part of a long session at once (JournalSource) holds no more memory than
+// with the parts as written. munmap() releases the mapping, and the file goes with it. Returns the
+// address, `len` set to the bytes in it; nullptr on failure, with `err` set to the reason
+// (nullptr: errno has it).
+void* inflate(const char* path, std::size_t& len, const char*& err) noexcept {
+  err = nullptr;
+  len = 0;
+  const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return nullptr;
+  struct stat st {};
+  if (::fstat(fd, &st) != 0 || st.st_size == 0) {
+    ::close(fd);
+    err = st.st_size == 0 ? "empty" : nullptr;
+    return nullptr;
+  }
+  const auto in_len = static_cast<std::size_t>(st.st_size);
+  void* in = ::mmap(nullptr, in_len, PROT_READ, MAP_PRIVATE, fd, 0);
+  ::close(fd);
+  if (in == MAP_FAILED) return nullptr;
+  const int out = scratch_file(path);
+  ZSTD_DCtx* dctx = ZSTD_createDCtx();
+  constexpr std::size_t kChunk = std::size_t{1} << 20;
+  auto* buf = static_cast<char*>(std::malloc(kChunk));
+  const auto give_up = [&](const char* why) -> void* {
+    const int saved = errno;
+    if (dctx != nullptr) ZSTD_freeDCtx(dctx);
+    std::free(buf);
+    if (out >= 0) ::close(out);
+    ::munmap(in, in_len);
+    errno = saved;
+    err = why;
+    return nullptr;
+  };
+  if (out < 0) return give_up(nullptr);
+  if (dctx == nullptr || buf == nullptr) return give_up("zstd: cannot allocate a context");
+  ZSTD_inBuffer ib{in, in_len, 0};
+  std::size_t produced = 0;
+  for (;;) {
+    ZSTD_outBuffer ob{buf, kChunk, 0};
+    const std::size_t left = ZSTD_decompressStream(dctx, &ob, &ib);
+    if (ZSTD_isError(left) != 0) return give_up(ZSTD_getErrorName(left));
+    for (std::size_t w = 0; w < ob.pos;) {
+      const ssize_t k = ::write(out, buf + w, ob.pos - w);
+      if (k < 0 && errno == EINTR) continue;
+      if (k <= 0) return give_up(nullptr);
+      w += static_cast<std::size_t>(k);
+    }
+    produced += ob.pos;
+    if (left == 0 && ib.pos == ib.size) break;
+    // Input used up while the frame wants more: the archive is cut short.
+    if (ib.pos == ib.size && ob.pos < ob.size) return give_up("the archive is truncated");
+  }
+  ZSTD_freeDCtx(dctx);
+  dctx = nullptr;
+  std::free(buf);
+  buf = nullptr;
+  ::munmap(in, in_len);
+  if (produced == 0) {
+    ::close(out);
+    err = "empty";
+    return nullptr;
+  }
+  void* map = ::mmap(nullptr, produced, PROT_READ, MAP_SHARED, out, 0);
+  const int saved = errno;
+  ::close(out);
+  if (map == MAP_FAILED) {
+    errno = saved;
+    return nullptr;
+  }
+  len = produced;
+  return map;
+}
+
+}  // namespace
+
+bool journal_exists(const std::string& path) {
+  return ::access(path.c_str(), F_OK) == 0 || ::access((path + ".zst").c_str(), F_OK) == 0;
+}
 
 JournalReader::~JournalReader() {
   if (map_ != nullptr) ::munmap(const_cast<std::byte*>(map_), map_len_);
@@ -420,7 +542,42 @@ Result<void, JournalError> JournalReader::open(const std::string& path) noexcept
                  sizeof detail_);
     return fail(e);
   };
-  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  // A journal the archive compressed ([engine] journal_compress) is read from x.fmj.zst, whether
+  // asked for by that name or by x.fmj.
+  char zst[PATH_MAX];
+  const char* file = path.c_str();
+  if (!is_archive(path) && ::access(file, F_OK) != 0) {
+    const auto r = fmt::format_to_n(zst, sizeof zst - 1, "{}.zst", path);
+    if (r.size < sizeof zst) {
+      zst[r.size] = '\0';
+      if (::access(zst, F_OK) == 0) file = zst;
+    }
+  }
+  if (is_archive(file)) {
+    std::size_t len = 0;
+    const char* err = nullptr;
+    void* p = inflate(file, len, err);
+    if (p == nullptr) {
+      return why(err == nullptr ? JournalError::IoError : JournalError::HeaderCorrupt,
+                 "{}: {}",
+                 file,
+                 err == nullptr ? std::strerror(errno) : err);
+    }
+    if (len < sizeof(JournalFileHeader)) {
+      ::munmap(p, len == 0 ? 1 : len);
+      return why(JournalError::TooShort,
+                 "{} bytes, shorter than the {}-byte file header",
+                 len,
+                 sizeof(JournalFileHeader));
+    }
+    map_ = static_cast<const std::byte*>(p);
+    map_len_ = len;
+    if (auto r = parse_prologue(); !r) return r;
+    validate();
+    reset();
+    return {};
+  }
+  const int fd = ::open(file, O_RDONLY | O_CLOEXEC);
   if (fd < 0) return why(JournalError::OpenFailed, "{}", std::strerror(errno));
   struct stat st {};
   if (::fstat(fd, &st) != 0) {

@@ -266,6 +266,17 @@ class Reader {
   [[nodiscard]] virtual Result<Rows, std::string> ledger(const QueryFilter& /*f*/, bool /*raw*/) {
     return fail(std::string("this store backend has no fill ledger"));
   }
+  // One row per execution with its decision record (schema 16): the order's state when the fill
+  // arrived, when it was placed and at what price, when its working leg went out (`sent`; after
+  // `amends` accepted replaces) and was acknowledged, how long it had rested, the cancel or replace
+  // in flight and for how long, and the strategy's quote context when the order went out and when
+  // the fill arrived. The context columns are named after the session's quote_context_names
+  // (sent_<name>, fill_<name>; ctx0..ctx3 where the sessions shown name them differently or not at
+  // all); a value no row has is left out. Filtered like fills(); also by `f.order`. The default
+  // cannot answer.
+  [[nodiscard]] virtual Result<Rows, std::string> fill_context(const QueryFilter& /*f*/) {
+    return fail(std::string("this store backend keeps no fill decision records"));
+  }
   // Everything stored about one client order (`f.order`), in time order: sent, each refusal, each
   // execution, and its last known state. The default cannot answer.
   [[nodiscard]] virtual Result<Rows, std::string> order_timeline(const QueryFilter& /*f*/) {

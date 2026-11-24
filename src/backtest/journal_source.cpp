@@ -2,6 +2,7 @@
 
 #include "fastmm/backtest/journal_state.hpp"
 #include "fastmm/backtest/recorded_latency.hpp"
+#include "fastmm/core/journal_archive.hpp"
 #include "fastmm/core/log.hpp"
 
 #include <fmt/format.h>
@@ -28,10 +29,12 @@ JournalSource::JournalSource(const std::string& path,
   // every block's checksum), so they are opened at once: on a slow file system (a Windows drive
   // under WSL) reading them side by side takes a fraction of reading them in turn. The checks
   // between parts then run in order, as they would have one part at a time.
+  // A part the archive compressed is x.N.fmj.zst; the part names are those of the journals.
   std::vector<std::string> paths{path};
+  const std::string base = journal_base_path(path);
   for (std::uint64_t n = 1; parts; ++n) {
-    std::string next_path = JournalFileWriter::part_path(path, n);
-    if (!std::filesystem::exists(next_path)) break;
+    std::string next_path = JournalFileWriter::part_path(base, n);
+    if (!journal_exists(next_path)) break;
     paths.push_back(std::move(next_path));
   }
   std::vector<JournalReader> readers(paths.size());

@@ -693,6 +693,7 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
   deps_.instruments = &cfg_.instruments;
   deps_.params = cfg_.params;
   deps_.journal_ring = impl_->journal_ring.get();
+  deps_.record_ring = cfg_.record_ring;
   deps_.backend = backend_.get();
 }
 
@@ -1517,7 +1518,7 @@ std::unique_ptr<MdSource> open_one(std::string_view spec, const InstrumentTable*
   }
   // A bare path: infer the source from the extension.
   const std::string path(spec);
-  if (ends_with(spec, ".fmj"))
+  if (ends_with(spec, ".fmj") || ends_with(spec, ".fmj.zst"))
     return std::make_unique<JournalSource>(path, false, true, instruments);
   if (ends_with(spec, ".csv")) return std::make_unique<CsvSource>(path);
   std::string known;

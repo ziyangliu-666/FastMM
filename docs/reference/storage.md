@@ -51,7 +51,8 @@ The engine copies each record into the ring without allocating, calling the kern
 
 | Record | Written when | Carries |
 |---|---|---|
-| `FillRecord` | every execution, and every quantity booked from a `cum_qty` jump | price, quantity, booked quantity, fee, liquidity, ids, the venue's trade time and the position after it |
+| `FillRecord` | every execution, and every quantity booked from a `cum_qty` jump | price, quantity, booked quantity, fee, liquidity, ids, the venue's trade time, the position after it, and its decision record ([fills](#fills)) |
+| `ContextNamesRecord` | when the strategy names its quote context values (`ctx.quote_context_names`) | up to four names ([quote_context_names](#quote_context_names)) |
 | `OrderRecord` | every OMS state change | the whole order: state, previous state, price, quantity, filled quantity, reject reason |
 | `PositionRecord` | after every fill, after a venue position snapshot, and per instrument at the end | the instrument's position and the portfolio totals |
 | `FundingRecord` | every funding payment booked | amount, asset, venue funding id and time, the position and its PnL after it |
@@ -124,7 +125,7 @@ SQLite reuses the space of deleted rows for new ones but does not return it to t
 
 ## Schema
 
-The schema is version 15, in `src/store/sqlite_schema.cpp`. An older store is migrated in place when opened, after a copy to `<path>.v<version>.bak`. A store from a newer FastMM is refused with the version it holds.
+The schema is version 16, in `src/store/sqlite_schema.cpp`. An older store is migrated in place when opened, after a copy to `<path>.v<version>.bak`. A store from a newer FastMM is refused with the version it holds. Version 16 only adds columns and a table: the migration rewrites no row, and the fills stored before it have NULL decision columns.
 
 ### sessions
 
@@ -192,6 +193,22 @@ One row per execution, keyed `(session_id, seq)`. A unique index on `(session_id
 | `account` | the `[venues.<name>]` it executed on, a pool member included (version 10) |
 | `named_qty_raw` | on an estimate, how much executions have named since; on an execution, how much of it named an estimate (version 10) |
 | `arm` | the `[ab]` arm its order was sent under; NULL outside a test (version 12) |
+
+From version 16 each row also carries the fill's decision record: how its order got to where it filled and what the strategy said about the side, so a fill can be explained from the store alone. The engine writes it from its own state and clock, so a replay of the journal writes the same values. The order columns are NULL when the fill named an order the engine no longer remembers (a fill for another client's order, or one more than 4096 terminal orders old); the context columns are NULL where the strategy published nothing.
+
+| Column | Meaning |
+|---|---|
+| `order_state` | the order's state when the fill arrived, before it: `Live`, `PartiallyFilled`, `PendingCancel`, `PendingReplace`, ...; on a late fill, the state it had ended in |
+| `placed_ns`, `placed_px_raw` | when the order's first leg went out, and at what price |
+| `sent_ns` | when the leg that filled went out: `placed_ns`, or the send time of the last replace the venue accepted |
+| `amends` | how many replaces the venue accepted before the fill |
+| `venue_ack_ns`, `local_ack_ns` | that leg's acknowledgement: the venue's time, and when it reached the engine |
+| `in_flight` | `cancel` or `replace` when one was in flight as the fill arrived; on a late fill, `cancel` when a cancel the engine sent ended the order; `''` for none |
+| `in_flight_ns`, `in_flight_px_raw` | when that cancel or replace went out, and the replace's price |
+| `order_ctx0` .. `order_ctx3` | the side's quote context when the leg that filled went out |
+| `fill_ctx0` .. `fill_ctx3` | the side's quote context when the fill arrived |
+
+The quote context is up to four numbers the strategy publishes per instrument and side with `ctx.quote_context` ([Strategy API](strategy-api.md#quote-context)): its fair value, the quote's distance from it, a signal. `fastmm-pnl fill-context` shows these columns with the strategy's names.
 
 An estimate's execution corrects its price and fee without moving the position again. Both rows stay, so sum quantity this way:
 
@@ -369,6 +386,10 @@ One row per account and minute in which it priced or sent an order under `[capac
 | `price_min`, `price_max`, `price_mean` | the price an action had to reach, quote currency |
 | `floor`, `day_price` | `L` and the day prices at the end of the minute, quote currency |
 
+### quote_context_names
+
+The names the strategy gave its quote context values, keyed `(session_id, slot)` (version 16): slot `k` names `order_ctx<k>` and `fill_ctx<k>` of the session's fills. Empty where the strategy named none.
+
 ### limit_changes
 
 One row per `[risk]` key a `fastmm-ctl limits` changed, keyed `(session_id, seq, key)` (version 11). `fastmm-pnl limit-changes` lists them.
@@ -446,6 +467,8 @@ The open orders the recovery lists are those FastMM last saw open; the venue's v
 | `fastmm-pnl pnl --books` | `pnl_daily` alone, which counts a repeat twice |
 | `fastmm-pnl ledger` | one row per execution across sessions, with its copies and flags ([Query what you traded](../how-to/operations/query-trading-records.md#the-economic-ledger)) |
 | `fastmm-pnl order --order <id>` | `orders`, `rejects` and `fills` of one client order |
+| `fastmm-pnl fill-context` | each fill's decision record, its context columns named after `quote_context_names` |
+
 | `fastmm-pnl` | the other daily questions ([command lines](cli.md), [Query what you traded](../how-to/operations/query-trading-records.md)) |
 | `fastmm.open_store(path)` | pandas DataFrames ([Python API](python-api.md)) |
 | `sqlite3 runs/mm1.db` | anything else; the schema above is the contract |

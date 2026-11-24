@@ -5,6 +5,7 @@
 #include "fastmm/backtest/backtest_runner.hpp"
 #include "fastmm/backtest/journal_source.hpp"
 #include "fastmm/core/journal.hpp"
+#include "fastmm/core/journal_archive.hpp"
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/sim/journal_feed.hpp"
 
@@ -184,4 +185,28 @@ TEST_CASE("backtest.journal_parts: a journal read from a later part says it star
   REQUIRE(parts.size() >= 2);
   CHECK_FALSE(JournalSource(parts[0]).recorded()->starts_mid_session);
   CHECK(JournalSource(parts[1], false, false).recorded()->starts_mid_session);
+}
+
+TEST_CASE("backtest.journal_parts: parts the archive compressed read as the journal did") {
+  const auto dir = fresh_dir("journal_parts_zst");
+  const std::string path = (dir / "s.fmj").string();
+  const InstrumentTable table = one_instrument();
+  const std::vector<std::string> parts = write_session(path, table, 7, 30'000);
+  REQUIRE(parts.size() >= 3);
+  // The first two parts archived (x.fmj.zst, x.1.fmj.zst), the rest as written.
+  for (std::size_t k = 0; k < 2; ++k) {
+    REQUIRE(compress_journal(parts[k], parts[k] + ".zst", 3));
+    std::filesystem::remove(parts[k]);
+  }
+  JournalSource all(path);
+  CHECK(all.md_events() == 30'000);
+  CHECK(all.seq_gaps() == 0);
+  CHECK(count_monotonic(all) == 30'000);
+  // Named by the archive itself, or as a bare path or a spec.
+  JournalSource by_archive(path + ".zst");
+  CHECK(by_archive.md_events() == 30'000);
+  std::unique_ptr<MdSource> bare = open_data(path + ".zst", &table);
+  CHECK(count_monotonic(*bare) == 30'000);
+  std::unique_ptr<MdSource> spec = open_data("journal:" + path, &table);
+  CHECK(count_monotonic(*spec) == 30'000);
 }

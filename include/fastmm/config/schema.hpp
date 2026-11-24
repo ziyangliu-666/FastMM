@@ -96,8 +96,23 @@ inline constexpr KeySpec kConfigSchema[] = {
      "journal_retention_days",
      KeyType::Int,
      false,
-     "delete .fmj files in journal_dir last written more than this many days ago, at start; "
-     "0 = keep everything (default 0)"},
+     "delete journals (.fmj and .fmj.zst) in journal_dir last written more than this many days "
+     "ago, at start and, in fastmm-live, every minute while it runs; 0 = keep everything "
+     "(default 0)"},
+    {"engine",
+     "journal_compress",
+     KeyType::String,
+     false,
+     "fastmm-live: none | zstd: compress each journal in journal_dir nobody is writing to "
+     "x.fmj.zst on a background thread, a minute after it was last written; the replay, "
+     "backtest and tools read either form (default none)"},
+    {"engine",
+     "journal_max_total_bytes",
+     KeyType::Int,
+     false,
+     "cap on the journals in journal_dir, bytes, compressed or not: the oldest go first, at start "
+     "and, in fastmm-live, every minute; a part being written is never deleted; 0 = no cap "
+     "(default 0)"},
     {"engine",
      "checkpoint_s",
      KeyType::Int,

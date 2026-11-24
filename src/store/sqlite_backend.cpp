@@ -302,6 +302,7 @@ class SqliteBackend final : public Backend {
     b.t(account);
     b.i(r.named_qty.raw);
     bind_arm(b, r.arm);
+    bind_decision(b, r);
     const int rc = sqlite3_step(ins_fill_.get());
     if (rc == SQLITE_DONE) {
       // Zero rows changed: this very record again (its session and seq), a no-op.
@@ -498,6 +499,17 @@ class SqliteBackend final : public Backend {
     b.i(r.hdr.engine_ts.ns);
     b.i(r.mid.raw);
     step(ins_markout_.get(), "insert markout");
+  }
+
+  void context_names(const ContextNamesRecord& r) override {
+    if (db_ == nullptr) return;
+    for (std::size_t k = 0; k < kQuoteContextSize; ++k) {
+      Bind b(ins_context_name_.get());
+      b.u(r.hdr.session_id);
+      b.i(static_cast<std::int64_t>(k));
+      b.t(r.names[k].view());
+      step(ins_context_name_.get(), "insert a quote context name");
+    }
   }
 
   void capacity(const CapacityRecord& r) override {
@@ -708,6 +720,7 @@ class SqliteBackend final : public Backend {
     ins_limit_.reset();
     ins_markout_.reset();
     ins_capacity_.reset();
+    ins_context_name_.reset();
     ins_ab_arm_.reset();
     ins_funding_.reset();
     ins_pnl_.reset();
@@ -937,6 +950,72 @@ class SqliteBackend final : public Backend {
     if (prune_warned_) return;
     prune_warned_ = true;
     FASTMM_LOG_WARN("store: retention: {}", std::string_view(e));
+  }
+
+  // The fill's decision record (schema 16): NULL order columns when it named no order the OMS
+  // remembered; a NaN context value binds as NULL.
+  static void bind_decision(Bind& b, const FillRecord& r) {
+    const auto stamp = [&](Timestamp t) {
+      if (r.trail != 0 && t.valid()) {
+        b.i(t.ns);
+      } else {
+        b.null();
+      }
+    };
+    if (r.trail != 0) {
+      b.t(to_string(r.order_state));
+    } else {
+      b.null();
+    }
+    stamp(r.placed_ts);
+    if (r.trail != 0) {
+      b.i(r.placed_px.raw);
+    } else {
+      b.null();
+    }
+    stamp(r.sent_ts);
+    stamp(r.venue_ack_ts);
+    stamp(r.local_ack_ts);
+    if (r.trail != 0) {
+      b.i(r.amends);
+    } else {
+      b.null();
+    }
+    // A cancel or replace in flight when the fill arrived; on a late fill, the cancel that ended
+    // the order before the fill reached the engine.
+    std::string_view in_flight;
+    if (r.trail != 0 && r.pending_ts.valid()) {
+      in_flight = r.order_state == OrderState::PendingReplace ? "replace" : "cancel";
+    }
+    if (r.trail == 0) {
+      b.null();
+    } else {
+      b.t(in_flight);
+    }
+    if (!in_flight.empty()) {
+      b.i(r.pending_ts.ns);
+    } else {
+      b.null();
+    }
+    if (in_flight == "replace") {
+      b.i(r.pending_px.raw);
+    } else {
+      b.null();
+    }
+    for (const double v : r.order_context.v) {
+      if (r.trail != 0 && v == v) {  // NOLINT(misc-redundant-expression): false for NaN
+        b.d(v);
+      } else {
+        b.null();
+      }
+    }
+    for (const double v : r.fill_context.v) {
+      if (v == v) {  // NOLINT(misc-redundant-expression): false for NaN
+        b.d(v);
+      } else {
+        b.null();
+      }
+    }
   }
 
   // A record's [ab] arm (Order::arm, ParamUpdateMsg::arm): its name, NULL for none.
@@ -1215,8 +1294,12 @@ class SqliteBackend final : public Backend {
          " cl_ord_id, venue_order_id, exec_id, side, liquidity, price_raw, qty_raw,"
          " booked_qty_raw, cum_qty_raw, leaves_qty_raw, fee_raw, fee_amount_raw, fee_asset,"
          " position_qty_raw, position_avg_px_raw, position_realized_raw, position_fees_raw,"
-         " synthetic, late, exch_ns, account, named_qty_raw, arm)"
-         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+         " synthetic, late, exch_ns, account, named_qty_raw, arm, order_state, placed_ns,"
+         " placed_px_raw, sent_ns, venue_ack_ns, local_ack_ns, amends, in_flight, in_flight_ns,"
+         " in_flight_px_raw, order_ctx0, order_ctx1, order_ctx2, order_ctx3, fill_ctx0,"
+         " fill_ctx1, fill_ctx2, fill_ctx3)"
+         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+         "?,?,?,?,?,?,?,?,?)"
          " ON CONFLICT(session_id, seq) DO NOTHING"},
         {&ins_repeat_,
          "INSERT OR IGNORE INTO fill_repeats (session_id, seq, ts_ns, day, account,"
@@ -1267,6 +1350,7 @@ class SqliteBackend final : public Backend {
         {&ins_markout_, "INSERT OR IGNORE INTO markouts VALUES (?,?,?,?,?,?,?)"},
         {&ins_capacity_,
          "INSERT OR IGNORE INTO capacity VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"},
+        {&ins_context_name_, "INSERT OR REPLACE INTO quote_context_names VALUES (?,?,?)"},
         {&ins_funding_,
          "INSERT OR IGNORE INTO funding (session_id, seq, ts_ns, day, exch_ns, instrument_id,"
          " venue_id, symbol, funding_id, asset, amount_raw, position_qty_raw,"
@@ -1342,6 +1426,7 @@ class SqliteBackend final : public Backend {
   Stmt ins_limit_;
   Stmt ins_markout_;
   Stmt ins_capacity_;
+  Stmt ins_context_name_;
   Stmt ins_ab_arm_;
   std::vector<std::string> venue_names_;  // the session's [venues.<name>] by VenueId
   std::vector<std::string> arm_names_;    // the session's [ab] arms, in order

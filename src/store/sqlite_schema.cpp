@@ -688,7 +688,40 @@ CREATE TABLE capacity (
 CREATE INDEX capacity_day ON capacity(day, account);
 )SQL";
 
-constexpr std::array<Migration, 15> kMigrations{Migration{1, kV1},
+// Version 16: each fill's decision record (FillRecord from placed_ts on): how its order got where
+// it was filled and what the strategy said about the side, so a fill can be explained without a
+// replay. The order columns are NULL for a fill that named no order the OMS remembered and for
+// fills stored before this version; the context columns are NULL where the strategy published
+// nothing. quote_context_names holds the names the strategy gave the context values
+// (ctx.quote_context_names), by slot.
+constexpr std::string_view kV16 = R"SQL(
+ALTER TABLE fills ADD COLUMN order_state TEXT;
+ALTER TABLE fills ADD COLUMN placed_ns INTEGER;
+ALTER TABLE fills ADD COLUMN placed_px_raw INTEGER;
+ALTER TABLE fills ADD COLUMN sent_ns INTEGER;
+ALTER TABLE fills ADD COLUMN venue_ack_ns INTEGER;
+ALTER TABLE fills ADD COLUMN local_ack_ns INTEGER;
+ALTER TABLE fills ADD COLUMN amends INTEGER;
+ALTER TABLE fills ADD COLUMN in_flight TEXT;
+ALTER TABLE fills ADD COLUMN in_flight_ns INTEGER;
+ALTER TABLE fills ADD COLUMN in_flight_px_raw INTEGER;
+ALTER TABLE fills ADD COLUMN order_ctx0 REAL;
+ALTER TABLE fills ADD COLUMN order_ctx1 REAL;
+ALTER TABLE fills ADD COLUMN order_ctx2 REAL;
+ALTER TABLE fills ADD COLUMN order_ctx3 REAL;
+ALTER TABLE fills ADD COLUMN fill_ctx0 REAL;
+ALTER TABLE fills ADD COLUMN fill_ctx1 REAL;
+ALTER TABLE fills ADD COLUMN fill_ctx2 REAL;
+ALTER TABLE fills ADD COLUMN fill_ctx3 REAL;
+CREATE TABLE quote_context_names (
+  session_id INTEGER NOT NULL,
+  slot       INTEGER NOT NULL,
+  name       TEXT    NOT NULL,
+  PRIMARY KEY (session_id, slot)
+);
+)SQL";
+
+constexpr std::array<Migration, 16> kMigrations{Migration{1, kV1},
                                                 Migration{2, kV2},
                                                 Migration{3, kV3},
                                                 Migration{4, kV4},
@@ -702,7 +735,8 @@ constexpr std::array<Migration, 15> kMigrations{Migration{1, kV1},
                                                 Migration{12, kV12},
                                                 Migration{13, kV13},
                                                 Migration{14, kV14},
-                                                Migration{15, kV15}};
+                                                Migration{15, kV15},
+                                                Migration{16, kV16}};
 
 // days since 1970-01-01 -> y/m/d (Howard Hinnant's civil_from_days).
 void civil_from_days(std::int64_t z, int& y, unsigned& m, unsigned& d) {

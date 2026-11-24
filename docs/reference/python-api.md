@@ -296,6 +296,7 @@ A class with `@fastmm.hot` methods is compiled by Numba in nopython mode. The en
 | `@fastmm.hot(every="100ms")` on any other name | a timer hook, at most 16; units `ns`, `us`, `ms`, `s`, `m`, `h` |
 | `fastmm.Param(default, min=, max=, doc=)` | a parameter, typed, parsed and validated as in [Parameters](#parameters) |
 | `fastmm.State(default, doc="")` | a per-instrument bool, int64 or float the hooks read and write; it starts at the default and keeps its value between calls |
+| `quote_context_names = ("fair", ...)` | names for the values `ctx.quote_context` publishes, at most four, recorded with the session ([Quote context](strategy-api.md#quote-context)) |
 
 Every hot hook takes `(self, ctx, book)` and runs once per instrument:
 
@@ -346,9 +347,14 @@ The hot `ctx` has no execution view: no `own_qty`, `queue_ahead` or order times.
 | `keep_passive()` | after `uncross`, shift each side so level 0 is one tick inside the book's touch (`keep_passive`) |
 | `quiet_book(lo, hi)`, `quiet_book_raw(lo, hi)` | call `on_book` only once the mid reaches `lo` or `hi` or the book turns invalid; floats are rounded inward to 1e-8 |
 | `quiet_book()` | ends `quiet_book(lo, hi)` |
+| `quote_context(a, b, c, d)` | up to four numbers about the quotes of both sides (a fair value, a distance), kept with each order the engine sends or moves on a side and stored with its fills; the rest are NaN ([Quote context](strategy-api.md#quote-context)) |
+| `bid_context(...)`, `ask_context(...)` | the same for one side |
 | `fail(code)` | stop the strategy with an int code |
 
 `quiet_book` suits a hook that would return at once inside the band: it gives the same result and runs faster in a sweep ([Many runs in one pass](../explanation/backtesting.md#many-runs-in-one-pass)).
+
+The quote context applies whatever the hook's last intent, before it, so the orders that intent sends carry it.
+
 
 When the hook returns, the engine makes at most one call for the instrument, after whichever intent came last:
 

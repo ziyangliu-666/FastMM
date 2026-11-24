@@ -1204,6 +1204,28 @@ class Engine {
     n.budget_raw = budget.raw;
     n.set_ns = now_.ns;
   }
+  // ctx.quote_context: the side's context from now on (QuoteContext). Values past
+  // kQuoteContextSize are dropped; slots not given are NaN.
+  void quote_context(InstrumentId id, Side side, std::span<const double> values) noexcept {
+    if (FASTMM_UNLIKELY(!instruments_.contains(id))) return;
+    QuoteContext& c = quote_ctx_[track_index(id, side)];
+    for (std::size_t k = 0; k < kQuoteContextSize; ++k)
+      c.v[k] = k < values.size() ? values[k] : std::numeric_limits<double>::quiet_NaN();
+  }
+  [[nodiscard]] const QuoteContext& quote_context(InstrumentId id, Side side) const noexcept {
+    return quote_ctx_[track_index(id, side)];
+  }
+  // ctx.quote_context_names: recorded for the store (ContextNamesRecord), names cut to
+  // ContextNamesRecord::kNameLen bytes.
+  void quote_context_names(std::span<const std::string_view> names) noexcept {
+    if (!records_.enabled()) return;
+    ContextNamesRecord r;
+    records_.init(r, RecordType::ContextNames, InstrumentId{}, VenueId::invalid(), now_, now_);
+    for (std::size_t k = 0; k < kQuoteContextSize; ++k)
+      r.names[k].assign(k < names.size() ? names[k] : std::string_view{});
+    std::memset(r.pad_, 0, sizeof r.pad_);
+    account_record(records_.put(r.hdr));
+  }
   // ctx.metric: a number the strategy publishes by name (the first kMaxStrategyMetrics names;
   // later ones are dropped). Cut to kStrategyMetricNameLen - 1 bytes.
   void metric(std::string_view name, double value) noexcept {
@@ -2372,10 +2394,43 @@ class Engine {
       r.exec_id = msg->exec_id;
       r.hdr.exch_ts = msg->hdr.exch_ts;
     }
+    record_decision(r, id, side, u);
     const bool put = records_.put(r.hdr);
     account_record(put);
     if (put && !markouts_.empty()) start_markouts(id, records_.written());
     emit_position(id);
+  }
+
+  // The fill's decision record (FillRecord from placed_ts on): its order's trail, when the OMS
+  // still knows the order, and the side's quote context now.
+  void record_decision(FillRecord& r, InstrumentId id, Side side, const OmsUpdate& u) noexcept {
+    std::memset(r.pad0_, 0, sizeof r.pad0_);
+    std::memset(r.pad_, 0, sizeof r.pad_);
+    r.fill_context = quote_ctx_[track_index(id, side)];
+    r.order_context = QuoteContext{};
+    r.placed_ts = r.sent_ts = r.venue_ack_ts = r.local_ack_ts = r.pending_ts = Timestamp{};
+    r.placed_px = r.pending_px = Price{};
+    r.amends = 0;
+    r.order_state = u.prev;
+    r.trail = 0;
+    const OrderTrail* t = u.known ? oms_.trail(r.cl_ord_id) : nullptr;
+    if (t == nullptr) return;
+    r.trail = 1;
+    r.placed_ts = t->placed;
+    r.sent_ts = t->times.sent;
+    r.venue_ack_ts = t->times.venue_ack;
+    r.local_ack_ts = t->times.local_ack;
+    r.placed_px = t->placed_px;
+    r.amends = t->amends;
+    r.order_context = t->context;
+    // What was in flight: a cancel or replace pending when the fill arrived, or on a fill after
+    // the order ended, the cancel that ended it.
+    if (is_pending(u.prev) && u.prev != OrderState::PendingNew) {
+      r.pending_ts = t->pending_sent;
+      if (u.prev == OrderState::PendingReplace) r.pending_px = u.order.pending_price;
+    } else if (u.action == OmsAction::LateFill) {
+      r.pending_ts = t->pending_sent;
+    }
   }
 
   // [engine] markout_ms: the mid now, and the fill queued for each horizon.
@@ -4057,7 +4112,7 @@ class Engine {
       FASTMM_LOG_WARN("order {} has no ack after {} ms: cancelling it",
                       encode_cl_ord_id(o.cl_ord_id),
                       timeout.millis());
-      if (!oms_.request_cancel_unacked(h)) return;
+      if (!oms_.request_cancel_unacked(h, now_)) return;
       const Order& co = oms_.get(h);
       OutCancelMsg m{};
       init_header(m, EventType::OutCancel, co.instrument, co.venue);
@@ -4472,7 +4527,7 @@ class Engine {
     NewOrderRequest r = req;
     r.venue = account;
     r.account = account;
-    auto h = oms_.submit(r, id, now);
+    auto h = oms_.submit(r, id, now, &quote_ctx_[track_index(req.instrument, req.side)]);
     if (FASTMM_UNLIKELY(!h)) return fail(h.error());
     const std::uint8_t arm = ab_arm_[req.instrument.value];  // submit checked the id
     oms_.get(*h).arm = arm;
@@ -5521,7 +5576,7 @@ class Engine {
     // knows it until the reconciliation that follows the instrument's return.
     if (FASTMM_UNLIKELY(oms_.is_live(h) && not_trading_[oms_.get(h).instrument.value]))
       return fail(RejectReason::InstrumentDisabled);
-    auto r = oms_.request_cancel(h);
+    auto r = oms_.request_cancel(h, now_);
     if (!r) return r;
     const Order& o = oms_.get(h);
     OutCancelMsg m{};
@@ -5593,7 +5648,8 @@ class Engine {
     }
     const ClientOrderId new_id = oms_.next_cl_ord_id();
     if (FASTMM_UNLIKELY(!new_id.valid())) return fail(on_ids_exhausted());
-    auto r = oms_.request_replace(h, new_id, px, qty, now);
+    auto r = oms_.request_replace(
+        h, new_id, px, qty, now, &quote_ctx_[track_index(o.instrument, o.side)]);
     if (!r) return r;
     const std::uint8_t arm = ab_arm_[o.instrument.value];
     oms_.get(h).arm = arm;
@@ -6570,6 +6626,10 @@ class Engine {
       std::make_unique<QuoteTrack[]>(static_cast<std::size_t>(kMaxInstruments) * 2);
   std::array<LiveMetric, kMaxStrategyMetrics> metrics_{};
   std::size_t metric_count_ = 0;
+  // ctx.quote_context, per instrument and side (track_index): copied into each order sent or moved
+  // on the side and into the record of each fill.
+  std::unique_ptr<QuoteContext[]> quote_ctx_ =
+      std::make_unique<QuoteContext[]>(static_cast<std::size_t>(kMaxInstruments) * 2);
   // RejectRecord folding, per instrument and side (record_reject).
   static constexpr std::size_t kRejectFolds = kMaxInstruments * 2 * kMaxVenues;
   std::unique_ptr<RejectFold[]> reject_folds_ = std::make_unique<RejectFold[]>(kRejectFolds);

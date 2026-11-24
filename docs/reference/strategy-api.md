@@ -194,6 +194,13 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().pull_quotes(InstrumentId{})), 
 static_assert(std::same_as<decltype(lvalue<Ctx>().pull_all_quotes()), void>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().working_quote(InstrumentId{}, Side::Buy, 0)),
                            const Order*>);
+// quote context: kept with each order sent on the side and with its fills
+static_assert(
+    std::same_as<decltype(lvalue<Ctx>().quote_context(InstrumentId{}, Side::Buy, {1.0, 2.0})),
+                 void>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().quote_context(InstrumentId{}, Side::Buy)),
+                           const QuoteContext&>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().quote_context_names({"fair"})), void>);
 // direct orders
 static_assert(std::same_as<decltype(lvalue<Ctx>().send(NewOrderRequest{})),
                            Result<ClientOrderId, RejectReason>>);
@@ -265,6 +272,33 @@ A direct order returns a `Result`:
 auto id = ctx.send(NewOrderRequest::limit(inst.id, Side::Buy, px, qty).post_only());
 if (!id) return FASTMM_LOG_WARN("order refused: {}", id.error());  // e.g. RejectReason::MaxPosition
 ```
+
+### Quote context
+
+The store keeps with every fill what the strategy knew about the quote that filled: up to four numbers per instrument and side, such as the fair value the quote was priced from and its distance from it. The engine copies a side's numbers into each order it sends or moves on that side, and the fill's row holds the copy its order took when it last went out and the side's numbers when the fill arrived, next to when the order was placed and moved and what was in flight ([Storage](storage.md#fills)). `fastmm-pnl fill-context` prints them.
+
+| Method | Notes |
+|---|---|
+| `quote_context(id, side, {a, b, ...})` | the side's numbers from now on, up to four; a slot not given is NaN. Call it before `set_quotes` or `send` |
+| `quote_context(id, {a, b, ...})` | both sides |
+| `quote_context(id, side)` | the side's numbers as they stand (`QuoteContext::v`) |
+| `quote_context_names({"fair", ...})` | names for the slots, up to 23 bytes each, recorded once for the session; call it from `on_start` |
+
+```cpp
+void on_start(auto& ctx) { ctx.quote_context_names({"fair", "bid_bps", "ask_bps"}); }
+
+void requote(auto& ctx, InstrumentId id, Price fair, Price bid, Price ask) {
+  const double f = fair.to_double();
+  ctx.quote_context(id, {f, (f - bid.to_double()) / f * 1e4, (ask.to_double() - f) / f * 1e4});
+  DesiredQuotes q;
+  q.bid(bid, qty_);
+  q.ask(ask, qty_);
+  ctx.set_quotes(id, q);
+}
+```
+
+Neither call allocates or leaves the engine thread. The numbers are part of the engine's state, so a replay of the journal records the same ones.
+
 
 ### Fees, risk headroom and venue health
 

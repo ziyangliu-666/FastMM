@@ -24,6 +24,7 @@ parse_header, parse_instruments, iter_events and fill_fields are also used by
 tools/pnl_report.py.
 """
 import argparse
+import os
 import struct
 import sys
 from collections import Counter
@@ -431,7 +432,22 @@ def main() -> int:
     ap.add_argument("--no-crc", action="store_true", help="skip crc32c verification")
     args = ap.parse_args()
 
-    data = open(args.journal, "rb").read()
+    path = args.journal
+    if not path.endswith(".zst") and not os.path.exists(path) and os.path.exists(path + ".zst"):
+        path += ".zst"
+    data = open(path, "rb").read()
+    if path.endswith(".zst"):  # [engine] journal_compress
+        try:
+            from compression import zstd  # Python 3.14
+            data = zstd.decompress(data)
+        except ImportError:
+            try:
+                import zstandard
+            except ImportError:
+                print(f"error: {path} is compressed; needs Python 3.14 or `pip install zstandard`, "
+                      "or `zstd -d` it first", file=sys.stderr)
+                return 2
+            data = zstandard.ZstdDecompressor().decompress(data)
     try:
         hdr = parse_header(data, verify_crc=not args.no_crc)
     except JournalError as e:

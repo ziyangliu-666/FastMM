@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
+#include <memory>
 #include <random>
 #include <string>
 #include <vector>
@@ -1199,4 +1201,78 @@ TEST_CASE("core.oms: the old leg of a replace keeps its estimate for its executi
     CHECK(u.order.cum_qty == qt(1));
     CHECK(oms.stats().synthetic_pending == 0);
   }
+}
+
+TEST_CASE("oms: the trail keeps placement, accepted replaces, what is in flight and the context") {
+  auto oms_ptr = std::make_unique<Oms>();
+  Oms& oms = *oms_ptr;
+  QuoteContext c1;
+  c1.v[0] = 100.5;
+  c1.v[1] = 3.0;
+  QuoteContext c2;
+  c2.v[0] = 101.25;
+  const ClientOrderId id = oms.next_cl_ord_id();
+  auto h = oms.submit(req(Side::Buy, 100, 10), id, Timestamp{1'000}, &c1);
+  REQUIRE(h);
+  const OrderTrail* t = oms.trail(id);
+  REQUIRE(t != nullptr);
+  CHECK(t->placed.ns == 1'000);
+  CHECK(t->times.sent.ns == 1'000);
+  CHECK(t->placed_px == px(100));
+  CHECK(t->amends == 0);
+  CHECK(t->context.v[0] == 100.5);
+  CHECK(t->context.v[1] == 3.0);
+  CHECK(std::isnan(t->context.v[2]));  // not given
+  CHECK_FALSE(t->pending_sent.valid());
+
+  OrderAckMsg a = ack(id);
+  a.hdr.exch_ts = Timestamp{1'500};
+  a.hdr.recv_ts = Timestamp{1'600};
+  static_cast<void>(oms.on_ack(a));
+  CHECK(t->times.venue_ack.ns == 1'500);
+  CHECK(t->times.local_ack.ns == 1'600);
+
+  // A replace in flight: the order keeps its leg and context until the venue accepts it.
+  const ClientOrderId nid = oms.next_cl_ord_id();
+  REQUIRE(oms.request_replace(*h, nid, px(101), qt(10), Timestamp{2'000}, &c2));
+  CHECK(oms.trail(nid) == t);  // the pending id names the same order
+  CHECK(t->pending_sent.ns == 2'000);
+  CHECK(t->context.v[0] == 100.5);
+  CHECK(t->amends == 0);
+  OrderAckMsg ra = ack(nid, "V2");
+  ra.hdr.exch_ts = Timestamp{2'500};
+  ra.hdr.recv_ts = Timestamp{2'600};
+  static_cast<void>(oms.on_ack(ra));
+  t = oms.trail(nid);
+  REQUIRE(t != nullptr);
+  CHECK(t->amends == 1);
+  CHECK(t->times.sent.ns == 2'000);
+  CHECK(t->times.venue_ack.ns == 2'500);
+  CHECK(t->placed.ns == 1'000);
+  CHECK(t->placed_px == px(100));
+  CHECK(t->context.v[0] == 101.25);
+  CHECK_FALSE(t->pending_sent.valid());
+
+  // A cancel the venue refuses clears what was in flight; one it accepts ends the order, and the
+  // terminal record keeps the trail with the cancel's send time.
+  REQUIRE(oms.request_cancel(*h, Timestamp{3'000}));
+  CHECK(t->pending_sent.ns == 3'000);
+  static_cast<void>(oms.on_cancel_reject(cancel_reject(nid)));
+  CHECK_FALSE(oms.trail(nid)->pending_sent.valid());
+  REQUIRE(oms.request_cancel(*h, Timestamp{4'000}));
+  const OmsUpdate u = oms.on_cancel_ack(cancel_ack(nid));
+  REQUIRE(u.terminal);
+  const OrderTrail* ended = oms.trail(nid);
+  REQUIRE(ended != nullptr);
+  CHECK(ended->pending_sent.ns == 4'000);
+  CHECK(ended->amends == 1);
+  CHECK(ended->placed.ns == 1'000);
+  CHECK(ended->context.v[0] == 101.25);
+  // A new order in the freed slot starts a trail of its own; the ended one keeps its record.
+  const ClientOrderId id3 = oms.next_cl_ord_id();
+  REQUIRE(oms.submit(req(Side::Sell, 105, 1), id3, Timestamp{5'000}));
+  CHECK(oms.trail(id3)->placed.ns == 5'000);
+  CHECK(std::isnan(oms.trail(id3)->context.v[0]));
+  CHECK(oms.trail(nid)->placed.ns == 1'000);
+  CHECK(oms.trail(oms.next_cl_ord_id()) == nullptr);
 }

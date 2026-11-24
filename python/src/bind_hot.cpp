@@ -91,6 +91,9 @@ py::dict ctx_layout() {
   FASTMM_HOT_OFFSET(d, fastmm_hot_ctx, reduce_only)
   FASTMM_HOT_OFFSET(d, fastmm_hot_ctx, home)
   FASTMM_HOT_OFFSET(d, fastmm_hot_ctx, pieces)
+  FASTMM_HOT_OFFSET(d, fastmm_hot_ctx, context_set)
+  FASTMM_HOT_OFFSET(d, fastmm_hot_ctx, quote_context_bid)
+  FASTMM_HOT_OFFSET(d, fastmm_hot_ctx, quote_context_ask)
   FASTMM_HOT_OFFSET(d, fastmm_hot_ctx, bid_px)
   FASTMM_HOT_OFFSET(d, fastmm_hot_ctx, bid_qty)
   FASTMM_HOT_OFFSET(d, fastmm_hot_ctx, ask_px)
@@ -521,6 +524,8 @@ void bind_hot(py::module_& m) {
         d["version"] = FASTMM_HOT_ABI_VERSION;
         d["book_depth"] = FASTMM_HOT_BOOK_DEPTH;
         d["quote_levels"] = FASTMM_HOT_QUOTE_LEVELS;
+        d["quote_context"] = FASTMM_HOT_QUOTE_CONTEXT;
+
         d["timer_limit"] = kMaxHotTimers;
         d["ctx"] = ctx_layout();
         d["book"] = book_layout();

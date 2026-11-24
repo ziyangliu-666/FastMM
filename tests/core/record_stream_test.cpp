@@ -7,6 +7,7 @@
 #include "fastmm/core/engine.hpp"
 #include "fastmm/strategies/basic_mm.hpp"
 
+#include <cmath>
 #include <memory>
 #include <vector>
 
@@ -443,7 +444,167 @@ TEST_CASE("core.records: record layouts are a multiple of the ring granule") {
   CHECK(sizeof(OrderRecord) % kRingMsgGranule == 0);
   CHECK(sizeof(PositionRecord) % kRingMsgGranule == 0);
   CHECK(sizeof(KillRecord) % kRingMsgGranule == 0);
+  CHECK(sizeof(ContextNamesRecord) % kRingMsgGranule == 0);
   // Type 0 is the ring's padding marker, so no record may use it.
   CHECK(static_cast<std::uint8_t>(RecordType::Fill) != kRingPaddingType);
   CHECK(to_string(RecordType::Position) == "Position");
+}
+
+namespace {
+// The first new order the engine sent, and the time the test clock had then.
+const OutNewOrderMsg* first_new(const Fixture& f) {
+  for (const auto& bytes : f.transport.out) {
+    const auto* h = reinterpret_cast<const EventHeader*>(bytes.data());
+    if (h->type == EventType::OutNewOrder) return reinterpret_cast<const OutNewOrderMsg*>(h);
+  }
+  return nullptr;
+}
+const FillRecord* fill_of(const Records& r, ClientOrderId id) {
+  for (const auto& [type, bytes] : r.all) {
+    if (type != RecordType::Fill) continue;
+    const auto* fr = reinterpret_cast<const FillRecord*>(bytes.data());
+    if (fr->cl_ord_id == id) return fr;
+  }
+  return nullptr;
+}
+}  // namespace
+
+TEST_CASE("core.records: the strategy's quote context names are recorded at start") {
+  Fixture f;
+  Records r;
+  r.drain(f.record_ring);
+  REQUIRE(r.count(RecordType::ContextNames) == 1);
+  const auto& n = r.first<ContextNamesRecord>(RecordType::ContextNames);
+  CHECK(n.names[0].view() == "mid");
+  CHECK(n.names[1].view() == "centre");
+  CHECK(n.names[2].view().empty());
+  CHECK(n.hdr.session_id == 4242);
+}
+
+TEST_CASE("core.records: a fill says how its order got there, what was in flight and the context") {
+  Fixture f;
+  const Timestamp placed = f.clock.now();
+  f.push_book("100.00", "100.02", 1);
+  f.drain();
+  const OutNewOrderMsg* sent = first_new(f);
+  REQUIRE(sent != nullptr);
+  const ClientOrderId id = sent->cl_ord_id;
+  const Side side = sent->side;
+  const Price placed_px = sent->price;
+
+  f.clock.advance(milliseconds(5));
+  OrderAckMsg a{};
+  init_header(a, EventType::OrderAck, InstrumentId{0}, VenueId{0});
+  a.cl_ord_id = id;
+  a.hdr.exch_ts = Timestamp{placed.ns + 4'000'000};
+  f.push(a);
+  f.drain();
+  const Timestamp acked = f.clock.now();
+
+  // The mid moves 10 ticks: the strategy requotes, and without replace the engine cancels the
+  // order and sends a new one at the new price.
+  f.clock.advance(milliseconds(100));
+  const Timestamp cancelled = f.clock.now();
+  f.push_book("100.10", "100.12", 2);
+  f.drain();
+
+  // The venue had filled it before the cancel reached it.
+  f.clock.advance(milliseconds(3));
+  OrderFillMsg fill{};
+  init_header(fill, EventType::OrderFill, InstrumentId{0}, VenueId{0});
+  fill.cl_ord_id = id;
+  fill.side = side;
+  fill.price = placed_px;
+  fill.qty = qt("0.01");
+  fill.cum_qty = qt("0.01");
+  fill.exec_id = "E1";
+  f.push(fill);
+  f.drain();
+
+  Records r;
+  r.drain(f.record_ring);
+  const FillRecord* fr = fill_of(r, id);
+  REQUIRE(fr != nullptr);
+  CHECK(fr->trail == 1);
+  CHECK(fr->order_state == OrderState::PendingCancel);
+  CHECK(fr->placed_ts == placed);
+  CHECK(fr->sent_ts == placed);
+  CHECK(fr->placed_px == placed_px);
+  CHECK(fr->amends == 0);
+  CHECK(fr->venue_ack_ts.ns == placed.ns + 4'000'000);
+  CHECK(fr->local_ack_ts == acked);
+  CHECK(fr->pending_ts == cancelled);
+  // BasicMM's context: the mid (and the centre, flat) when the order went out, and now.
+  CHECK(fr->order_context.v[0] == doctest::Approx(100.01));
+  CHECK(fr->order_context.v[1] == doctest::Approx(100.01));
+  CHECK(fr->fill_context.v[0] == doctest::Approx(100.11));
+  CHECK(std::isnan(fr->order_context.v[2]));
+}
+
+TEST_CASE("core.records: a fill after a requested cancel ended its order names that cancel") {
+  Fixture f;
+  f.push_book("100.00", "100.02", 1);
+  f.drain();
+  const OutNewOrderMsg* sent = first_new(f);
+  REQUIRE(sent != nullptr);
+  const ClientOrderId id = sent->cl_ord_id;
+  OrderAckMsg a{};
+  init_header(a, EventType::OrderAck, InstrumentId{0}, VenueId{0});
+  a.cl_ord_id = id;
+  f.push(a);
+  f.drain();
+  f.clock.advance(milliseconds(50));
+  const Timestamp cancelled = f.clock.now();
+  f.push_book("100.10", "100.12", 2);
+  f.drain();
+  f.clock.advance(milliseconds(2));
+  OrderCancelAckMsg c{};
+  init_header(c, EventType::OrderCancelAck, InstrumentId{0}, VenueId{0});
+  c.cl_ord_id = id;
+  f.push(c);
+  f.drain();
+  f.clock.advance(milliseconds(2));
+  OrderFillMsg fill{};
+  init_header(fill, EventType::OrderFill, InstrumentId{0}, VenueId{0});
+  fill.cl_ord_id = id;
+  fill.side = sent->side;
+  fill.price = sent->price;
+  fill.qty = qt("0.01");
+  fill.cum_qty = qt("0.01");
+  fill.exec_id = "E9";
+  f.push(fill);
+  f.drain();
+
+  Records r;
+  r.drain(f.record_ring);
+  const FillRecord* fr = fill_of(r, id);
+  REQUIRE(fr != nullptr);
+  CHECK((fr->hdr.flags & RecordHeader::kLate) != 0);
+  CHECK(fr->trail == 1);
+  CHECK(fr->order_state == OrderState::Canceled);
+  CHECK(fr->pending_ts == cancelled);
+  CHECK(fr->order_context.v[0] == doctest::Approx(100.01));
+}
+
+TEST_CASE("core.records: a fill of an order the engine never had carries the side's context") {
+  Fixture f;
+  f.push_book("100.00", "100.02", 1);
+  f.drain();
+  OrderFillMsg fill{};
+  init_header(fill, EventType::OrderFill, InstrumentId{0}, VenueId{0});
+  fill.cl_ord_id = make_cl_ord_id(77, 5);
+  fill.side = Side::Sell;
+  fill.price = px("100.02");
+  fill.qty = qt("0.01");
+  fill.cum_qty = qt("0.01");
+  fill.exec_id = "X1";
+  f.push(fill);
+  f.drain();
+  Records r;
+  r.drain(f.record_ring);
+  const FillRecord* fr = fill_of(r, fill.cl_ord_id);
+  REQUIRE(fr != nullptr);
+  CHECK(fr->trail == 0);
+  CHECK_FALSE(fr->placed_ts.valid());
+  CHECK(fr->fill_context.v[0] == doctest::Approx(100.01));
 }

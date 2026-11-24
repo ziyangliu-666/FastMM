@@ -9,9 +9,10 @@ import numpy as np
 
 from .. import _core
 
-VERSION = 3
+VERSION = 4
 BOOK_DEPTH = 10
 QUOTE_LEVELS = 8
+QUOTE_CONTEXT = 4
 
 OK = 0
 EXCEPTION = 1
@@ -26,6 +27,9 @@ FLAG_UNCROSS = 1
 FLAG_KEEP_PASSIVE = 2
 FLAG_QUIET = 4
 FLAG_LOUD = 8
+
+CONTEXT_BID = 1
+CONTEXT_ASK = 2
 
 CTX_DTYPE = np.dtype(
     [
@@ -68,6 +72,9 @@ CTX_DTYPE = np.dtype(
         ("reduce_only", "u1"),
         ("home", "u1"),
         ("pieces", "u1"),
+        ("context_set", "u1"),
+        ("quote_context_bid", "f8", (QUOTE_CONTEXT,)),
+        ("quote_context_ask", "f8", (QUOTE_CONTEXT,)),
     ],
     align=True,
 )
@@ -102,7 +109,9 @@ BOOK_DTYPE = np.dtype(
 
 
 def _check(layout: dict) -> None:
-    expected = {"version": VERSION, "book_depth": BOOK_DEPTH, "quote_levels": QUOTE_LEVELS}
+    expected = {"version": VERSION, "book_depth": BOOK_DEPTH, "quote_levels": QUOTE_LEVELS,
+                "quote_context": QUOTE_CONTEXT}
+
     for key, value in expected.items():
         if layout[key] != value:
             raise ImportError(f"fastmm: hot ABI {key} is {layout[key]} in fastmm._core and {value} "

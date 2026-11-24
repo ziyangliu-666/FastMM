@@ -48,6 +48,7 @@ enum class RecordType : std::uint8_t {
   Limits = 9,
   Markout = 10,
   Capacity = 11,
+  ContextNames = 12,
 };
 [[nodiscard]] constexpr std::string_view to_string(RecordType t) noexcept {
   switch (t) {
@@ -73,6 +74,8 @@ enum class RecordType : std::uint8_t {
       return "Markout";
     case RecordType::Capacity:
       return "Capacity";
+    case RecordType::ContextNames:
+      return "ContextNames";
   }
   return "?";
 }
@@ -112,6 +115,12 @@ static_assert(offsetof(RecordHeader, len) == 0 && offsetof(RecordHeader, type) =
 // One execution. `fee` is the engine's booked fee in the instrument's settlement currency;
 // `fee_amount` is what the venue reported, in units of `fee_asset` (a commission in a third asset
 // is reported but not booked, so `fee` is then zero).
+//
+// From offset 256, the fill's decision record: how its order got where it was filled (the OMS's
+// OrderTrail) and what the strategy said about the side (StrategyContext::quote_context), so a
+// fill can be explained afterwards without a replay. `trail` is 0 when the fill named no order the
+// OMS remembers; the order fields are zero then and only fill_context is set. Engine clock
+// throughout.
 struct FillRecord {
   RecordHeader hdr;
   ClientOrderId cl_ord_id;     // 64
@@ -137,11 +146,29 @@ struct FillRecord {
   Liquidity liquidity;          // 251
   FeeAsset fee_asset;           // 252
   std::uint8_t arm;             // 253 its order's Order::arm
-  std::uint8_t pad_[2];         // -> 256
+  std::uint8_t pad0_[2];        // -> 256
+  Timestamp placed_ts;          // 256 the order's first leg went out
+  Timestamp sent_ts;            // 264 the working leg went out: placed_ts, or the last accepted
+                                //     replace's send
+  Timestamp venue_ack_ts;       // 272 the working leg's ack, venue time (invalid: none)
+  Timestamp local_ack_ts;       // 280 the same ack, when it reached the engine
+  // A cancel or replace was in flight when the fill arrived (order_state PendingCancel or
+  // PendingReplace): when it went out. On a late fill, the cancel that ended the order.
+  Timestamp pending_ts;        // 288
+  Price placed_px;             // 296 the first leg's price
+  Price pending_px;            // 304 the replace in flight: its price
+  QuoteContext order_context;  // 312 the side's context when the working leg went out
+  QuoteContext fill_context;   // 344 the side's context when the fill arrived
+  std::uint32_t amends;        // 376 replaces the venue accepted before the fill
+  OrderState order_state;      // 380 the order's state when the fill arrived, before it
+  std::uint8_t trail;          // 381 1: the order fields above are set
+  std::uint8_t pad_[2];        // -> 384
 };
-static_assert(sizeof(FillRecord) == 256 && std::is_trivially_copyable_v<FillRecord>);
+static_assert(sizeof(FillRecord) == 384 && std::is_trivially_copyable_v<FillRecord>);
 static_assert(offsetof(FillRecord, named_qty) == 160 &&
-              offsetof(FillRecord, venue_order_id) == 168 && offsetof(FillRecord, exec_id) == 209);
+              offsetof(FillRecord, venue_order_id) == 168 && offsetof(FillRecord, exec_id) == 209 &&
+              offsetof(FillRecord, placed_ts) == 256 &&
+              offsetof(FillRecord, order_context) == 312 && offsetof(FillRecord, amends) == 376);
 
 // The OMS record after a transition. hdr.aux[0] is the previous OrderState, hdr.aux[1] the
 // OmsAction as an integer, and hdr.aux[2] is 1 when this closes the client order id a
@@ -383,6 +410,18 @@ struct CapacityRecord {
   std::uint8_t pad_[56];          // -> 192
 };
 static_assert(sizeof(CapacityRecord) == 192 && std::is_trivially_copyable_v<CapacityRecord>);
+
+// The names the strategy gave the values of its quote context (StrategyContext::
+// quote_context_names), in slot order; an empty name leaves a slot unnamed. Written when the
+// strategy names them, normally once from on_start.
+struct ContextNamesRecord {
+  static constexpr std::size_t kNameLen = 23;  // bytes kept of a name
+  RecordHeader hdr;
+  FixedString<kNameLen> names[kQuoteContextSize];  // 64 -> 160
+  std::uint8_t pad_[32];                           // -> 192
+};
+static_assert(sizeof(ContextNamesRecord) == 192 &&
+              std::is_trivially_copyable_v<ContextNamesRecord>);
 
 // Engine-side producer. Every method is allocation-free, wait-free and safe to call from the
 // trading thread; a full ring increments dropped() and returns false.

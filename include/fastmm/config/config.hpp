@@ -76,10 +76,12 @@ struct EngineSection {
   std::string threading = "split";
   bool journal = true;
   std::string journal_dir = "runs";
-  std::string journal_sync = "async";  // "async" | "fdatasync" (core/journal.hpp)
-  std::size_t journal_max_bytes = 0;   // roll over to the next part at this size (0: never)
-  int journal_retention_days = 0;      // delete .fmj files older than this at start (0: keep)
-  std::int64_t checkpoint_s = 0;       // journal checkpoints this often (0: none)
+  std::string journal_sync = "async";         // "async" | "fdatasync" (core/journal.hpp)
+  std::size_t journal_max_bytes = 0;          // roll over to the next part at this size (0: never)
+  int journal_retention_days = 0;             // delete journals older than this (0: keep)
+  std::string journal_compress = "none";      // "none" | "zstd" (core/journal_archive.hpp)
+  std::uint64_t journal_max_total_bytes = 0;  // cap on the journals in journal_dir (0: none)
+  std::int64_t checkpoint_s = 0;              // journal checkpoints this often (0: none)
   std::string epoch_file = "runs/session_epoch";
   // Latched kill switch and cumulative PnL; empty = "<journal_dir>/<name>.kill".
   std::string kill_file;

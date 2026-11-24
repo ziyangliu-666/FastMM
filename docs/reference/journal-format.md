@@ -59,7 +59,28 @@ Each part is a complete journal with the same `session_id`: it repeats the heade
 | `fastmm-replay` | verifies one part at a time |
 | [store](storage.md) | lists every part in `session_journals` |
 
-`[engine] journal_retention_days` deletes `*.fmj` files in `journal_dir` last written more than that many days ago, once at session start. 0, the default, keeps everything; a file that cannot be removed is skipped with a warning.
+Three `[engine]` keys keep a bounded history of journals in `journal_dir`. `fastmm-live` applies them at start, before the new journal takes its room, and then every minute on a thread of its own (`fm-archive`, at the lowest CPU priority, on the cores of the other threads):
+
+| Key | Does |
+|---|---|
+| `journal_compress = "zstd"` | compresses each journal nobody is writing into `x.fmj.zst` once it has not been written to for a minute, then deletes `x.fmj`; the archive keeps the journal's time |
+| `journal_retention_days` | deletes journals, either form, last written more than that many days ago |
+| `journal_max_total_bytes` | while the journals in `journal_dir` total more than that, deletes the oldest |
+
+```toml
+[engine]
+journal_max_bytes = 1073741824          # 1 GiB parts, so a closed part can be compressed
+journal_compress = "zstd"
+journal_retention_days = 14
+journal_max_total_bytes = 64424509440   # 60 GiB
+```
+
+The part being written is never compressed or deleted: its writer holds an exclusive `flock` on it, which another engine sharing the directory respects too, and a file written to within the last minute is left alone as well. So the cap can be exceeded by the parts in use, and the log says so. Without `journal_max_bytes` a session's journal is one file that is compressed only after the session ends, by the next session's archive.
+
+A compressed journal is a standard zstd frame (`zstd -d x.fmj.zst` gives the journal back) with its size in the header. Every reader opens it in place of the journal: given `x.fmj` when only `x.fmj.zst` is there, or given `x.fmj.zst`, the replay, the backtest `journal:` source with its parts and `inspect_journal` decompress it into a file with no name next to the archive (in `$TMPDIR` or `/tmp` where that directory cannot hold one), mapped as a journal file is: the disk holds the journal's full size while it is open, the memory no more than for the journal itself. A compression the session stops in the middle leaves no `.fmj.zst`; its temporary `.fmj.zst.tmp` is removed by the next sweep. `session_journals` in the store keeps the path the journal was written under.
+
+Compression runs at zstd level 3, about 1 GiB of journal in 2 to 4 s of one core and a tenth of the size or less on market data. The archive holds a few MiB whatever the size of the part.
+
 
 ## Header
 

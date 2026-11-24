@@ -37,7 +37,7 @@ import numpy as np
 from numba import carray, cfunc, njit, types
 from numba.core import config as numba_config
 from numba.core.errors import NumbaError, TypingError, UnsupportedBytecodeError
-from numba.extending import overload_method
+from numba.extending import overload, overload_method
 
 from .. import _core
 from . import abi
@@ -61,6 +61,8 @@ _QUIET = abi.FLAG_QUIET
 _LOUD = abi.FLAG_LOUD
 _BAND = _QUIET | _LOUD
 _LEVELS = abi.QUOTE_LEVELS
+_CONTEXT_BID = abi.CONTEXT_BID
+_CONTEXT_ASK = abi.CONTEXT_ASK
 
 
 # ---- ctx methods -----------------------------------------------------------------------------------
@@ -264,6 +266,52 @@ def _quiet_book_raw(ctx, lo, hi):
         ctx.quiet_hi_raw = hi
         ctx.flags = (ctx.flags & ~_BAND) | _QUIET
     return impl
+
+
+def _absent(t: Any) -> bool:
+    return t is None or isinstance(t, (types.NoneType, types.Omitted))
+
+
+def _or_nan(x):  # type: ignore[no-untyped-def]
+    """A context value as a float; NaN for one not given (compiled through the overload below)."""
+    return math.nan if x is None else float(x)
+
+
+@overload(_or_nan)
+def _or_nan_impl(x):
+    if _absent(x):
+        return lambda x: np.nan
+    return lambda x: np.float64(x)
+
+
+def _context_method(method: str, sides: int):
+    def typer(ctx, a, b=None, c=None, d=None):
+        if not _is_ctx(ctx):
+            return None
+        _numbers(method, *(v for v in (a, b, c, d) if not _absent(v)))
+
+        def impl(ctx, a, b=None, c=None, d=None):  # type: ignore[no-untyped-def]
+            if sides & _CONTEXT_BID:
+                ctx.quote_context_bid[0] = _or_nan(a)
+                ctx.quote_context_bid[1] = _or_nan(b)
+                ctx.quote_context_bid[2] = _or_nan(c)
+                ctx.quote_context_bid[3] = _or_nan(d)
+            if sides & _CONTEXT_ASK:
+                ctx.quote_context_ask[0] = _or_nan(a)
+                ctx.quote_context_ask[1] = _or_nan(b)
+                ctx.quote_context_ask[2] = _or_nan(c)
+                ctx.quote_context_ask[3] = _or_nan(d)
+            ctx.context_set = ctx.context_set | sides
+        return impl
+    overload_method(types.Record, method)(typer)
+
+
+# ctx.quote_context(a, b, c, d): what the strategy knows about the quotes of both sides (its fair,
+# a distance), for the record of their fills; bid_context / ask_context set one side. Up to four
+# numbers; the rest are NaN. The engine applies them before the quotes the hook asks for.
+_context_method("quote_context", _CONTEXT_BID | _CONTEXT_ASK)
+_context_method("bid_context", _CONTEXT_BID)
+_context_method("ask_context", _CONTEXT_ASK)
 
 
 @overload_method(types.Record, "fail")
@@ -583,7 +631,10 @@ class CompiledHot:
             "param_bytes": self.param_bytes,
             "book_depth": self.book_depth,
             "param_fields": meta.param_fields(self.spec),
+            "quote_context_names": [str(n) for n in getattr(type(instance),
+                                                            "quote_context_names", ())],
         }
+
 
 
 def compiled(cls: type, spec: HotSpec, cache: bool) -> CompiledHot:

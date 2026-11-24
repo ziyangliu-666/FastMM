@@ -2,11 +2,13 @@
 // session shows. Read-only, off any hot path.
 #include "sqlite_schema.hpp"
 
+#include "fastmm/core/order.hpp"
 #include "fastmm/store/sqlite_store.hpp"
 
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -510,6 +512,98 @@ class SqliteReader final : public Reader {
     w.day_range(f);
     w.engine_join(f, "fills");
     return query(sql + w.text() + " ORDER BY ts_ns" + limit(f), w);
+  }
+
+  [[nodiscard]] Result<Rows, std::string> fill_context(const QueryFilter& f) override {
+    if (version_ < 16)
+      return fail(path_ + " predates the fill decision records (schema 16): its fills have none");
+    std::string sql =
+        "SELECT ts_ns, account, symbol, side, liquidity, price_raw, qty_raw, cl_ord_id,"
+        " order_state AS state, placed_ns, placed_px_raw, amends, sent_ns, venue_ack_ns,"
+        " ROUND((ts_ns - sent_ns) / 1e6, 3) AS rested_ms, in_flight,"
+        " ROUND((ts_ns - in_flight_ns) / 1e6, 3) AS in_flight_ms, in_flight_px_raw,"
+        " order_ctx0, order_ctx1, order_ctx2, order_ctx3,"
+        " fill_ctx0, fill_ctx1, fill_ctx2, fill_ctx3, session_id FROM fills";
+    Where w;
+    w.session(f);
+    w.symbol(f);
+    w.day_range(f);
+    w.engine_join(f, "fills");
+    if (!f.order.empty()) {
+      w.raw("cl_ord_id = ?");
+      w.value(f.order);
+    }
+    auto rows = query(sql + w.text() + " ORDER BY ts_ns, session_id, seq" + limit(f), w);
+    if (!rows) return rows;
+    name_context(*rows);
+    return rows;
+  }
+
+  // fill_context(): names the context columns after the sessions' quote_context_names where every
+  // session shown gives a slot the same name, and leaves out the slots no row has a value for.
+  void name_context(Rows& r) {
+    const std::size_t n = r.columns.size();
+    const std::size_t sid_col = n - 1;
+    std::set<std::string> sessions;
+    for (const auto& row : r.rows) sessions.insert(row[sid_col]);
+    std::array<std::string, kQuoteContextSize> names;
+    std::array<bool, kQuoteContextSize> agreed{};
+    agreed.fill(!sessions.empty());
+    for (std::size_t k = 0; k < kQuoteContextSize; ++k) {
+      std::set<std::string> seen;
+      for (const std::string& s : sessions) {
+        std::string name;
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db_,
+                               "SELECT name FROM quote_context_names WHERE session_id = ? AND"
+                               " slot = ?",
+                               -1,
+                               &st,
+                               nullptr) == SQLITE_OK) {
+          sqlite3_bind_int64(st, 1, std::strtoll(s.c_str(), nullptr, 10));
+          sqlite3_bind_int64(st, 2, static_cast<std::int64_t>(k));
+          if (sqlite3_step(st) == SQLITE_ROW) {
+            const auto* p = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
+            if (p != nullptr) name = p;
+          }
+        }
+        sqlite3_finalize(st);
+        seen.insert(name);
+      }
+      if (seen.size() == 1 && !seen.begin()->empty()) {
+        names[k] = *seen.begin();
+      } else {
+        agreed[k] = false;
+      }
+    }
+    std::vector<bool> keep(n, true);
+    for (std::size_t i = 0; i < n; ++i) {
+      std::string& c = r.columns[i];
+      for (const std::string_view prefix :
+           {std::string_view("order_ctx"), std::string_view("fill_ctx")}) {
+        if (c.size() != prefix.size() + 1 || c.compare(0, prefix.size(), prefix) != 0) continue;
+        const std::size_t k = static_cast<std::size_t>(c.back() - '0');
+        if (k >= kQuoteContextSize) continue;
+        bool any = false;
+        for (const auto& row : r.rows) any = any || !row[i].empty();
+        keep[i] = any;
+        const std::string_view side = prefix == "fill_ctx" ? "fill_" : "sent_";
+        c = std::string(side) + (agreed[k] ? names[k] : "ctx" + std::to_string(k));
+      }
+    }
+    Rows out;
+    for (std::size_t i = 0; i < n; ++i) {
+      if (keep[i]) out.columns.push_back(std::move(r.columns[i]));
+    }
+    for (auto& row : r.rows) {
+      std::vector<std::string> kept;
+      kept.reserve(out.columns.size());
+      for (std::size_t i = 0; i < n && i < row.size(); ++i) {
+        if (keep[i]) kept.push_back(std::move(row[i]));
+      }
+      out.rows.push_back(std::move(kept));
+    }
+    r = std::move(out);
   }
 
   // An execution is grouped as duplicates() groups it: engine, venue name, symbol, side and the

@@ -101,6 +101,10 @@ struct BacktestConfig {
   std::string path;
   std::string output_dir;
   std::string journal_out;  // record the run to this .fmj (empty = no journal)
+  // Where the engine puts its records (core/record_stream.hpp), as fastmm-live hands them to the
+  // store: the caller's ring, drained by the caller, large enough for the run (a full ring drops
+  // records). Null: none.
+  MsgRing* record_ring = nullptr;
   // Effective configuration embedded in journal_out (Config::effective_toml(); from_config() sets
   // it, hand-built configs leave it empty). Callers that override fields after from_config()
   // must refresh or clear it.

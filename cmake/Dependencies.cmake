@@ -167,6 +167,32 @@ if(sqlite3_ADDED AND NOT TARGET sqlite3)
   target_link_libraries(sqlite3 PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
+# --- zstd (core: compressed journal archives) --------------------------------
+# [engine] journal_compress: closed journal parts are kept as .fmj.zst and read back by
+# JournalReader. Built here as a static library from the pinned release, like secp256k1: the
+# library sources only (single-threaded, no legacy formats, no dictionary builder), no assembly.
+enable_language(C)
+CPMAddPackage(
+  NAME zstd
+  VERSION 1.5.7
+  URL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+  URL_HASH SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+  DOWNLOAD_ONLY YES)
+if(zstd_ADDED AND NOT TARGET fastmm_zstd)
+  file(GLOB _zstd_sources
+    ${zstd_SOURCE_DIR}/lib/common/*.c
+    ${zstd_SOURCE_DIR}/lib/compress/*.c
+    ${zstd_SOURCE_DIR}/lib/decompress/*.c)
+  add_library(fastmm_zstd STATIC ${_zstd_sources})
+  set_target_properties(fastmm_zstd PROPERTIES
+    C_STANDARD 99 C_EXTENSIONS OFF EXPORT_NAME zstd
+    POSITION_INDEPENDENT_CODE ${FASTMM_PIC})
+  # SYSTEM: zstd.h is not held to fastmm::warnings in the files that include it.
+  target_include_directories(fastmm_zstd SYSTEM PUBLIC $<BUILD_INTERFACE:${zstd_SOURCE_DIR}/lib>)
+  target_compile_definitions(fastmm_zstd PRIVATE ZSTD_DISABLE_ASM)
+  target_compile_options(fastmm_zstd PRIVATE -w)
+endif()
+
 # --- doctest (tests) --------------------------------------------------------
 if(FASTMM_BUILD_TESTS)
   CPMAddPackage(

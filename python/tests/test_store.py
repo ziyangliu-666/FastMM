@@ -363,3 +363,47 @@ def test_pnl_counts_each_execution_once(tmp_path):
     assert row["fills"] == 3
     assert row["estimates"] == 0
     assert row["gross_traded"] == pytest.approx(3.0)
+
+
+def test_fill_context_names_the_strategys_values(tmp_path):
+    """Schema 16: each fill's decision record, its context columns named after the session's
+    quote_context_names."""
+    text = SCHEMA.read_text()
+    path = tmp_path / "decisions.db"
+    db = sqlite3.connect(path)
+    db.executescript(
+        "CREATE TABLE schema_version (version INTEGER NOT NULL, applied_ns INTEGER NOT NULL,"
+        " fastmm TEXT NOT NULL); INSERT INTO schema_version VALUES (16, 0, 'test');"
+    )
+    for v in range(1, 17):
+        db.executescript(_sql_between(text, f'constexpr std::string_view kV{v} = R"SQL(', ')SQL";'))
+    day1 = 1_709_510_400_000_000_000
+    db.executescript(
+        f"""
+        INSERT INTO fills (session_id, seq, ts_ns, day, instrument_id, venue_id, symbol, cl_ord_id,
+            venue_order_id, exec_id, side, liquidity, price_raw, qty_raw, booked_qty_raw,
+            cum_qty_raw, leaves_qty_raw, fee_raw, fee_amount_raw, fee_asset, position_qty_raw,
+            position_avg_px_raw, position_realized_raw, position_fees_raw, synthetic, late,
+            order_state, placed_ns, placed_px_raw, sent_ns, amends, in_flight, in_flight_ns,
+            order_ctx0, fill_ctx0)
+          VALUES (1, 2, {day1 + 100_000_000}, '2024-03-04', 0, 0, 'BTCUSDT', 'C1', 'V1', 'E1',
+            'Buy', 'Maker', 10000000000, 100000, 100000, 100000, 0, 0, 0, 'quote', 100000, 0, 0,
+            0, 0, 0, 'PendingCancel', {day1}, 9990000000, {day1 + 20_000_000}, 1, 'cancel',
+            {day1 + 95_000_000}, 100.05, 99.8);
+        INSERT INTO quote_context_names VALUES (1, 0, 'fair'), (1, 1, ''), (1, 2, ''), (1, 3, '');
+        """
+    )
+    db.commit()
+    db.close()
+    with fastmm.open_store(path) as store:
+        df = store.fill_context()
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert row["order_state"] == "PendingCancel"
+    assert row["placed_px"] == pytest.approx(99.9)
+    assert row["amends"] == 1
+    assert row["in_flight"] == "cancel"
+    assert (row["ts"] - row["in_flight_since"]).total_seconds() == pytest.approx(0.005)
+    assert row["sent_fair"] == pytest.approx(100.05)
+    assert row["fill_fair"] == pytest.approx(99.8)
+    assert "sent_ctx1" in df.columns

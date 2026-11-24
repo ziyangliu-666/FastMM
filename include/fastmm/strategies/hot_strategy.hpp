@@ -109,6 +109,8 @@ struct HotProgram {
   // The parameters a ParamUpdate may assign, by field index: their places in the parameter block.
   std::vector<HotParamSlot> params;
   bool stop_on_error = false;  // request_stop() after a failure (backtests)
+  // Names of the quote context values (Strategy.quote_context_names), given to the engine at start.
+  std::vector<std::string> quote_context_names;
   // Copy the level arrays into the book view. False when no hook can read them: the view then holds
   // the top of book and the level counts, and the arrays stay zero.
   bool book_depth = true;
@@ -218,6 +220,12 @@ class HotStrategy {
 
   template <class Ctx>
   void on_start(Ctx& ctx) noexcept {
+    if (!program_.quote_context_names.empty()) {
+      std::array<std::string_view, kQuoteContextSize> names{};
+      const std::size_t n = std::min(program_.quote_context_names.size(), names.size());
+      for (std::size_t k = 0; k < n; ++k) names[k] = program_.quote_context_names[k];
+      ctx.quote_context_names(std::span<const std::string_view>(names.data(), n));
+    }
     for (std::size_t i = 0; i < program_.n_timers; ++i) {
       if (program_.timers[i].fn != nullptr)
         static_cast<void>(ctx.every(program_.timers[i].period, kHotTimerTag + i));
@@ -482,6 +490,7 @@ class HotStrategy {
     c.n_asks = 0;
     c.status = FASTMM_HOT_OK;
     c.fail_code = 0;
+    c.context_set = 0;
     fill_book(book);
     std::uint8_t* const self = records_.data() + static_cast<std::size_t>(id.value) * record_size_;
     std::memcpy(
@@ -491,6 +500,12 @@ class HotStrategy {
     if (FASTMM_UNLIKELY(rc != FASTMM_HOT_OK)) {
       fail(ctx, inst, rc, c.fail_code, hook, timer);
       return;
+    }
+    if (FASTMM_UNLIKELY(c.context_set != 0)) {
+      if ((c.context_set & FASTMM_HOT_CONTEXT_BID) != 0)
+        ctx.quote_context(id, Side::Buy, std::span<const double>(c.quote_context_bid));
+      if ((c.context_set & FASTMM_HOT_CONTEXT_ASK) != 0)
+        ctx.quote_context(id, Side::Sell, std::span<const double>(c.quote_context_ask));
     }
     if ((c.flags & FASTMM_HOT_FLAG_QUIET) != 0) {
       ctx.quiet_book(id, Price::from_raw(c.quiet_lo_raw), Price::from_raw(c.quiet_hi_raw));

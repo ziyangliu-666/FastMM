@@ -40,6 +40,11 @@ struct ReplayOptions {
   // stops early; by default such a file is refused rather than compared against a stream that was
   // cut off. fastmm-replay --allow-incomplete sets it and warns instead.
   bool allow_incomplete = false;
+  // Where the replayed engine puts its records (core/record_stream.hpp): the same fills, decision
+  // records included, orders and positions the recorded session handed its store. The caller's
+  // ring, drained by the caller, large enough for the journal (a full ring drops records). Null:
+  // none.
+  MsgRing* record_ring = nullptr;
 };
 
 struct ReplayResult {

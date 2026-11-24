@@ -3,6 +3,7 @@
 #include "fastmm/config/env_subst.hpp"
 #include "fastmm/core/host_tuning.hpp"
 #include "fastmm/core/journal.hpp"
+#include "fastmm/core/journal_archive.hpp"
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/core/oms.hpp"
@@ -1896,17 +1897,33 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   std::unique_ptr<JournalFileWriter> journal;
   std::string journal_path;
   const bool journaling = !opts.no_journal && (!opts.journal_path.empty() || cfg.engine.journal);
-  if (journaling && cfg.engine.journal_retention_days > 0) {
-    std::string prune_error;
-    const std::size_t removed =
-        prune_journals(cfg.engine.journal_dir, cfg.engine.journal_retention_days, &prune_error);
-    if (removed != 0)
-      FASTMM_LOG_INFO("journal retention: {} file(s) older than {} day(s) removed from {}",
-                      removed,
-                      cfg.engine.journal_retention_days,
-                      cfg.engine.journal_dir);
-    if (!prune_error.empty())
-      FASTMM_LOG_WARN("journal retention: {}", std::string_view(prune_error));
+  // [engine] journal_retention_days, journal_max_total_bytes: before the new journal takes its
+  // room; then, with journal_compress too, the archiver every minute (core/journal_archive.hpp).
+  JournalRetention retention;
+  retention.compress = cfg.engine.journal_compress == "zstd";
+  retention.retention_days = cfg.engine.journal_retention_days;
+  retention.max_total_bytes = cfg.engine.journal_max_total_bytes;
+  std::unique_ptr<JournalArchiver> archiver;
+  if (journaling && (retention.retention_days > 0 || retention.max_total_bytes > 0)) {
+    const JournalSweep s = sweep_journals(cfg.engine.journal_dir, retention, /*compress=*/false);
+    if (s.removed_old + s.removed_cap != 0)
+      FASTMM_LOG_INFO(
+          "journal retention: {} file(s) removed from {} ({} older than {} day(s), {} over the "
+          "{}-byte cap); {} bytes of journals left",
+          s.removed_old + s.removed_cap,
+          cfg.engine.journal_dir,
+          s.removed_old,
+          retention.retention_days,
+          s.removed_cap,
+          retention.max_total_bytes,
+          s.total_bytes);
+    if (s.over_cap)
+      FASTMM_LOG_WARN(
+          "journal retention: the journals in {} total {} bytes, over "
+          "journal_max_total_bytes, and the rest are in use",
+          cfg.engine.journal_dir,
+          s.total_bytes);
+    if (!s.error.empty()) FASTMM_LOG_WARN("journal retention: {}", std::string_view(s.error));
   }
   if (journaling) {
     std::string path = opts.journal_path;
@@ -2384,6 +2401,15 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   }
   if (ab && !warm) static_cast<void>(ab->poll(wall_now()));
   if (journal) journal->start();
+  if (journal && retention.any()) {
+    archiver = std::make_unique<JournalArchiver>(cfg.engine.journal_dir, retention);
+    archiver->start();
+    FASTMM_LOG_INFO("journal archive: {} every minute (compress {}, {} day(s), cap {} bytes)",
+                    cfg.engine.journal_dir,
+                    cfg.engine.journal_compress,
+                    retention.retention_days,
+                    retention.max_total_bytes);
+  }
   std::thread engine_thread;
   if (single) {
     engine_thread = std::thread(inline_loop, std::ref(inline_ctx), cfg.engine.cpu);
@@ -3391,6 +3417,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
         t.in_flight,
         t.dry_run_plans);
   }
+  if (archiver) archiver->stop();  // a compression in progress is abandoned, not finished
   if (journal) journal->stop();
 
   const RunnerStats rs = runner->stats();

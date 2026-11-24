@@ -4,6 +4,13 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+### Breaking changes
+- core: the journal format is version 6 (the instrument table records the trading status); 0.14 does not read it.
+- apps: the status file is version 30; run `fastmm-top` from the same build as `fastmm-live`.
+- python: the hot hook ABI is version 4; hooks cached for version 3 are compiled again.
+- store: schema 16, migrated in place after a copy to `<path>.v15.bak`; its old fills have NULL decision columns.
+- store: a store opened by this version does not open in 0.14.
+
 ### Added
 - core: `InstrumentRules` events change an instrument's tick, lot, limits or trading status live.
 - core: an instrument the venue does not trade is sent nothing, cancels included, until it trades.
@@ -20,12 +27,26 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: the IANA tzdata (2026e) is compiled in; `tools/tzdata_gen.py` regenerates it.
 - apps: `fastmm-top`, `status` and Prometheus show each window, whether it is open and its next edge.
 - apps: a side a window pulls shows `window` as its quote obstacle (12).
+- core: every fill record carries its order's trail: placed when and at what price, last moved, acked, what was in flight.
+- core: `ctx.quote_context(id, side, {...})` publishes up to four numbers per side that each order and fill keeps.
+- core: `ctx.quote_context_names({...})` names them for the store and the tools.
+- core: `[engine] journal_compress = "zstd"` compresses closed journal parts to `.fmj.zst` on a background thread.
+- core: `[engine] journal_max_total_bytes` caps the journals in `journal_dir`, oldest first.
+- core: `JournalReader` and the `journal:` source read `.fmj.zst`, also when asked for `x.fmj`.
+- core: the journal writer holds a `flock` on the part it writes.
+- store: schema 16 adds the decision columns to `fills` and the `quote_context_names` table.
+- apps: `fastmm-pnl fill-context` prints each fill's decision record with the context named.
+- backtest: `BacktestConfig::record_ring` and `ReplayOptions::record_ring` hand out the engine's records.
+- python: hot `ctx.quote_context`, `bid_context`, `ask_context` and `Strategy.quote_context_names`.
+- python: `Store.fill_context()`.
+- strategies: `basic_mm` publishes the mid and its inventory-skewed centre as its quote context.
 
 ### Changed
-- core: the journal format is version 6; the instrument table records the trading status.
 - core: the engine keeps its own copy of the instrument table.
 - venues: a Binance Spot symbol not trading at start-up is held instead of disabled.
-- core: the status segment is version 30.
+- core: `journal_retention_days` covers `.fmj.zst` and runs every minute in `fastmm-live`, not only at start.
+- core: the OMS keeps an `OrderTrail` per order, open or recently terminal; `request_cancel` takes the send time.
+- deps: zstd 1.5.7, built from source as `fastmm_zstd`.
 
 ### Fixed
 - core: a timer beyond the wheel's horizon fires at the poll that reaches its expiry, not the next.

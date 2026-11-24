@@ -361,10 +361,15 @@ struct JournalOptions {
   std::size_t max_bytes = 0;
 };
 
-// Deletes `dir`/*.fmj last modified more than `days` days ago ([engine] journal_retention_days);
-// 0 keeps everything. Returns how many files were removed; a file it cannot remove is skipped and
-// named in `error` (the first one only).
+// Deletes `dir`/*.fmj and *.fmj.zst last modified more than `days` days ago; 0 keeps everything.
+// Returns how many files were removed; a file it cannot remove is skipped and named in `error`
+// (the first one only). fastmm-live's [engine] journal_retention_days goes through
+// sweep_journals (core/journal_archive.hpp), which also leaves alone a part being written.
 std::size_t prune_journals(const std::string& dir, int days, std::string* error = nullptr);
+
+// The journal `path` is there, as written or compressed by the archive (`path`.zst,
+// core/journal_archive.hpp). JournalReader::open opens either.
+[[nodiscard]] bool journal_exists(const std::string& path);
 
 // Background side: drains the ring into 1 MiB blocks written (pwrite) to a file reserved in
 // 64 MiB extents; syncs every 100 ms (JournalSync); stop() writes the trailer and truncates.
@@ -473,7 +478,11 @@ class JournalReader {
   JournalReader(JournalReader&& o) noexcept;
   JournalReader& operator=(JournalReader&& o) noexcept;
 
+  // `path` may name a compressed journal (x.fmj.zst), and when x.fmj is not there but x.fmj.zst
+  // is, the archive is read: it is decompressed into a file with no name next to it (or in
+  // $TMPDIR), mapped as a journal file is.
   [[nodiscard]] Result<void, JournalError> open(const std::string& path) noexcept;
+
   // The header and tables of a journal that may still be written, as a private copy: no block is
   // read and no mapping of the file is kept, so the writer can shrink it (JournalTail).
   [[nodiscard]] Result<void, JournalError> open_prologue(const std::string& path) noexcept;

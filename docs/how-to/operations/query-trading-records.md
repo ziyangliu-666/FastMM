@@ -234,6 +234,21 @@ ts                   event    symbol   side  price    qty   cum_qty  detail     
 
 The rows are everything the store has about one client order, ending with its last known state. A `refused` row names the limit, as `rejects` does. The store keeps the last state, not each transition; the journal has every message ([Journal format](../../reference/journal-format.md)).
 
+## Why did this fill happen
+
+```bash
+build/release/bin/fastmm-pnl fill-context --engine mm1 --day 2024-03-04 --instrument ETHUSDT
+```
+
+```text
+ts                   account  symbol   side  liquidity  price    qty   cl_ord_id       state          placed               placed_px  amends  sent                 venue_ack            rested_ms  in_flight  in_flight_ms  in_flight_px  sent_fair  sent_bid_bps  fill_fair  fill_bid_bps  session_id
+2024-03-04 09:14:02  binance  ETHUSDT  Buy   Maker      3412.55  0.05  fm000700000003  PendingCancel  2024-03-04 09:14:01  3412.40    1       2024-03-04 09:14:01  2024-03-04 09:14:01  842.113    cancel     3.802                       3413.21    1.9           3410.02    -7.4          5
+```
+
+Each fill row says how its order got there: when it was placed and at what price, how many replaces the venue accepted (`amends`), when the leg that filled went out and was acknowledged, and how long it had rested. `in_flight` is the cancel or replace the engine had sent and the venue had not answered when the fill arrived, sent `in_flight_ms` before it; on a late fill it is the cancel that ended the order first. The `sent_` and `fill_` columns are the strategy's quote context ([Quote context](../../reference/strategy-api.md#quote-context)) when the order last went out and when the fill arrived, named as the strategy named them; a strategy that publishes none has no such columns.
+
+The example reads: the bid was moved once, rested 842 ms at 1.9 bp under a fair of 3413.21, the fair dropped to 3410.02 and the requote's cancel was 3.8 ms on its way when the bid was hit. `--order <id>` keeps one order's fills. The values come from the engine's own state, so they are there for every fill whether or not the journal of that hour is still on the box.
+
 ## Check the stored fills against the venue
 
 1. Export the account's executions from the venue, as JSON or CSV ([formats](#export-formats)).
@@ -291,6 +306,8 @@ with fastmm.open_store("runs/mm1.db") as store:
     daily = store.pnl(since="2024-03-01")            # DataFrame: day, symbol, realized, funding, fees, net
     funding = store.funding(instrument="BTCUSDT")
     fills = store.fills(instrument="BTCUSDT")
+    why = store.fill_context(since="2024-03-04")     # each fill's decision record
+
     open_orders = store.orders(open_only=True)
     store.query("SELECT day, SUM(fills) FROM pnl_daily GROUP BY day")
 ```
