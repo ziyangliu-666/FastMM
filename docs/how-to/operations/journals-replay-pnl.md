@@ -72,7 +72,7 @@ It prints the header, the instrument table, the first matching events and a coun
     ```
 
     ```text
-    journal  /tmp/e2e/session.fmj: format v5, 2644 messages (850 market data, 320 outbound), rng_seed 42, strategy 'basic_mm'
+    journal  /tmp/e2e/session.fmj: format v6, 2644 messages (850 market data, 320 outbound), rng_seed 42, strategy 'basic_mm'
     session  epoch 23, quoting enabled, cancel-replace venues 0x1, engine clock recorded
     config   embedded in the journal (hash fb8ab9d4318a634e)
     replay   strategy=basic_mm events=2300

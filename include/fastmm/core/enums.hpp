@@ -348,7 +348,10 @@ enum class EventType : std::uint8_t {
   // it ([backtest] own_orders_in_feed; OwnLevelsMsg): the engine's book is the recorded one with it
   // added.
   OwnLevels = 32,
-  Count = 33,
+  // A venue's trading rules or trading status of one instrument changed while the session ran
+  // (InstrumentRulesMsg): tick, lot, the order limits, trading or not.
+  InstrumentRules = 33,
+  Count = 34,
 };
 [[nodiscard]] constexpr std::string_view to_string(EventType t) noexcept {
   switch (t) {
@@ -418,8 +421,29 @@ enum class EventType : std::uint8_t {
       return "AccountFlow";
     case EventType::OwnLevels:
       return "OwnLevels";
+    case EventType::InstrumentRules:
+      return "InstrumentRules";
     case EventType::Count:
       return "Count";
+  }
+  return "?";
+}
+
+// Whether a venue takes orders on an instrument (Instrument::status, InstrumentRulesMsg). Anything
+// but Trading: the engine sends the instrument nothing, not even a cancel, until it trades again.
+enum class TradingStatus : std::uint8_t {
+  Trading = 0,
+  Halted = 1,  // a break, a halt, an auction, before or after the session
+  Closed = 2,  // the venue lists it no longer, or has closed it for the day
+};
+[[nodiscard]] constexpr std::string_view to_string(TradingStatus s) noexcept {
+  switch (s) {
+    case TradingStatus::Trading:
+      return "trading";
+    case TradingStatus::Halted:
+      return "halted";
+    case TradingStatus::Closed:
+      return "closed";
   }
   return "?";
 }

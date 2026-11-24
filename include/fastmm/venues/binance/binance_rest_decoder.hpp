@@ -11,6 +11,7 @@
 //                                Order Count")
 //   {"code":..,"msg":..}      -> error envelope (errors.md)
 //   POST /api/v3/userDataStream -> listenKey (legacy; the sim exchange)
+#include "fastmm/core/enums.hpp"
 #include "fastmm/core/fees.hpp"
 #include "fastmm/core/fixed_point.hpp"
 
@@ -35,6 +36,14 @@ struct SymbolFilters {
   Notional max_notional{};        // NOTIONAL.maxNotional (0 = none)
   bool post_only_allowed = true;  // "LIMIT_MAKER" in orderTypes
 };
+
+// exchangeInfo `status` (enums.md "Symbol status": PRE_TRADING, TRADING, POST_TRADING,
+// END_OF_DAY, HALT, AUCTION_MATCH, BREAK): END_OF_DAY is closed, the others but TRADING halted.
+[[nodiscard]] constexpr TradingStatus trading_status(std::string_view status) noexcept {
+  if (status == "TRADING") return TradingStatus::Trading;
+  if (status == "END_OF_DAY") return TradingStatus::Closed;
+  return TradingStatus::Halted;
+}
 
 struct RateLimitRule {
   std::string type;      // REQUEST_WEIGHT | ORDERS | RAW_REQUESTS

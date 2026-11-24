@@ -472,6 +472,40 @@ struct PerpStateMsg {
 static_assert(sizeof(PerpStateMsg) == 128 && offsetof(PerpStateMsg, funding_rate) == 80 &&
               offsetof(PerpStateMsg, fields) == 112);
 
+// A venue changed an instrument's trading rules or trading status while the session ran
+// (EventType::InstrumentRules): the connector read them again (venues/instrument_rules.hpp) and
+// found them different from the last it reported. It rides the order ring, which drops nothing,
+// and the journal, so a replay changes the rules at the same engine time. `changed` names the
+// fields that differ; the engine takes those and leaves the rest of the instrument as it is, so a
+// field the session kept from its configuration ([venues.<name>] rules_mismatch = "warn") stays
+// until the venue changes it. A zero max_qty or max_notional is no limit, as in Instrument.
+//   cause  kRefresh: the periodic read; kRefusal: a read after the venue refused an order for its
+//          rules or status
+struct InstrumentRulesMsg {
+  static constexpr std::uint8_t kTick = 1U << 0;
+  static constexpr std::uint8_t kLot = 1U << 1;
+  static constexpr std::uint8_t kMinQty = 1U << 2;
+  static constexpr std::uint8_t kMaxQty = 1U << 3;
+  static constexpr std::uint8_t kMinNotional = 1U << 4;
+  static constexpr std::uint8_t kMaxNotional = 1U << 5;
+  static constexpr std::uint8_t kStatus = 1U << 6;
+  static constexpr std::uint8_t kRefresh = 0;
+  static constexpr std::uint8_t kRefusal = 1;
+  EventHeader hdr;
+  Price tick;             // 64
+  Qty lot;                // 72
+  Qty min_qty;            // 80
+  Qty max_qty;            // 88
+  Notional min_notional;  // 96
+  Notional max_notional;  // 104
+  TradingStatus status;   // 112
+  std::uint8_t changed;   // 113
+  std::uint8_t cause;     // 114
+  std::uint8_t pad_[13];  // -> 128
+};
+static_assert(sizeof(InstrumentRulesMsg) == 128 && offsetof(InstrumentRulesMsg, tick) == 64 &&
+              offsetof(InstrumentRulesMsg, status) == 112);
+
 // A funding id in the list of venue ids a restarted session's store already holds
 // (store::Recovery::VenueResume::known_exec_ids, next to the trade ids): the prefix keeps the two
 // id spaces apart.
@@ -928,13 +962,14 @@ static_assert(FixedSizeMessage<TradeMsg> && FixedSizeMessage<BookTickerMsg> &&
               FixedSizeMessage<OrderCancelRejectMsg> && FixedSizeMessage<OrderExpiredMsg> &&
               FixedSizeMessage<PositionUpdateMsg> && FixedSizeMessage<FundingMsg> &&
               FixedSizeMessage<AccountFlowMsg> && FixedSizeMessage<BalanceMsg> &&
-              FixedSizeMessage<PerpStateMsg> && FixedSizeMessage<TimerMsg> &&
-              FixedSizeMessage<ControlMsg> && FixedSizeMessage<ConnectionStateMsg> &&
-              FixedSizeMessage<ReconcileMsg> && FixedSizeMessage<LatencySampleMsg> &&
-              FixedSizeMessage<EngineTimeMsg> && FixedSizeMessage<StrategyStateMsg> &&
-              FixedSizeMessage<OutNewOrderMsg> && FixedSizeMessage<OutCancelMsg> &&
-              FixedSizeMessage<OrderAddL3Msg> && FixedSizeMessage<OrderExecL3Msg> &&
-              FixedSizeMessage<OrderCancelL3Msg> && FixedSizeMessage<OrderReplaceL3Msg>);
+              FixedSizeMessage<PerpStateMsg> && FixedSizeMessage<InstrumentRulesMsg> &&
+              FixedSizeMessage<TimerMsg> && FixedSizeMessage<ControlMsg> &&
+              FixedSizeMessage<ConnectionStateMsg> && FixedSizeMessage<ReconcileMsg> &&
+              FixedSizeMessage<LatencySampleMsg> && FixedSizeMessage<EngineTimeMsg> &&
+              FixedSizeMessage<StrategyStateMsg> && FixedSizeMessage<OutNewOrderMsg> &&
+              FixedSizeMessage<OutCancelMsg> && FixedSizeMessage<OrderAddL3Msg> &&
+              FixedSizeMessage<OrderExecL3Msg> && FixedSizeMessage<OrderCancelL3Msg> &&
+              FixedSizeMessage<OrderReplaceL3Msg>);
 
 template <MessageLike M>
 [[nodiscard]] FASTMM_FORCE_INLINE const M& msg_cast(const EventHeader* h) noexcept {

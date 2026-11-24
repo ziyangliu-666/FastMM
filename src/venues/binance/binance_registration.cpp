@@ -24,6 +24,12 @@ constexpr VenueKeySpec kBinanceKeys[] = {
      KeyType::Bool,
      false,
      "start without REST reference data, using the configured tick and lot (default false)"},
+    {"rules_refresh_s",
+     KeyType::Int,
+     false,
+     "read exchangeInfo again this often while running, s, and adopt a changed tick, lot, limit "
+     "or trading status; 0 = only after the venue refuses an order for them (default 60, at "
+     "least 10)"},
     {"cancel_on_order_channel_loss",
      KeyType::Bool,
      false,

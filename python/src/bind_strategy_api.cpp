@@ -498,6 +498,21 @@ void py_on_perp_state(PyRun& r, InstrumentId id, const PerpStateMsg& m) noexcept
   r.call(Hook::PerpState, args, 3);
 }
 
+void py_on_instrument_rules(PyRun& r, InstrumentId id, const Instrument& inst, bool call) noexcept {
+  const PyRun::Scope scope(r);
+  if (id.value >= r.inst_objs_.size()) return;
+  // The object the run handed out keeps its identity (ctx.instruments, the hooks' `inst`).
+  try {
+    r.inst_objs_[id.value].cast<InstrumentInfo&>().inst = inst;
+  } catch (...) {
+    r.fail_current("on_instrument_rules");
+    return;
+  }
+  if (!call) return;
+  PyObject* args[3] = {nullptr, r.ctx_.ptr(), r.inst_objs_[id.value].ptr()};
+  r.call(Hook::InstrumentRules, args, 2);
+}
+
 void py_on_risk_reject(PyRun& r, const RiskReject& reject) noexcept {
   const PyRun::Scope scope(r);
   // Rejects are rare and the hook keeps what it likes: a fresh object each time, no view.
@@ -848,6 +863,10 @@ void bind_strategy_api(py::module_& m) {
       .def_property_readonly(
           "asset_class",
           [](const InstrumentInfo& v) { return std::string(to_string(v.inst.asset_class)); })
+      .def_property_readonly(
+          "trading",
+          [](const InstrumentInfo& v) { return v.inst.trading(); },
+          "The venue takes orders on it now; nothing is sent for it while it does not.")
       .def(
           "round_price",
           [](const InstrumentInfo& v, double px, int side) {

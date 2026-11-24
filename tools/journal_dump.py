@@ -36,8 +36,9 @@ EVENT_TYPES = [
     "Control", "ConnectionState", "Reconcile", "LatencySample", "OutNewOrder", "OutCancel",
     "OutReplace", "OrderAddL3", "OrderExecL3", "OrderCancelL3", "OrderReplaceL3", "OptionTicker",
     "EngineTime", "ParamUpdate", "Funding", "Balance", "PerpState", "StrategyState", "AccountFlow",
-    "OwnLevels",
+    "OwnLevels", "InstrumentRules",
 ]
+TRADING_STATUS = {0: "trading", 1: "halted", 2: "closed"}
 PARAM_TYPES = {0: "int", 1: "double", 2: "bool", 3: "decimal", 4: "bps", 5: "ms"}
 ENGINE_TIME_KINDS = {0: "sync", 1: "start", 2: "finish"}
 SIDES = {0: "Buy", 1: "Sell"}
@@ -302,6 +303,13 @@ def decode_body(type_name: str, body: bytes, params=()) -> str:
         if fields & 8:
             out.append(f"open_interest={dec(q(40))}")
         return " ".join(out) if out else "(no fields)"
+    if type_name == "InstrumentRules":
+        names = ("tick", "lot", "min_qty", "max_qty", "min_notional", "max_notional", "status")
+        changed = [n for bit, n in enumerate(names) if body[49] & (1 << bit)]
+        return (f"tick={dec(q(0))} lot={dec(q(8))} min_qty={dec(q(16))} max_qty={dec(q(24))} "
+                f"min_notional={dec(q(32))} max_notional={dec(q(40))} "
+                f"status={TRADING_STATUS.get(body[48], body[48])} changed={'|'.join(changed)} "
+                f"cause={'refusal' if body[50] == 1 else 'refresh'}")
     if type_name == "PositionUpdate":
         return f"qty={dec(q(0))} avg_px={dec(q(8))} realized={dec(q(16))} unrealized={dec(q(24))} fees={dec(q(32))}"
     return f"({len(body)} body bytes)"

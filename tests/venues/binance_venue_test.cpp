@@ -65,6 +65,8 @@ std::string query_param(const std::string& query, const std::string& key) {
 struct Harness {
   FakeVenueServer srv;
   std::string exchange_info = fastmm::test::fixture("binance/exchange_info.json");
+  std::mutex info_mu;                        // exchange_info, once the fake serves
+  std::atomic<bool> place_lot_error{false};  // order.place answers -1013 Filter failure: LOT_SIZE
   std::atomic<int> depth_requests{0};
   std::atomic<std::uint64_t> depth_last_update_id{100};  // the snapshot's lastUpdateId
   std::atomic<int> cancel_all_ok{0};
@@ -107,6 +109,7 @@ struct Harness {
                           recorded.size(),
                           R"("serverTime":)" + std::to_string(wall_now().ns / 1'000'000));
     srv.route("GET", "/api/v3/exchangeInfo", [this](const net::HttpRequest&) {
+      const std::lock_guard lock(info_mu);
       return net::HttpServerResponse::json(200, exchange_info);
     });
     srv.route("GET", "/api/v3/time", [](const net::HttpRequest&) {
@@ -200,6 +203,14 @@ struct Harness {
     srv.start();
   }
 
+  // exchangeInfo from now on: `from` replaced by `to` (once).
+  void edit_info(const std::string& from, const std::string& to) {
+    const std::lock_guard lock(info_mu);
+    const std::size_t p = exchange_info.find(from);
+    REQUIRE(p != std::string::npos);
+    exchange_info.replace(p, from.size(), to);
+  }
+
   // The request's timestamp, by the fake's clock, is more than recv_window_ms old.
   bool too_old(std::string_view query) {
     const long long window = recv_window_ms.load();
@@ -222,6 +233,9 @@ struct Harness {
       if (method == "userDataStream.subscribe.signature") {
         user_session = &s;
         s.send_text(R"({"id":")" + id + R"(","status":200,"result":{"subscriptionId":0}})");
+      } else if (method == "order.place" && place_lot_error.load()) {
+        s.send_text(R"({"id":")" + id +
+                    R"(","status":400,"error":{"code":-1013,"msg":"Filter failure: LOT_SIZE"}})");
       } else if (method == "order.place") {
         if (hold_place.load()) {
           server.record("held", json_str(t, "newClientOrderId"));
@@ -1850,4 +1864,168 @@ TEST_CASE("binance.venue: a failed query of the account's order limits keeps exc
   CHECK_FALSE(venue.fatal());
   venue.disconnect();
   h.srv.stop();
+}
+
+namespace {
+
+// A connected venue on one instrument, BTCUSDT, that reads its rules only when asked.
+struct RulesVenue {
+  Harness h;
+  InstrumentTable instruments;
+  RecordingSink md{8U << 20};
+  RecordingSink orders{1U << 20, SinkPolicy::Spin};
+  MsgRing outbound{1U << 16};
+  net::Reactor reactor;
+  SymbolTable symbols;
+  std::unique_ptr<BinanceVenue> venue;
+  Collected oc;
+
+  RulesVenue() {
+    REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+    BinanceVenueConfig c = h.config(false);
+    c.rules_refresh_ns = 0;
+    venue = std::make_unique<BinanceVenue>(VenueId{0}, c);
+    REQUIRE(venue->load_reference_data(instruments));
+    REQUIRE(symbols.build(instruments));
+    venue->attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    const InstrumentId ids[] = {InstrumentId{0}};
+    venue->subscribe(ids);
+    venue->connect(reactor);
+    REQUIRE(pump_until(reactor, [&] {
+      static_cast<void>(md.drain());
+      oc.take(orders);
+      std::size_t live = 0;
+      for (const auto& m : oc.all) {
+        if (RecordingSink::type_of(m) == EventType::ConnectionState &&
+            RecordingSink::as<ConnectionStateMsg>(m).state == ConnState::Live)
+          ++live;
+      }
+      return live >= 2;
+    }));
+  }
+  ~RulesVenue() {
+    venue->disconnect();
+    reactor.run_once(0);
+  }
+  // One read, to its reply.
+  void read() {
+    const std::uint64_t reads = venue->rules().reads();
+    REQUIRE(venue->refresh_rules());
+    REQUIRE(venue->rules().reads() == reads + 1);
+    REQUIRE(pump_until(reactor, [&] {
+      static_cast<void>(md.drain());
+      oc.take(orders);
+      return !venue->rules().in_flight();
+    }));
+  }
+};
+
+}  // namespace
+
+TEST_CASE("binance.venue: a new lot step and a halt are read again and reported to the engine") {
+  RulesVenue f;
+  const InstrumentId btc{0};
+  CHECK(f.venue->rules().seeded(btc));
+  CHECK(f.venue->rules().trading(btc));
+  CHECK(f.instruments.get(btc).status == TradingStatus::Trading);
+
+  f.read();  // nothing changed: nothing reported
+  CHECK(f.oc.count(EventType::InstrumentRules) == 0);
+
+  // A split moves the lot step and the minimum; the symbol is in a break meanwhile.
+  f.h.edit_info(R"("minQty":"0.00001000","maxQty":"9000.00000000","stepSize":"0.00001000")",
+                R"("minQty":"0.01000000","maxQty":"9000.00000000","stepSize":"0.01000000")");
+  f.h.edit_info(R"("status":"TRADING")", R"("status":"BREAK")");
+  f.read();
+  REQUIRE(f.oc.count(EventType::InstrumentRules) == 1);
+  const auto* m = f.oc.last<InstrumentRulesMsg>(EventType::InstrumentRules);
+  CHECK(m->hdr.instrument == btc);
+  CHECK(m->hdr.venue == VenueId{0});
+  CHECK(m->lot == Qty::from_decimal("0.01").value());
+  CHECK(m->min_qty == Qty::from_decimal("0.01").value());
+  CHECK(m->tick == Price::from_decimal("0.01").value());
+  CHECK(m->status == TradingStatus::Halted);
+  CHECK(m->changed ==
+        (InstrumentRulesMsg::kLot | InstrumentRulesMsg::kMinQty | InstrumentRulesMsg::kStatus));
+  CHECK(m->cause == InstrumentRulesMsg::kRefresh);
+  CHECK_FALSE(f.venue->rules().trading(btc));
+
+  // The kill switch does not ask the venue to cancel on a symbol it refuses cancels for.
+  CHECK(f.venue->cancel_all());
+  CHECK(f.h.cancel_all_ok.load() == 0);
+  CHECK(f.h.cancel_all_bad.load() == 0);
+
+  // Trading again: only the status changed.
+  f.h.edit_info(R"("status":"BREAK")", R"("status":"TRADING")");
+  f.read();
+  REQUIRE(f.oc.count(EventType::InstrumentRules) == 2);
+  m = f.oc.last<InstrumentRulesMsg>(EventType::InstrumentRules);
+  CHECK(m->changed == InstrumentRulesMsg::kStatus);
+  CHECK(m->status == TradingStatus::Trading);
+  CHECK(m->lot == Qty::from_decimal("0.01").value());
+  CHECK(f.venue->rules().trading(btc));
+  CHECK(f.venue->cancel_all());
+  CHECK(f.h.cancel_all_ok.load() == 1);
+}
+
+TEST_CASE("binance.venue: a LOT_SIZE refusal asks for the rules again") {
+  RulesVenue f;
+  const std::int64_t now = net::Reactor::now_ns();
+  CHECK_FALSE(f.venue->rules().due(now + 3'600'000'000'000));  // no period: only when asked
+  f.h.place_lot_error = true;
+  f.h.edit_info(R"("minQty":"0.00001000","maxQty":"9000.00000000","stepSize":"0.00001000")",
+                R"("minQty":"0.01000000","maxQty":"9000.00000000","stepSize":"0.01000000")");
+  OutNewOrderMsg n{};
+  init_header(n, EventType::OutNewOrder, InstrumentId{0}, VenueId{0});
+  n.cl_ord_id = decode_cl_ord_id("fm000100000001").value();
+  n.side = Side::Buy;
+  n.type = OrderType::PostOnly;
+  n.price = Price::from_decimal("70000").value();
+  n.qty = Qty::from_decimal("0.001").value();
+  REQUIRE(f.outbound.try_push(&n, n.hdr.len));
+  f.venue->on_wake();
+  REQUIRE(pump_until(f.reactor, [&] {
+    f.oc.take(f.orders);
+    return f.oc.count(EventType::OrderReject) == 1;
+  }));
+  CHECK(f.oc.last<OrderRejectMsg>(EventType::OrderReject)->reason == RejectReason::InvalidLot);
+  // Due once the refusal gap has passed since the last read: at once, as none was made yet. The
+  // connector's housekeeping makes the read; the test makes it if the housekeeping has not.
+  CHECK(f.venue->rules().due(net::Reactor::now_ns() + RulesWatch::kRefusalGapNs));
+  REQUIRE(pump_until(f.reactor, [&] {
+    f.oc.take(f.orders);
+    if (f.venue->rules().reads() == 0) static_cast<void>(f.venue->refresh_rules());
+    return f.oc.count(EventType::InstrumentRules) == 1;
+  }));
+  const auto* m = f.oc.last<InstrumentRulesMsg>(EventType::InstrumentRules);
+  CHECK(m->cause == InstrumentRulesMsg::kRefusal);
+  CHECK(m->lot == Qty::from_decimal("0.01").value());
+  CHECK(m->status == TradingStatus::Trading);
+}
+
+TEST_CASE("binance.venue: a symbol not trading at start-up is kept, halted, not disabled") {
+  Harness h;
+  h.edit_info(R"("status":"TRADING")", R"("status":"BREAK")");
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  BinanceVenue venue(VenueId{0}, h.config(false));
+  REQUIRE(venue.load_reference_data(instruments));
+  const Instrument& inst = instruments.get(InstrumentId{0});
+  CHECK(inst.enabled());
+  CHECK(inst.status == TradingStatus::Halted);
+  CHECK_FALSE(venue.rules().trading(InstrumentId{0}));
+}
+
+TEST_CASE("binance.venue: rules_refresh_s") {
+  VenueSectionView v;
+  v.name = "b";
+  std::map<std::string, std::string> extra;
+  v.extra = &extra;
+  CHECK(make_binance_config(v, true).rules_refresh_ns == 60'000'000'000);
+  extra["rules_refresh_s"] = "0";
+  CHECK(make_binance_config(v, true).rules_refresh_ns == 0);
+  extra["rules_refresh_s"] = "300";
+  CHECK(make_binance_config(v, true).rules_refresh_ns == 300'000'000'000);
+  extra["rules_refresh_s"] = "5";
+  CHECK_THROWS_AS(static_cast<void>(make_binance_config(v, true)), std::invalid_argument);
 }

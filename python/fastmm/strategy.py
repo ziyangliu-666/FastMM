@@ -88,6 +88,7 @@ HOOKS: Dict[str, Tuple[str, ...]] = {
     "on_balance": ("ctx", "msg"),
     "on_perp_state": ("ctx", "inst", "msg"),
     "on_risk_reject": ("ctx", "reject"),
+    "on_instrument_rules": ("ctx", "inst"),
 }
 
 # Likely misspellings, as in the C++ checker: a warning, because a helper may use such a name.

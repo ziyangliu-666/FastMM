@@ -34,6 +34,7 @@ enum class QuoteBlock : std::uint8_t {
   Pending = 9,      // orders on their way: sent, not yet working, or a requote waiting its turn
   FillCluster = 10,  // the fill-cluster guard holds the side ([risk] fill_cluster_names)
   Hazard = 11,       // a hazard group holds the side ([[risk.hazard]])
+  NotTrading = 12,   // the venue does not trade the instrument now (Instrument::status)
 };
 [[nodiscard]] constexpr std::string_view to_string(QuoteBlock b) noexcept {
   switch (b) {
@@ -61,6 +62,8 @@ enum class QuoteBlock : std::uint8_t {
       return "fill_cluster";
     case QuoteBlock::Hazard:
       return "hazard";
+    case QuoteBlock::NotTrading:
+      return "not_trading";
   }
   return "?";
 }

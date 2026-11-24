@@ -120,6 +120,7 @@ One table per venue; `<name>` is how instruments refer to it.
 | `fill_audit_interval_s` | integer |  | fastmm-live compares the venue's trade history with the stored fills this often, s; 0 = off (default 0, at least 10) |
 | `fill_audit_lag_s` | integer |  | a fill audit reads up to this long ago, s, so the execution replay has booked what it will (default 180) |
 | `fill_audit_mode` | string |  | "report" logs and counts what differs; "book" also books the executions the engine missed (default "report") |
+| `rules_mismatch` | string |  | a tick, lot, min_qty, max_qty or min_notional of [[instruments]] that differs from the venue's at start-up: "adopt" the venue's (default), "warn" and keep the configured one, or "refuse" to start |
 | `fees` | table |  | [venues.<name>.fees] table: maker_bps and taker_bps, used for PnL |
 | `treasury` | table |  | [venues.<primary>.treasury] table: transfers that keep one asset spread over the accounts of the pool this venue is the primary of (fastmm-live) |
 | `pool` | table |  | [venues.<primary>.pool] table: where the pool this venue is the primary of keeps each instrument's position (home placement) and the planner that spreads the homes |
@@ -362,6 +363,7 @@ configuration (a dry run, `order_entry = "none"`, missing credentials).
 | `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms; raised to at least 45000 |
 | `order_api` | string |  | order entry: ws (default) \| rest |
 | `allow_offline_reference_data` | boolean |  | start without REST reference data, using the configured tick and lot (default false) |
+| `rules_refresh_s` | integer |  | read exchangeInfo again this often while running, s, and adopt a changed tick, lot, limit or trading status; 0 = only after the venue refuses an order for them (default 60, at least 10) |
 | `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
 | `emit_ack_from_response` | boolean |  | acknowledge orders from the request response, not the event stream (default true) |
 | `amend_keep_priority` | boolean |  | reduce size with order.amend.keepPriority, which keeps the queue position, instead of order.cancelReplace (default true) |

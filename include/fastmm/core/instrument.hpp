@@ -57,11 +57,15 @@ struct alignas(kCacheLine) Instrument {
   FixedString<8> base{};                      // 9
   FixedString<8> quote{};                     // 9 -> 55
   OptionType option_type = OptionType::None;  // 1 -> 56
-  std::uint8_t cold_pad_[8] = {};             // -> 64
+  // Whether the venue takes orders on it (zero, Trading, in journals from before it was kept):
+  // the venue's at start-up, then each InstrumentRulesMsg's.
+  TradingStatus status = TradingStatus::Trading;  // 1 -> 57
+  std::uint8_t cold_pad_[7] = {};                 // -> 64
 
   [[nodiscard]] constexpr bool enabled() const noexcept { return (flags & kEnabled) != 0; }
   [[nodiscard]] constexpr bool inverse() const noexcept { return (flags & kInverse) != 0; }
   [[nodiscard]] constexpr bool coin_quoted() const noexcept { return (flags & kCoinQuoted) != 0; }
+  [[nodiscard]] constexpr bool trading() const noexcept { return status == TradingStatus::Trading; }
 
   // Passive rounding: bids down, asks up.
   [[nodiscard]] constexpr Price round_price(Price p, Side side) const noexcept {
@@ -114,7 +118,7 @@ struct alignas(kCacheLine) Instrument {
            asset_class == AssetClass::Option;
   }
 };
-static_assert(sizeof(Instrument) == 128);
+static_assert(sizeof(Instrument) == 128 && offsetof(Instrument, status) == 120);
 static_assert(alignof(Instrument) == 64);
 static_assert(std::is_trivially_copyable_v<Instrument>);
 

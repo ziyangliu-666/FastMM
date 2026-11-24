@@ -83,10 +83,20 @@ struct VenueSlot {
 
 using VenueSlots = std::vector<std::unique_ptr<VenueSlot>>;
 
-// Builds one connector per [venues.*] section and loads its reference data into `instruments`.
-// Returns 0, or the exit code (kExitConfig, kExitVenue) after printing the error prefixed with
-// `prog` to stderr. With `paper` (fastmm-live --dry-run) every venue that takes orders is a
-// PaperVenue over its dry-run connector.
+// Builds one connector per [venues.*] section and loads its reference data into `instruments`,
+// then settles it with the configuration (settle_venue_rules). Returns 0, or the exit code
+// (kExitConfig, kExitVenue) after printing the error prefixed with `prog` to stderr. With `paper`
+// (fastmm-live --dry-run) every venue that takes orders is a PaperVenue over its dry-run connector.
+// The rules the connectors read at start-up against those [[instruments]] states: each tick, lot,
+// min_qty, max_qty and min_notional the configuration sets and the venue gave another value for.
+// [venues.<name>] rules_mismatch says what happens: "adopt" (the default) keeps the venue's and
+// logs the difference, "warn" logs it and puts the configured value back, "refuse" returns the
+// differences as an error, which stops the start. `configured`: the table before
+// load_reference_data(); `loaded` after. Empty when the start goes on.
+[[nodiscard]] std::string settle_venue_rules(const Config& cfg,
+                                             const InstrumentTable& configured,
+                                             InstrumentTable& loaded);
+
 [[nodiscard]] int make_venue_slots(const Config& cfg,
                                    const venues::VenueFactoryOptions& vopts,
                                    InstrumentTable& instruments,

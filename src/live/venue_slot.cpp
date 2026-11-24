@@ -47,7 +47,60 @@ const char* short_state(venues::ChannelState s) {
   return "?";
 }
 
+template <class Tag>
+std::string decimal(Fixed<Tag> v) {
+  char buf[kMaxDecimalChars];
+  return {buf, v.to_decimal(buf)};
+}
+
 }  // namespace
+
+std::string settle_venue_rules(const Config& cfg,
+                               const InstrumentTable& configured,
+                               InstrumentTable& loaded) {
+  std::string refused;
+  for (std::uint32_t k = 0; k < loaded.size() && k < configured.size(); ++k) {
+    Instrument& now = loaded.get(InstrumentId{k});
+    const Instrument& conf = configured.get(InstrumentId{k});
+    if (now.venue.value >= cfg.venues.size()) continue;
+    const VenueSection& v = cfg.venues[now.venue.value];
+    const auto section =
+        std::find_if(cfg.instruments.begin(), cfg.instruments.end(), [&](const auto& i) {
+          return i.venue == v.name && i.symbol == now.symbol.view();
+        });
+    if (section == cfg.instruments.end()) continue;
+    // One field the configuration sets, whose venue value differs.
+    const auto settle =
+        [&](const std::string& set, const char* field, auto& venue_value, auto conf_value) {
+          if (set.empty() || venue_value == conf_value) return;
+          const std::string line =
+              fmt::format("venues.{}: {} {} is {} in [[instruments]], {} on the venue",
+                          v.name,
+                          now.symbol.view(),
+                          field,
+                          decimal(conf_value),
+                          decimal(venue_value));
+          if (v.rules_mismatch == "refuse") {
+            refused += line + "\n";
+          } else if (v.rules_mismatch == "warn") {
+            FASTMM_LOG_WARN("{}: keeping the configured value (rules_mismatch = \"warn\")", line);
+            venue_value = conf_value;
+          } else {
+            FASTMM_LOG_WARN("{}: using the venue's", line);
+          }
+        };
+    settle(section->tick, "tick", now.tick, conf.tick);
+    settle(section->lot, "lot", now.lot, conf.lot);
+    settle(section->min_qty, "min_qty", now.min_qty, conf.min_qty);
+    settle(section->max_qty, "max_qty", now.max_qty, conf.max_qty);
+    settle(section->min_notional, "min_notional", now.min_notional, conf.min_notional);
+  }
+  if (!refused.empty())
+    refused +=
+        "the venue's trading rules differ from the configuration and rules_mismatch = "
+        "\"refuse\": correct [[instruments]] or set rules_mismatch = \"adopt\"";
+  return refused;
+}
 
 std::size_t ring_size(std::size_t bytes) {
   return std::bit_ceil(std::max<std::size_t>(bytes, 1U << 16));
@@ -72,6 +125,7 @@ int make_venue_slots(const Config& cfg,
         endpoints.probe_interval_s,
         endpoints.switch_us);
   }
+  const InstrumentTable configured = instruments;  // before the venues' reference data
   for (std::size_t i = 0; i < cfg.venues.size(); ++i) {
     auto slot = std::make_unique<VenueSlot>();
     // The source address must be one this host has: a bind to another fails every connect.
@@ -104,6 +158,12 @@ int make_venue_slots(const Config& cfg,
       return slot->venue->refused_account_settings() ? kExitConfig : kExitVenue;
     }
     slots.push_back(std::move(slot));
+  }
+  // After every venue: a pool member's reference data rewrites its primary's instruments.
+  if (const std::string refused = settle_venue_rules(cfg, configured, instruments);
+      !refused.empty()) {
+    std::fprintf(stderr, "%s: %s\n", prog, refused.c_str());
+    return kExitConfig;
   }
   return 0;
 }

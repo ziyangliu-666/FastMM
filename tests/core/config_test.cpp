@@ -963,6 +963,20 @@ std::string audit_toml(const char* keys) {
 }
 }  // namespace
 
+TEST_CASE("core.config: rules_mismatch adopts by default and takes warn or refuse") {
+  const Config def = Config::parse(audit_toml(""));
+  CHECK(def.venues[0].rules_mismatch == "adopt");
+  CHECK(def.effective_toml().find("rules_mismatch") == std::string::npos);
+  const Config refuse = Config::parse(audit_toml("rules_mismatch = \"refuse\"\n"));
+  CHECK(refuse.venues[0].rules_mismatch == "refuse");
+  CHECK(Config::parse(refuse.effective_toml()).venues[0].rules_mismatch == "refuse");
+  CHECK(Config::parse(audit_toml("rules_mismatch = \"warn\"\n")).venues[0].rules_mismatch ==
+        "warn");
+  CHECK_THROWS_WITH_AS(Config::parse(audit_toml("rules_mismatch = \"ignore\"\n")),
+                       doctest::Contains(R"(rules_mismatch must be "adopt", "warn" or "refuse")"),
+                       ConfigError);
+}
+
 TEST_CASE("core.config: the fill audit is off by default and checked when set") {
   const Config off = Config::parse(audit_toml(""));
   CHECK(off.venues[0].fill_audit_interval_s == 0);

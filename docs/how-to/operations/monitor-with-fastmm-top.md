@@ -88,6 +88,7 @@ The obstacles, in the order the engine checks them:
 | `not_wanted` | the strategy asks for nothing |
 | `quoting_off` | quoting is disabled: pulled, killed, reconciling or parameters stale |
 | `venue_killed` | the venue's kill switch is engaged |
+| `not_trading` | the venue halted or closed the instrument; quoting resumes when it trades again ([Venue trading rules](../../reference/venues/trading-rules.md)) |
 | `pulled` | `fastmm-ctl pull` |
 | `feed_lag` | the feed-lag gate |
 | `fill_cluster` | the fill-cluster guard holds the side ([risk] `fill_cluster_names`) |
@@ -163,7 +164,7 @@ scrape_configs:
 | `fastmm_reduce_only_instruments` | gauge | instruments [reduce-only mode](operate-a-running-session.md#reduce-only-mode) holds |
 | `fastmm_latency_quantile_seconds{interval,quantile}`, `fastmm_latency_samples_total{interval}` | gauge, counter | the engine intervals above, per publishing window |
 | `fastmm_venue_*{venue}` | gauge, counter | channel states, synced books, market-data messages, order traffic, reconnects, REST errors, rate-limit cooldowns, clock offset, wire tick-to-trade quantiles over the session and, in `fastmm_venue_tick_to_trade_recent_quantile_seconds{venue,window}` (`1m`, `1h`), over the last minute and hour |
-| `fastmm_quote_obstacle{symbol,side}`, `fastmm_quote_obstacle_seconds{symbol,side}` | gauge | the quote table's obstacle as a number (0 quoting, 1 not wanted, 2 quoting off, 3 pulled, 4 venue killed, 5 feed lag, 6 backoff, 7 starved, 8 refused, 9 pending, 10 fill cluster, 11 hazard) and how long it has held as of the snapshot |
+| `fastmm_quote_obstacle{symbol,side}`, `fastmm_quote_obstacle_seconds{symbol,side}` | gauge | the quote table's obstacle as a number (0 quoting, 1 not wanted, 2 quoting off, 3 pulled, 4 venue killed, 5 feed lag, 6 backoff, 7 starved, 8 refused, 9 pending, 10 fill cluster, 11 hazard, 12 not trading) and how long it has held as of the snapshot |
 | `fastmm_quote_asked_qty{symbol,side}`, `fastmm_quote_working_qty{symbol,side}`, `fastmm_quote_budget{symbol,side}` | gauge | what the strategy asks for and what works, base units; the budget of its note, quote currency (0 none) |
 | `fastmm_position{symbol}` | gauge | position per instrument, base units |
 | `fastmm_strategy_metric{name}` | gauge | each `ctx.metric` the strategy publishes |

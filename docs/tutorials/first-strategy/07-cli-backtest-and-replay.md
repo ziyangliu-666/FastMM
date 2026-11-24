@@ -64,7 +64,7 @@ Open the file in a browser. It shows the equity curve and the inventory on one t
 
 <!-- output: tutorial-replay --journal runs/tutorial/backtest.fmj --verify -->
 ```text
-journal  runs/tutorial/backtest.fmj: format v5, 19709 messages (16752 market data, 1198 outbound), rng_seed 1, strategy 'first_mm'
+journal  runs/tutorial/backtest.fmj: format v6, 19709 messages (16752 market data, 1198 outbound), rng_seed 1, strategy 'first_mm'
 session  epoch 1, quoting enabled, cancel-replace venues 0, engine clock recorded
 config   embedded in the journal (hash 64b3bb33f341e470)
 replay   strategy=first_mm events=18447
