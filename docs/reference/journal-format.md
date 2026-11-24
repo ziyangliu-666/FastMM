@@ -81,7 +81,6 @@ A compressed journal is a standard zstd frame (`zstd -d x.fmj.zst` gives the jou
 
 Compression runs at zstd level 3, about 1 GiB of journal in 2 to 4 s of one core and a tenth of the size or less on market data. The archive holds a few MiB whatever the size of the part.
 
-
 ## Header
 
 | Offset | Size | Field | Meaning |

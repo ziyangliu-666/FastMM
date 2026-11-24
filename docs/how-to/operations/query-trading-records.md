@@ -307,7 +307,6 @@ with fastmm.open_store("runs/mm1.db") as store:
     funding = store.funding(instrument="BTCUSDT")
     fills = store.fills(instrument="BTCUSDT")
     why = store.fill_context(since="2024-03-04")     # each fill's decision record
-
     open_orders = store.orders(open_only=True)
     store.query("SELECT day, SUM(fills) FROM pnl_daily GROUP BY day")
 ```

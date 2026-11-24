@@ -355,7 +355,6 @@ The hot `ctx` has no execution view: no `own_qty`, `queue_ahead` or order times.
 
 The quote context applies whatever the hook's last intent, before it, so the orders that intent sends carry it.
 
-
 When the hook returns, the engine makes at most one call for the instrument, after whichever intent came last:
 
 | Last intent | Engine call |

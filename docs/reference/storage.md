@@ -468,7 +468,6 @@ The open orders the recovery lists are those FastMM last saw open; the venue's v
 | `fastmm-pnl ledger` | one row per execution across sessions, with its copies and flags ([Query what you traded](../how-to/operations/query-trading-records.md#the-economic-ledger)) |
 | `fastmm-pnl order --order <id>` | `orders`, `rejects` and `fills` of one client order |
 | `fastmm-pnl fill-context` | each fill's decision record, its context columns named after `quote_context_names` |
-
 | `fastmm-pnl` | the other daily questions ([command lines](cli.md), [Query what you traded](../how-to/operations/query-trading-records.md)) |
 | `fastmm.open_store(path)` | pandas DataFrames ([Python API](python-api.md)) |
 | `sqlite3 runs/mm1.db` | anything else; the schema above is the contract |
