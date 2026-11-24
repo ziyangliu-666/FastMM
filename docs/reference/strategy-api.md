@@ -298,7 +298,6 @@ void requote(auto& ctx, InstrumentId id, Price fair, Price bid, Price ask) {
 
 Neither call allocates or leaves the engine thread. The numbers are part of the engine's state, so a replay of the journal records the same ones.
 
-
 ### Fees, risk headroom and venue health
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#venue_state -->
