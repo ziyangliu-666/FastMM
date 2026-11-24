@@ -156,9 +156,10 @@ class TimerWheel {
   FASTMM_NOINLINE std::size_t poll_due(Timestamp now, std::int64_t now_ms, F& f) noexcept {
     std::size_t fired = 0;
     // After a stall longer than the horizon every slot is visited exactly once anyway, so
-    // jump the cursor forward; this also lets promote_overflow() see the right window.
-    if (now_ms - cur_ms_ > static_cast<std::int64_t>(kSlots))
-      cur_ms_ = now_ms - static_cast<std::int64_t>(kSlots);
+    // jump the cursor forward to the kSlots slots up to now_ms; this also lets promote_overflow()
+    // see the right window, which then holds an overflow timer due at now_ms.
+    if (now_ms - cur_ms_ >= static_cast<std::int64_t>(kSlots))
+      cur_ms_ = now_ms - static_cast<std::int64_t>(kSlots) + 1;
     // Bring overflow timers that are now within the horizon into the wheel.
     if (now_ms + static_cast<std::int64_t>(kSlots) > overflow_min_ms_) promote_overflow();
     // Nothing is due when the earliest expiry is known to be later: the cursor moves on without

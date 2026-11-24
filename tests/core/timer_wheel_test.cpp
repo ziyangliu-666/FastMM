@@ -89,6 +89,26 @@ TEST_CASE("core.timer_wheel: one-shot, repeat, cancel, overflow, order") {
   CHECK(w.next_expiry() == Timestamp::max());
 }
 
+TEST_CASE("core.timer_wheel: an overflow timer fires at the poll that reaches its expiry") {
+  // A simulated clock jumps straight to the expiry of a timer beyond the horizon: the poll at that
+  // instant fires it, not the poll after.
+  for (const Duration later : {seconds(5), seconds(60), seconds(3600)}) {
+    Timestamp now{seconds(1).ns};
+    TimerWheel<64> w(now);
+    std::size_t fired = 0;
+    const TimerId t = w.add(now, later, false, 7);
+    REQUIRE(t.valid());
+    CHECK(w.poll(now + later - Duration{1}, [&](TimerId, std::uint64_t) { ++fired; }) == 0);
+    CHECK(w.poll(now + later, [&](TimerId, std::uint64_t) { ++fired; }) == 1);
+    CHECK(fired == 1);
+    TimerWheel<64> jump(now);
+    const TimerId u = jump.add(now, later, false, 8);
+    REQUIRE(u.valid());
+    CHECK(jump.poll(now + later, [&](TimerId, std::uint64_t) { ++fired; }) == 1);
+    CHECK(fired == 2);
+  }
+}
+
 TEST_CASE("core.timer_wheel: re-entrant add/cancel inside callback and catch-up") {
   Timestamp now{0};
   TimerWheel<8> w(now);
