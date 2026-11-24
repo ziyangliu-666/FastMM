@@ -201,9 +201,18 @@ class Venue {
 
   // Fetches exchangeInfo / instruments-info for every instrument of this venue and
   // overwrites tick/lot/min_qty/max_qty/min_notional with the venue's values (config values
-  // are a fallback when the venue is unreachable and `allow_offline` is set). Fatal on
-  // mismatch of a required symbol.
+  // are a fallback when the venue is unreachable and `allow_offline` is set), and the trading
+  // status where the venue states one (Instrument::status). Fatal on mismatch of a required
+  // symbol. fastmm-live then compares the result with the configuration ([venues.<name>]
+  // rules_mismatch).
   virtual Result<void, std::string> load_reference_data(InstrumentTable& instruments) = 0;
+  // Reads the rules load_reference_data() read again, now and asynchronously, and emits an
+  // InstrumentRulesMsg into the order sink for each instrument whose tick, lot, limits or trading
+  // status differ from the last the connector reported (venues/instrument_rules.hpp). A connector
+  // that implements it also reads them every [venues.<name>] rules_refresh_s and soon after the
+  // venue refused an order or a cancel for an instrument's rules or status. Reactor thread. False
+  // when the connector cannot read them while it runs (the default) or a read is in flight.
+  virtual bool refresh_rules() { return false; }
   // The account's fee rates on this venue's instruments in `instruments`, fetched from the venue
   // (Binance Spot with fetch_fees = true: GET /api/v3/account/commission per symbol). Main thread,
   // after load_reference_data(), blocking REST allowed. Empty when the connector does not fetch

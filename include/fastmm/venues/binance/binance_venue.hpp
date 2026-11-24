@@ -29,6 +29,12 @@
 // X-MBX-ORDER-COUNT-10S; 429 -> Retry-After cooldown, longer for one soon after another; 418 ->
 // REST hard stop. The start's snapshots, history queries and order lookups, one per symbol, take
 // the rate limiter's bulk share of the weight (RateLimiter::kBulkShare) and wait for the rest.
+//
+// Trading rules (venues/instrument_rules.hpp): GET /api/v3/exchangeInfo for the session's symbols
+// again every rules_refresh_s, and 5 s after the venue refused an order or a cancel for a filter
+// (-1013 LOT_SIZE, PRICE_FILTER, NOTIONAL; -1111) or for the symbol's status ("Market is closed").
+// A symbol whose status is not TRADING is halted (BREAK, HALT, AUCTION_MATCH, PRE_TRADING,
+// POST_TRADING) or closed (END_OF_DAY); the kill switch's cancel-all skips it.
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/containers/recent_map.hpp"
 #include "fastmm/core/log.hpp"
@@ -42,6 +48,7 @@
 #include "fastmm/venues/binance/binance_user_parser.hpp"
 #include "fastmm/venues/connection_slot.hpp"
 #include "fastmm/venues/execution_audit.hpp"
+#include "fastmm/venues/instrument_rules.hpp"
 #include "fastmm/venues/order_commands.hpp"
 #include "fastmm/venues/rate_limiter.hpp"
 #include "fastmm/venues/raw_recorder.hpp"
@@ -99,7 +106,9 @@ struct BinanceVenueConfig {
   bool fetch_fees = false;             // account_fees(): GET /api/v3/account/commission per symbol
   bool cancel_on_order_channel_loss = true;
   bool allow_offline_reference_data = false;  // keep config tick/lot if exchangeInfo fails
-  bool supports_replace = true;               // cancelReplace
+  // exchangeInfo read again this often while running (rules_refresh_s); 0: only after a refusal.
+  std::int64_t rules_refresh_ns = RulesWatch::kDefaultPeriodNs;
+  bool supports_replace = true;  // cancelReplace
   // PUT /api/v3/order/amend/keepPriority for a replace that only reduces the quantity at the
   // same price: the order keeps its id and its place in the queue. Everything else, and this
   // set to false, uses order.cancelReplace, which starts again at the back of the queue.
@@ -141,6 +150,7 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   [[nodiscard]] std::string_view name() const noexcept override { return cfg_.name; }
   [[nodiscard]] VenueCaps caps() const noexcept override;
   Result<void, std::string> load_reference_data(InstrumentTable& instruments) override;
+  bool refresh_rules() override;
   Result<std::vector<VenueFee>, std::string> account_fees(
       const InstrumentTable& instruments) override;
   void attach(const SymbolTable& symbols,
@@ -187,6 +197,8 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   [[nodiscard]] bool fatal() const noexcept { return fatal_; }
   // Replaces sent as order.amend.keepPriority rather than order.cancelReplace.
   [[nodiscard]] std::uint64_t amends_sent() const noexcept { return amends_sent_; }
+  // The trading rules as the connector last read them (refresh_rules).
+  [[nodiscard]] const RulesWatch& rules() const noexcept { return rules_; }
   // Venue time in ms (local wall clock + measured offset).
   [[nodiscard]] std::int64_t venue_time_ms() const noexcept;
 
@@ -262,6 +274,10 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
                     int code,
                     std::string_view msg,
                     std::int64_t retry_after_ms);
+  // The exchangeInfo reply of a refresh_rules() read.
+  void on_rules_reply(const net::HttpResponse& r);
+  // A venue refusal for an instrument's rules or status asks for a read (RulesWatch::want).
+  void note_refusal(RejectReason reason, int code) noexcept;
   void emit_reject(
       InstrumentId inst, ClientOrderId id, RejectReason reason, int code, std::string_view text);
   void emit_cancel_reject(
@@ -379,6 +395,10 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   RawRecorder raw_order_;
 
   std::vector<InstrumentId> subscribed_;
+  // The instruments' rules as last read, and the exchangeInfo target that reads them again (the
+  // one load_reference_data() used).
+  RulesWatch rules_;
+  std::string rules_target_;
 
   int depth_limit_ = 1000;  // the snapshot depth in use (cfg_.depth_limit or auto_depth_limit)
   // Venue order id -> the client order id this session gave it, so an execution the trade history

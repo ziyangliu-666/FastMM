@@ -53,6 +53,7 @@ class PaperVenue final : public venues::Venue {
   Result<void, std::string> load_reference_data(InstrumentTable& instruments) override {
     return inner_->load_reference_data(instruments);
   }
+  bool refresh_rules() override { return inner_->refresh_rules(); }
   Result<std::vector<venues::VenueFee>, std::string> account_fees(
       const InstrumentTable& instruments) override {
     return inner_->account_fees(instruments);

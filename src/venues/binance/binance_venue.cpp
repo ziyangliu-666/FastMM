@@ -42,6 +42,8 @@ constexpr std::uint32_t kMyTradesWeight = 20;
 constexpr std::int64_t kMyTradesFullReadNs = 30LL * 60 * 1'000'000'000;
 // How long a blocking start-up request waits for its weight (wait_for_weight): a window and some.
 constexpr std::int64_t kStartupWaitNs = 65'000'000'000;
+// rules_refresh_s below this is refused: each read weighs 20.
+constexpr std::int64_t kMinRulesRefreshS = 10;
 // rest-api.md "Order book" weight by limit: 1-100:5, 101-500:25, 501-1000:50, 1001-5000:250.
 std::uint32_t depth_weight(int limit) noexcept {
   if (limit <= 100) return 5;
@@ -61,6 +63,7 @@ BinanceVenue::BinanceVenue(VenueId id, BinanceVenueConfig cfg)
       signer_(cfg_.credentials),
       rate_(cfg_.rate_threshold) {
   rate_.set_order_threshold(cfg_.order_rate_threshold);
+  rules_.configure(cfg_.rules_refresh_ns);
   // Binance counts request weight per IP: the accounts of a pool that leave from one address
   // (source_ip / source_interface, or none) spend one window.
   if (cfg_.share_ip_weight)
@@ -200,6 +203,7 @@ Result<void, std::string> BinanceVenue::load_reference_data(InstrumentTable& ins
   const std::size_t n = net::percent_encode(list, enc);
   if (n == 0) return fail(std::string("exchangeInfo: symbol list too long"));
   const std::string target = "/api/v3/exchangeInfo?symbols=" + std::string(enc, n);
+  rules_target_ = target;
 
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
@@ -221,6 +225,8 @@ Result<void, std::string> BinanceVenue::load_reference_data(InstrumentTable& ins
     if (!cfg_.allow_offline_reference_data)
       return fail(fmt::format("{}: exchangeInfo failed: {}", cfg_.name, why));
     FASTMM_LOG_WARN("{}: exchangeInfo failed ({}); keeping configured tick/lot", cfg_.name, why);
+    // The configuration's rules until a later read gives the venue's.
+    for (Instrument* inst : mine) rules_.seed(inst->id, rules_of(*inst));
     return {};
   }
   ExchangeInfo info;
@@ -235,26 +241,21 @@ Result<void, std::string> BinanceVenue::load_reference_data(InstrumentTable& ins
       return fail(fmt::format("{}: symbol {} not in exchangeInfo", cfg_.name, inst->symbol.view()));
     if (!f->tick.is_positive() || !f->step.is_positive())
       return fail(fmt::format("{}: {} has invalid tick/step", cfg_.name, inst->symbol.view()));
-    if (inst->tick != f->tick || inst->lot != f->step) {
-      FASTMM_LOG_WARN("{}: {} tick/lot from exchangeInfo override config ({} / {} -> {} / {})",
-                      cfg_.name,
-                      inst->symbol.view(),
-                      inst->tick,
-                      inst->lot,
-                      f->tick,
-                      f->step);
-    }
+    // fastmm-live compares these with the configuration ([venues.<name>] rules_mismatch).
     inst->tick = f->tick;
     inst->lot = f->step;
     inst->min_qty = f->min_qty.is_positive() ? f->min_qty : f->step;
     inst->max_qty = f->max_qty;
     inst->min_notional = f->min_notional;
     inst->max_notional = f->max_notional;
-    if (f->status != "TRADING") {
-      FASTMM_LOG_ERROR(
-          "{}: {} status is {} (not TRADING): disabled", cfg_.name, inst->symbol.view(), f->status);
-      inst->flags = static_cast<std::uint8_t>(inst->flags & ~Instrument::kEnabled);
-    }
+    // Not trading now: the engine sends it nothing until a later read finds it trading.
+    inst->status = trading_status(f->status);
+    if (!inst->trading())
+      FASTMM_LOG_ERROR("{}: {} status is {}: nothing is sent for it until it trades",
+                       cfg_.name,
+                       inst->symbol.view(),
+                       f->status);
+    rules_.seed(inst->id, rules_of(*inst));
     if (!f->post_only_allowed)
       FASTMM_LOG_WARN(
           "{}: {} does not allow LIMIT_MAKER (post-only)", cfg_.name, inst->symbol.view());
@@ -284,6 +285,95 @@ Result<void, std::string> BinanceVenue::load_reference_data(InstrumentTable& ins
                   mine.size(),
                   info.rate_limits.size());
   return {};
+}
+
+// GET /api/v3/exchangeInfo for the session's symbols, as load_reference_data() read them (weight
+// 20), on the REST connection; the reply goes through on_rules_reply(). A pool member reads them
+// for its own cancel-all and reports nothing: the primary does.
+bool BinanceVenue::refresh_rules() {
+  constexpr std::uint32_t kExchangeInfoWeight = 20;
+  const std::int64_t now = now_ns();
+  if (rest_ == nullptr || rest_hard_stopped_ || rules_target_.empty() || rules_.in_flight())
+    return false;
+  if (!rate_.can_send(kExchangeInfoWeight, now, false, RateLimiter::kBulkShare)) return false;
+  rules_.started(now);
+  std::weak_ptr<int> alive = alive_;
+  const bool queued =
+      rest_->request("GET", rules_target_, {}, {}, [this, alive](const net::HttpResponse& r) {
+        if (alive.expired()) return;
+        rules_.finished();
+        if (r.error == net::NetError::Canceled) return;
+        ++stats_.rest_requests;
+        note_rate_headers(r);
+        on_rules_reply(r);
+      });
+  if (!queued) {
+    rules_.finished();
+    return false;
+  }
+  rate_.on_bulk_sent(kExchangeInfoWeight, now);
+  return true;
+}
+
+void BinanceVenue::on_rules_reply(const net::HttpResponse& r) {
+  if (!r.ok()) {
+    ++stats_.rest_errors;
+    int code = 0;
+    std::string msg;
+    static_cast<void>(decode_rest_error(r.body, code, msg));
+    // -1121 Invalid symbol: one of them is listed no more, and the venue answers for none.
+    FASTMM_LOG_WARN("{}: exchangeInfo failed: status={} code={} {}; the rules stay as they were",
+                    cfg_.name,
+                    r.status,
+                    code,
+                    msg);
+    return;
+  }
+  ExchangeInfo info;
+  if (const std::string err = decode_exchange_info(r.body, info); !err.empty()) {
+    ++stats_.rest_errors;
+    FASTMM_LOG_WARN("{}: exchangeInfo: {}; the rules stay as they were", cfg_.name, err);
+    return;
+  }
+  if (instruments_ == nullptr) return;
+  EventSink* sink = pool_member() ? nullptr : order_sink_;
+  for (const Instrument& inst : *instruments_) {
+    if (inst.venue != md_venue_ || !rules_.seeded(inst.id)) continue;
+    const SymbolFilters* f = nullptr;
+    for (const SymbolFilters& sf : info.symbols) {
+      if (iequals_symbol(sf.symbol, inst.symbol.view())) f = &sf;
+    }
+    const VenueRules before = rules_.last(inst.id);
+    VenueRules v = before;
+    if (f == nullptr) {
+      v.status = TradingStatus::Closed;  // asked for and not listed
+    } else {
+      v.tick = f->tick;
+      v.lot = f->step;
+      v.min_qty = f->min_qty.is_positive() ? f->min_qty : f->step;
+      v.max_qty = f->max_qty;
+      v.min_notional = f->min_notional;
+      v.max_notional = f->max_notional;
+      v.status = trading_status(f->status);
+    }
+    if (rules_.update(sink, md_venue_, inst.id, v) == 0) continue;
+    const VenueRules& now = rules_.last(inst.id);
+    FASTMM_LOG_WARN(
+        "{}: {} rules changed on the venue: tick {} -> {}, lot {} -> {}, min_qty {} -> {}, "
+        "min_notional {} -> {}, {} -> {}",
+        cfg_.name,
+        inst.symbol.view(),
+        before.tick,
+        now.tick,
+        before.lot,
+        now.lot,
+        before.min_qty,
+        now.min_qty,
+        before.min_notional,
+        now.min_notional,
+        to_string(before.status),
+        to_string(now.status));
+  }
 }
 
 // GET /api/v3/account/commission for every instrument of this venue (weight 20 each), signed like
@@ -1421,8 +1511,13 @@ void BinanceVenue::emit_connection_state(Channel ch, ConnState state, std::int32
                   state);
 }
 
+void BinanceVenue::note_refusal(RejectReason reason, int code) noexcept {
+  if (code != 0 && refusal_reads_rules(reason)) rules_.want();
+}
+
 void BinanceVenue::emit_reject(
     InstrumentId inst, ClientOrderId id, RejectReason reason, int code, std::string_view text) {
+  note_refusal(reason, code);
   sent_.answered(id);
   emit_order_reject(*order_sink_, id_, inst, id, reason, code, text);
   ++stats_.order_events;
@@ -1430,6 +1525,7 @@ void BinanceVenue::emit_reject(
 
 void BinanceVenue::emit_cancel_reject(
     InstrumentId inst, ClientOrderId id, RejectReason reason, int code, std::string_view text) {
+  note_refusal(reason, code);
   venues::emit_cancel_reject(*order_sink_, id_, inst, id, reason, code, text);
   ++stats_.order_events;
 }
@@ -1982,6 +2078,7 @@ void BinanceVenue::cancel_all_async() {
   // No rest_hard_stopped_ check: cancelling is what a hard stop asks for.
   if (rest_ == nullptr || !signer_.usable()) return;
   for (InstrumentId id : subscribed_) {
+    if (!rules_.trading(id)) continue;  // refused while the symbol does not trade
     RestRequest rr;
     if (!encoder_->encode_rest_cancel_all(symbols_->venue_symbol(id), venue_time_ms(), rr))
       continue;
@@ -2017,9 +2114,14 @@ bool BinanceVenue::cancel_all() {
   if (cfg_.dry_run || !signer_.usable() || symbols_ == nullptr) return true;
   BlockingControl control(cfg_);
   BinanceOrderEncoder enc(signer_, *symbols_, cfg_.recv_window_ms);  // thread-local copy
+  // A symbol the venue does not trade now refuses the cancel ("Market is closed").
+  std::vector<InstrumentId> targets;
+  for (const InstrumentId id : subscribed_) {
+    if (rules_.trading(id)) targets.push_back(id);
+  }
   return control.per_target(
       "kill-switch cancel-all",
-      std::span<const InstrumentId>(subscribed_),
+      std::span<const InstrumentId>(targets),
       [&](InstrumentId id) { return symbols_->venue_symbol(id); },
       [&](InstrumentId id, BlockingRequest& q) {
         RestRequest rr;
@@ -2062,6 +2164,7 @@ void BinanceVenue::on_timer(std::int64_t now) {
     }
   }
   if (clock_resync_wanted_ || now - clock_sync_ns_ >= kClockResyncNs) request_server_time();
+  if (rules_.due(now)) static_cast<void>(refresh_rules());
   reconcile_.on_timer(now);
   // The execution replay: a retry 5 s after an incomplete one (the next reconnect may be hours
   // away), and one a minute while all is well, which keeps the watermark within what the OMS can
@@ -2220,6 +2323,12 @@ BinanceVenueConfig make_binance_config(const VenueSectionView& v, bool dry_run) 
   c.max_order_amends = static_cast<std::uint16_t>(
       std::clamp<std::int64_t>(x.integer("max_order_amends", c.max_order_amends), 0, 65535));
   c.emit_ack_from_response = x.flag("emit_ack_from_response", true);
+  const std::int64_t refresh_s = x.integer("rules_refresh_s", c.rules_refresh_ns / 1'000'000'000);
+  if (refresh_s < 0 || (refresh_s > 0 && refresh_s < kMinRulesRefreshS))
+    throw std::invalid_argument("venue '" + v.name +
+                                "': rules_refresh_s must be 0 (off) or at least " +
+                                std::to_string(kMinRulesRefreshS));
+  c.rules_refresh_ns = refresh_s * 1'000'000'000;
   if (v.extra != nullptr) {
     c.transfer = read_transfer_settings(v.name, *v.extra, "SPOT", dry_run);
     c.transfer.ca_file = v.ca_file;
