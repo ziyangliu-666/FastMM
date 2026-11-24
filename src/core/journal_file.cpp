@@ -543,15 +543,18 @@ Result<void, JournalError> JournalReader::open(const std::string& path) noexcept
     return fail(e);
   };
   // A journal the archive compressed ([engine] journal_compress) is read from x.fmj.zst, whether
-  // asked for by that name or by x.fmj.
+  // asked for by that name or by x.fmj. x.fmj is opened first: the archive deletes it once
+  // x.fmj.zst is complete, so a journal that is not there may have been compressed a moment ago.
   char zst[PATH_MAX];
   const char* file = path.c_str();
-  if (!is_archive(path) && ::access(file, F_OK) != 0) {
+  int fd = is_archive(path) ? -1 : ::open(file, O_RDONLY | O_CLOEXEC);
+  if (fd < 0 && !is_archive(path) && errno == ENOENT) {
     const auto r = fmt::format_to_n(zst, sizeof zst - 1, "{}.zst", path);
     if (r.size < sizeof zst) {
       zst[r.size] = '\0';
       if (::access(zst, F_OK) == 0) file = zst;
     }
+    if (file == path.c_str()) errno = ENOENT;  // the error to report is the journal's
   }
   if (is_archive(file)) {
     std::size_t len = 0;
@@ -577,7 +580,6 @@ Result<void, JournalError> JournalReader::open(const std::string& path) noexcept
     reset();
     return {};
   }
-  const int fd = ::open(file, O_RDONLY | O_CLOEXEC);
   if (fd < 0) return why(JournalError::OpenFailed, "{}", std::strerror(errno));
   struct stat st {};
   if (::fstat(fd, &st) != 0) {
