@@ -31,8 +31,9 @@
 // the rate limiter's bulk share of the weight (RateLimiter::kBulkShare) and wait for the rest.
 //
 // Trading rules (venues/instrument_rules.hpp): GET /api/v3/exchangeInfo for the session's symbols
-// again every rules_refresh_s, and 5 s after the venue refused an order or a cancel for a filter
-// (-1013 LOT_SIZE, PRICE_FILTER, NOTIONAL; -1111) or for the symbol's status ("Market is closed").
+// again every rules_refresh_s, and after the venue refused an order or a cancel for a filter
+// (-1013 LOT_SIZE, PRICE_FILTER, NOTIONAL; -1111) or for the symbol's status ("Market is closed"),
+// at most once in RulesWatch::kRefusalGapNs.
 // A symbol whose status is not TRADING is halted (BREAK, HALT, AUCTION_MATCH, PRE_TRADING,
 // POST_TRADING) or closed (END_OF_DAY); the kill switch's cancel-all skips it.
 #include "fastmm/core/containers/open_hash_map.hpp"
