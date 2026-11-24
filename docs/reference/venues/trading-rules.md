@@ -51,7 +51,7 @@ If the reply is an error, for example `-1121` after the venue removed a symbol, 
 
 | Part | After a change |
 |---|---|
-| orders already working | keep their price and quantity; the next requote replaces one that is off the new grid |
+| orders already working | keep their price and quantity, as the venue keeps them; a requote that moves one puts it on the new grid, and one within `min_requote_ticks` of the new price stays where it is |
 | positions and balances | unchanged by the rules; the base asset of a split reaches the engine as the venue's balance and position reports |
 | fixed-point values | prices and quantities are int64 with 8 decimals whatever the tick ([Fixed-point](../fixed-point.md)); a tick or lot finer than 1e-8 cannot be represented |
 | `[capacity]` minimum notional | computed from the table at start-up |
