@@ -43,6 +43,7 @@ TEST_CASE("venues.rules: a read that changes nothing emits nothing, a change emi
   CHECK(m.hdr.type == EventType::InstrumentRules);
   CHECK(m.hdr.instrument == kBtc);
   CHECK(m.hdr.venue == kVenue);
+  CHECK(m.hdr.recv_ts.valid());  // a backtest of the journal orders it by this
   CHECK(m.lot == split.lot);
   CHECK(m.tick == split.tick);
   CHECK(m.status == TradingStatus::Trading);

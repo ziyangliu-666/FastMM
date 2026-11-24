@@ -1,6 +1,7 @@
 // RulesWatch: an instrument's trading rules read again while the session runs.
 #include "fastmm/venues/instrument_rules.hpp"
 
+#include "fastmm/core/time.hpp"
 #include "fastmm/venues/event_sink.hpp"
 
 namespace fastmm::venues {
@@ -84,6 +85,9 @@ std::uint8_t RulesWatch::update(EventSink* sink,
   if (sink != nullptr) {
     InstrumentRulesMsg m;
     fill_rules_msg(m, venue, id, r, changed, cause_);
+    // When the read's answer arrived, as every venue event says: a backtest that takes the
+    // journal as its market data orders it by this time.
+    m.hdr.recv_ts = wall_now();
     static_cast<void>(sink->push(m.hdr));  // the order sink spins rather than drop
   }
   return changed;
