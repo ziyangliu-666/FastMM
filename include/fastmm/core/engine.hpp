@@ -1907,8 +1907,9 @@ class Engine {
 
   // A venue changed an instrument's rules or trading status (InstrumentRulesMsg). The changed
   // fields replace the instrument's, so every later rounding, risk check and ctx.instrument() reads
-  // them; orders already working keep their price and quantity, and the next requote moves those
-  // off the new grid. An instrument that stops trading is sent nothing more, not even a cancel
+  // them; orders already working keep their price and quantity (the venue keeps them too), and a
+  // requote that moves one puts it on the new grid: one within min_requote_ticks of its new price
+  // stays. An instrument that stops trading is sent nothing more, not even a cancel
   // (submit_new, submit_cancel, submit_replace); one that trades again has its venue reconcile
   // first, since the venue may have ended its orders meanwhile.
   FASTMM_NOINLINE void on_instrument_rules(const InstrumentRulesMsg& m) noexcept {
