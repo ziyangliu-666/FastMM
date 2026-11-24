@@ -7,7 +7,7 @@
 //   on_trade(ctx, id, m)  on_option_ticker(ctx, id, m)  on_fill(ctx, fill)
 //   on_order_update(ctx, u)  on_timer(ctx, timer_id, tag)  on_connection(ctx, m)
 //   on_quoting(ctx, enabled)  on_params(ctx)  on_balance(ctx, m)  on_perp_state(ctx, id, m)
-//   on_risk_reject(ctx, r)  on_batch_end(ctx)
+//   on_risk_reject(ctx, r)  on_batch_end(ctx)  on_instrument_rules(ctx, id, m)
 //
 // The engine checks every hook name when it is instantiated. If the strategy has a member with a
 // hook's name (function, template, data member, static, inherited or private) and the engine's
@@ -86,83 +86,89 @@ struct RiskReject {
 
 // The hook table. X(Enum, name, word, (parameters), (arguments), "expected signature"). The
 // parameters name the engine's call; `Ctx` and `Book` are the engine's context and book types.
-#define FASTMM_STRATEGY_HOOKS(X)                                                   \
-  X(Start, on_start, "start", (Ctx & ctx), (ctx), "void on_start(auto& ctx)")      \
-  X(Stop, on_stop, "stop", (Ctx & ctx), (ctx), "void on_stop(auto& ctx)")          \
-  X(Book,                                                                          \
-    on_book,                                                                       \
-    "book",                                                                        \
-    (Ctx & ctx, InstrumentId id, const Book& book),                                \
-    (ctx, id, book),                                                               \
-    "void on_book(auto& ctx, InstrumentId id, const auto& book)")                  \
-  X(BookTicker,                                                                    \
-    on_book_ticker,                                                                \
-    "book_ticker",                                                                 \
-    (Ctx & ctx, InstrumentId id, const BookTickerMsg& m),                          \
-    (ctx, id, m),                                                                  \
-    "void on_book_ticker(auto& ctx, InstrumentId id, const BookTickerMsg& m)")     \
-  X(Trade,                                                                         \
-    on_trade,                                                                      \
-    "trade",                                                                       \
-    (Ctx & ctx, InstrumentId id, const TradeMsg& m),                               \
-    (ctx, id, m),                                                                  \
-    "void on_trade(auto& ctx, InstrumentId id, const TradeMsg& m)")                \
-  X(OptionTicker,                                                                  \
-    on_option_ticker,                                                              \
-    "option_ticker",                                                               \
-    (Ctx & ctx, InstrumentId id, const OptionTickerMsg& m),                        \
-    (ctx, id, m),                                                                  \
-    "void on_option_ticker(auto& ctx, InstrumentId id, const OptionTickerMsg& m)") \
-  X(Fill,                                                                          \
-    on_fill,                                                                       \
-    "fill",                                                                        \
-    (Ctx & ctx, const Fill& fill),                                                 \
-    (ctx, fill),                                                                   \
-    "void on_fill(auto& ctx, const Fill& fill)")                                   \
-  X(OrderUpdate,                                                                   \
-    on_order_update,                                                               \
-    "order_update",                                                                \
-    (Ctx & ctx, const OmsUpdate& u),                                               \
-    (ctx, u),                                                                      \
-    "void on_order_update(auto& ctx, const OmsUpdate& u)")                         \
-  X(Timer,                                                                         \
-    on_timer,                                                                      \
-    "timer",                                                                       \
-    (Ctx & ctx, TimerId id, std::uint64_t tag),                                    \
-    (ctx, id, tag),                                                                \
-    "void on_timer(auto& ctx, TimerId id, std::uint64_t tag)")                     \
-  X(Connection,                                                                    \
-    on_connection,                                                                 \
-    "connection",                                                                  \
-    (Ctx & ctx, const ConnectionStateMsg& m),                                      \
-    (ctx, m),                                                                      \
-    "void on_connection(auto& ctx, const ConnectionStateMsg& m)")                  \
-  X(Quoting,                                                                       \
-    on_quoting,                                                                    \
-    "quoting",                                                                     \
-    (Ctx & ctx, bool enabled),                                                     \
-    (ctx, enabled),                                                                \
-    "void on_quoting(auto& ctx, bool enabled)")                                    \
-  X(Params, on_params, "params", (Ctx & ctx), (ctx), "void on_params(auto& ctx)")  \
-  X(Balance,                                                                       \
-    on_balance,                                                                    \
-    "balance",                                                                     \
-    (Ctx & ctx, const BalanceMsg& m),                                              \
-    (ctx, m),                                                                      \
-    "void on_balance(auto& ctx, const BalanceMsg& m)")                             \
-  X(PerpState,                                                                     \
-    on_perp_state,                                                                 \
-    "perp_state",                                                                  \
-    (Ctx & ctx, InstrumentId id, const PerpStateMsg& m),                           \
-    (ctx, id, m),                                                                  \
-    "void on_perp_state(auto& ctx, InstrumentId id, const PerpStateMsg& m)")       \
-  X(RiskReject,                                                                    \
-    on_risk_reject,                                                                \
-    "risk_reject",                                                                 \
-    (Ctx & ctx, const RiskReject& r),                                              \
-    (ctx, r),                                                                      \
-    "void on_risk_reject(auto& ctx, const RiskReject& r)")                         \
-  X(BatchEnd, on_batch_end, "batch_end", (Ctx & ctx), (ctx), "void on_batch_end(auto& ctx)")
+#define FASTMM_STRATEGY_HOOKS(X)                                                             \
+  X(Start, on_start, "start", (Ctx & ctx), (ctx), "void on_start(auto& ctx)")                \
+  X(Stop, on_stop, "stop", (Ctx & ctx), (ctx), "void on_stop(auto& ctx)")                    \
+  X(Book,                                                                                    \
+    on_book,                                                                                 \
+    "book",                                                                                  \
+    (Ctx & ctx, InstrumentId id, const Book& book),                                          \
+    (ctx, id, book),                                                                         \
+    "void on_book(auto& ctx, InstrumentId id, const auto& book)")                            \
+  X(BookTicker,                                                                              \
+    on_book_ticker,                                                                          \
+    "book_ticker",                                                                           \
+    (Ctx & ctx, InstrumentId id, const BookTickerMsg& m),                                    \
+    (ctx, id, m),                                                                            \
+    "void on_book_ticker(auto& ctx, InstrumentId id, const BookTickerMsg& m)")               \
+  X(Trade,                                                                                   \
+    on_trade,                                                                                \
+    "trade",                                                                                 \
+    (Ctx & ctx, InstrumentId id, const TradeMsg& m),                                         \
+    (ctx, id, m),                                                                            \
+    "void on_trade(auto& ctx, InstrumentId id, const TradeMsg& m)")                          \
+  X(OptionTicker,                                                                            \
+    on_option_ticker,                                                                        \
+    "option_ticker",                                                                         \
+    (Ctx & ctx, InstrumentId id, const OptionTickerMsg& m),                                  \
+    (ctx, id, m),                                                                            \
+    "void on_option_ticker(auto& ctx, InstrumentId id, const OptionTickerMsg& m)")           \
+  X(Fill,                                                                                    \
+    on_fill,                                                                                 \
+    "fill",                                                                                  \
+    (Ctx & ctx, const Fill& fill),                                                           \
+    (ctx, fill),                                                                             \
+    "void on_fill(auto& ctx, const Fill& fill)")                                             \
+  X(OrderUpdate,                                                                             \
+    on_order_update,                                                                         \
+    "order_update",                                                                          \
+    (Ctx & ctx, const OmsUpdate& u),                                                         \
+    (ctx, u),                                                                                \
+    "void on_order_update(auto& ctx, const OmsUpdate& u)")                                   \
+  X(Timer,                                                                                   \
+    on_timer,                                                                                \
+    "timer",                                                                                 \
+    (Ctx & ctx, TimerId id, std::uint64_t tag),                                              \
+    (ctx, id, tag),                                                                          \
+    "void on_timer(auto& ctx, TimerId id, std::uint64_t tag)")                               \
+  X(Connection,                                                                              \
+    on_connection,                                                                           \
+    "connection",                                                                            \
+    (Ctx & ctx, const ConnectionStateMsg& m),                                                \
+    (ctx, m),                                                                                \
+    "void on_connection(auto& ctx, const ConnectionStateMsg& m)")                            \
+  X(Quoting,                                                                                 \
+    on_quoting,                                                                              \
+    "quoting",                                                                               \
+    (Ctx & ctx, bool enabled),                                                               \
+    (ctx, enabled),                                                                          \
+    "void on_quoting(auto& ctx, bool enabled)")                                              \
+  X(Params, on_params, "params", (Ctx & ctx), (ctx), "void on_params(auto& ctx)")            \
+  X(Balance,                                                                                 \
+    on_balance,                                                                              \
+    "balance",                                                                               \
+    (Ctx & ctx, const BalanceMsg& m),                                                        \
+    (ctx, m),                                                                                \
+    "void on_balance(auto& ctx, const BalanceMsg& m)")                                       \
+  X(PerpState,                                                                               \
+    on_perp_state,                                                                           \
+    "perp_state",                                                                            \
+    (Ctx & ctx, InstrumentId id, const PerpStateMsg& m),                                     \
+    (ctx, id, m),                                                                            \
+    "void on_perp_state(auto& ctx, InstrumentId id, const PerpStateMsg& m)")                 \
+  X(RiskReject,                                                                              \
+    on_risk_reject,                                                                          \
+    "risk_reject",                                                                           \
+    (Ctx & ctx, const RiskReject& r),                                                        \
+    (ctx, r),                                                                                \
+    "void on_risk_reject(auto& ctx, const RiskReject& r)")                                   \
+  X(BatchEnd, on_batch_end, "batch_end", (Ctx & ctx), (ctx), "void on_batch_end(auto& ctx)") \
+  X(InstrumentRules,                                                                         \
+    on_instrument_rules,                                                                     \
+    "instrument_rules",                                                                      \
+    (Ctx & ctx, InstrumentId id, const InstrumentRulesMsg& m),                               \
+    (ctx, id, m),                                                                            \
+    "void on_instrument_rules(auto& ctx, InstrumentId id, const InstrumentRulesMsg& m)")
 
 // Optional state the engine keeps across sessions ([strategy] state_file): `std::string_view
 // state()` returns the bytes to save (valid until the strategy's next hook; the engine copies them

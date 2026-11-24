@@ -77,7 +77,8 @@ class JournalSource final : public MdSource {
 
   [[nodiscard]] static bool is_market_data(EventType t) noexcept {
     return t == EventType::BookDelta || t == EventType::BookSnapshot || t == EventType::Trade ||
-           t == EventType::BookTicker || t == EventType::OptionTicker || t == EventType::PerpState;
+           t == EventType::BookTicker || t == EventType::OptionTicker ||
+           t == EventType::PerpState || t == EventType::InstrumentRules;
   }
   // A ticker a backtest's simulated venue sent because our order changed the touch: ours, as the
   // journal's OwnLevels records are, not the market's.

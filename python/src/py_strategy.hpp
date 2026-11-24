@@ -48,6 +48,12 @@ void py_on_quoting(PyRun& run, bool enabled) noexcept;
 void py_on_balance(PyRun& run, const BalanceMsg& m) noexcept;
 void py_on_perp_state(PyRun& run, InstrumentId id, const PerpStateMsg& m) noexcept;
 void py_on_risk_reject(PyRun& run, const RiskReject& r) noexcept;
+// The venue changed the instrument's rules: the Instrument object the run hands out takes them, and
+// with `call` the class's on_instrument_rules(ctx, inst) runs.
+void py_on_instrument_rules(PyRun& run,
+                            InstrumentId id,
+                            const Instrument& inst,
+                            bool call) noexcept;
 // The strategy's `state(self)` (bytes or str; None: nothing) and `restore(self, data)` -> bool,
 // when the class defines them; else empty and true.
 std::string_view py_state(PyRun& run) noexcept;
@@ -138,6 +144,11 @@ class PyStrategy {
   template <class Ctx>
   void on_risk_reject(Ctx&, const RiskReject& r) noexcept {
     if (on(Hook::RiskReject)) py_on_risk_reject(*run_, r);
+  }
+  template <class Ctx>
+  void on_instrument_rules(Ctx& ctx, InstrumentId id, const InstrumentRulesMsg&) noexcept {
+    if (run_ != nullptr)
+      py_on_instrument_rules(*run_, id, ctx.instrument(id), on(Hook::InstrumentRules));
   }
 
   // [strategy] state_file (strategies/hooks.hpp KeepsState): forwarded to the Python class's

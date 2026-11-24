@@ -54,9 +54,20 @@ def test_every_hook_name_and_order_matches_the_cpp_table():
         def on_balance(self, ctx, msg): ...
         def on_perp_state(self, ctx, inst, msg): ...
         def on_risk_reject(self, ctx, reject): ...
+        def on_instrument_rules(self, ctx, inst): ...
 
     assert All.hooks() == tuple(fastmm.strategy.HOOKS)
-    assert All.hooks()[0] == "on_start" and All.hooks()[-1] == "on_risk_reject"
+    assert All.hooks()[0] == "on_start" and All.hooks()[-1] == "on_instrument_rules"
+
+
+def test_an_instrument_says_whether_the_venue_trades_it(example_config):
+    class Watch(Strategy):
+        def on_book(self, ctx, inst, book):
+            self.trading = inst.trading
+
+    s = Watch()
+    fastmm.run_backtest(_cfg(example_config), data=FIXTURE_FMJ, strategy=s)
+    assert s.trading is True
 
 
 def test_hook_signatures_and_near_misses_are_checked(example_config):

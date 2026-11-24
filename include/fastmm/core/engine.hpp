@@ -162,6 +162,8 @@ struct EngineStats {
   std::uint64_t replayed_foreign_fills = 0;
   // Reconciliations the engine asked a venue for (ControlCommand::Reconcile).
   std::uint64_t reconcile_requests = 0;
+  // InstrumentRules events applied: a venue changed an instrument's rules or trading status.
+  std::uint64_t rules_changes = 0;
   std::uint64_t ack_timeouts = 0;          // PendingNew orders force-cancelled by the ack sweep
   std::uint64_t flattens = 0;              // operator flattens started (ControlCommand::Flatten)
   std::uint64_t reduce_only_switches = 0;  // ControlCommand::ReduceOnly applied
@@ -256,6 +258,7 @@ class Engine {
       if (!venue_replace && qp.replace_all_venues) qp.supports_replace = false;
     }
     quotes_.set_params(qp);
+    for (const Instrument& inst : instruments_) not_trading_[inst.id.value] = !inst.trading();
     cluster_.configure(cfg_.fill_cluster);
     hazard_.configure(cfg_.hazard, kMaxInstruments);
     hazard_on_ = hazard_.enabled();
@@ -653,7 +656,7 @@ class Engine {
   [[nodiscard]] bool quoting_enabled(InstrumentId id) const noexcept {
     if (!quoting_enabled() || !instruments_.contains(id)) return false;
     const Instrument& inst = instruments_.get(id);
-    return !inst_pulled_[id.value] && !venue_is_pulled(inst.venue) &&
+    return !inst_pulled_[id.value] && !not_trading_[id.value] && !venue_is_pulled(inst.venue) &&
            !risk_.venue_killed(inst.venue) && !health_.gated(inst.venue, now());
   }
   // Where the operator's flatten stands, and how many orders it has sent.
@@ -1168,7 +1171,7 @@ class Engine {
     if (FASTMM_UNLIKELY(!instruments_.contains(id))) return false;
     note_asked(id, q);
     if (!quoting_enabled()) return false;
-    if (FASTMM_UNLIKELY(inst_pulled_[id.value])) return false;
+    if (FASTMM_UNLIKELY(inst_pulled_[id.value] || not_trading_[id.value])) return false;
     const Instrument& inst = instruments_.get(id);
     if (FASTMM_UNLIKELY(risk_.venue_killed(inst.venue) || venue_is_pulled(inst.venue) ||
                         health_.gated(inst.venue, now())))
@@ -1439,6 +1442,9 @@ class Engine {
         break;
       case EventType::PerpState:
         on_perp_state(msg_cast<PerpStateMsg>(h));
+        break;
+      case EventType::InstrumentRules:
+        on_instrument_rules(msg_cast<InstrumentRulesMsg>(h));
         break;
       case EventType::Timer: {
         const auto& t = msg_cast<TimerMsg>(h);
@@ -1857,6 +1863,52 @@ class Engine {
     flush_out();
   }
 
+  // A venue changed an instrument's rules or trading status (InstrumentRulesMsg). The changed
+  // fields replace the instrument's, so every later rounding, risk check and ctx.instrument() reads
+  // them; orders already working keep their price and quantity, and the next requote moves those
+  // off the new grid. An instrument that stops trading is sent nothing more, not even a cancel
+  // (submit_new, submit_cancel, submit_replace); one that trades again has its venue reconcile
+  // first, since the venue may have ended its orders meanwhile.
+  FASTMM_NOINLINE void on_instrument_rules(const InstrumentRulesMsg& m) noexcept {
+    const InstrumentId id = m.hdr.instrument;
+    if (FASTMM_UNLIKELY(!instruments_.contains(id))) return;
+    Instrument& inst = instruments_.get(id);
+    const std::uint8_t c = m.changed;
+    if ((c & InstrumentRulesMsg::kTick) != 0 && m.tick.is_positive()) inst.tick = m.tick;
+    if ((c & InstrumentRulesMsg::kLot) != 0 && m.lot.is_positive()) inst.lot = m.lot;
+    if ((c & InstrumentRulesMsg::kMinQty) != 0 && !m.min_qty.is_negative())
+      inst.min_qty = m.min_qty;
+    if ((c & InstrumentRulesMsg::kMaxQty) != 0 && !m.max_qty.is_negative())
+      inst.max_qty = m.max_qty;
+    if ((c & InstrumentRulesMsg::kMinNotional) != 0 && !m.min_notional.is_negative())
+      inst.min_notional = m.min_notional;
+    if ((c & InstrumentRulesMsg::kMaxNotional) != 0 && !m.max_notional.is_negative())
+      inst.max_notional = m.max_notional;
+    const bool was_trading = !not_trading_[id.value];
+    if ((c & InstrumentRulesMsg::kStatus) != 0) inst.status = m.status;
+    not_trading_[id.value] = !inst.trading();
+    ++stats_.rules_changes;
+    FASTMM_LOG_WARN("{}: the venue's rules changed: tick {} lot {} min_qty {} min_notional {} {}",
+                    inst.symbol.view(),
+                    inst.tick,
+                    inst.lot,
+                    inst.min_qty,
+                    inst.min_notional,
+                    to_string(inst.status));
+    if (!was_trading && inst.trading()) {
+      // Every account the instrument's orders may be on: its venue and the members of its pool.
+      for (const VenueId v : cfg_.pools.members(inst.venue)) {
+        ControlMsg r{};
+        init_header(r, EventType::Control, id, v);
+        r.command = ControlCommand::Reconcile;
+        queue_out(r.hdr);
+        ++stats_.reconcile_requests;
+      }
+    }
+    if constexpr (has_hook(Hook::InstrumentRules)) strategy_.on_instrument_rules(ctx_, id, m);
+    flush_out();
+  }
+
   // ---- store records ---------------------------------------------------------------------------
   // What a storage backend turns into rows (core/record_stream.hpp). Never on the risk path: a
   // full ring drops the record and counts it, and nothing here can block or fail the session.
@@ -1986,6 +2038,7 @@ class Engine {
     if (!quoting_enabled()) return QuoteBlock::QuotingOff;
     // A venue kill pulls the venue's quotes too; the kill is the cause to report.
     if (risk_.venue_killed(inst.venue)) return QuoteBlock::VenueKilled;
+    if (not_trading_[id.value]) return QuoteBlock::NotTrading;
     if (inst_pulled_[id.value] || quotes_.pulled(id) || venue_is_pulled(inst.venue))
       return QuoteBlock::Pulled;
     if (health_.gated(inst.venue, now_)) return QuoteBlock::FeedLag;
@@ -4205,7 +4258,8 @@ class Engine {
   Result<ClientOrderId, RejectReason> submit_new(const NewOrderRequest& req,
                                                  bool flatten = false,
                                                  const Purchase* buy = nullptr) noexcept {
-    if (FASTMM_UNLIKELY(!instruments_.contains(req.instrument)))
+    if (FASTMM_UNLIKELY(!instruments_.contains(req.instrument) ||
+                        not_trading_[req.instrument.value]))
       return fail(RejectReason::InstrumentDisabled);
     if (FASTMM_UNLIKELY(awaiting_ != 0)) return fail(RejectReason::NotReconciled);
     const Instrument& inst = instruments_.get(req.instrument);
@@ -5338,6 +5392,10 @@ class Engine {
   }
 
   Result<void, RejectReason> submit_cancel(Handle<Order> h) noexcept {
+    // The venue refuses a cancel on an instrument it does not trade; the order stays as the engine
+    // knows it until the reconciliation that follows the instrument's return.
+    if (FASTMM_UNLIKELY(oms_.is_live(h) && not_trading_[oms_.get(h).instrument.value]))
+      return fail(RejectReason::InstrumentDisabled);
     auto r = oms_.request_cancel(h);
     if (!r) return r;
     const Order& o = oms_.get(h);
@@ -5357,6 +5415,8 @@ class Engine {
     if (!oms_.is_live(h)) return fail(RejectReason::UnknownOrder);
     const Order& o = oms_.get(h);
     if (!o.is_working()) return fail(RejectReason::InvalidState);
+    if (FASTMM_UNLIKELY(not_trading_[o.instrument.value]))
+      return fail(RejectReason::InstrumentDisabled);
     if (!transport_.supports_replace(o.venue)) return fail(RejectReason::VenueReject);
     const Instrument& inst = instruments_.get(o.instrument);
     const Timestamp now = now_;
@@ -5647,7 +5707,9 @@ class Engine {
     // Never leave an unknown live order at the venue (5.8). We do not have an OMS record,
     // so send a bare cancel keyed by the venue's ids from the message. With [engine]
     // cancel_unknown = "own" an order whose id is not ours (a manual order, another program's)
-    // stays.
+    // stays. An instrument the venue does not trade now waits for the reconciliation that follows
+    // its return, which reports the order again.
+    if (instruments_.contains(h.instrument) && not_trading_[h.instrument.value]) return;
     OutCancelMsg m{};
     init_header(m, EventType::OutCancel, h.instrument, h.venue);
     m.hdr.recv_ts = now_;
@@ -6300,7 +6362,9 @@ class Engine {
   // ---- members ----------------------------------------------------------------------------------
 
   EngineConfig cfg_;
-  const InstrumentTable& instruments_;
+  // The engine's own copy of the table it was given: InstrumentRules events change its tick, lot,
+  // limits and trading status on the engine thread (on_instrument_rules).
+  InstrumentTable instruments_;
   Clock& clock_;
   Transport& transport_;
   Feed& feed_;
@@ -6477,6 +6541,8 @@ class Engine {
   // Instruments and venues an operator pulled on their own (ControlCommand::PullQuotes with a
   // scope, a flatten); they stay pulled until a matching resume.
   std::array<bool, kMaxInstruments> inst_pulled_{};
+  // The venue does not trade the instrument (Instrument::status): nothing is sent for it.
+  std::array<bool, kMaxInstruments> not_trading_{};
   // The flatten slice each instrument has in flight (invalid: none).
   std::array<ClientOrderId, kMaxInstruments> flatten_order_{};
   std::uint32_t venue_pulled_ = 0;

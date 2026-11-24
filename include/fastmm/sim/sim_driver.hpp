@@ -397,7 +397,7 @@ class SimDriver {
     return type == EventType::BookDelta || type == EventType::BookSnapshot ||
            type == EventType::Trade || type == EventType::BookTicker ||
            type == EventType::OptionTicker || type == EventType::PerpState ||
-           type == EventType::OwnLevels;
+           type == EventType::OwnLevels || type == EventType::InstrumentRules;
   }
 
  private:

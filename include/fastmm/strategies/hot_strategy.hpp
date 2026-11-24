@@ -270,6 +270,14 @@ class HotStrategy {
     }
   }
 
+  // The venue changed the instrument's rules: the hooks read the new tick, lot and min_qty.
+  template <class Ctx>
+  void on_instrument_rules(Ctx& ctx, InstrumentId id, const InstrumentRulesMsg&) noexcept {
+    if (id.value >= inst_f_.size()) return;
+    const Instrument& inst = ctx.instrument(id);
+    inst_f_[id.value] = {to_f(inst.tick.raw), to_f(inst.lot.raw), to_f(inst.min_qty.raw)};
+  }
+
   template <class Ctx>
   void on_connection(Ctx& ctx, const ConnectionStateMsg& m) noexcept {
     if (FASTMM_UNLIKELY(slow_ != nullptr)) slow_touch(ctx);

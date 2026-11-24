@@ -675,7 +675,7 @@ void SimTransport::venue_event(const EventHeader& md) noexcept {
     if (md.type == EventType::PerpState) {
       const auto& p = msg_cast<PerpStateMsg>(&md);
       if ((p.fields & PerpStateMsg::kMark) != 0) accounts_->mark(id, p.mark_price, true);
-    } else if (md.type != EventType::Trade) {
+    } else if (md.type != EventType::Trade && md.type != EventType::InstrumentRules) {
       accounts_->mark(id, venue_mid(id), false);
     }
   }
@@ -691,10 +691,11 @@ void SimTransport::feed_event(const EventHeader& md) noexcept {
   // The venue's own record of every order (the engine's book is the source's L2 view of it), and a
   // recorded ticker one side of which was only the session's own orders (strip_own: the venue took
   // its other side; the engine, with none of ours there, would see a level nobody holds) do not go
-  // to the engine. Coupled mode publishes its own view of the book; a venue's mark and funding go
-  // through as recorded.
+  // to the engine. Coupled mode publishes its own view of the book; a venue's mark and funding,
+  // and its trading rules, go through as recorded.
   if ((id.value < instruments_.size() && is_l3_event(md.type)) ||
-      (agg_ != nullptr && md.type != EventType::PerpState) ||
+      (agg_ != nullptr && md.type != EventType::PerpState &&
+       md.type != EventType::InstrumentRules) ||
       (md.type == EventType::BookTicker && hides_level(msg_cast<BookTickerMsg>(&md)))) {
     if (md.seq != 0) forward_in_order(nullptr, md.seq, md.recv_ts, now);
     return;
