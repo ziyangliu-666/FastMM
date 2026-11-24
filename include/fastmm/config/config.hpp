@@ -261,6 +261,10 @@ struct VenueSection {
   int fill_audit_interval_s = 0;
   int fill_audit_lag_s = 180;
   std::string fill_audit_mode = "report";
+  // The connector's start-up trading rules against [[instruments]] (live/venue_slot.hpp
+  // settle_venue_rules): "adopt" the venue's, "warn" and keep the configured ones, or "refuse" to
+  // start.
+  std::string rules_mismatch = "adopt";
   FeesSection fees;
   TreasurySection treasury;
   PoolSection pool;

@@ -523,6 +523,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      "missed "
      "(default \"report\")"},
     {"venues.*",
+     "rules_mismatch",
+     KeyType::String,
+     false,
+     "a tick, lot, min_qty, max_qty or min_notional of [[instruments]] that differs from the "
+     "venue's at start-up: \"adopt\" the venue's (default), \"warn\" and keep the configured "
+     "one, or \"refuse\" to start"},
+    {"venues.*",
      "fees",
      KeyType::Table,
      false,

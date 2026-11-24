@@ -1014,6 +1014,11 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
       if (v.fill_audit_mode != "report" && v.fill_audit_mode != "book")
         fail_at(*t->get("fill_audit_mode"),
                 fmt::format(R"(venues.{}.fill_audit_mode must be "report" or "book")", name.str()));
+      get(*t, "rules_mismatch", v.rules_mismatch);
+      if (v.rules_mismatch != "adopt" && v.rules_mismatch != "warn" && v.rules_mismatch != "refuse")
+        fail_at(*t->get("rules_mismatch"),
+                fmt::format(R"(venues.{}.rules_mismatch must be "adopt", "warn" or "refuse")",
+                            name.str()));
       if (const auto* fees = t->get_as<toml::table>("fees")) {
         validate_table(*fees, "venues.*.fees");
         get(*fees, "maker_bps", v.fees.maker_bps);
@@ -1734,6 +1739,7 @@ std::string Config::redacted() const {
       kv("fill_audit_lag_s", v.fill_audit_lag_s);
       kq("fill_audit_mode", v.fill_audit_mode);
     }
+    if (v.rules_mismatch != "adopt") kq("rules_mismatch", v.rules_mismatch);
     fmt::format_to(std::back_inserter(out),
                    "fees = {{ maker_bps = {}, taker_bps = {} }}\n",
                    v.fees.maker_bps,
@@ -2176,6 +2182,7 @@ std::string Config::effective_toml() const {
         t.insert("fill_audit_lag_s", static_cast<std::int64_t>(v.fill_audit_lag_s));
         t.insert("fill_audit_mode", v.fill_audit_mode);
       }
+      if (v.rules_mismatch != "adopt") t.insert("rules_mismatch", v.rules_mismatch);
       toml::table fees;
       fees.insert("maker_bps", v.fees.maker_bps);
       fees.insert("taker_bps", v.fees.taker_bps);
