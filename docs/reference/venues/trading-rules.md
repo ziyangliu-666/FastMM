@@ -4,7 +4,7 @@ An instrument's tick, lot step, minimum and maximum quantity, minimum and maximu
 
 ## At start-up
 
-Every connector reads the rules before the engine starts and writes them over the `[[instruments]]` values. fastmm-live and fastmm-gateway then compare the two for each field the configuration sets (`tick`, `lot`, `min_qty`, `max_qty`, `min_notional`) and act by `[venues.<name>] rules_mismatch`:
+The connectors read the rules before the engine starts and write them over the `[[instruments]]` values. fastmm-live and fastmm-gateway then compare the two for each field the configuration sets (`tick`, `lot`, `min_qty`, `max_qty`, `min_notional`) and act by `[venues.<name>] rules_mismatch`:
 
 | `rules_mismatch` | A configured value that differs from the venue's |
 |---|---|
@@ -27,7 +27,7 @@ An instrument whose venue status is not trading at start-up is kept in the table
 | `binance` | `GET /api/v3/exchangeInfo` for the session's symbols (weight 20) | `rules_refresh_s`: every 60 s by default, at least 10, 0 for none |
 | the others | no | |
 
-A connector that reads them again also reads them 5 s after the venue refused an order or a cancel for a rule or for the symbol's status: on Binance, `-1013 Filter failure` (`LOT_SIZE`, `PRICE_FILTER`, `NOTIONAL`), `-1111` and `Market is closed`. Several refusals in those 5 s cause one read.
+A connector that reads them again also reads them after the venue refused an order or a cancel for a rule or for the symbol's status, at most once every 5 s: on Binance, `-1013 Filter failure` (`LOT_SIZE`, `PRICE_FILTER`, `NOTIONAL`), `-1111` and `Market is closed`.
 
 A read that finds a field or the status changed sends the engine an `InstrumentRules` event naming the fields that changed:
 
