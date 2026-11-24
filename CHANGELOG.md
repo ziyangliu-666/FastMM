@@ -15,11 +15,20 @@ All notable changes are recorded here (Keep a Changelog format).
 - live: `[venues.<name>] rules_mismatch` adopts, warns about or refuses start-up rule differences.
 - apps: `fastmm-top` and Prometheus show a side of a halted instrument as `not_trading`.
 - tools: `journal_dump.py` prints `InstrumentRules` records.
+- core: `[[windows]]` pulls a scope's quotes or holds it reduce-only on weekdays or dates at local time.
+- core: windows take an IANA zone or POSIX rule, `end` or `duration`, `from`, `until` and `except`.
+- core: the IANA tzdata (2026e) is compiled in; `tools/tzdata_gen.py` regenerates it.
+- apps: `fastmm-top`, `status` and Prometheus show each window, whether it is open and its next edge.
+- apps: a side a window pulls shows `window` as its quote obstacle (12).
 
 ### Changed
 - core: the journal format is version 6; the instrument table records the trading status.
 - core: the engine keeps its own copy of the instrument table.
 - venues: a Binance Spot symbol not trading at start-up is held instead of disabled.
+- core: the status segment is version 30.
+
+### Fixed
+- core: a timer beyond the wheel's horizon fires at the poll that reaches its expiry, not the next.
 
 ## [0.14.0] - 2026-11-19
 

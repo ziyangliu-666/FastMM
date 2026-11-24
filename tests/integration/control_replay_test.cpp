@@ -7,6 +7,8 @@
 #include "fastmm/backtest/replay.hpp"
 #include "fastmm/strategies/param_publisher.hpp"
 
+#include <fmt/format.h>
+
 #include <chrono>
 #include <string>
 #include <thread>
@@ -148,6 +150,50 @@ TEST_CASE("sim_exchange replay: a reduce-only window replays to the identical ou
     });
   }
   CHECK(switches == 2);
+
+  const bt::ReplayResult r = bt::replay_journal(path);
+  INFO("expected: " << r.expected_message);
+  INFO("actual:   " << r.actual_message);
+  CHECK(r.first_mismatch == -1);
+  CHECK(r.outbound_messages == r.recorded_messages);
+  CHECK(r.outbound_sha256 == r.recorded_sha256);
+  CHECK(r.ok());
+}
+
+TEST_CASE("sim_exchange replay: scheduled windows replay to the identical outbound stream") {
+  const std::string path = fresh_journal("windows.fmj");
+  ServerFixture fx;
+  LiveEngineOptions opts;
+  opts.journal_path = path;
+  opts.session_epoch = kEpoch;
+  Config cfg = sim_local_config(fx, false);
+  // A pull window from 6 s after now and a reduce_only window after it, dated today in a zone
+  // with an offset, so the replay converts local times the way the session did.
+  const std::int64_t now_s = wall_now().ns / 1'000'000'000;
+  const auto window = [&](const char* name, std::int64_t at_s, const char* action) {
+    const std::int64_t local = at_s + 5 * 3600 + 45 * 60;  // Asia/Kathmandu, +05:45
+    const std::int64_t day = local / 86400;
+    const std::int64_t sod = local % 86400;
+    WindowSection w;
+    w.name = name;
+    w.zone = "Asia/Kathmandu";
+    w.dates = {format_local_date(static_cast<std::int32_t>(day))};
+    w.start = fmt::format("{:02}:{:02}:{:02}", sod / 3600, sod / 60 % 60, sod % 60);
+    w.duration = "2s";
+    w.action = action;
+    return w;
+  };
+  cfg.windows = {window("quiet", now_s + 6, "pull"), window("unwind", now_s + 8, "reduce_only")};
+  LiveEngine live(cfg, opts);
+  live.start();
+  REQUIRE(fills_at_least(fx, 2, 30000));
+  REQUIRE(wait_until([&] { return live.engine().stats().window_switches >= 3; }, 20000));
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  live.stop();
+  CHECK(live.engine().windows_open() == 0);
+  MESSAGE(
+      "window switches " << live.engine().stats().window_switches << ", refused reduce-only "
+                         << live.engine().stats().risk_rejects_by_reason[RejectReason::ReduceOnly]);
 
   const bt::ReplayResult r = bt::replay_journal(path);
   INFO("expected: " << r.expected_message);

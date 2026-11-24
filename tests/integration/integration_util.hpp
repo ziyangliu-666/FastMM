@@ -433,6 +433,7 @@ class LiveEngine {
     ec.quotes = cfg_.quote_params();
     ec.capacity = cfg_.capacity_config();
     ec.perp = perp_config(cfg_);
+    ec.windows = window_config(cfg_, instruments_, std::vector<std::string>{cfg_.venues[0].name});
     ec.quoting_enabled = true;
     const auto err = strategy_.configure(cfg_.strategy.params);
     REQUIRE_MESSAGE(!err, (err ? *err : std::string()));

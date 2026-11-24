@@ -177,6 +177,7 @@ nav:
               - how-to/operations/runbook.md
           - Operate a session:
               - how-to/operations/operate-a-running-session.md
+              - how-to/operations/schedule-windows.md
               - how-to/operations/home-placement.md
               - how-to/operations/fund-a-pool.md
               - how-to/operations/sweep-pieces.md

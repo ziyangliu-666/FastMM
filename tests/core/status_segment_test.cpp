@@ -3,6 +3,7 @@
 #include "test_support.hpp"
 
 #include "fastmm/core/messages.hpp"
+#include "fastmm/core/windows.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -345,7 +346,7 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   CHECK(frame.find("fallback=5") != std::string::npos);
 
   const std::string json = format_status_json(s);
-  CHECK(json.find(R"({"kind": "engine", "version": 29,)") == 0);
+  CHECK(json.find(R"({"kind": "engine", "version": 30,)") == 0);
   CHECK(json.find(R"("engine": "binance-demo")") != std::string::npos);
   CHECK(json.find(R"("tick_to_trade": {"count": 10, "p50_ns": 106495, "p99_ns": 216053, )"
                   R"("p999_ns": 250000, "max_ns": 300000})") != std::string::npos);
@@ -505,7 +506,7 @@ TEST_CASE("core.status_segment: a gateway's snapshot round trips and shows its a
 
   const std::string json = format_status_json(got);
   INFO(json);
-  CHECK(json.find(R"({"kind": "gateway", "version": 29,)") == 0);
+  CHECK(json.find(R"({"kind": "gateway", "version": 30,)") == 0);
   CHECK(json.find(R"("gateway": "gw")") != std::string::npos);
   CHECK(json.find(R"("net_pnl": -0.25, "realized": 1.5)") != std::string::npos);
   CHECK(json.find(R"("engine": "mm-a", "pid": 1001)") != std::string::npos);
@@ -764,4 +765,29 @@ TEST_CASE("core.status_segment: the pools' transfer lanes in the frame and the J
   CHECK(format_status_json(s).find(R"("transfers": {"pools": 1, "sweeping": 1, "dry_run": 0, )"
                                    R"("breaker": "paused", "in_flight": 2, )") !=
         std::string::npos);
+}
+
+TEST_CASE("core.status_segment: the scheduled windows, open or not, and their next edges") {
+  StatusSnapshot s = sample();
+  CHECK(format_status(s, s.updated_ns, false).find("windows") == std::string::npos);
+  CHECK(format_status_json(s).find(R"("windows": [])") != std::string::npos);
+  set_status_name(s.tzdata, "2026e");
+  s.window_count = 2;
+  set_status_name(s.windows[0].name, "reopen");
+  s.windows[0].action = static_cast<std::uint8_t>(WindowAction::ReduceOnly);
+  s.windows[0].open = 1;
+  s.windows[0].next_edge_s = 1773016200;  // 2026-03-09 00:30Z
+  set_status_name(s.windows[1].name, "cpi");
+  s.windows[1].next_edge_s = kNoEdge;
+  s.updated_ns = 1773015000LL * 1'000'000'000;
+  const std::string frame = format_status(s, s.updated_ns, false);
+  CHECK(frame.find("WINDOW reopen") != std::string::npos);
+  CHECK(
+      frame.find("windows    reopen  reduce_only  OPEN  closes 2026-03-09 00:30Z (in 20m00s)\n") !=
+      std::string::npos);
+  CHECK(frame.find("           cpi  pull  closed  never again\n") != std::string::npos);
+  const std::string json = format_status_json(s);
+  CHECK(json.find(R"("tzdata": "2026e", "windows": [{"name": "reopen", "action": "reduce_only", )"
+                  R"("open": true, "next_edge_s": 1773016200}, {"name": "cpi", "action": "pull", )"
+                  R"("open": false, "next_edge_s": null}])") != std::string::npos);
 }

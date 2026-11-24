@@ -3,6 +3,7 @@
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/latency.hpp"
+#include "fastmm/core/windows.hpp"
 
 #include <fmt/format.h>
 
@@ -172,8 +173,8 @@ void underlying_metrics(Exposition& e,
 
 // The quote table, per instrument and side: fastmm_quote_obstacle (the QuoteBlock code: 0 quoting,
 // 1 not wanted, 2 quoting off, 3 pulled, 4 venue killed, 5 feed lag, 6 backoff, 7 starved,
-// 8 refused, 9 pending, 10 fill cluster, 11 hazard, 12 not trading) and its age, the asked and
-// working quantities and the strategy's budget; fastmm_position per instrument;
+// 8 refused, 9 pending, 10 fill cluster, 11 hazard, 12 window, 13 not trading) and its age, the
+// asked and working quantities and the strategy's budget; fastmm_position per instrument;
 // fastmm_strategy_metric{name} for each ctx.metric.
 void quote_metrics(Exposition& e, const StatusSnapshot& s) {
   const std::uint32_t n = std::min<std::uint32_t>(s.quote_count, kStatusMaxQuotes);
@@ -423,6 +424,26 @@ void engine_metrics(Exposition& e, const StatusSnapshot& s) {
   e.gauge("fastmm_reduce_only_instruments",
           "instruments reduce-only mode holds (fastmm-ctl reduce-only)",
           static_cast<double>(s.reduce_only_instruments));
+  const std::uint32_t windows = std::min<std::uint32_t>(s.window_count, kStatusMaxWindows);
+  if (windows != 0) {
+    const auto labels = [&](const StatusTimeWindow& w) {
+      return fmt::format("window=\"{}\",action=\"{}\"",
+                         label(name_of(w.name, sizeof w.name)),
+                         to_string(static_cast<WindowAction>(w.action)));
+    };
+    e.family("fastmm_window_open", "gauge", "1 while the [[windows]] window is open");
+    for (std::uint32_t w = 0; w < windows; ++w)
+      e.value_of("fastmm_window_open", labels(s.windows[w]), s.windows[w].open != 0 ? 1.0 : 0.0);
+    e.family("fastmm_window_next_edge_seconds",
+             "gauge",
+             "when the window next opens or closes, UTC seconds; absent when it never does again");
+    for (std::uint32_t w = 0; w < windows; ++w) {
+      const std::int64_t edge = s.windows[w].next_edge_s;
+      if (edge != 0 && edge != kNoEdge)
+        e.value_of(
+            "fastmm_window_next_edge_seconds", labels(s.windows[w]), static_cast<double>(edge));
+    }
+  }
   if (s.lanes.pools != 0) {
     const LaneStatus& l = s.lanes;
     e.gauge("fastmm_transfers_sweeping", "pools whose sweep moves pieces home now", l.sweeping);

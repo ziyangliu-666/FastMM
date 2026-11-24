@@ -3,9 +3,9 @@
 // table): what the strategy last asked for on the side against the
 // orders working there, the first thing the engine finds in the way, and the strategy's own
 // reason and budget for the side. The engine knows its own obstacles (quoting off, a pull, a kill,
-// the feed-lag gate, the fill-cluster guard, a hazard group, a reject backoff, a wait for an order
-// token, a refusal); why a model chose not to quote, or quoted less than its budget, only the
-// strategy can say.
+// the feed-lag gate, the fill-cluster guard, a hazard group, a window, a reject backoff, a wait for
+// an order token, a refusal); why a model chose not to quote, or quoted less than its budget, only
+// the strategy can say.
 #include "fastmm/core/enums.hpp"
 
 #include <cstddef>
@@ -34,7 +34,8 @@ enum class QuoteBlock : std::uint8_t {
   Pending = 9,      // orders on their way: sent, not yet working, or a requote waiting its turn
   FillCluster = 10,  // the fill-cluster guard holds the side ([risk] fill_cluster_names)
   Hazard = 11,       // a hazard group holds the side ([[risk.hazard]])
-  NotTrading = 12,   // the venue does not trade the instrument now (Instrument::status)
+  Window = 12,       // an open [[windows]] window with action = "pull" covers the instrument
+  NotTrading = 13,   // the venue does not trade the instrument now (Instrument::status)
 };
 [[nodiscard]] constexpr std::string_view to_string(QuoteBlock b) noexcept {
   switch (b) {
@@ -62,6 +63,8 @@ enum class QuoteBlock : std::uint8_t {
       return "fill_cluster";
     case QuoteBlock::Hazard:
       return "hazard";
+    case QuoteBlock::Window:
+      return "window";
     case QuoteBlock::NotTrading:
       return "not_trading";
   }

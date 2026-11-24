@@ -3,8 +3,8 @@
 // private dependency of fastmm_core); this header exposes only plain structs.
 //
 // Sections: [engine] [venues.<x>] [venues.<x>.fees] [[instruments]] [strategy]
-//           [strategy.params] [risk] [gateway] [accounting] [accounting.fx] [logging] [sim]
-//           [backtest] [storage]
+//           [strategy.params] [risk] [[windows]] [gateway] [accounting] [accounting.fx] [logging]
+//           [sim] [backtest] [storage]
 // A [venues.<x>] key the generic parser does not read is kept verbatim in VenueSection::extra:
 // the connector `kind` names owns it (include/fastmm/venues/registry.hpp).
 // Rules: ${VAR} is substituted only inside [venues.*] strings; a value that looks like an
@@ -25,6 +25,7 @@
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/treasury.hpp"
 #include "fastmm/core/underlying.hpp"
+#include "fastmm/core/windows.hpp"
 #include "fastmm/strategies/params.hpp"
 
 #include <cstdint>
@@ -432,6 +433,23 @@ struct CapacitySection {
   std::vector<std::string> venues;  // empty: every venue
 };
 
+// One [[windows]] table (core/windows.hpp), as written; window_config() resolves it.
+struct WindowSection {
+  std::string name;
+  std::string zone;                      // IANA name or POSIX TZ rule
+  std::vector<std::string> days;         // "mon" ... "sun"; or
+  std::vector<std::string> dates;        // "YYYY-MM-DD", local
+  std::string start;                     // "HH:MM[:SS]", local
+  std::string end;                       // "HH:MM[:SS]", local; or
+  std::string duration;                  // "30m", "1h30m", "2d"
+  std::string from;                      // first local date an occurrence may start on; "" = any
+  std::string until;                     // the last; "" = any
+  std::vector<std::string> except;       // local dates no occurrence starts on
+  std::string action = "pull";           // "pull" | "reduce_only"
+  std::vector<std::string> venues;       // scope: these venues' instruments ...
+  std::vector<std::string> instruments;  // ... and these; neither: the whole session
+};
+
 struct LoggingSection {
   std::string level = "info";
   std::string file;
@@ -492,6 +510,7 @@ class Config {
   StrategySection strategy;
   AbSection ab;
   RiskSection risk;
+  std::vector<WindowSection> windows;  // [[windows]]
   CapacitySection capacity;
   GatewaySection gateway;
   // [accounting]: the reporting currency and the FX source of each other settlement currency,
@@ -563,6 +582,12 @@ PoolHomesPlan pool_homes(const Config& cfg, const InstrumentTable& table);
 HazardConfig hazard_config(const Config& cfg,
                            const InstrumentTable& table,
                            std::span<const std::string> venue_names);
+
+// [[windows]] with the zones looked up and the scopes resolved in `table` (`venue_names` naming
+// its venue ids). Throws ConfigError for a scope entry that names no instrument.
+WindowsConfig window_config(const Config& cfg,
+                            const InstrumentTable& table,
+                            std::span<const std::string> venue_names);
 
 // The fee rates of each instrument: its [[instruments]] maker_bps / taker_bps, else its venue's
 // [venues.<x>.fees]; the first venue's are the default for ids outside the configuration. Without

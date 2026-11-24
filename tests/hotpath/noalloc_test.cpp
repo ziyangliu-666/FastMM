@@ -995,6 +995,72 @@ TEST_CASE("hotpath.noalloc: engine step with reduce-only mode switched on and of
   CHECK(engine->reduce_only(InstrumentId{0}));
 }
 
+// [[windows]]: a pull window and a reduce_only window open and close (looking up the zone's
+// offsets, cancelling, re-arming the timer) while the engine steps, without allocating.
+TEST_CASE("hotpath.noalloc: engine opens and closes scheduled windows") {
+  constexpr std::int64_t kOpen = 1773014400;  // Sunday 2026-03-08 20:00 New York (EDT)
+  InstrumentTable table;
+  REQUIRE(table.add(make_inst()));
+  SimClock clock{Timestamp{(kOpen - 30) * 1'000'000'000}};
+  NullTransport transport;
+  InlineFeed feed{1 << 20};
+  MsgRing journal_ring{1 << 20};
+  BasicMM strategy;
+  REQUIRE_FALSE(strategy.configure(
+      {{"half_spread_bps", "10"}, {"quote_qty", "0.01"}, {"max_inventory", "0.05"}}));
+  EngineConfig cfg;
+  cfg.risk.max_order_qty = qt("1");
+  cfg.risk.max_position = qt("1");
+  cfg.risk.max_open_orders = 8;
+  cfg.quotes.min_requote_interval = Duration{};
+  std::string why;
+  WindowRule pull;
+  pull.name = "reopen";
+  pull.zone = *TimeZone::find("America/New_York", &why);
+  pull.weekdays = 0x7F;
+  pull.start_s = 20 * 3600;
+  pull.duration_s = 20;
+  WindowRule hold = pull;
+  hold.name = "after";
+  hold.start_s = 20 * 3600 + 20;
+  hold.action = WindowAction::ReduceOnly;
+  cfg.windows.rules = {pull, hold};
+  using E = Engine<BasicMM, SimClock, NullTransport, InlineFeed>;
+  auto engine = std::make_unique<E>(cfg, table, clock, transport, feed, strategy, &journal_ring);
+  engine->warm_up();
+  engine->start();
+  std::uint64_t seq = 0;
+  auto push_book = [&](const char* bid, const char* ask) {
+    std::byte* p = feed.reserve(BookDeltaMsg::size_for(1, 1));
+    REQUIRE(p != nullptr);
+    auto* d = reinterpret_cast<BookDeltaMsg*>(p);
+    init_header(
+        *d, EventType::BookSnapshot, InstrumentId{0}, VenueId{0}, BookDeltaMsg::size_for(1, 1));
+    d->hdr.flags |= EventHeader::kSnapshot;
+    d->hdr.recv_ts = clock.now();
+    d->hdr.t0_cycles = clock.cycles();
+    d->bid_count = d->ask_count = 1;
+    d->last_update_id = ++seq;
+    d->levels()[0] = Level{px(bid), qt("5")};
+    d->levels()[1] = Level{px(ask), qt("5")};
+    feed.commit();
+  };
+  push_book("100.00", "100.02");
+  while (engine->step() > 0) {
+  }
+  {
+    NoAllocScope guard(true);
+    for (int k = 0; k < 8; ++k) {
+      clock.advance(seconds(10));
+      push_book(k % 2 == 0 ? "100.10" : "100.00", k % 2 == 0 ? "100.12" : "100.02");
+      while (engine->step() > 0) {
+      }
+    }
+  }
+  CHECK(engine->stats().window_switches == 3);  // pull opens, hands over to hold, hold closes
+  CHECK(engine->windows_open() == 0);
+}
+
 TEST_CASE("hotpath.noalloc: engine step with home placement on an account pool") {
   InstrumentTable table;
   Instrument btc = make_inst();
