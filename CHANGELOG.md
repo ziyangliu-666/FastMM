@@ -2,6 +2,25 @@
 
 All notable changes are recorded here (Keep a Changelog format).
 
+## [Unreleased]
+
+### Added
+- core: `InstrumentRules` events change an instrument's tick, lot, limits or trading status live.
+- core: an instrument the venue does not trade is sent nothing, cancels included, until it trades.
+- core: an instrument that trades again has its venue reconcile before quoting resumes.
+- core: `on_instrument_rules(ctx, id, m)` runs after a rules change; Python gets `inst.trading`.
+- venues: `Venue::refresh_rules()` reads the trading rules again while the session runs.
+- venues: Binance Spot reads `exchangeInfo` every `rules_refresh_s` (60 s) and after a filter refusal.
+- venues: Binance Spot's kill-switch cancel-all skips a symbol that is not trading.
+- live: `[venues.<name>] rules_mismatch` adopts, warns about or refuses start-up rule differences.
+- apps: `fastmm-top` and Prometheus show a side of a halted instrument as `not_trading`.
+- tools: `journal_dump.py` prints `InstrumentRules` records.
+
+### Changed
+- core: the journal format is version 6; the instrument table records the trading status.
+- core: the engine keeps its own copy of the instrument table.
+- venues: a Binance Spot symbol not trading at start-up is held instead of disabled.
+
 ## [0.14.0] - 2026-11-19
 
 A group of instruments priced off one factor can pull one side of its quotes at once when it is

@@ -88,6 +88,7 @@ void on_risk_reject(auto& /*ctx*/, const RiskReject& r) noexcept {
 | `on_perp_state(ctx, id, m)` | a derivative's mark, index or funding arrived; `ctx.mark` and `ctx.funding` already hold it ([Perpetuals](#perpetuals)) |
 | `on_risk_reject(ctx, r)` | the engine's own risk check refused a new order or replace, and nothing was sent ([on_risk_reject](#on_risk_reject)) |
 | `on_batch_end(ctx)` | once, after the events waiting when the strategy called `ctx.request_batch_end()` ([on_batch_end](#on_batch_end)) |
+| `on_instrument_rules(ctx, id, m)` | the venue changed the instrument's tick, lot, limits or trading status; `ctx.instrument(id)` already holds them and `m.changed` names the fields ([Trading rules](venues/trading-rules.md)) |
 
 One input event runs through the hooks in this order:
 

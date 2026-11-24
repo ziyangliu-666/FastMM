@@ -213,6 +213,7 @@ nav:
       - Venues and protocols:
           - reference/venues.md
           - reference/venues/connector-behaviour.md
+          - reference/venues/trading-rules.md
           - reference/venues/binance-spot.md
           - reference/venues/binance-usdm.md
           - reference/venues/bybit.md

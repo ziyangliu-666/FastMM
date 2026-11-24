@@ -71,6 +71,7 @@ Hook names and argument order match the [C++ hooks](strategy-api.md#hooks). Defi
 | `on_balance(self, ctx, msg)` | a venue reported one asset of the account; `ctx.balance` already holds it |
 | `on_perp_state(self, ctx, inst, msg)` | a derivative's mark, index or funding arrived; `ctx.mark` and `ctx.funding` already hold it |
 | `on_risk_reject(self, ctx, reject)` | the engine's risk check refused a `send`, `replace` or quote, reported after the calling hook returns ([on_risk_reject](strategy-api.md#on_risk_reject)) |
+| `on_instrument_rules(self, ctx, inst)` | the venue changed the instrument's tick, lot, limits or trading status; `inst` holds the new ones and `inst.trading` the status ([Trading rules](venues/trading-rules.md)) |
 
 `inst` is an `Instrument`; `book`, `msg`, `trade`, `fill` and `update` are [views](#views-and-values).
 

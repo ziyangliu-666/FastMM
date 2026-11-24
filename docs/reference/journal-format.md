@@ -1,6 +1,6 @@
 # Journal format
 
-The `.fmj` journal records every event a session's engine consumed, in consumption order and with the engine clock, plus a copy of every order message it sent. Format version 5; readers also open versions 1 to 4. Code: `include/fastmm/core/journal.hpp`; design: [ADR-0010](../adr/0010-fmj-journal-format.md).
+The `.fmj` journal records every event a session's engine consumed, in consumption order and with the engine clock, plus a copy of every order message it sent. Format version 6; readers also open versions 1 to 5. Code: `include/fastmm/core/journal.hpp`; design: [ADR-0010](../adr/0010-fmj-journal-format.md).
 
 | Value | Encoding |
 |---|---|
@@ -66,7 +66,7 @@ Each part is a complete journal with the same `session_id`: it repeats the heade
 | Offset | Size | Field | Meaning |
 |---:|---:|---|---|
 | 0 | 4 | `magic` | `FMJ1` |
-| 4 | 4 | `version` | 5 (1 to 4 for old files) |
+| 4 | 4 | `version` | 6 (1 to 5 for old files) |
 | 8 | 4 | `header_bytes` | offset of the first block |
 | 12 | 4 | `instrument_count` | instruments that follow the header |
 | 16 | 8 | `session_id` | session identifier |
@@ -103,7 +103,7 @@ Each part is a complete journal with the same `session_id`: it repeats the heade
 | 2 | the venue feeds showed the session's own orders: always live; in a backtest with `[backtest] own_orders_in_feed`, our quantity is in `OwnLevels` records (format 5) |
 | 3 | `engine_clock_ns` is valid (a part after the first) |
 
-The configuration is `Config::effective_toml()`: the configuration after command-line overrides (`--strategy`, `--param`) as deterministic TOML, without `api_key`, `api_secret` and `api_passphrase`, zero-padded to a multiple of 64 bytes. The instrument records are `fastmm::Instrument` (128 bytes).
+The configuration is `Config::effective_toml()`: the configuration after command-line overrides (`--strategy`, `--param`) as deterministic TOML, without `api_key`, `api_secret` and `api_passphrase`, zero-padded to a multiple of 64 bytes. The instrument records are `fastmm::Instrument` (128 bytes), as the session started with them: the venue's tick, lot and limits where the connector read them, and from format 6 the trading status at byte 120 (0 trading, 1 halted, 2 closed).
 
 The parameter table lists the strategy's parameters in schema order. Each entry is the type (`uint8`: 0 `int`, 1 `double`, 2 `bool`, 3 `decimal`, 4 `bps`, 5 `ms`), the name length (`uint8`) and the name; the table is zero-padded to a multiple of 64 bytes.
 
@@ -175,6 +175,7 @@ Message layouts are the structs in `include/fastmm/core/messages.hpp`; `EventTyp
 | 30 | `StrategyState` | [Strategy state](#strategy-state) |
 | 31 | `AccountFlow` (128 B, v4) | signed amount at 64, positive in; asset at 72; the venue's id at 81; `venue` is the account, `exch_ts` the venue's time |
 | 32 | `OwnLevels` (v5) | a book delta's layout: our quantity at each price from then on, zero for none |
+| 33 | `InstrumentRules` (128 B, v6) | tick at 64, lot at 72, min quantity at 80, max quantity at 88, min notional at 96, max notional at 104, trading status at 112 (0 trading, 1 halted, 2 closed); the fields that changed at 113: bit 0 tick, 1 lot, 2 min quantity, 3 max quantity, 4 min notional, 5 max notional, 6 status; cause at 114: 0 the periodic read, 1 a read after a refusal |
 
 `AccountFlow` is money in or out of an account other than by trades and funding. Binance Spot reports it as `balanceUpdate`; Binance USDⓈ-M as the `bc` of an `ACCOUNT_UPDATE` that is not for an order or funding.
 

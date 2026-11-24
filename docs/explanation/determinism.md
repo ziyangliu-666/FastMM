@@ -23,7 +23,7 @@ A backtest with the same inputs sends the same orders, and replaying a journal s
 
 The rest is deterministic by construction: one engine thread, no reads of the system clock, integer arithmetic for money, containers iterated in a defined order and timers that fire in engine time.
 
-Operator actions are inputs too. Commands on the control socket ([Operate a running session](../how-to/operations/operate-a-running-session.md)) reach the engine through a journaled ring, and a flatten runs on a journaled timer. A replay of an incident reproduces the pull, the new limits and every reduce-only order the flatten sent.
+Operator actions are inputs too. Commands on the control socket ([Operate a running session](../how-to/operations/operate-a-running-session.md)) reach the engine through a journaled ring, and a flatten runs on a journaled timer. A replay of an incident reproduces the pull, the new limits and every reduce-only order the flatten sent. A venue's change of an instrument's tick, lot or trading status is an input in the same way ([Trading rules](../reference/venues/trading-rules.md)).
 
 A live session is not repeatable, because network timing decides which event comes first, but its journal is. The journal records the engine clock of every event and timer, and in its header the session epoch, the quoting state, each venue's cancel-replace setting, the configuration and the strategy's parameter table ([Journal format](../reference/journal-format.md)). Replay restores all of them.
 
