@@ -5,17 +5,21 @@
 #include <fmt/format.h>
 
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <zstd.h>
 
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <cstring>
 #include <filesystem>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -152,6 +156,9 @@ bool JournalFileWriter::open_part() noexcept {
     set_failed(JournalError::OpenFailed);
     return false;
   }
+  // Held until the part is closed: the archiver (core/journal_archive.hpp), of this process or
+  // another engine's sharing the directory, leaves a part it cannot lock alone.
+  static_cast<void>(::flock(fd_, LOCK_EX | LOCK_NB));
   closed_ = false;
   reserved_ = 0;
   file_size_ = 0;
@@ -370,7 +377,10 @@ std::size_t prune_journals(const std::string& dir, int days, std::string* error)
   for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
     if (ec) break;
     if (!entry.is_regular_file(ec) || ec) continue;
-    if (entry.path().extension() != ".fmj") continue;
+    const std::string name = entry.path().filename().string();
+    const bool journal = name.size() > 4 && name.compare(name.size() - 4, 4, ".fmj") == 0;
+    const bool archive = name.size() > 8 && name.compare(name.size() - 8, 8, ".fmj.zst") == 0;
+    if (!journal && !archive) continue;
     const auto mtime = entry.last_write_time(ec);
     if (ec) {
       ec.clear();
@@ -390,6 +400,89 @@ std::size_t prune_journals(const std::string& dir, int days, std::string* error)
 }
 
 // ---- JournalReader ----------------------------------------------------------------------
+
+namespace {
+
+bool is_archive(std::string_view path) noexcept {
+  return path.size() > 4 && path.substr(path.size() - 4) == ".zst";
+}
+
+// The whole of the zstd file `path` decompressed into an anonymous mapping, which munmap()
+// releases as it does a file's: its address, `len` set to the bytes in it. nullptr on failure,
+// with `err` set to zstd's reason (nullptr: errno has it).
+void* inflate(const char* path, std::size_t& len, const char*& err) noexcept {
+  err = nullptr;
+  len = 0;
+  const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return nullptr;
+  struct stat st {};
+  if (::fstat(fd, &st) != 0 || st.st_size == 0) {
+    ::close(fd);
+    err = st.st_size == 0 ? "empty" : nullptr;
+    return nullptr;
+  }
+  const auto in_len = static_cast<std::size_t>(st.st_size);
+  void* in = ::mmap(nullptr, in_len, PROT_READ, MAP_PRIVATE, fd, 0);
+  ::close(fd);
+  if (in == MAP_FAILED) return nullptr;
+  const unsigned long long known = ZSTD_getFrameContentSize(in, in_len);
+  std::size_t cap = known != ZSTD_CONTENTSIZE_UNKNOWN && known != ZSTD_CONTENTSIZE_ERROR
+                        ? static_cast<std::size_t>(known)
+                        : in_len * 4;
+  cap = std::max<std::size_t>(cap, 4096);
+  void* out = ::mmap(nullptr, cap, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  ZSTD_DCtx* dctx = ZSTD_createDCtx();
+  const auto give_up = [&](const char* why) -> void* {
+    if (dctx != nullptr) ZSTD_freeDCtx(dctx);
+    if (out != MAP_FAILED) ::munmap(out, cap);
+    ::munmap(in, in_len);
+    err = why;
+    return nullptr;
+  };
+  if (out == MAP_FAILED) return give_up(nullptr);
+  if (dctx == nullptr) return give_up("zstd: cannot allocate a context");
+  ZSTD_inBuffer ib{in, in_len, 0};
+  std::size_t produced = 0;
+  for (;;) {
+    if (produced == cap) {
+      void* grown = ::mremap(out, cap, cap * 2, MREMAP_MAYMOVE);
+      if (grown == MAP_FAILED) return give_up(nullptr);
+      out = grown;
+      cap *= 2;
+    }
+    ZSTD_outBuffer ob{static_cast<char*>(out) + produced, cap - produced, 0};
+    const std::size_t left = ZSTD_decompressStream(dctx, &ob, &ib);
+    if (ZSTD_isError(left) != 0) return give_up(ZSTD_getErrorName(left));
+    produced += ob.pos;
+    if (left == 0 && ib.pos == ib.size) break;
+    // Input used up while the frame wants more: the archive is cut short.
+    if (ib.pos == ib.size && ob.pos < ob.size) return give_up("the archive is truncated");
+  }
+  ZSTD_freeDCtx(dctx);
+  ::munmap(in, in_len);
+  // Hand back no more than the data: munmap(map_, map_len_) then releases every page.
+  const long page = ::sysconf(_SC_PAGESIZE);
+  const std::size_t keep = std::max<std::size_t>(
+      (produced + static_cast<std::size_t>(page) - 1) & ~(static_cast<std::size_t>(page) - 1),
+      static_cast<std::size_t>(page));
+  if (keep < cap) {
+    void* shrunk = ::mremap(out, cap, keep, 0);
+    if (shrunk != MAP_FAILED) {
+      out = shrunk;
+    } else {
+      ::munmap(static_cast<char*>(out) + keep, cap - keep);
+    }
+  }
+  ::mprotect(out, keep, PROT_READ);
+  len = produced;
+  return out;
+}
+
+}  // namespace
+
+bool journal_exists(const std::string& path) {
+  return ::access(path.c_str(), F_OK) == 0 || ::access((path + ".zst").c_str(), F_OK) == 0;
+}
 
 JournalReader::~JournalReader() {
   if (map_ != nullptr) ::munmap(const_cast<std::byte*>(map_), map_len_);
@@ -420,7 +513,42 @@ Result<void, JournalError> JournalReader::open(const std::string& path) noexcept
                  sizeof detail_);
     return fail(e);
   };
-  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  // A journal the archive compressed ([engine] journal_compress) is read from x.fmj.zst, whether
+  // asked for by that name or by x.fmj.
+  char zst[PATH_MAX];
+  const char* file = path.c_str();
+  if (!is_archive(path) && ::access(file, F_OK) != 0) {
+    const auto r = fmt::format_to_n(zst, sizeof zst - 1, "{}.zst", path);
+    if (r.size < sizeof zst) {
+      zst[r.size] = '\0';
+      if (::access(zst, F_OK) == 0) file = zst;
+    }
+  }
+  if (is_archive(file)) {
+    std::size_t len = 0;
+    const char* err = nullptr;
+    void* p = inflate(file, len, err);
+    if (p == nullptr) {
+      return why(err == nullptr ? JournalError::IoError : JournalError::HeaderCorrupt,
+                 "{}: {}",
+                 file,
+                 err == nullptr ? std::strerror(errno) : err);
+    }
+    if (len < sizeof(JournalFileHeader)) {
+      ::munmap(p, len == 0 ? 1 : len);
+      return why(JournalError::TooShort,
+                 "{} bytes, shorter than the {}-byte file header",
+                 len,
+                 sizeof(JournalFileHeader));
+    }
+    map_ = static_cast<const std::byte*>(p);
+    map_len_ = len;
+    if (auto r = parse_prologue(); !r) return r;
+    validate();
+    reset();
+    return {};
+  }
+  const int fd = ::open(file, O_RDONLY | O_CLOEXEC);
   if (fd < 0) return why(JournalError::OpenFailed, "{}", std::strerror(errno));
   struct stat st {};
   if (::fstat(fd, &st) != 0) {

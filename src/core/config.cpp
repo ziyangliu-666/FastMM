@@ -797,6 +797,10 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "journal_retention_days", e.journal_retention_days);
     if (e.journal_retention_days < 0)
       fail_at(*t->get("journal_retention_days"), "journal_retention_days must be >= 0 (0 keeps)");
+    get(*t, "journal_compress", e.journal_compress);
+    if (e.journal_compress != "none" && e.journal_compress != "zstd")
+      fail_at(*t->get("journal_compress"), "journal_compress must be none|zstd");
+    get(*t, "journal_max_total_bytes", e.journal_max_total_bytes);
     get(*t, "checkpoint_s", e.checkpoint_s);
     if (e.checkpoint_s < 0)
       fail_at(*t->get("checkpoint_s"), "checkpoint_s must be >= 0 (0 disables)");
@@ -2083,6 +2087,9 @@ std::string Config::effective_toml() const {
   e.insert("journal_sync", engine.journal_sync);
   e.insert("journal_max_bytes", static_cast<std::int64_t>(engine.journal_max_bytes));
   e.insert("journal_retention_days", static_cast<std::int64_t>(engine.journal_retention_days));
+  e.insert("journal_compress", engine.journal_compress);
+  e.insert("journal_max_total_bytes", static_cast<std::int64_t>(engine.journal_max_total_bytes));
+
   if (engine.checkpoint_s != 0) e.insert("checkpoint_s", engine.checkpoint_s);
   e.insert("epoch_file", engine.epoch_file);
   e.insert("kill_file", engine.kill_file);

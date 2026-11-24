@@ -82,7 +82,7 @@ Alert on the process exiting with 5, 6 or 7 from whatever starts it.
 A session writes `<journal_dir>/<name>-<session_id>.fmj`, grown in 64 MiB extents. One-symbol Binance Demo sessions write 23 to 32 MB per hour; a full-depth multicast feed writes far more ([Journal files](journals-replay-pnl.md#journal-files)).
 
 1. Put `journal_dir` on its own filesystem.
-2. Set `[engine] journal_max_bytes` to roll over into parts (`x.fmj`, `x.1.fmj`, ...) and `journal_retention_days` to delete old files at start, or archive them yourself.
+2. Set `[engine] journal_max_bytes` to roll over into parts (`x.fmj`, `x.1.fmj`, ...), `journal_compress = "zstd"` to compress the closed ones, and `journal_retention_days` and `journal_max_total_bytes` to keep a bounded history: the session applies them every minute ([Rotation and retention](../../reference/journal-format.md#rotation-and-retention)).
 3. Alert on free space with room for a full session ([Go-live checklist](go-live-checklist.md#the-host)).
 
 The store grows too, mostly by one row per order. `[storage] retention_days` deletes old orders, position snapshots, markouts and rejects while the session runs ([Storage](../../reference/storage.md#retention)).

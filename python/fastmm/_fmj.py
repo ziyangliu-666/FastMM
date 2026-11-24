@@ -9,7 +9,9 @@ and a price to mark inventory at; everything else is skipped without decoding it
 from __future__ import annotations
 
 import mmap
+import os
 import struct
+
 from typing import Any, Dict, List, Optional, Tuple
 
 SCALE = 100_000_000
@@ -89,6 +91,37 @@ def _instruments(data: memoryview, count: int) -> List[Dict[str, Any]]:
     return out
 
 
+def archive_path(path: str) -> Optional[str]:
+    """The compressed journal to read for `path` ([engine] journal_compress): `path` itself when
+    it ends in .zst, `path`.zst when only that is there, else None."""
+    if path.endswith(".zst"):
+        return path
+    if not os.path.exists(path) and os.path.exists(path + ".zst"):
+        return path + ".zst"
+    return None
+
+
+def decompress(path: str) -> bytes:
+    """A .fmj.zst journal's bytes: through compression.zstd (Python 3.14) or the zstandard
+    package, whichever is there."""
+    with open(path, "rb") as fh:
+        raw = fh.read()
+    try:
+        from compression import zstd  # type: ignore[import-not-found]
+
+        return bytes(zstd.decompress(raw))
+    except ImportError:
+        pass
+    try:
+        import zstandard  # type: ignore[import-not-found]
+
+        return bytes(zstandard.ZstdDecompressor().decompress(raw))
+    except ImportError:
+        raise RuntimeError(f"fastmm: {path} is a compressed journal; reading it needs Python "
+                           "3.14 or `pip install zstandard`, or decompress it with `zstd -d`"
+                           ) from None
+
+
 def read_session(path: str, mark_interval_ns: int = 1_000_000_000) -> Dict[str, Any]:
     """Header, fills, outbound counts, rejects and mark-price series of a session journal.
 
@@ -97,11 +130,16 @@ def read_session(path: str, mark_interval_ns: int = 1_000_000_000) -> Dict[str, 
     no book ticker); fills carry the mark of their instrument that was current when they arrived,
     so the marked position is never ahead of the market.
     """
-    with open(path, "rb") as fh:
-        try:
-            data: Any = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
-        except ValueError:  # an empty file cannot be mapped
-            data = b""
+    data: Any
+    archive = archive_path(path)
+    if archive is not None:
+        data = decompress(archive)
+    else:
+        with open(path, "rb") as fh:
+            try:
+                data = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+            except ValueError:  # an empty file cannot be mapped
+                data = b""
     view = memoryview(data)
     try:
         return _read_session(view, mark_interval_ns)

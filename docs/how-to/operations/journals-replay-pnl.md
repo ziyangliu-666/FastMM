@@ -29,7 +29,9 @@ Blocks carry CRC32C checksums, and a clean shutdown writes a trailer ([Journal f
 |---|---|
 | `journal` | on by default |
 | `journal_max_bytes` | rolls the file over into numbered parts |
-| `journal_retention_days` | deletes old journals at start-up |
+| `journal_compress` | compresses the closed parts to `.fmj.zst`, which every reader opens |
+| `journal_retention_days` | deletes journals older than that many days, at start and every minute |
+| `journal_max_total_bytes` | deletes the oldest journals past that total |
 | `journal_sync` | how far a write is pushed before the writer moves on ([Durability](../../reference/journal-format.md#durability)) |
 
 A one-symbol Binance Demo session writes 23 to 32 MB per hour. A journal that cannot be written trips the kill switch.

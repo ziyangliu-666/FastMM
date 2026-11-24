@@ -8,6 +8,10 @@ All notable changes are recorded here (Keep a Changelog format).
 - core: every fill record carries its order's trail: placed when and at what price, last moved, acked, what was in flight.
 - core: `ctx.quote_context(id, side, {...})` publishes up to four numbers per side that each order and fill keeps.
 - core: `ctx.quote_context_names({...})` names them for the store and the tools.
+- core: `[engine] journal_compress = "zstd"` compresses closed journal parts to `.fmj.zst` on a background thread.
+- core: `[engine] journal_max_total_bytes` caps the journals in `journal_dir`, oldest first.
+- core: `JournalReader` and the `journal:` source read `.fmj.zst`, also when asked for `x.fmj`.
+- core: the journal writer holds a `flock` on the part it writes.
 - store: schema 16 adds the decision columns to `fills` and the `quote_context_names` table.
 - apps: `fastmm-pnl fill-context` prints each fill's decision record with the context named.
 - backtest: `BacktestConfig::record_ring` and `ReplayOptions::record_ring` hand out the engine's records.
@@ -16,7 +20,9 @@ All notable changes are recorded here (Keep a Changelog format).
 - strategies: `basic_mm` publishes the mid and its inventory-skewed centre as its quote context.
 
 ### Changed
+- core: `journal_retention_days` covers `.fmj.zst` and runs every minute in `fastmm-live`, not only at start.
 - core: the OMS keeps an `OrderTrail` per order, open or recently terminal; `request_cancel` takes the send time.
+- deps: zstd 1.5.7, built from source as `fastmm_zstd`.
 
 ### Breaking changes
 - python: the hot hook ABI is version 4; hooks cached for version 3 are compiled again.

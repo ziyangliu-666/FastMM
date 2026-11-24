@@ -11,7 +11,7 @@ target_include_directories(fastmm_core PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/generated>
   $<INSTALL_INTERFACE:include>)
-target_link_libraries(fastmm_core PUBLIC fmt::fmt Threads::Threads PRIVATE $<BUILD_INTERFACE:tomlplusplus::tomlplusplus>)
+target_link_libraries(fastmm_core PUBLIC fmt::fmt Threads::Threads PRIVATE $<BUILD_INTERFACE:tomlplusplus::tomlplusplus> fastmm_zstd)
 target_compile_definitions(fastmm_core PRIVATE
   FASTMM_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
   FASTMM_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}"

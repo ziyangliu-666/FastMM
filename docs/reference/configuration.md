@@ -31,7 +31,9 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `journal_dir` | string |  | directory for journals (default "runs") |
 | `journal_sync` | string |  | how far a journal write is pushed: async (the kernel writes it back; survives the process dying) \| fdatasync (fdatasync every 100 ms; survives power loss) (default async) |
 | `journal_max_bytes` | integer |  | roll the journal over to the next part at this size, bytes; each part is a complete journal ("x.fmj", "x.1.fmj", ...); 0 = one file per session (default 0) |
-| `journal_retention_days` | integer |  | delete .fmj files in journal_dir last written more than this many days ago, at start; 0 = keep everything (default 0) |
+| `journal_retention_days` | integer |  | delete journals (.fmj and .fmj.zst) in journal_dir last written more than this many days ago, at start and, in fastmm-live, every minute while it runs; 0 = keep everything (default 0) |
+| `journal_compress` | string |  | fastmm-live: none \| zstd: compress each journal in journal_dir nobody is writing to x.fmj.zst on a background thread, a minute after it was last written; the replay, backtest and tools read either form (default none) |
+| `journal_max_total_bytes` | integer |  | cap on the journals in journal_dir, bytes, compressed or not: the oldest go first, at start and, in fastmm-live, every minute; a part being written is never deleted; 0 = no cap (default 0) |
 | `checkpoint_s` | integer |  | with a journal, how often the engine writes a checkpoint to it: the strategy's state() (a strategy that keeps state), the positions and the open orders, seconds of engine time; a backtest can start from any of them (default 0: never) |
 | `epoch_file` | string |  | session epoch file, keeps client order ids unique across restarts (default "runs/session_epoch") |
 | `kill_file` | string |  | latched kill switch and cumulative PnL, so [risk] max_loss is a budget across restarts (default "<journal_dir>/<name>.kill") |
