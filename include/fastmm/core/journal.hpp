@@ -475,7 +475,8 @@ class JournalReader {
   JournalReader& operator=(JournalReader&& o) noexcept;
 
   // `path` may name a compressed journal (x.fmj.zst), and when x.fmj is not there but x.fmj.zst
-  // is, the archive is read: it is decompressed into memory, which the reader holds.
+  // is, the archive is read: it is decompressed into a file with no name next to it (or in
+  // $TMPDIR), mapped as a journal file is.
   [[nodiscard]] Result<void, JournalError> open(const std::string& path) noexcept;
 
   // The header and tables of a journal that may still be written, as a private copy: no block is

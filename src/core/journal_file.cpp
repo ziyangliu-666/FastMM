@@ -15,6 +15,7 @@
 #include <cerrno>
 #include <chrono>
 #include <climits>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <mutex>
@@ -407,9 +408,36 @@ bool is_archive(std::string_view path) noexcept {
   return path.size() > 4 && path.substr(path.size() - 4) == ".zst";
 }
 
-// The whole of the zstd file `path` decompressed into an anonymous mapping, which munmap()
-// releases as it does a file's: its address, `len` set to the bytes in it. nullptr on failure,
-// with `err` set to zstd's reason (nullptr: errno has it).
+// A file with no name to decompress an archive into: in the archive's directory, else in $TMPDIR
+// or /tmp. -1 when none of them takes one (a file system without O_TMPFILE).
+int scratch_file(const char* path) noexcept {
+  char dir[PATH_MAX];
+  const char* slash = std::strrchr(path, '/');
+  const auto n = static_cast<std::size_t>(slash == nullptr ? 0 : slash - path);
+  if (slash == nullptr) {
+    std::memcpy(dir, ".", 2);
+  } else if (n == 0) {
+    std::memcpy(dir, "/", 2);
+  } else if (n < sizeof dir) {
+    std::memcpy(dir, path, n);
+    dir[n] = '\0';
+  } else {
+    dir[0] = '\0';
+  }
+  const int flags = O_TMPFILE | O_RDWR | O_CLOEXEC;
+  int fd = dir[0] != '\0' ? ::open(dir, flags, 0600) : -1;
+  if (fd >= 0) return fd;
+  const char* tmp = std::getenv("TMPDIR");
+  if (tmp != nullptr && tmp[0] != '\0') fd = ::open(tmp, flags, 0600);
+  return fd >= 0 ? fd : ::open("/tmp", flags, 0600);
+}
+
+// The whole of the zstd file `path` decompressed into a file with no name (scratch_file) and
+// mapped read-only, as a journal file is: its pages are the kernel's to drop and read again, so a
+// source that opens every part of a long session at once (JournalSource) holds no more memory than
+// with the parts as written. munmap() releases the mapping, and the file goes with it. Returns the
+// address, `len` set to the bytes in it; nullptr on failure, with `err` set to the reason
+// (nullptr: errno has it).
 void* inflate(const char* path, std::size_t& len, const char*& err) noexcept {
   err = nullptr;
   len = 0;
@@ -425,57 +453,58 @@ void* inflate(const char* path, std::size_t& len, const char*& err) noexcept {
   void* in = ::mmap(nullptr, in_len, PROT_READ, MAP_PRIVATE, fd, 0);
   ::close(fd);
   if (in == MAP_FAILED) return nullptr;
-  const unsigned long long known = ZSTD_getFrameContentSize(in, in_len);
-  std::size_t cap = known != ZSTD_CONTENTSIZE_UNKNOWN && known != ZSTD_CONTENTSIZE_ERROR
-                        ? static_cast<std::size_t>(known)
-                        : in_len * 4;
-  cap = std::max<std::size_t>(cap, 4096);
-  void* out = ::mmap(nullptr, cap, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  const int out = scratch_file(path);
   ZSTD_DCtx* dctx = ZSTD_createDCtx();
+  constexpr std::size_t kChunk = std::size_t{1} << 20;
+  auto* buf = static_cast<char*>(std::malloc(kChunk));
   const auto give_up = [&](const char* why) -> void* {
+    const int saved = errno;
     if (dctx != nullptr) ZSTD_freeDCtx(dctx);
-    if (out != MAP_FAILED) ::munmap(out, cap);
+    std::free(buf);
+    if (out >= 0) ::close(out);
     ::munmap(in, in_len);
+    errno = saved;
     err = why;
     return nullptr;
   };
-  if (out == MAP_FAILED) return give_up(nullptr);
-  if (dctx == nullptr) return give_up("zstd: cannot allocate a context");
+  if (out < 0) return give_up(nullptr);
+  if (dctx == nullptr || buf == nullptr) return give_up("zstd: cannot allocate a context");
   ZSTD_inBuffer ib{in, in_len, 0};
   std::size_t produced = 0;
   for (;;) {
-    if (produced == cap) {
-      void* grown = ::mremap(out, cap, cap * 2, MREMAP_MAYMOVE);
-      if (grown == MAP_FAILED) return give_up(nullptr);
-      out = grown;
-      cap *= 2;
-    }
-    ZSTD_outBuffer ob{static_cast<char*>(out) + produced, cap - produced, 0};
+    ZSTD_outBuffer ob{buf, kChunk, 0};
     const std::size_t left = ZSTD_decompressStream(dctx, &ob, &ib);
     if (ZSTD_isError(left) != 0) return give_up(ZSTD_getErrorName(left));
+    for (std::size_t w = 0; w < ob.pos;) {
+      const ssize_t k = ::write(out, buf + w, ob.pos - w);
+      if (k < 0 && errno == EINTR) continue;
+      if (k <= 0) return give_up(nullptr);
+      w += static_cast<std::size_t>(k);
+    }
     produced += ob.pos;
     if (left == 0 && ib.pos == ib.size) break;
     // Input used up while the frame wants more: the archive is cut short.
     if (ib.pos == ib.size && ob.pos < ob.size) return give_up("the archive is truncated");
   }
   ZSTD_freeDCtx(dctx);
+  dctx = nullptr;
+  std::free(buf);
+  buf = nullptr;
   ::munmap(in, in_len);
-  // Hand back no more than the data: munmap(map_, map_len_) then releases every page.
-  const long page = ::sysconf(_SC_PAGESIZE);
-  const std::size_t keep = std::max<std::size_t>(
-      (produced + static_cast<std::size_t>(page) - 1) & ~(static_cast<std::size_t>(page) - 1),
-      static_cast<std::size_t>(page));
-  if (keep < cap) {
-    void* shrunk = ::mremap(out, cap, keep, 0);
-    if (shrunk != MAP_FAILED) {
-      out = shrunk;
-    } else {
-      ::munmap(static_cast<char*>(out) + keep, cap - keep);
-    }
+  if (produced == 0) {
+    ::close(out);
+    err = "empty";
+    return nullptr;
   }
-  ::mprotect(out, keep, PROT_READ);
+  void* map = ::mmap(nullptr, produced, PROT_READ, MAP_SHARED, out, 0);
+  const int saved = errno;
+  ::close(out);
+  if (map == MAP_FAILED) {
+    errno = saved;
+    return nullptr;
+  }
   len = produced;
-  return out;
+  return map;
 }
 
 }  // namespace
