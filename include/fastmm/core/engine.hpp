@@ -1128,6 +1128,7 @@ class Engine {
     r.risk_rejects_by_reason = stats_.risk_rejects_by_reason;
     r.venue_rejects_by_reason = stats_.venue_rejects_by_reason;
     r.balance_withheld = quotes_.stats().kept_balance;
+    r.window_switches = stats_.window_switches;
     if (capacity_on_) {
       const CapacityMinute& c = capacity_->totals();
       r.capacity_priced_out = c.priced_out_new + c.priced_out_move;

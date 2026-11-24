@@ -53,6 +53,8 @@ struct RunnerStats {
   // would have been (observe mode, or moves under mode = "new").
   std::uint64_t capacity_priced_out = 0;
   std::uint64_t capacity_observed = 0;
+  // [[windows]] opened or closed (EngineStats::window_switches).
+  std::uint64_t window_switches = 0;
   // Pools with homes (core/pool_homes.hpp): adding orders refused HomeUnavailable, and those
   // spill = "busy" sent off their home.
   std::uint64_t home_unavailable = 0;
