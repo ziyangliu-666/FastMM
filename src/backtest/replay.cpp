@@ -239,6 +239,7 @@ ReplayResult replay_impl(const std::string& path,
   deps.instruments = &instruments;
   deps.params = cfg.params;
   deps.backend = &backend;
+  deps.record_ring = opt.record_ring;
   backend.feed.set_param_updates(opt.param_updates);
   std::unique_ptr<IEngineRunner> runner;
   if (custom != nullptr) {

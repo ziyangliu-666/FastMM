@@ -384,7 +384,7 @@ OPTIONS:
   --raw                       ledger: every stored row, with its copy number
   --books                     pnl: the engine's own day roll-up of its positions, as it
                               booked them
-  --order <id>                order: the client order id
+  --order <id>                order, fill-context: the client order id
   --test <name>               ab: the [ab] name (default: the newest session's)
   --horizons-ms <ms,...>      ab: recorded horizons to show (default: all)
   --resamples <n>             ab: resamples of the days (default 2000)
@@ -394,6 +394,9 @@ OPTIONS:
 SUBCOMMANDS:
   sessions                    one row per session: when it ran, what it made, how it ended
   fills                       one row per execution
+  fill-context                one row per execution with how its order got there: placed
+                              when and where, last moved, rested how long, what was in
+                              flight, and the strategy's quote context then and at the fill
   orders                      one row per order, in its last known state
   pnl                         realised (and the funding in it), fees and net by UTC day,
                               account and instrument, from the executions; --books: as the

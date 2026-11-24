@@ -2,6 +2,27 @@
 
 All notable changes are recorded here (Keep a Changelog format).
 
+## [Unreleased]
+
+### Added
+- core: every fill record carries its order's trail: placed when and at what price, last moved, acked, what was in flight.
+- core: `ctx.quote_context(id, side, {...})` publishes up to four numbers per side that each order and fill keeps.
+- core: `ctx.quote_context_names({...})` names them for the store and the tools.
+- store: schema 16 adds the decision columns to `fills` and the `quote_context_names` table.
+- apps: `fastmm-pnl fill-context` prints each fill's decision record with the context named.
+- backtest: `BacktestConfig::record_ring` and `ReplayOptions::record_ring` hand out the engine's records.
+- python: hot `ctx.quote_context`, `bid_context`, `ask_context` and `Strategy.quote_context_names`.
+- python: `Store.fill_context()`.
+- strategies: `basic_mm` publishes the mid and its inventory-skewed centre as its quote context.
+
+### Changed
+- core: the OMS keeps an `OrderTrail` per order, open or recently terminal; `request_cancel` takes the send time.
+
+### Breaking changes
+- python: the hot hook ABI is version 4; hooks cached for version 3 are compiled again.
+- store: schema 16, migrated in place after a copy to `<path>.v15.bak`; its old fills have NULL decision columns.
+- store: a store opened by this version does not open in 0.14.
+
 ## [0.14.0] - 2026-11-19
 
 A group of instruments priced off one factor can pull one side of its quotes at once when it is

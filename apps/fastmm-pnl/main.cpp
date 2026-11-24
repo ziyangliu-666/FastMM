@@ -2,6 +2,8 @@
 //
 //   fastmm-pnl pnl --since yesterday          what each instrument made, by day
 //   fastmm-pnl fills --session 1700000000     the fills of one session
+//   fastmm-pnl fill-context --day today       why each fill happened: its order's trail
+
 //   fastmm-pnl sessions                       what has run
 //   fastmm-pnl audit --exchange trades.json   the stored fills against the venue's export
 //   fastmm-pnl params --at "2026-10-09 14:00"  the strategy parameters in effect then
@@ -263,6 +265,10 @@ static int run(int argc, char** argv) {
   const std::pair<const char*, const char*> commands[] = {
       {"sessions", "one row per session: when it ran, what it made, how it ended"},
       {"fills", "one row per execution"},
+      {"fill-context",
+       "one row per execution with how its order got there: placed when and where, last moved, "
+       "rested how long, what was in flight, and the strategy's quote context then and at the "
+       "fill"},
       {"orders", "one row per order, in its last known state"},
       {"pnl",
        "realised (and the funding in it), fees and net by UTC day, account and instrument, from "
@@ -327,7 +333,8 @@ static int run(int argc, char** argv) {
   app.add_flag("--raw", raw, "ledger: every stored row, with its copy number");
   app.add_flag(
       "--books", books, "pnl: the engine's own day roll-up of its positions, as it booked them");
-  app.add_option("--order", f.order, "order: the client order id")->option_text("<id>");
+  app.add_option("--order", f.order, "order, fill-context: the client order id")
+      ->option_text("<id>");
   app.add_option("--test", test, "ab: the [ab] name (default: the newest session's)")
       ->option_text("<name>");
   app.add_option("--horizons-ms", horizons, "ab: recorded horizons to show (default: all)")
@@ -471,6 +478,8 @@ static int run(int argc, char** argv) {
     rows = reader->sessions(f);
   } else if (command == "fills") {
     rows = reader->fills(f);
+  } else if (command == "fill-context") {
+    rows = reader->fill_context(f);
   } else if (command == "orders") {
     rows = reader->orders(f);
   } else if (command == "pnl") {

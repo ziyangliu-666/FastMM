@@ -61,6 +61,36 @@ struct OrderTimes {
   Timestamp local_ack;  // the ack's recv_ts: when it reached us
 };
 
+// The numbers a strategy publishes about its quotes on one side of an instrument
+// (StrategyContext::quote_context): the fair value it priced them from, a quote's distance from it,
+// a signal. NaN where nothing was published. The engine copies the side's context into each order
+// it sends or moves on that side, so the record of a fill can say what the strategy knew when it
+// placed the order and what it knew when the fill arrived (FillRecord).
+inline constexpr std::size_t kQuoteContextSize = 4;
+struct QuoteContext {
+  double v[kQuoteContextSize] = {std::numeric_limits<double>::quiet_NaN(),
+                                 std::numeric_limits<double>::quiet_NaN(),
+                                 std::numeric_limits<double>::quiet_NaN(),
+                                 std::numeric_limits<double>::quiet_NaN()};
+};
+static_assert(sizeof(QuoteContext) == 32 && std::is_trivially_copyable_v<QuoteContext>);
+
+// How an order came to be where it was when something happened to it: kept by the OMS next to
+// Order (Oms::trail), for an open order and for a recently terminal one, and copied into the
+// record of each fill (FillRecord). Engine clock throughout, so a replay reproduces it.
+struct OrderTrail {
+  OrderTimes times;              // the working leg: sent (the order, or its last accepted replace)
+  Timestamp placed;              // the first leg went out
+  Timestamp pending_sent;        // the cancel or replace in flight went out; invalid: none. Kept on
+                                 // the terminal record: the cancel that ended the order.
+  Price placed_px;               // the first leg's price
+  std::uint32_t amends = 0;      // replaces the venue accepted
+  std::uint32_t pad_ = 0;        //
+  QuoteContext context;          // the side's context when the working leg went out
+  QuoteContext pending_context;  // the side's context when the replace in flight went out
+};
+static_assert(std::is_trivially_copyable_v<OrderTrail>);
+
 // What an order or a quote level is worth when the strategy did not say ([capacity],
 // core/capacity_price.hpp).
 inline constexpr float kNoValue = std::numeric_limits<float>::quiet_NaN();

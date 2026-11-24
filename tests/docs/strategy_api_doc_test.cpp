@@ -158,6 +158,13 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().pull_quotes(InstrumentId{})), 
 static_assert(std::same_as<decltype(lvalue<Ctx>().pull_all_quotes()), void>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().working_quote(InstrumentId{}, Side::Buy, 0)),
                            const Order*>);
+// quote context: kept with each order sent on the side and with its fills
+static_assert(
+    std::same_as<decltype(lvalue<Ctx>().quote_context(InstrumentId{}, Side::Buy, {1.0, 2.0})),
+                 void>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().quote_context(InstrumentId{}, Side::Buy)),
+                           const QuoteContext&>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().quote_context_names({"fair"})), void>);
 // direct orders
 static_assert(std::same_as<decltype(lvalue<Ctx>().send(NewOrderRequest{})),
                            Result<ClientOrderId, RejectReason>>);

@@ -29,7 +29,8 @@ SCHEMA_VERSION: int = _core._store_schema_version
 """Schema version this module reads (the one the engine writes); a newer store is refused."""
 
 _NS_COLUMNS = frozenset(
-    {"ts_ns", "started_ns", "stopped_ns", "created_ns", "updated_ns", "last_ns"}
+    {"ts_ns", "started_ns", "stopped_ns", "created_ns", "updated_ns", "last_ns", "placed_ns",
+     "sent_ns", "venue_ack_ns", "local_ack_ns", "in_flight_since_ns"}
 )
 
 
@@ -157,7 +158,61 @@ class Store:
             params,
         )
 
+    def fill_context(
+        self,
+        session: Optional[int] = None,
+        instrument: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+    ) -> "pd.DataFrame":
+        """One row per execution with its decision record (schema 16), as `fastmm-pnl
+        fill-context` shows it: the order's state when the fill arrived (`order_state`), when it
+        was placed and at what price, when its working leg went out (`sent`, after `amends`
+        accepted replaces) and was acknowledged, the cancel or replace in flight (`in_flight`,
+        sent at `in_flight_since`), and the strategy's quote context when the order went out
+        (`sent_<name>`) and when the fill arrived (`fill_<name>`), named after the session's
+        `quote_context_names` (`ctx0` .. `ctx3` where the sessions name a slot differently)."""
+        if self.schema_version < 16:
+            raise ValueError(f"{self.path} predates the fill decision records (schema 16)")
+        clauses, params = [], []
+        if session:
+            clauses.append("session_id = ?")
+            params.append(session)
+        if instrument:
+            clauses.append("symbol = ?")
+            params.append(instrument)
+        if since:
+            clauses.append("day >= ?")
+            params.append(since)
+        if until:
+            clauses.append("day <= ?")
+            params.append(until)
+        df = self.query(
+            "SELECT session_id, seq, ts_ns, account, symbol, side, liquidity, price_raw, qty_raw,"
+            " cl_ord_id, order_state, placed_ns, placed_px_raw, amends, sent_ns, venue_ack_ns,"
+            " local_ack_ns, in_flight, in_flight_ns AS in_flight_since_ns, in_flight_px_raw,"
+            " order_ctx0, order_ctx1, order_ctx2, order_ctx3, fill_ctx0, fill_ctx1, fill_ctx2,"
+            " fill_ctx3 FROM fills"
+            + _where(clauses) + " ORDER BY ts_ns, session_id, seq",
+            params,
+        )
+        sessions = sorted(set(int(s) for s in df["session_id"])) if len(df) else []
+        names: Dict[int, set] = {k: set() for k in range(4)}
+        for sid in sessions:
+            got = dict(self._db.execute(
+                "SELECT slot, name FROM quote_context_names WHERE session_id = ?", (sid,)))
+            for k in range(4):
+                names[k].add(got.get(k, ""))
+        rename: Dict[str, str] = {}
+        for k in range(4):
+            label = next(iter(names[k])) if len(names[k]) == 1 else ""
+            label = label or f"ctx{k}"
+            rename[f"order_ctx{k}"] = f"sent_{label}"
+            rename[f"fill_ctx{k}"] = f"fill_{label}"
+        return df.rename(columns=rename)
+
     def orders(
+
         self,
         session: Optional[int] = None,
         instrument: Optional[str] = None,

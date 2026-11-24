@@ -13,12 +13,15 @@
 
 #include <array>
 #include <cstdint>
+#include <initializer_list>
+#include <string_view>
 
 using namespace fastmm;
 
 namespace {
 struct NoCtx {
   TimerId every(Duration, std::uint64_t) { return TimerId{1}; }
+  void quote_context_names(std::initializer_list<std::string_view>) {}
 };
 }  // namespace
 

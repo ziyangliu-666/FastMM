@@ -95,6 +95,16 @@ inline HotProgram program_from(const py::dict& program, bool stop_on_error) {
   p.record.assign(record.begin(), record.end());
   p.param_bytes = program["param_bytes"].cast<std::size_t>();
   if (program.contains("book_depth")) p.book_depth = program["book_depth"].cast<bool>();
+  if (program.contains("quote_context_names")) {
+    for (const py::handle n : program["quote_context_names"].cast<py::list>()) {
+      if (p.quote_context_names.size() == kQuoteContextSize) {
+        throw py::value_error("fastmm: quote_context_names names at most " +
+                              std::to_string(kQuoteContextSize) + " values");
+      }
+      p.quote_context_names.push_back(n.cast<std::string>());
+    }
+  }
+
   for (const HotParamField& f : param_fields_from(program))
     p.params.push_back({f.offset, f.raw_offset, f.type});
   p.stop_on_error = stop_on_error;

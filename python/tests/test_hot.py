@@ -330,6 +330,27 @@ def test_ctx_methods_write_intents():
     assert c["flags"] == abi.FLAG_UNCROSS | abi.FLAG_KEEP_PASSIVE
 
 
+def test_ctx_quote_context_writes_both_sides_or_one():
+    class Context(Strategy):
+        quote_context_names = ("fair", "spread_bps")
+
+        @fastmm.hot
+        def on_book(self, ctx, book):
+            ctx.quote_context(100.5, 2)
+            ctx.ask_context(101.0)
+
+    status, _, ctx, _ = _call(Context, "on_book")
+    c = ctx[0]
+    assert status == abi.OK
+    assert c["context_set"] == abi.CONTEXT_BID | abi.CONTEXT_ASK
+    assert list(c["quote_context_bid"][:2]) == [100.5, 2.0]
+    assert np.isnan(c["quote_context_bid"][2:]).all()
+    assert c["quote_context_ask"][0] == 101.0 and np.isnan(c["quote_context_ask"][1:]).all()
+    program = compiler.compiled(Context, Context._fastmm_hot, cache=False).program(Context())
+    assert program["quote_context_names"] == ["fair", "spread_bps"]
+
+
+
 def test_book_levels_are_copied_for_code_that_can_read_them(example_config):
     assert compiler.compiled(BasicMMHot, BasicMMHot._fastmm_hot, cache=False).book_depth is False
 

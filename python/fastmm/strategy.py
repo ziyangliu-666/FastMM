@@ -346,6 +346,10 @@ class Strategy:
     ``[backtest] initial_state = "journal"`` and ``start_at`` restores. ``state_version = <int>``
     names the layout of those bytes (0 when absent); a state file or checkpoint of another version
     is refused.
+
+    ``quote_context_names = ("fair", ...)`` names the values hot hooks publish with
+    ``ctx.quote_context(...)``, which the store keeps with every fill (``fastmm-pnl
+    fill-context``).
     """
 
     def __init__(self) -> None:

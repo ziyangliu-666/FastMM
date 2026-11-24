@@ -142,6 +142,10 @@ class Backend {
   virtual void markout(const MarkoutRecord& /*r*/) {}
   // A minute of one account's capacity price ([capacity]). The default drops it.
   virtual void capacity(const CapacityRecord& /*r*/) {}
+  // The names of the strategy's quote context values (FillRecord::order_context). The default
+  // drops them.
+  virtual void context_names(const ContextNamesRecord& /*r*/) {}
+
   virtual void commit() = 0;
 
   // StoreThread calls it when the ring is empty, outside a batch, with the wall clock: a backend

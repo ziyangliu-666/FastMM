@@ -192,9 +192,11 @@ class Oms {
 
   // ---- outbound ---------------------------------------------------------------------------
 
+  // `context`: the strategy's quote context of the order's side now (OrderTrail::context).
   Result<Handle<Order>, RejectReason> submit(const NewOrderRequest& req,
                                              ClientOrderId id,
-                                             Timestamp now) noexcept {
+                                             Timestamp now,
+                                             const QuoteContext* context = nullptr) noexcept {
     if (FASTMM_UNLIKELY(req.instrument.value >= kMaxInstruments))
       return fail(RejectReason::InstrumentDisabled);
     if (FASTMM_UNLIKELY(open_handle(id).valid())) return fail(RejectReason::DuplicateId);
@@ -220,7 +222,12 @@ class Oms {
     o.qty = req.qty;
     o.created = now;
     o.user_tag = req.user_tag;
-    times_[h.idx] = TimesSlot{OrderTimes{now, {}, {}}, {}};
+    OrderTrail& t = trails_[h.idx];
+    t = OrderTrail{};
+    t.times.sent = now;
+    t.placed = now;
+    t.placed_px = req.price;
+    if (context != nullptr) t.context = *context;
     estimates_[h.idx] = Estimate{};  // terminate() moved the last order's to its record
     ++stats_.submitted;
     ++stats_.open;
@@ -231,28 +238,36 @@ class Oms {
     return h;
   }
 
-  Result<void, RejectReason> request_cancel(Handle<Order> h) noexcept {
+  // `now`: the cancel's send time (OrderTrail::pending_sent).
+  Result<void, RejectReason> request_cancel(Handle<Order> h, Timestamp now = {}) noexcept {
     if (!pool_.is_live(h)) return fail(RejectReason::UnknownOrder);
     Order& o = pool_.get(h);
     if (!o.is_working()) return fail(RejectReason::InvalidState);
     o.state = OrderState::PendingCancel;
+    trails_[h.idx].pending_sent = now;
     return {};
   }
 
   // Cancel of an order that is still waiting for its ack (the ack-timeout sweep only). A venue
   // that never saw the order answers VenueUnknownOrder, and on_cancel_reject ends it.
-  Result<void, RejectReason> request_cancel_unacked(Handle<Order> h) noexcept {
+  Result<void, RejectReason> request_cancel_unacked(Handle<Order> h, Timestamp now = {}) noexcept {
     if (!pool_.is_live(h)) return fail(RejectReason::UnknownOrder);
     Order& o = pool_.get(h);
     if (o.state != OrderState::PendingNew) return fail(RejectReason::InvalidState);
     o.state = OrderState::PendingCancel;
+    trails_[h.idx].pending_sent = now;
     return {};
   }
 
   // new_id may equal the current id for venues that amend in place. `now`: the replace's send
-  // time, which becomes OrderTimes::sent once it is acknowledged.
-  Result<void, RejectReason> request_replace(
-      Handle<Order> h, ClientOrderId new_id, Price px, Qty qty, Timestamp now = {}) noexcept {
+  // time, which becomes OrderTimes::sent once it is acknowledged; `context`: the side's quote
+  // context now, which becomes OrderTrail::context then.
+  Result<void, RejectReason> request_replace(Handle<Order> h,
+                                             ClientOrderId new_id,
+                                             Price px,
+                                             Qty qty,
+                                             Timestamp now = {},
+                                             const QuoteContext* context = nullptr) noexcept {
     if (!pool_.is_live(h)) return fail(RejectReason::UnknownOrder);
     Order& o = pool_.get(h);
     if (!o.is_working()) return fail(RejectReason::InvalidState);
@@ -264,7 +279,9 @@ class Oms {
     o.pending_price = px;
     o.pending_qty = qty;
     o.state = OrderState::PendingReplace;
-    times_[h.idx].replace_sent = now;
+    OrderTrail& t = trails_[h.idx];
+    t.pending_sent = now;
+    t.pending_context = context != nullptr ? *context : QuoteContext{};
     return {};
   }
 
@@ -294,8 +311,8 @@ class Oms {
         o.venue_order_id = m.venue_order_id;
         ++stats_.acked;
         u.changed = true;
-        times_[h.idx].t.venue_ack = m.hdr.exch_ts;
-        times_[h.idx].t.local_ack = m.hdr.recv_ts;
+        trails_[h.idx].times.venue_ack = m.hdr.exch_ts;
+        trails_[h.idx].times.local_ack = m.hdr.recv_ts;
         break;
       case OrderState::PendingReplace:
         // Only the replacement's ack completes it (the same id for an in-place amend). An ack that
@@ -313,8 +330,11 @@ class Oms {
           if (o.cl_ord_id != old_id) u.replaced_cl_ord_id = old_id;
           o.venue_order_id = m.venue_order_id;
           u.changed = true;
-          TimesSlot& t = times_[h.idx];
-          t.t = OrderTimes{t.replace_sent, m.hdr.exch_ts, m.hdr.recv_ts};
+          OrderTrail& t = trails_[h.idx];
+          t.times = OrderTimes{t.pending_sent, m.hdr.exch_ts, m.hdr.recv_ts};
+          t.pending_sent = Timestamp{};
+          t.context = t.pending_context;
+          ++t.amends;
         } else {
           u.action = OmsAction::Ignored;
         }
@@ -322,8 +342,8 @@ class Oms {
       default:
         u.action = OmsAction::Ignored;  // duplicate ack
         // A venue that answers twice (API response and user stream) may put its time on either.
-        if (m.cl_ord_id == o.cl_ord_id && !times_[h.idx].t.venue_ack.valid())
-          times_[h.idx].t.venue_ack = m.hdr.exch_ts;
+        if (m.cl_ord_id == o.cl_ord_id && !trails_[h.idx].times.venue_ack.valid())
+          trails_[h.idx].times.venue_ack = m.hdr.exch_ts;
         break;
     }
     finish_update(u, h, o);
@@ -356,6 +376,7 @@ class Oms {
         return u;
       }
       clear_pending(o);
+      trails_[h.idx].pending_sent = Timestamp{};
       o.state = o.cum_qty.is_zero() ? OrderState::Live : OrderState::PartiallyFilled;
       u.changed = true;
       finish_update(u, h, o);
@@ -416,6 +437,7 @@ class Oms {
       return u;
     }
     o.state = o.cum_qty.is_zero() ? OrderState::Live : OrderState::PartiallyFilled;
+    trails_[h.idx].pending_sent = Timestamp{};
     o.cancel_attempts = static_cast<std::uint8_t>(o.cancel_attempts + 1);
     if (o.cancel_attempts > 3) u.action = OmsAction::ReconcileNeeded;
     u.changed = true;
@@ -609,7 +631,19 @@ class Oms {
   [[nodiscard]] Order& get(Handle<Order> h) noexcept { return pool_.get(h); }
   [[nodiscard]] bool is_live(Handle<Order> h) const noexcept { return pool_.is_live(h); }
   // Send and ack times of an open order.
-  [[nodiscard]] const OrderTimes& times(Handle<Order> h) const noexcept { return times_[h.idx].t; }
+  [[nodiscard]] const OrderTimes& times(Handle<Order> h) const noexcept {
+    return trails_[h.idx].times;
+  }
+  // How the order `id` names got where it is: an open order's (its own id or a pending replace's),
+  // else a recently terminal one's as it ended; nullptr for an id the OMS does not remember.
+  [[nodiscard]] const OrderTrail* trail(ClientOrderId id) const noexcept {
+    const std::uint32_t* v = ids_.find(id);
+    if (v == nullptr) return nullptr;
+    if ((*v & kTerminalRef) == 0) return &trails_[*v];
+    const std::uint64_t pos = terminal_pos(id);
+    if (recently_terminal_.at_pos(pos) == nullptr) return nullptr;
+    return &terminal_trails_[pos & (kRecentlyTerminal - 1)];
+  }
   [[nodiscard]] Handle<Order> find(ClientOrderId id) const noexcept { return open_handle(id); }
   [[nodiscard]] OrderClass classify(ClientOrderId id) const noexcept {
     if (open_handle(id).valid()) return OrderClass::Open;
@@ -652,10 +686,6 @@ class Oms {
   struct ReconcileScope {
     ClientOrderId watermark{};
     bool bounded = false;
-  };
-  struct TimesSlot {
-    OrderTimes t;
-    Timestamp replace_sent;  // a replace in flight: its send time
   };
 
   [[nodiscard]] static bool in_scope(const Order& o, VenueId venue) noexcept {
@@ -750,7 +780,7 @@ class Oms {
   // Adds `r` to the recently terminal orders. The oldest one leaves when they are full, and with it
   // the last means of telling an execution of that order from a foreign one: an estimate it still
   // held is reported in `u` rather than dropped without a trace.
-  void remember_terminal(const TerminalRecord& r, OmsUpdate& u) noexcept {
+  void remember_terminal(const TerminalRecord& r, const OrderTrail& trail, OmsUpdate& u) noexcept {
     if (recently_terminal_.full()) {
       const TerminalRecord& gone = recently_terminal_.front();
       if (FASTMM_UNLIKELY(gone.estimate.qty.is_positive())) {
@@ -766,6 +796,7 @@ class Oms {
     }
     // The id that named the open order names its terminal record from now on.
     static_cast<void>(ids_.assign(r.cl_ord_id, terminal_ref(recently_terminal_.next_pos())));
+    terminal_trails_[recently_terminal_.next_pos() & (kRecentlyTerminal - 1)] = trail;
     recently_terminal_.push(r);
   }
 
@@ -820,7 +851,7 @@ class Oms {
   void finish_update(OmsUpdate& u, Handle<Order> h, const Order& o) noexcept {
     u.order = o;
     u.handle = h;
-    u.times = times_[h.idx].t;
+    u.times = trails_[h.idx].times;
     u.slot = h;
   }
 
@@ -842,6 +873,7 @@ class Oms {
       remember_terminal(
           TerminalRecord{
               o.cl_ord_id, o.price, o.qty, o.cum_qty, o.instrument, o.venue, end, o.side, false, e},
+          trails_[h.idx],
           u);
       e = Estimate{};
     }
@@ -901,11 +933,12 @@ class Oms {
                                      o.side,
                                      by_reconcile,
                                      estimates_[h.idx]},
+                      trails_[h.idx],
                       u);
     estimates_[h.idx] = Estimate{};
     u.order = o;
     u.handle = Handle<Order>{};
-    u.times = times_[h.idx].t;
+    u.times = trails_[h.idx].times;
     u.slot = h;
     u.changed = true;
     u.terminal = true;
@@ -961,8 +994,12 @@ class Oms {
   Qty open_qty_[kMaxInstruments][2];
   std::uint32_t open_per_inst_[kMaxInstruments] = {};
   ReconcileScope recon_scope_[std::numeric_limits<VenueId::rep_type>::max() + 1U] = {};
-  // OrderTimes by pool slot, apart from Order so the order record keeps its 128-byte layout.
-  std::unique_ptr<TimesSlot[]> times_ = std::make_unique<TimesSlot[]>(kMaxOpenOrders);
+  // OrderTrail by pool slot, apart from Order so the order record keeps its 128-byte layout, and by
+  // recently_terminal_ ring slot for the orders that ended (on the heap: the OMS is large already).
+  std::unique_ptr<OrderTrail[]> trails_ = std::make_unique<OrderTrail[]>(kMaxOpenOrders);
+  std::unique_ptr<OrderTrail[]> terminal_trails_ =
+      std::make_unique<OrderTrail[]>(kRecentlyTerminal);
+
   // Each open order's estimate (absorb_cum), by pool slot; terminate() moves it to the order's
   // terminal record.
   std::unique_ptr<Estimate[]> estimates_ = std::make_unique<Estimate[]>(kMaxOpenOrders);

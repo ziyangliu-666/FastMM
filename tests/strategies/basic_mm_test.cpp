@@ -7,8 +7,11 @@
 
 #include <array>
 #include <cstdio>
+#include <initializer_list>
 #include <random>
 #include <string>
+#include <string_view>
+#include <vector>
 
 using namespace fastmm;
 
@@ -28,6 +31,7 @@ Instrument inst() {
 }
 struct NoCtx {
   TimerId every(Duration, std::uint64_t) { return TimerId{1}; }
+  void quote_context_names(std::initializer_list<std::string_view>) {}
 };
 }  // namespace
 
@@ -101,6 +105,9 @@ struct QuoteCtx {
   Qty room_sell = Qty::max();
   Qty resting_sell{};
   DesiredQuotes last;
+  // ctx.quote_context: the mid and the centre the last requote published.
+  std::vector<double> context;
+  void quote_context(InstrumentId, std::initializer_list<double> v) { context.assign(v); }
   Qty balance_room(InstrumentId, Side s, Price) const {
     return s == Side::Buy ? room_buy : room_sell;
   }
@@ -169,6 +176,10 @@ TEST_CASE("strategies.basic_mm: the quiet band is the one on_book returns at onc
   // Mid 100.05, requote_threshold_ticks 1 of 0.01: a mid strictly inside (100.04, 100.06).
   CHECK(ctx.quiet_lo == px("100.04"));
   CHECK(ctx.quiet_hi == px("100.06"));
+  // The quote context its orders carry: the mid, and the centre (flat: the mid).
+  REQUIRE(ctx.context.size() == 2);
+  CHECK(ctx.context[0] == doctest::Approx(100.05));
+  CHECK(ctx.context[1] == doctest::Approx(100.05));
   ctx.b = FakeBook{px("100.01"), px("100.09")};  // mid 100.05: inside, no requote
   s.on_book(ctx, id, ctx.b);
   CHECK(ctx.set_quotes_calls == 1);

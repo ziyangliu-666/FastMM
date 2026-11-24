@@ -693,6 +693,7 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
   deps_.instruments = &cfg_.instruments;
   deps_.params = cfg_.params;
   deps_.journal_ring = impl_->journal_ring.get();
+  deps_.record_ring = cfg_.record_ring;
   deps_.backend = backend_.get();
 }
 

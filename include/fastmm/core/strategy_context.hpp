@@ -28,7 +28,9 @@
 #include "fastmm/core/venue_health.hpp"
 
 #include <cstdint>
+#include <initializer_list>
 #include <optional>
+#include <span>
 #include <string_view>
 
 namespace fastmm {
@@ -120,6 +122,38 @@ class StrategyContext {
   // A number the strategy publishes by name, for the status file (a budget split, a model's
   // state): the first 32 names are kept, a name at most 23 bytes. No allocation.
   void metric(std::string_view name, double value) noexcept { e_->metric(name, value); }
+  // What the strategy knows about its quotes on a side, for the record of their fills: up to
+  // kQuoteContextSize numbers (its fair value, the quote's distance from it, a signal), NaN for a
+  // slot not given. The side keeps them until the next call. Each order sent or moved on the side
+  // takes a copy, and the store keeps, with every fill, the copy its order took when it last went
+  // out and the side's values when the fill arrived (fastmm-pnl fill-context). Call it before
+  // set_quotes or send for the orders it explains. No allocation.
+  //
+  //   ctx.quote_context(id, Side::Buy, {fair.to_double(), bid_distance_bps});
+  void quote_context(InstrumentId id, Side side, std::initializer_list<double> values) noexcept {
+    e_->quote_context(id, side, std::span<const double>(values.begin(), values.size()));
+  }
+  void quote_context(InstrumentId id, Side side, std::span<const double> values) noexcept {
+    e_->quote_context(id, side, values);
+  }
+  // Both sides at once.
+  void quote_context(InstrumentId id, std::initializer_list<double> values) noexcept {
+    const std::span<const double> v(values.begin(), values.size());
+    e_->quote_context(id, Side::Buy, v);
+    e_->quote_context(id, Side::Sell, v);
+  }
+  // The side's values as they stand.
+  [[nodiscard]] const QuoteContext& quote_context(InstrumentId id, Side side) const noexcept {
+    return e_->quote_context(id, side);
+  }
+  // Names for the values, in slot order (at most 23 bytes each), for the store and the tools that
+  // show them; call once, from on_start. No allocation.
+  void quote_context_names(std::initializer_list<std::string_view> names) noexcept {
+    e_->quote_context_names(std::span<const std::string_view>(names.begin(), names.size()));
+  }
+  void quote_context_names(std::span<const std::string_view> names) noexcept {
+    e_->quote_context_names(names);
+  }
   void pull_all_quotes() noexcept {
     e_->mark_decision();
     e_->pull_all_quotes();

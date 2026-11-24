@@ -53,6 +53,9 @@ class BasicMM : public StrategyBase<BasicMMParams, ParamScope::PerInstrument> {
   template <class Ctx>
   void on_start(Ctx& ctx) noexcept {
     for (auto& m : last_mid_) m = Price{};
+    // The record of each fill keeps the mid and the inventory-skewed centre the quotes were priced
+    // from when the order went out, and as they stood when it filled.
+    ctx.quote_context_names({"mid", "centre"});
     if (params().pull_on_stale_ms > Duration{})
       stale_timer_ = ctx.every(milliseconds(100), kStaleTimer);
   }
@@ -146,9 +149,8 @@ class BasicMM : public StrategyBase<BasicMMParams, ParamScope::PerInstrument> {
     const BasicMMParams& p = params(inst.id);
     DesiredQuotes q;
     if (p.quote_qty.is_zero()) return q;
-    const std::int64_t inventory_units = position / p.quote_qty;  // signed, truncating
     const Price half = mid * p.half_spread_bps;
-    const Price centre = mid - mid * (p.skew_bps_per_unit * inventory_units);
+    const Price centre = this->centre(mid, position, inst.id);
     const Price step = inst.ticks(p.level_step_ticks);
     const Qty qty = inst.round_qty(p.quote_qty);
     const bool can_buy = inventory_allows(Side::Buy, position, p.quote_qty, p.max_inventory);
@@ -161,11 +163,22 @@ class BasicMM : public StrategyBase<BasicMMParams, ParamScope::PerInstrument> {
     return q;
   }
 
+  // The mid skewed by inventory: what both sides are priced around.
+  [[nodiscard]] Price centre(Price mid, Qty position, InstrumentId id) const noexcept {
+    const BasicMMParams& p = params(id);
+    if (p.quote_qty.is_zero()) return mid;
+    const std::int64_t inventory_units = position / p.quote_qty;  // signed, truncating
+    return mid - mid * (p.skew_bps_per_unit * inventory_units);
+  }
+
  private:
   template <class Ctx, class Book>
+
   void requote(Ctx& ctx, InstrumentId id, const Book& book, const Instrument& inst) noexcept {
     const Price mid = book.mid();
-    DesiredQuotes q = compute_quotes(mid, ctx.position(id).qty, inst);
+    const Qty position = ctx.position(id).qty;
+    ctx.quote_context(id, {mid.to_double(), centre(mid, position, id).to_double()});
+    DesiredQuotes q = compute_quotes(mid, position, inst);
     keep_passive(q, book.best_bid().price, book.best_ask().price, inst.tick);
     fit_to_balance(ctx, id, inst, q);
     // Remember the mid only if the quotes were taken; while quoting is disabled they are ignored.

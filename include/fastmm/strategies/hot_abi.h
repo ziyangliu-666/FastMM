@@ -19,10 +19,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define FASTMM_HOT_ABI_VERSION 3
+#define FASTMM_HOT_ABI_VERSION 4
 
-#define FASTMM_HOT_BOOK_DEPTH 10  /* book levels per side a hook can read */
-#define FASTMM_HOT_QUOTE_LEVELS 8 /* quote levels per side a hook can write (kMaxQuoteLevels) */
+#define FASTMM_HOT_BOOK_DEPTH 10   /* book levels per side a hook can read */
+#define FASTMM_HOT_QUOTE_LEVELS 8  /* quote levels per side a hook can write (kMaxQuoteLevels) */
+#define FASTMM_HOT_QUOTE_CONTEXT 4 /* values of a side's quote context (kQuoteContextSize) */
+
+/* ctx->context_set: the hook set the side's quote context (ctx.quote_context) */
+#define FASTMM_HOT_CONTEXT_BID 1
+#define FASTMM_HOT_CONTEXT_ASK 2
 
 /* Hook status. EXCEPTION: the generated wrapper caught an exception. FAILED: the hook called
  * ctx.fail(code), and ctx->fail_code holds the code. BAD_VALUE (set by the engine): a float price
@@ -92,6 +97,11 @@ typedef struct fastmm_hot_ctx {
   uint8_t reduce_only; /* reduce-only mode holds the instrument: quote only the side that reduces */
   uint8_t home;        /* the instrument's home account in its pool, a venue id (255: none) */
   uint8_t pieces;      /* accounts other than the home that hold the instrument */
+  /* outputs: the quote context of each side (StrategyContext::quote_context), applied before the
+   * action whatever it is; NaN for a value not given */
+  uint8_t context_set; /* FASTMM_HOT_CONTEXT_* */
+  double quote_context_bid[FASTMM_HOT_QUOTE_CONTEXT];
+  double quote_context_ask[FASTMM_HOT_QUOTE_CONTEXT];
 } fastmm_hot_ctx;
 
 typedef struct fastmm_hot_book {
@@ -131,8 +141,8 @@ typedef int32_t (*fastmm_hot_fn)(uint8_t* self, fastmm_hot_ctx* ctx, fastmm_hot_
 #define FASTMM_HOT_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
 #endif
 
-/* Layout of ABI version 3 (x86-64 System V). */
-FASTMM_HOT_STATIC_ASSERT(sizeof(fastmm_hot_ctx) == 688, "fastmm_hot_ctx size");
+/* Layout of ABI version 4 (x86-64 System V). */
+FASTMM_HOT_STATIC_ASSERT(sizeof(fastmm_hot_ctx) == 752, "fastmm_hot_ctx size");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, tick) == 16, "fastmm_hot_ctx.tick");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, fill_price) == 80, "fastmm_hot_ctx.fill_price");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, action) == 112, "fastmm_hot_ctx.action");
@@ -143,6 +153,13 @@ FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, quiet_lo_raw) == 664,
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, reduce_only) == 680,
                          "fastmm_hot_ctx.reduce_only");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, pieces) == 682, "fastmm_hot_ctx.pieces");
+FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, context_set) == 683,
+                         "fastmm_hot_ctx.context_set");
+FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, quote_context_bid) == 688,
+                         "fastmm_hot_ctx.quote_context_bid");
+FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_ctx, quote_context_ask) == 720,
+                         "fastmm_hot_ctx.quote_context_ask");
+
 FASTMM_HOT_STATIC_ASSERT(sizeof(fastmm_hot_book) == 744, "fastmm_hot_book size");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_book, n_bids) == 12, "fastmm_hot_book.n_bids");
 FASTMM_HOT_STATIC_ASSERT(offsetof(fastmm_hot_book, mid) == 24, "fastmm_hot_book.mid");
