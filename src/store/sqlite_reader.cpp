@@ -607,7 +607,6 @@ class SqliteReader final : public Reader {
   }
 
   // An execution is grouped as duplicates() groups it: engine, venue name, symbol, side and the
-
   // venue's id; a synthetic fill (no id) is its own. The engine and symbol filters apply before
   // the grouping (they are part of the key), the session and day filters after it.
   [[nodiscard]] Result<Rows, std::string> ledger(const QueryFilter& f, bool raw) override {

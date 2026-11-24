@@ -424,7 +424,6 @@ static_assert(sizeof(ContextNamesRecord) == 192 &&
               std::is_trivially_copyable_v<ContextNamesRecord>);
 
 // Engine-side producer. Every method is allocation-free, wait-free and safe to call from the
-
 // trading thread; a full ring increments dropped() and returns false.
 class RecordWriter {
  public:

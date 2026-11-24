@@ -194,7 +194,6 @@ if(zstd_ADDED AND NOT TARGET fastmm_zstd)
 endif()
 
 # --- doctest (tests) --------------------------------------------------------
-
 if(FASTMM_BUILD_TESTS)
   CPMAddPackage(
     NAME doctest

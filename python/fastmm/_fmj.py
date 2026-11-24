@@ -11,7 +11,6 @@ from __future__ import annotations
 import mmap
 import os
 import struct
-
 from typing import Any, Dict, List, Optional, Tuple
 
 SCALE = 100_000_000

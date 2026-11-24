@@ -173,7 +173,6 @@ class BasicMM : public StrategyBase<BasicMMParams, ParamScope::PerInstrument> {
 
  private:
   template <class Ctx, class Book>
-
   void requote(Ctx& ctx, InstrumentId id, const Book& book, const Instrument& inst) noexcept {
     const Price mid = book.mid();
     const Qty position = ctx.position(id).qty;

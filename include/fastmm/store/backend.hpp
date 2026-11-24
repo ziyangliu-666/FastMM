@@ -145,7 +145,6 @@ class Backend {
   // The names of the strategy's quote context values (FillRecord::order_context). The default
   // drops them.
   virtual void context_names(const ContextNamesRecord& /*r*/) {}
-
   virtual void commit() = 0;
 
   // StoreThread calls it when the ring is empty, outside a batch, with the wall clock: a backend

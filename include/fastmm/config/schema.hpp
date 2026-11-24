@@ -113,7 +113,6 @@ inline constexpr KeySpec kConfigSchema[] = {
      "cap on the journals in journal_dir, bytes, compressed or not: the oldest go first, at start "
      "and, in fastmm-live, every minute; a part being written is never deleted; 0 = no cap "
      "(default 0)"},
-
     {"engine",
      "checkpoint_s",
      KeyType::Int,

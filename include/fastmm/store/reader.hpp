@@ -278,7 +278,6 @@ class Reader {
     return fail(std::string("this store backend keeps no fill decision records"));
   }
   // Everything stored about one client order (`f.order`), in time order: sent, each refusal, each
-
   // execution, and its last known state. The default cannot answer.
   [[nodiscard]] virtual Result<Rows, std::string> order_timeline(const QueryFilter& /*f*/) {
     return fail(std::string("this store backend has no order timeline"));

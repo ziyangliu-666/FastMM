@@ -999,7 +999,6 @@ class Oms {
   std::unique_ptr<OrderTrail[]> trails_ = std::make_unique<OrderTrail[]>(kMaxOpenOrders);
   std::unique_ptr<OrderTrail[]> terminal_trails_ =
       std::make_unique<OrderTrail[]>(kRecentlyTerminal);
-
   // Each open order's estimate (absorb_cum), by pool slot; terminate() moves it to the order's
   // terminal record.
   std::unique_ptr<Estimate[]> estimates_ = std::make_unique<Estimate[]>(kMaxOpenOrders);

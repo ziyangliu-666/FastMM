@@ -2089,7 +2089,6 @@ std::string Config::effective_toml() const {
   e.insert("journal_retention_days", static_cast<std::int64_t>(engine.journal_retention_days));
   e.insert("journal_compress", engine.journal_compress);
   e.insert("journal_max_total_bytes", static_cast<std::int64_t>(engine.journal_max_total_bytes));
-
   if (engine.checkpoint_s != 0) e.insert("checkpoint_s", engine.checkpoint_s);
   e.insert("epoch_file", engine.epoch_file);
   e.insert("kill_file", engine.kill_file);

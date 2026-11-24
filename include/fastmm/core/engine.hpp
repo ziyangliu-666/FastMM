@@ -2359,7 +2359,6 @@ class Engine {
   }
 
   // [engine] markout_ms: the mid now, and the fill queued for each horizon.
-
   void start_markouts(InstrumentId id, std::uint64_t fill_seq) noexcept {
     emit_markout(id, fill_seq, now_.ns, 0);
     for (MarkoutQueue& q : markouts_) {

@@ -952,7 +952,6 @@ class SqliteBackend final : public Backend {
     FASTMM_LOG_WARN("store: retention: {}", std::string_view(e));
   }
 
-  // A record's [ab] arm (Order::arm, ParamUpdateMsg::arm): its name, NULL for none.
   // The fill's decision record (schema 16): NULL order columns when it named no order the OMS
   // remembered; a NaN context value binds as NULL.
   static void bind_decision(Bind& b, const FillRecord& r) {
@@ -1019,6 +1018,7 @@ class SqliteBackend final : public Backend {
     }
   }
 
+  // A record's [ab] arm (Order::arm, ParamUpdateMsg::arm): its name, NULL for none.
   void bind_arm(Bind& b, std::uint8_t arm) const {
     if (arm == 0 || arm == ParamUpdateMsg::kArmNone) {
       b.null();
@@ -1428,7 +1428,6 @@ class SqliteBackend final : public Backend {
   Stmt ins_capacity_;
   Stmt ins_context_name_;
   Stmt ins_ab_arm_;
-
   std::vector<std::string> venue_names_;  // the session's [venues.<name>] by VenueId
   std::vector<std::string> arm_names_;    // the session's [ab] arms, in order
   // The session's parameter table, the last raw value of each (instrument, field) (the instrument

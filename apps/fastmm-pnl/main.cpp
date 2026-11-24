@@ -3,7 +3,6 @@
 //   fastmm-pnl pnl --since yesterday          what each instrument made, by day
 //   fastmm-pnl fills --session 1700000000     the fills of one session
 //   fastmm-pnl fill-context --day today       why each fill happened: its order's trail
-
 //   fastmm-pnl sessions                       what has run
 //   fastmm-pnl audit --exchange trades.json   the stored fills against the venue's export
 //   fastmm-pnl params --at "2026-10-09 14:00"  the strategy parameters in effect then
