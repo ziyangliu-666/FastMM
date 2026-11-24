@@ -51,16 +51,18 @@ struct alignas(kCacheLine) Instrument {
   Qty contract_multiplier = Qty::from_int(1);  // 8   units of underlying per contract
   Notional max_notional{};                     // 8 -> 64
   // ---- cold line (64 bytes) ------------------------------------------------------------
-  std::int64_t expiry_ns = 0;                 // 8   (0 = perpetual / spot)
-  Price strike{};                             // 8 -> 16
-  Symbol symbol{};                            // 21
-  FixedString<8> base{};                      // 9
-  FixedString<8> quote{};                     // 9 -> 55
-  OptionType option_type = OptionType::None;  // 1 -> 56
-  // Whether the venue takes orders on it (zero, Trading, in journals from before it was kept):
-  // the venue's at start-up, then each InstrumentRulesMsg's.
-  TradingStatus status = TradingStatus::Trading;  // 1 -> 57
-  std::uint8_t cold_pad_[7] = {};                 // -> 64
+  std::int64_t expiry_ns = 0;  // 8   (0 = perpetual / spot)
+  Price strike{};              // 8 -> 16
+  Symbol symbol{};             // 21
+  FixedString<8> base{};       // 9
+  FixedString<8> quote{};      // 9 -> 55
+  // Byte 119 (the cold line's 55): option_type in the low nibble and, from journal format 6, the
+  // trading status in the high one (zero, Trading, in older journals: their byte 119 is
+  // option_type, at most 2).
+  OptionType option_type : 4 = OptionType::None;  // 119, low nibble
+  // Whether the venue takes orders on it: the venue's at start-up, then each InstrumentRulesMsg's.
+  TradingStatus status : 4 = TradingStatus::Trading;  // 119, high nibble -> 56
+  std::uint8_t cold_pad_[8] = {};                     // -> 64
 
   [[nodiscard]] constexpr bool enabled() const noexcept { return (flags & kEnabled) != 0; }
   [[nodiscard]] constexpr bool inverse() const noexcept { return (flags & kInverse) != 0; }
@@ -118,7 +120,7 @@ struct alignas(kCacheLine) Instrument {
            asset_class == AssetClass::Option;
   }
 };
-static_assert(sizeof(Instrument) == 128 && offsetof(Instrument, status) == 120);
+static_assert(sizeof(Instrument) == 128 && offsetof(Instrument, cold_pad_) == 120);
 static_assert(alignof(Instrument) == 64);
 static_assert(std::is_trivially_copyable_v<Instrument>);
 

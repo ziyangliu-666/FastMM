@@ -246,3 +246,67 @@ TEST_CASE("core.journal v2: a full ring breaks the chain and the next event re-s
   CHECK(msg_cast<EngineTimeMsg>(&hdr(recs[0])).engine_ts == t + Duration{10});
   CHECK(delta(recs[1]) == 0);
 }
+
+TEST_CASE(
+    "core.journal v6: the trading status is byte 119's high nibble, and an older instrument "
+    "table reads as trading") {
+  const auto path = (tmp_dir() / "v6_status.fmj").string();
+  InstrumentTable table;
+  {
+    Instrument i{};
+    i.symbol = "BTC-27DEC26-90000-P";
+    i.tick = Price::from_decimal("0.0005").value();
+    i.lot = Qty::from_decimal("0.1").value();
+    i.flags = Instrument::kEnabled;
+    i.option_type = OptionType::Put;
+    i.status = TradingStatus::Halted;
+    REQUIRE(table.add(i));
+  }
+  MsgRing ring(1 << 16);
+  {
+    JournalSessionInfo info;
+    info.instruments = &table;
+    JournalFileWriter fw(ring, path, info);
+    JournalWriter w(&ring);
+    REQUIRE(w.record(trade(0).hdr));
+    fw.drain_once();
+    fw.stop();
+  }
+  {
+    JournalReader r;
+    REQUIRE(r.open(path));
+    REQUIRE(r.instruments().size() == 1);
+    CHECK(r.instruments()[0].option_type == OptionType::Put);
+    CHECK(r.instruments()[0].status == TradingStatus::Halted);
+  }
+  // A format-5 file as builds before the status wrote it: byte 119 is the whole option_type, and
+  // the cold line's last 8 bytes are whatever that build kept there (zero in 0.14.0; an order cap
+  // in some builds). The status reads as trading and option_type as written.
+  JournalFileHeader h;
+  {
+    JournalReader r;
+    REQUIRE(r.open(path));
+    h = r.header();
+  }
+  h.version = 5;
+  h.crc32c = crc32c(&h, offsetof(JournalFileHeader, crc32c));
+  rewrite_header(path, h);
+  {
+    const int fd = ::open(path.c_str(), O_WRONLY);
+    REQUIRE(fd >= 0);
+    const std::uint8_t put = 2;                // OptionType::Put as a full byte
+    const std::int64_t cap = 500'000'000'000;  // 5000 at the 1e-8 scale
+    REQUIRE(::pwrite(fd, &put, 1, sizeof(JournalFileHeader) + 119) == 1);
+    REQUIRE(::pwrite(fd, &cap, 8, sizeof(JournalFileHeader) + 120) == 8);
+    ::close(fd);
+  }
+  JournalReader r5;
+  REQUIRE(r5.open(path));
+  CHECK(r5.version() == 5);
+  REQUIRE(r5.instruments().size() == 1);
+  CHECK(r5.instruments()[0].option_type == OptionType::Put);
+  CHECK(r5.instruments()[0].status == TradingStatus::Trading);
+  CHECK(r5.instruments()[0].trading());
+  CHECK(r5.instruments()[0].tick == Price::from_decimal("0.0005").value());
+  CHECK(r5.message_count() == 1);
+}

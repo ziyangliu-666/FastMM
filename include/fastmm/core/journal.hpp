@@ -30,7 +30,8 @@
 //
 // Format v6 (readers accept v1 to v6) adds InstrumentRules records (a venue changed an
 // instrument's tick, lot, order limits or trading status during the session) and the trading
-// status in the instrument table (Instrument::status, a byte that was padding: zero, trading).
+// status in the instrument table (Instrument::status, the high nibble of byte 119, beside
+// option_type in the low one; zero, trading, in older files).
 //
 // Blocks are 1 MiB max; a message never straddles blocks. A trailer is an empty block with
 // kBlockFlagTrailer; if it is missing the file was not closed cleanly and the reader

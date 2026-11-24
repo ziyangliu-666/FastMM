@@ -123,7 +123,7 @@ Compression runs at zstd level 3, about 1 GiB of journal in 2 to 4 s of one core
 | 2 | the venue feeds showed the session's own orders: always live; in a backtest with `[backtest] own_orders_in_feed`, our quantity is in `OwnLevels` records (format 5) |
 | 3 | `engine_clock_ns` is valid (a part after the first) |
 
-The configuration is `Config::effective_toml()`: the configuration after command-line overrides (`--strategy`, `--param`) as deterministic TOML, without `api_key`, `api_secret` and `api_passphrase`, zero-padded to a multiple of 64 bytes. The instrument records are `fastmm::Instrument` (128 bytes), as the session started with them: the venue's tick, lot and limits where the connector read them, and from format 6 the trading status at byte 120 (0 trading, 1 halted, 2 closed).
+The configuration is `Config::effective_toml()`: the configuration after command-line overrides (`--strategy`, `--param`) as deterministic TOML, without `api_key`, `api_secret` and `api_passphrase`, zero-padded to a multiple of 64 bytes. The instrument records are `fastmm::Instrument` (128 bytes), as the session started with them: the venue's tick, lot and limits where the connector read them, and from format 6 the trading status in the high 4 bits of byte 119, whose low 4 bits are the option type (0 trading, 1 halted, 2 closed; 0 in older files).
 
 The parameter table lists the strategy's parameters in schema order. Each entry is the type (`uint8`: 0 `int`, 1 `double`, 2 `bool`, 3 `decimal`, 4 `bps`, 5 `ms`), the name length (`uint8`) and the name; the table is zero-padded to a multiple of 64 bytes.
 
