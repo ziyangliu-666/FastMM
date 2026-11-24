@@ -2,6 +2,21 @@
 
 All notable changes are recorded here (Keep a Changelog format).
 
+## [Unreleased]
+
+### Added
+- core: `[[windows]]` pulls a scope's quotes or holds it reduce-only on weekdays or dates at local time.
+- core: windows take an IANA zone or POSIX rule, `end` or `duration`, `from`, `until` and `except`.
+- core: the IANA tzdata (2026e) is compiled in; `tools/tzdata_gen.py` regenerates it.
+- apps: `fastmm-top`, `status` and Prometheus show each window, whether it is open and its next edge.
+- apps: a side a window pulls shows `window` as its quote obstacle (12).
+
+### Changed
+- core: the status segment is version 30.
+
+### Fixed
+- core: a timer beyond the wheel's horizon fires at the poll that reaches its expiry, not the next.
+
 ## [0.14.0] - 2026-11-19
 
 A group of instruments priced off one factor can pull one side of its quotes at once when it is

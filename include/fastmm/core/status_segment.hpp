@@ -57,7 +57,8 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 //     the arms' names.
 // 27: per quote row, the instrument's home in its account pool and its pieces.
 // 28: the capacity price's refusals: priced out, and observed (would have been).
-inline constexpr std::uint32_t kStatusVersion = 29;
+// 30: the [[windows]] (open, next edge) and the tzdata release; quote obstacle 12 (window).
+inline constexpr std::uint32_t kStatusVersion = 30;
 inline constexpr std::size_t kStatusMaxArms = 16;  // kMaxAbArms
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
@@ -344,6 +345,16 @@ struct StatusGateway {
   StatusUnderlying underlyings[kStatusMaxUnderlyings];
 };
 
+// One [[windows]] window (kind Engine): open now or not, and the next instant it opens or closes.
+struct StatusTimeWindow {
+  char name[33] = {};
+  std::uint8_t action = 0;  // WindowAction
+  std::uint8_t open = 0;
+  std::uint8_t pad_[5] = {};
+  std::int64_t next_edge_s = 0;  // UTC seconds; kNoEdge: never again
+};
+inline constexpr std::size_t kStatusMaxWindows = 32;  // kMaxWindows
+
 // One instrument of the quote table (kind Engine): LiveQuoteInstrument with its symbol.
 struct StatusQuote {
   char symbol[24] = {};
@@ -473,6 +484,12 @@ struct StatusSnapshot {
   std::uint32_t metric_count = 0;
   StatusQuote quotes[kStatusMaxQuotes];
   LiveMetric metrics[kMaxStrategyMetrics];
+  // kind Engine: the [[windows]] in the configuration's order, and the tzdata release the build
+  // evaluates their zones with.
+  std::uint32_t window_count = 0;
+  std::uint32_t pad5_ = 0;
+  char tzdata[16] = {};
+  StatusTimeWindow windows[kStatusMaxWindows];
 };
 static_assert(std::is_trivially_copyable_v<StatusSnapshot>);
 // Every version keeps the magic and the version at these offsets (after the 8-byte sequence).

@@ -1721,6 +1721,7 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   deps.engine.risk = cfg.risk_limits();
   deps.engine.fill_cluster = cfg.fill_cluster_config();
   deps.engine.hazard = hazard_config(cfg, instruments, venue_names);
+  deps.engine.windows = window_config(cfg, instruments, venue_names);
   deps.engine.reduce_only = cfg.risk.reduce_only;
   deps.engine.reduce_only_venues = cfg.reduce_only_venues();
   deps.engine.quotes = cfg.quote_params();
@@ -2449,6 +2450,13 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
   }
   snap.venue_count =
       static_cast<std::uint8_t>(std::min<std::size_t>(venue_names.size(), kStatusMaxVenues));
+  set_status_name(snap.tzdata, tzdata_version());
+  snap.window_count = static_cast<std::uint32_t>(
+      std::min<std::size_t>(deps.engine.windows.rules.size(), kStatusMaxWindows));
+  for (std::size_t w = 0; w < snap.window_count; ++w) {
+    set_status_name(snap.windows[w].name, deps.engine.windows.rules[w].name);
+    snap.windows[w].action = static_cast<std::uint8_t>(deps.engine.windows.rules[w].action);
+  }
   const auto control_params_published = [&]() -> std::uint64_t {
     return publisher ? publisher->published() : 0;
   };
@@ -2514,6 +2522,10 @@ int run_session(const Config& cfg, const LiveOptions& opts) {
     snap.reduce_only = live.reduce_only;
     snap.reduce_only_venues = live.reduce_only_venues;
     snap.reduce_only_instruments = live.reduce_only_instruments;
+    for (std::size_t w = 0; w < snap.window_count; ++w) {
+      snap.windows[w].open = ((live.windows_open >> w) & 1U) != 0 ? 1 : 0;
+      snap.windows[w].next_edge_s = live.window_edge_s[w];
+    }
     snap.realized_pnl_raw = live.stats.realized_pnl_raw;
     snap.unrealized_pnl_raw = live.stats.unrealized_pnl_raw;
     snap.fees_raw = live.stats.fees_raw;

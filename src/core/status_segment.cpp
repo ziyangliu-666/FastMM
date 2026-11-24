@@ -3,6 +3,7 @@
 #include "fastmm/core/engine_runner.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
+#include "fastmm/core/windows.hpp"
 
 #include <fmt/format.h>
 
@@ -48,14 +49,50 @@ std::string fmt_duration_s(std::int64_t ns) {
   return fmt::format("{}h{:02}m{:02}s", s / 3600, (s / 60) % 60, s % 60);
 }
 
+std::string_view name_of(const char* buf, std::size_t cap) {
+  return std::string_view(buf, strnlen(buf, cap));
+}
+
+// "2026-11-30 01:30Z" of a UTC second (seconds shown when not zero).
+std::string utc_minute(std::int64_t s) {
+  const std::int64_t day = floor_div(s, 86'400);
+  const std::int64_t sod = s - day * 86'400;
+  const CivilDate c = civil_date(day);
+  if (sod % 60 != 0) {
+    return fmt::format(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}Z", c.y, c.m, c.d, sod / 3600, sod / 60 % 60, sod % 60);
+  }
+  return fmt::format("{:04}-{:02}-{:02} {:02}:{:02}Z", c.y, c.m, c.d, sod / 3600, sod / 60 % 60);
+}
+
+// One line per [[windows]] window: open or not, and when that next changes.
+void format_windows(std::string& out, const StatusSnapshot& s) {
+  const std::uint32_t n = std::min<std::uint32_t>(s.window_count, kStatusMaxWindows);
+  for (std::uint32_t w = 0; w < n; ++w) {
+    const StatusTimeWindow& sw = s.windows[w];
+    std::string next = "never again";
+    if (sw.next_edge_s == 0) {
+      next = "-";
+    } else if (sw.next_edge_s != kNoEdge) {
+      next = fmt::format("{} {} (in {})",
+                         sw.open != 0 ? "closes" : "opens",
+                         utc_minute(sw.next_edge_s),
+                         fmt_duration_s(sw.next_edge_s * 1'000'000'000 - s.updated_ns));
+    }
+    fmt::format_to(std::back_inserter(out),
+                   "{}{}  {}  {}  {}\n",
+                   w == 0 ? "windows    " : "           ",
+                   name_of(sw.name, sizeof sw.name),
+                   to_string(static_cast<WindowAction>(sw.action)),
+                   sw.open != 0 ? "OPEN" : "closed",
+                   next);
+  }
+}
+
 std::string money(std::int64_t raw) {
   char buf[48];
   const std::size_t n = Notional::from_raw(raw).to_decimal(buf);
   return std::string(buf, n);
-}
-
-std::string_view name_of(const char* buf, std::size_t cap) {
-  return std::string_view(buf, strnlen(buf, cap));
 }
 
 // StatusSnapshot::param_last_origin (ParamUpdateMsg::Origin).
@@ -497,6 +534,15 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                         s.reduce_only_instruments,
                         reset(color));
   }
+  std::string open_windows;
+  for (std::uint32_t w = 0; w < std::min<std::uint32_t>(s.window_count, kStatusMaxWindows); ++w) {
+    if (s.windows[w].open == 0) continue;
+    open_windows += open_windows.empty() ? "" : ",";
+    open_windows += name_of(s.windows[w].name, sizeof s.windows[w].name);
+  }
+  if (!open_windows.empty()) {
+    kill += fmt::format("  {}WINDOW {}{}", color ? "\x1b[33m" : "", open_windows, reset(color));
+  }
   fmt::format_to(std::back_inserter(out),
                  "state      {}{}{}{}  uptime={}  updated {:.1f}s ago\n\n",
                  paint(color, state),
@@ -533,6 +579,7 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                    s.reduce_only_venues,
                    s.reduce_only_instruments);
   }
+  format_windows(out, s);
   const auto rejects = [](std::uint64_t total, const StatusRejectCount* entries) {
     return total == 0 ? std::string("0")
                       : fmt::format("{} ({})", total, format_status_rejects(entries, total));
@@ -1389,7 +1436,23 @@ std::string format_status_json(const StatusSnapshot& s) {
   json_venues(out, s);
   out += ", ";
   json_quotes(out, s);
-  out += "}\n";
+  fmt::format_to(
+      it, ", \"tzdata\": {}, \"windows\": [", json_string(name_of(s.tzdata, sizeof s.tzdata)));
+  for (std::uint32_t w = 0; w < std::min<std::uint32_t>(s.window_count, kStatusMaxWindows); ++w) {
+    const StatusTimeWindow& sw = s.windows[w];
+    // next_edge_s: null when it never opens or closes again (or before the engine started).
+    const std::string next = sw.next_edge_s == 0 || sw.next_edge_s == kNoEdge
+                                 ? std::string("null")
+                                 : std::to_string(sw.next_edge_s);
+    fmt::format_to(it,
+                   "{}{{\"name\": {}, \"action\": \"{}\", \"open\": {}, \"next_edge_s\": {}}}",
+                   w == 0 ? "" : ", ",
+                   json_string(name_of(sw.name, sizeof sw.name)),
+                   to_string(static_cast<WindowAction>(sw.action)),
+                   sw.open != 0,
+                   next);
+  }
+  out += "]}\n";
   return out;
 }
 

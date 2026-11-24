@@ -15,6 +15,7 @@
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/underlying.hpp"
+#include "fastmm/core/windows.hpp"
 
 #include <cstdint>
 #include <string>
@@ -127,6 +128,9 @@ struct EngineConfig {
   // the group's threshold pulls that side's quotes on the members for the hold (core/hazard.hpp;
   // none: off).
   HazardConfig hazard;
+  // [[windows]]: recurring windows that pull a scope's quotes or hold it reduce-only while open,
+  // on the engine's clock (core/windows.hpp; none: off).
+  WindowsConfig windows;
   QuoteParams quotes;
   // [accounting]: the settlement currencies and their FX sources (inactive: nothing converted).
   FxPlan fx;

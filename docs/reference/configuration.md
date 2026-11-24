@@ -861,6 +861,52 @@ max_net = 0.5
 | `max_net` | any | yes | refuse an order that would take the net position in this base asset, open orders on the order's side included, further past this; base units (contracts times contract_multiplier, inverse contracts at the mark), decimal; 0: tracked, no limit |
 <!-- END config-keys -->
 
+## `[[windows]]`
+
+A recurring time window: on given weekdays or dates, from a local time in a time zone, the engine pulls the quotes of a scope or holds it reduce-only, and lets go when the window closes. [Schedule windows](../how-to/operations/schedule-windows.md) has examples.
+
+```toml
+[[windows]]
+name = "weekly-reopen"
+zone = "America/New_York"
+days = ["sun"]
+start = "19:55"
+duration = "35m"
+action = "reduce_only"
+```
+
+| Case | When the window opens or closes |
+|---|---|
+| `start` on a day the clock skips it (spring forward) | at the jump: 02:30 on 2026-03-08 in New York opens at 03:00 EDT |
+| `start` on a day the clock shows it twice (fall back) | at the first: 01:30 on 2026-11-01 in New York opens at 01:30 EDT |
+| `duration` across a change of offset | wall-clock: Friday 17:00 plus `48h` closes Sunday 17:00 local, 47 h later in March |
+| `end` at or before `start` | the next day |
+| two occurrences overlap | open while either is |
+
+- `days`, `dates`, `from`, `until` and `except` are dates in `zone`, of the day an occurrence starts on.
+- The scope is the union of `venues` and `instruments`; without either it is the whole session. A pool's members follow the primary's venue.
+- `action = "pull"` stops quoting in the scope as `fastmm-ctl pull` does; `"reduce_only"` holds it as `fastmm-ctl reduce-only on` does ([Operate a running session](../how-to/operations/operate-a-running-session.md#reduce-only-mode)). The operator's switches and a window's add up: `resume` and `reduce-only off` do not end a window, and a window that closes does not end an operator's pull.
+- The engine evaluates windows on its own clock, so a backtest and a replay open and close them at the same events as the live session. The zones come from the IANA tzdata compiled into the build (`status` shows its release), not from the host. A zone is an IANA name or a POSIX TZ rule such as `"EST5EDT,M3.2.0,M11.1.0"`. Times before 2000-01-01 take the zone's offset on that day.
+- 32 windows at most. Not adjustable at run time.
+
+<!-- BEGIN config-keys windows[] -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `name` | string | yes | the window's name, 1 to 32 letters, digits, '_', '-' or '.', for the log and the status |
+| `zone` | string | yes | the time zone of start, end and the dates: an IANA name ("America/New_York") of the tzdata compiled into the build, or a POSIX TZ rule ("EST5EDT,M3.2.0,M11.1.0") |
+| `days` | string array |  | the local weekdays an occurrence starts on: "mon" ... "sun"; give days or dates |
+| `dates` | string array |  | the local dates an occurrence starts on, "YYYY-MM-DD"; give days or dates |
+| `start` | string | yes | local time the window opens, "HH:MM" or "HH:MM:SS"; a time the clock skips opens at the jump, one it shows twice opens at the first |
+| `end` | string |  | local time it closes, "HH:MM[:SS]": the same day when later than start, otherwise the next; give end or duration |
+| `duration` | string |  | how long it stays open in wall-clock time, "30m", "1h30m", "2d" (units d, h, m, s), more than 0 and at most 7d; give end or duration |
+| `from` | string |  | first local date an occurrence may start on, "YYYY-MM-DD" (default: no limit) |
+| `until` | string |  | last local date an occurrence may start on, "YYYY-MM-DD" (default: no limit) |
+| `except` | string array |  | local dates no occurrence starts on, "YYYY-MM-DD" (default none) |
+| `action` | string |  | "pull": no quotes in the scope while open, as fastmm-ctl pull; "reduce_only": orders that add to a position are refused, as fastmm-ctl reduce-only on (default "pull") |
+| `venues` | string array |  | the scope: every instrument of these [venues.<name>] (default: with no instruments either, the whole session) |
+| `instruments` | string array |  | the scope: "symbol", "venue:symbol" or a [strategy.groups] name (default: with no venues either, the whole session) |
+<!-- END config-keys -->
+
 ## `[capacity]`
 
 The price of an order slot: a new order or a move of a resting one is sent when what it is worth covers what its slot costs at that moment ([Price order capacity](../how-to/strategies/price-order-capacity.md)). Cancels are never priced. Without the table, or with `mode = "off"`, nothing is priced.

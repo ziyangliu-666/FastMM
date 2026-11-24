@@ -341,6 +341,105 @@ void get_underlying(const toml::table& parent, std::string_view section, Underly
 
 // [venues.<primary>.treasury]: the keys and their ranges. Whether the venue is a pool's primary and
 // the accounts named are its pool's is checked once every venue is read (check_treasuries).
+std::vector<std::string> get_strings(const toml::table& t, std::string_view key) {
+  std::vector<std::string> out;
+  if (const auto* a = t.get_as<toml::array>(key)) {
+    for (const toml::node& n : *a) out.push_back(n.value_or(std::string{}));
+  }
+  return out;
+}
+
+// [[windows]] (core/windows.hpp): every key checked here, so a mistake fails the load with its
+// line; the scopes' instruments are resolved by window_config.
+void parse_windows(const toml::node& node, Config& cfg) {
+  const toml::array* list = node.as_array();
+  if (list == nullptr || !list->is_array_of_tables())
+    fail_at(node, "windows must be [[windows]] tables");
+  if (list->size() > kMaxWindows)
+    fail_at(node,
+            fmt::format("[[windows]]: {} windows at most, got {}", kMaxWindows, list->size()));
+  for (const toml::node& n : *list) {
+    const toml::table& t = *n.as_table();
+    validate_table(t, "windows[]");
+    WindowSection w;
+    get(t, "name", w.name);
+    const toml::node& at_name = *t.get("name");
+    if (!plain_name(w.name, 32, "_-."))
+      fail_at(at_name, "windows.name must be 1 to 32 letters, digits, '_', '-' or '.'");
+    for (const WindowSection& other : cfg.windows) {
+      if (other.name == w.name)
+        fail_at(at_name, fmt::format("[[windows]]: two windows are named '{}'", w.name));
+    }
+    const auto where = [&](std::string_view key) -> const toml::node& {
+      const toml::node* k = t.get(key);
+      return k != nullptr ? *k : n;
+    };
+    const auto bad = [&](std::string_view key, const std::string& why) {
+      fail_at(where(key), fmt::format("window '{}': {}", w.name, why));
+    };
+    get(t, "zone", w.zone);
+    if (std::string why; !TimeZone::find(w.zone, &why)) bad("zone", why);
+    w.days = get_strings(t, "days");
+    w.dates = get_strings(t, "dates");
+    if (w.days.empty() == w.dates.empty())
+      bad(w.days.empty() ? "start" : "dates", "give days or dates, one of them, not empty");
+    for (const std::string& d : w.days) {
+      if (!parse_weekday(d))
+        bad("days", fmt::format("days: '{}' is not a weekday (\"mon\" ... \"sun\")", d));
+    }
+    const auto check_dates = [&](std::string_view key, const std::vector<std::string>& dates) {
+      for (const std::string& d : dates) {
+        if (!parse_local_date(d))
+          bad(key, fmt::format("{}: '{}' is not a date \"YYYY-MM-DD\"", key, d));
+      }
+    };
+    check_dates("dates", w.dates);
+    get(t, "start", w.start);
+    if (!parse_local_time(w.start))
+      bad("start", fmt::format("start '{}' is not a time \"HH:MM\" or \"HH:MM:SS\"", w.start));
+    get(t, "end", w.end);
+    get(t, "duration", w.duration);
+    if (w.end.empty() == w.duration.empty())
+      bad(w.end.empty() ? "start" : "duration", "give end or duration, one of them");
+    if (!w.end.empty() && !parse_local_time(w.end))
+      bad("end", fmt::format("end '{}' is not a time \"HH:MM\" or \"HH:MM:SS\"", w.end));
+    if (!w.duration.empty()) {
+      const std::optional<std::int64_t> d = parse_duration(w.duration);
+      if (!d)
+        bad("duration",
+            fmt::format("duration '{}' is not a duration such as \"30m\", \"1h30m\" or \"2d\"",
+                        w.duration));
+      if (*d <= 0 || *d > kMaxWindowSeconds)
+        bad("duration",
+            fmt::format("duration '{}' must be more than 0 and at most 7d", w.duration));
+    }
+    get(t, "from", w.from);
+    get(t, "until", w.until);
+    const std::optional<std::int32_t> from = parse_local_date(w.from);
+    const std::optional<std::int32_t> until = parse_local_date(w.until);
+    if (!w.from.empty() && !from)
+      bad("from", fmt::format("from '{}' is not a date \"YYYY-MM-DD\"", w.from));
+    if (!w.until.empty() && !until)
+      bad("until", fmt::format("until '{}' is not a date \"YYYY-MM-DD\"", w.until));
+    if (from && until && *from > *until)
+      bad("until", fmt::format("until {} is before from {}", w.until, w.from));
+    w.except = get_strings(t, "except");
+    check_dates("except", w.except);
+    get(t, "action", w.action);
+    if (w.action != "pull" && w.action != "reduce_only")
+      bad("action", fmt::format("action '{}' must be \"pull\" or \"reduce_only\"", w.action));
+    w.venues = get_strings(t, "venues");
+    for (const std::string& v : w.venues) {
+      if (cfg.venue(v) == nullptr) bad("venues", fmt::format("no venue named '{}'", v));
+    }
+    w.instruments = get_strings(t, "instruments");
+    for (const std::string& i : w.instruments) {
+      if (i.empty()) bad("instruments", "an instrument is empty");
+    }
+    cfg.windows.push_back(std::move(w));
+  }
+}
+
 void parse_treasury(const toml::table& t, VenueSection& v) {
   validate_table(t, "venues.*.treasury");
   TreasurySection& s = v.treasury;
@@ -744,6 +843,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
                                                         "strategy",
                                                         "ab",
                                                         "risk",
+                                                        "windows",
                                                         "capacity",
                                                         "gateway",
                                                         "accounting",
@@ -1275,6 +1375,9 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "reduce_only", r.reduce_only);
     get_underlying(*t, "risk", r.underlying);
   }
+
+  // [[windows]]: after [venues], whose names a scope may give.
+  if (const toml::node* w = doc.get("windows")) parse_windows(*w, cfg);
 
   // [capacity]
   if (const auto* t = doc["capacity"].as_table()) {
@@ -1883,6 +1986,25 @@ std::string Config::redacted() const {
     out += "\n[risk.hazard.weights]\n";
     for (const auto& [k, v] : g.weights) kv(fmt::format("\"{}\"", k), v);
   }
+  const auto list = [&](std::string_view k, const std::vector<std::string>& v) {
+    if (!v.empty()) kv(k, fmt::format("[\"{}\"]", fmt::join(v, "\", \"")));
+  };
+  for (const WindowSection& w : windows) {
+    out += "\n[[windows]]\n";
+    kq("name", w.name);
+    kq("zone", w.zone);
+    list("days", w.days);
+    list("dates", w.dates);
+    kq("start", w.start);
+    if (!w.end.empty()) kq("end", w.end);
+    if (!w.duration.empty()) kq("duration", w.duration);
+    if (!w.from.empty()) kq("from", w.from);
+    if (!w.until.empty()) kq("until", w.until);
+    list("except", w.except);
+    kq("action", w.action);
+    list("venues", w.venues);
+    list("instruments", w.instruments);
+  }
   if (capacity.configured) {
     out += "\n[capacity]\n";
     kq("mode", capacity.mode);
@@ -2338,6 +2460,38 @@ std::string Config::effective_toml() const {
   root.insert("risk", std::move(r));
 
   // Only when present, so a configuration without it keeps its effective text and hash.
+  if (!windows.empty()) {
+    toml::array list;
+    for (const WindowSection& w : windows) {
+      toml::table t;
+      const auto strings = [&](std::string_view key, const std::vector<std::string>& v) {
+        if (v.empty()) return;
+        toml::array a;
+        for (const std::string& s : v) a.push_back(s);
+        t.insert(key, std::move(a));
+      };
+      const auto text = [&](std::string_view key, const std::string& v) {
+        if (!v.empty()) t.insert(key, v);
+      };
+      text("name", w.name);
+      text("zone", w.zone);
+      strings("days", w.days);
+      strings("dates", w.dates);
+      text("start", w.start);
+      text("end", w.end);
+      text("duration", w.duration);
+      text("from", w.from);
+      text("until", w.until);
+      strings("except", w.except);
+      text("action", w.action);
+      strings("venues", w.venues);
+      strings("instruments", w.instruments);
+      list.push_back(std::move(t));
+    }
+    root.insert("windows", std::move(list));
+  }
+
+  // Only when present, so a configuration without it keeps its effective text and hash.
   if (capacity.configured) {
     toml::table c;
     c.insert("mode", capacity.mode);
@@ -2498,6 +2652,64 @@ HazardConfig hazard_config(const Config& cfg,
       c.weights[static_cast<std::size_t>(at - c.members.begin())] = w;
     }
     out.groups.push_back(std::move(c));
+  }
+  return out;
+}
+
+WindowsConfig window_config(const Config& cfg,
+                            const InstrumentTable& table,
+                            std::span<const std::string> venue_names) {
+  WindowsConfig out;
+  out.rules.reserve(cfg.windows.size());
+  for (const WindowSection& w : cfg.windows) {
+    // Config::parse checked every value; a configuration built in code is checked here.
+    const auto need = [&](const auto& v, std::string_view key, const std::string& text) {
+      if (!v)
+        throw ConfigError(fmt::format("window '{}': {} '{}' does not read", w.name, key, text));
+      return *v;
+    };
+    const auto dates = [&](const std::vector<std::string>& text, std::string_view key) {
+      std::vector<std::int32_t> v;
+      v.reserve(text.size());
+      for (const std::string& d : text) v.push_back(need(parse_local_date(d), key, d));
+      std::sort(v.begin(), v.end());
+      v.erase(std::unique(v.begin(), v.end()), v.end());
+      return v;
+    };
+    WindowRule r;
+    r.name = w.name;
+    std::string why;
+    std::optional<TimeZone> zone = TimeZone::find(w.zone, &why);
+    if (!zone) throw ConfigError(fmt::format("window '{}': {}", w.name, why));
+    r.zone = std::move(*zone);
+    for (const std::string& d : w.days) r.weekdays |= need(parse_weekday(d), "days", d);
+    r.dates = dates(w.dates, "dates");
+    if (!w.from.empty()) r.from_day = need(parse_local_date(w.from), "from", w.from);
+    if (!w.until.empty()) r.until_day = need(parse_local_date(w.until), "until", w.until);
+    r.except = dates(w.except, "except");
+    r.start_s = need(parse_local_time(w.start), "start", w.start);
+    if (!w.end.empty()) r.end_s = need(parse_local_time(w.end), "end", w.end);
+    if (!w.duration.empty())
+      r.duration_s = need(parse_duration(w.duration), "duration", w.duration);
+    r.action = w.action == "reduce_only" ? WindowAction::ReduceOnly : WindowAction::Pull;
+    for (const std::string& v : w.venues) {
+      const auto at = std::find(venue_names.begin(), venue_names.end(), v);
+      if (at == venue_names.end())
+        throw ConfigError(fmt::format("window '{}': no venue named '{}'", w.name, v));
+      const auto id = static_cast<std::size_t>(at - venue_names.begin());
+      if (id < 32) r.venues |= 1U << id;
+    }
+    for (const std::string& key : w.instruments) {
+      const std::vector<InstrumentId> ids =
+          resolve_scope(key, cfg.strategy.groups, table, venue_names);
+      if (ids.empty())
+        throw ConfigError(fmt::format("window '{}': no instrument '{}'", w.name, key));
+      for (const InstrumentId id : ids) {
+        if (std::find(r.instruments.begin(), r.instruments.end(), id) == r.instruments.end())
+          r.instruments.push_back(id);
+      }
+    }
+    out.rules.push_back(std::move(r));
   }
   return out;
 }

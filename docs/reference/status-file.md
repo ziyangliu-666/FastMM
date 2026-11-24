@@ -21,7 +21,7 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`.
 1. The writer makes the counter odd, writes the snapshot, then makes it even again.
 2. A reader copies the snapshot and keeps it when the counter was even and unchanged across the copy; otherwise it retries.
 
-`magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 29) sit at the same offsets in every version. The layout is internal ([Public API](public-api.md)): read it with `fastmm-top` from the same build. Another version is refused:
+`magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 30) sit at the same offsets in every version. The layout is internal ([Public API](public-api.md)): read it with `fastmm-top` from the same build. Another version is refused:
 
 ```text
 <file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)
@@ -72,6 +72,7 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`.
 | `ab_test`, `ab_arms` | char[40], 16 x char[24] | the `[ab]` test's name and its arms', empty without a test |
 | `quote_count`, `quotes` | u32, 256 x quote entry | the quote table, one entry per instrument in the table's order ([below](#quote-entry)) |
 | `metric_count`, `metrics` | u32, 32 x {name char[24], value f64} | the numbers the strategy publishes with `ctx.metric`, in the order it first named them |
+| `window_count`, `tzdata`, `windows` | u32, char[16], 32 x {name char[33], action u8, open u8, next_edge_s i64} | the [scheduled windows](../how-to/operations/schedule-windows.md) in the configuration's order: action (0 pull, 1 reduce_only), 1 while open, and when it next opens or closes in UTC seconds (INT64_MAX never, 0 before the engine starts); `tzdata` is the zone data's IANA release |
 | `gateway` | gateway block | `kind` 1 only, zero otherwise ([below](#gateway-block)) |
 | `lanes` | lane block | the pools' sweeps summed ([Sweep pieces home](../how-to/operations/sweep-pieces.md)): `pools`, `in_flight`, `used_hour`, `used_day` (u32); `planned`, `requested`, `sent`, `done`, `done_by_flows`, `failed`, `unknown`, `late`, `trips` (u64); `held_value_raw`, `moved_value_raw` (i64, quote at the mid); `breaker` (u8: 0 closed, 1 paused, 2 off, the worst pool's), `sweeping`, `dry_run`, `blocked` (u8 counts) |
 
@@ -154,7 +155,7 @@ Side entry:
 | `desired_px_raw`, `desired_qty_raw`, `desired_levels` | i64, i64, u8 | what the last `set_quotes` asked for: level 0's price, the quantity over every level, the levels; asked even when the engine ignored it |
 | `working_px_raw`, `working_qty_raw`, `working_orders` | i64, i64, u16 | the best working quote price, the leaves of the side's quotes, how many |
 | `account_qty_raw` | 8 x i64 | those leaves by pool account (0 the primary) |
-| `block` | u8 | the first obstacle: 0 quoting, 1 not wanted, 2 quoting off, 3 pulled, 4 venue killed, 5 feed lag, 6 backoff, 7 starved, 8 refused, 9 pending ([Monitoring](../how-to/operations/monitor-with-fastmm-top.md)) |
+| `block` | u8 | the first obstacle: 0 quoting, 1 not wanted, 2 quoting off, 3 pulled, 4 venue killed, 5 feed lag, 6 backoff, 7 starved, 8 refused, 9 pending, 10 fill cluster, 11 hazard, 12 window ([Monitoring](../how-to/operations/monitor-with-fastmm-top.md)) |
 | `reason` | u8 | with `block` 8, the `RejectReason` of the refusal |
 | `block_since_ns` | i64 | when `block` began (wall clock) |
 | `note` | {reason char[24], budget_raw i64, set_ns i64} | the strategy's last `ctx.note_quote` on the side: its reason, the budget it gave (settlement currency, 0 none) and when |

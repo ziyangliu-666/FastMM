@@ -3,6 +3,7 @@
 #include "test_support.hpp"
 
 #include "fastmm/core/enums.hpp"
+#include "fastmm/core/windows.hpp"
 
 #include <cctype>
 #include <cstddef>
@@ -87,6 +88,25 @@ TEST_CASE("core.status_prometheus: the snapshot becomes metrics in base units") 
   CHECK(has(text, "fastmm_venue_md_messages_total{venue=\"binance\"} 963\n"));
   CHECK(has(text, "fastmm_venue_fill_audit_missing_total{venue=\"binance\"} 4\n"));
   CHECK_FALSE(has(text, "fastmm_feed_"));  // no multicast venue in this snapshot
+}
+
+TEST_CASE("core.status_prometheus: each scheduled window, open or not, and its next edge") {
+  StatusSnapshot s = sample();
+  CHECK_FALSE(has(format_status_prometheus(s, 61'500'000'000), "fastmm_window_"));
+  s.window_count = 2;
+  set_status_name(s.windows[0].name, "reopen");
+  s.windows[0].action = static_cast<std::uint8_t>(WindowAction::ReduceOnly);
+  s.windows[0].open = 1;
+  s.windows[0].next_edge_s = 1773016200;
+  set_status_name(s.windows[1].name, "cpi");
+  s.windows[1].next_edge_s = kNoEdge;
+  const std::string text = format_status_prometheus(s, 61'500'000'000);
+  CHECK(has(text, "fastmm_window_open{window=\"reopen\",action=\"reduce_only\"} 1\n"));
+  CHECK(has(text, "fastmm_window_open{window=\"cpi\",action=\"pull\"} 0\n"));
+  CHECK(has(text,
+            "fastmm_window_next_edge_seconds{window=\"reopen\",action=\"reduce_only\"} "
+            "1773016200\n"));
+  CHECK_FALSE(has(text, "fastmm_window_next_edge_seconds{window=\"cpi\""));
 }
 
 TEST_CASE("core.status_prometheus: estimated fills, those still pending and those forgotten") {

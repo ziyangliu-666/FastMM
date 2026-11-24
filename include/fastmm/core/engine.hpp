@@ -165,6 +165,7 @@ struct EngineStats {
   std::uint64_t ack_timeouts = 0;          // PendingNew orders force-cancelled by the ack sweep
   std::uint64_t flattens = 0;              // operator flattens started (ControlCommand::Flatten)
   std::uint64_t reduce_only_switches = 0;  // ControlCommand::ReduceOnly applied
+  std::uint64_t window_switches = 0;       // [[windows]] opened or closed
   std::uint64_t home_changes = 0;          // pool homes changed (ControlCommand::PoolHome)
   std::uint64_t home_unavailable = 0;      // orders refused HomeUnavailable
   std::uint64_t home_spills = 0;           // adding orders spill = "busy" sent off their home
@@ -214,6 +215,8 @@ class Engine {
   // [engine] base_flows: the base assets' balances against the positions, every kFlowPeriod.
   static constexpr std::uint8_t kFlowTimer = 8;
   static constexpr Duration kFlowPeriod = seconds(1);
+  // [[windows]]: the next instant a window opens or closes (core/windows.hpp).
+  static constexpr std::uint8_t kWindowTimer = 9;
 
   Engine(const EngineConfig& cfg,
          const InstrumentTable& instruments,
@@ -456,6 +459,8 @@ class Engine {
       }
       set_lanes_live(live);
     }
+    // The windows open at the start are open before on_start: it sees their pulls and holds.
+    if (cfg_.windows.any()) step_windows();
     const bool quoting_before = quoting_enabled();
     if constexpr (has_hook(Hook::Start)) strategy_.on_start(ctx_);
     after_hooks(quoting_before);
@@ -649,12 +654,18 @@ class Engine {
     return quoting_enabled_ && !reconciling() && !params_stale_ && !risk_.killed();
   }
   // ... and this instrument was not pulled on its own, nor its venue (ControlCommand::PullQuotes
-  // with a scope, an engine-owned flatten).
+  // with a scope, an engine-owned flatten, an open [[windows]] window).
   [[nodiscard]] bool quoting_enabled(InstrumentId id) const noexcept {
     if (!quoting_enabled() || !instruments_.contains(id)) return false;
     const Instrument& inst = instruments_.get(id);
-    return !inst_pulled_[id.value] && !venue_is_pulled(inst.venue) &&
+    return inst_pulled_[id.value] == 0 && !venue_is_pulled(inst.venue) &&
            !risk_.venue_killed(inst.venue) && !health_.gated(inst.venue, now());
+  }
+  // The [[windows]] open now, bit per window in the configuration's order, and the next instant
+  // (UTC seconds) each may open or close (kNoEdge: never).
+  [[nodiscard]] std::uint32_t windows_open() const noexcept { return windows_open_; }
+  [[nodiscard]] std::int64_t window_edge(std::size_t i) const noexcept {
+    return i < kMaxWindows ? window_edge_[i] : kNoEdge;
   }
   // Where the operator's flatten stands, and how many orders it has sent.
   [[nodiscard]] FlattenState flatten_state() const noexcept { return flatten_state_; }
@@ -1168,7 +1179,7 @@ class Engine {
     if (FASTMM_UNLIKELY(!instruments_.contains(id))) return false;
     note_asked(id, q);
     if (!quoting_enabled()) return false;
-    if (FASTMM_UNLIKELY(inst_pulled_[id.value])) return false;
+    if (FASTMM_UNLIKELY(inst_pulled_[id.value] != 0)) return false;
     const Instrument& inst = instruments_.get(id);
     if (FASTMM_UNLIKELY(risk_.venue_killed(inst.venue) || venue_is_pulled(inst.venue) ||
                         health_.gated(inst.venue, now())))
@@ -1387,6 +1398,9 @@ class Engine {
     if (FASTMM_UNLIKELY(cluster_on_) && cluster_.lift_due(now_)) lift_fill_cluster();
     if (FASTMM_UNLIKELY(hazard_on_) && hazard_.lift_due(now_)) lift_hazard();
     if (FASTMM_UNLIKELY(capacity_on_)) capacity_clock();
+    // A replayed timer that fired from the wheel looks at the windows where the session did: inside
+    // its call (on_recorded_timer), so a window timer it re-arms takes the session's timer id.
+    if (!kFeedReplaysTimers || h->type != EventType::Timer) check_windows();
     dispatch(h);
     after_hooks(quoting_before);
     unlatch_clock();
@@ -1490,7 +1504,12 @@ class Engine {
 
   // A journaled TimerMsg: what the timer, or the batch end, did in the session.
   void on_recorded_timer(const TimerMsg& t) noexcept {
-    if (t.engine == kAckSweepTimer) {
+    // As fire_timer and batch_end_hook did (a checkpoint the journal asked for looks at nothing).
+    if (t.timer_id.valid() || t.engine == kBatchEndTimer) check_windows();
+    if (t.engine == kWindowTimer) {
+      // The windows were looked at above; as fire_timer, a timer that fired before the edge.
+      if (window_timer_.valid() && window_timer_ == t.timer_id) arm_window_timer();
+    } else if (t.engine == kAckSweepTimer) {
       sweep_acks();  // replay of the engine's ack_timeout sweep
     } else if (t.engine == kFlattenTimer) {
       flatten_tick();  // replay of the engine's flatten sweep
@@ -1986,8 +2005,10 @@ class Engine {
     if (!quoting_enabled()) return QuoteBlock::QuotingOff;
     // A venue kill pulls the venue's quotes too; the kill is the cause to report.
     if (risk_.venue_killed(inst.venue)) return QuoteBlock::VenueKilled;
-    if (inst_pulled_[id.value] || quotes_.pulled(id) || venue_is_pulled(inst.venue))
+    if ((inst_pulled_[id.value] & kPulledByOperator) != 0 || quotes_.pulled(id) ||
+        venue_is_pulled(inst.venue))
       return QuoteBlock::Pulled;
+    if (inst_pulled_[id.value] != 0) return QuoteBlock::Window;
     if (health_.gated(inst.venue, now_)) return QuoteBlock::FeedLag;
     if (quotes_.side_held(side)) return QuoteBlock::FillCluster;
     if (quotes_.side_held(id, side)) return QuoteBlock::Hazard;
@@ -3041,14 +3062,16 @@ class Engine {
         break;
       case ControlCommand::ResumeQuotes:
         if (c.hdr.instrument.valid()) {
-          if (instruments_.contains(c.hdr.instrument)) inst_pulled_[c.hdr.instrument.value] = false;
+          if (instruments_.contains(c.hdr.instrument))
+            inst_pulled_[c.hdr.instrument.value] &= static_cast<std::uint8_t>(~kPulledByOperator);
         } else if (c.hdr.venue.valid()) {
           venue_pulled_ &= ~venue_mask(c.hdr.venue);
         } else {
           // A resume without a scope is the operator taking the session back: every scoped pull is
           // cleared and a flatten that is still running is abandoned (the strategy quotes again).
+          // An open window's pull stays: the schedule, not the operator, ends it.
           quoting_enabled_ = true;
-          inst_pulled_.fill(false);
+          for (std::uint8_t& p : inst_pulled_) p &= static_cast<std::uint8_t>(~kPulledByOperator);
           venue_pulled_ = 0;
           if (flatten_state_ == FlattenState::Working) end_flatten(FlattenState::Stopped);
         }
@@ -3426,7 +3449,7 @@ class Engine {
   // One instrument stops quoting and its quotes go; the rest of the session keeps trading.
   void pull_instrument(InstrumentId id) noexcept {
     if (!instruments_.contains(id)) return;
-    inst_pulled_[id.value] = true;
+    inst_pulled_[id.value] |= kPulledByOperator;
     pull_quotes(id);
   }
   void pull_venue(VenueId v) noexcept {
@@ -3482,12 +3505,105 @@ class Engine {
     ro_count_ = 0;
     for (const Instrument& inst : instruments_) {
       if (inst.id.value >= kMaxInstruments) continue;
-      const bool held =
-          ro_session_ || (ro_venues_ & venue_mask(inst.venue)) != 0 || ro_inst_[inst.id.value];
+      const bool held = ro_session_ || (ro_venues_ & venue_mask(inst.venue)) != 0 ||
+                        ro_inst_[inst.id.value] || win_ro_[inst.id.value];
       reduce_only_[inst.id.value] = held;
       ro_count_ += held ? 1U : 0U;
     }
   }
+  // ---- [[windows]] (core/windows.hpp) -----------------------------------------------------------
+
+  // Before each event and fired timer: one compare until the next instant a window opens or closes.
+  FASTMM_FORCE_INLINE void check_windows() noexcept {
+    if (FASTMM_UNLIKELY(now_ >= windows_next_)) step_windows();
+  }
+  // Which windows are open at now_, when each next opens or closes, and the timer for the first of
+  // those; the pulls and holds follow the windows that opened or closed.
+  FASTMM_NOINLINE void step_windows() noexcept {
+    const std::int64_t s = floor_div(now_.ns, 1'000'000'000);
+    const std::vector<WindowRule>& rules = cfg_.windows.rules;
+    std::uint32_t open = 0;
+    std::int64_t next = kNoEdge;
+    for (std::size_t i = 0; i < rules.size() && i < kMaxWindows; ++i) {
+      if (rules[i].active(s)) open |= 1U << i;
+      window_edge_[i] = rules[i].next_edge(s);
+      next = std::min(next, window_edge_[i]);
+    }
+    windows_next_ = next >= std::numeric_limits<std::int64_t>::max() / 1'000'000'000
+                        ? Timestamp::max()
+                        : Timestamp{next * 1'000'000'000};
+    arm_window_timer();
+    if (open != windows_open_) apply_windows(open);
+  }
+  void arm_window_timer() noexcept {
+    if (window_timer_.valid()) static_cast<void>(timers_.cancel(window_timer_));
+    window_timer_ = TimerId{};
+    if (windows_next_ == Timestamp::max()) return;
+    // An invalid id (timer pool full) leaves the check before each event and timer.
+    window_timer_ =
+        timers_.add(now_, Duration{std::max<std::int64_t>(windows_next_.ns - now_.ns, 0)}, false);
+  }
+  void apply_windows(std::uint32_t open) noexcept {
+    const std::vector<WindowRule>& rules = cfg_.windows.rules;
+    const std::uint32_t changed = open ^ windows_open_;
+    windows_open_ = open;
+    ++stats_.window_switches;
+    std::array<bool, kMaxInstruments> pull{};
+    std::array<bool, kMaxInstruments> hold{};
+    for (std::size_t i = 0; i < rules.size() && i < kMaxWindows; ++i) {
+      const WindowRule& w = rules[i];
+      if ((changed >> i) & 1U) {
+        FASTMM_LOG_INFO(
+            "window {} {}: {} {}",
+            std::string_view(w.name),
+            ((open >> i) & 1U) != 0 ? "opens" : "closes",
+            to_string(w.action),
+            w.whole_session() ? std::string_view("the session") : std::string_view("its scope"));
+      }
+      if (((open >> i) & 1U) == 0) continue;
+      std::array<bool, kMaxInstruments>& mark = w.action == WindowAction::Pull ? pull : hold;
+      for (const Instrument& inst : instruments_) {
+        if (inst.id.value >= kMaxInstruments) continue;
+        if (w.whole_session() || (w.venues & venue_mask(inst.venue)) != 0)
+          mark[inst.id.value] = true;
+      }
+      for (const InstrumentId id : w.instruments) {
+        if (id.value < kMaxInstruments) mark[id.value] = true;
+      }
+    }
+    enter_api();
+    Placer place{this};
+    bool holds_changed = false;
+    for (const Instrument& inst : instruments_) {
+      const std::uint32_t k = inst.id.value;
+      if (k >= kMaxInstruments) continue;
+      const bool was_pulled = (inst_pulled_[k] & kPulledByWindow) != 0;
+      if (pull[k] && !was_pulled) {
+        inst_pulled_[k] |= kPulledByWindow;
+        quotes_.pull_quotes(inst, oms_, place);
+      } else if (!pull[k] && was_pulled) {
+        inst_pulled_[k] &= static_cast<std::uint8_t>(~kPulledByWindow);
+      }
+      holds_changed = holds_changed || hold[k] != win_ro_[k];
+    }
+    if (holds_changed) {
+      win_ro_ = hold;
+      refresh_reduce_only();
+      // As set_reduce_only: the working orders that add to a position on a held instrument go.
+      for (const Instrument& inst : instruments_) {
+        if (inst.id.value >= kMaxInstruments || !win_ro_[inst.id.value]) continue;
+        StaticVector<Handle<Order>, kMaxOpenOrders> handles;
+        oms_.for_each_open_order(inst.id, [&](Handle<Order> h, const Order& o) {
+          if (o.is_working() && adds(inst.id, o.side)) static_cast<void>(handles.push_back(h));
+        });
+        for (Handle<Order> h : handles) static_cast<void>(submit_cancel(h));
+      }
+    }
+    flush_out();
+    // At once rather than with the next latency publication: the status shows the change.
+    publish_live(latency_pub_.load());
+  }
+
   // An order on `side` takes the instrument's position away from zero (either side when flat).
   [[nodiscard]] bool adds(InstrumentId id, Side side) const noexcept {
     const std::int64_t q = positions_.get(id).qty.raw;
@@ -3769,6 +3885,7 @@ class Engine {
       if (FASTMM_UNLIKELY(cluster_on_) && cluster_.lift_due(now_)) lift_fill_cluster();
       if (FASTMM_UNLIKELY(hazard_on_) && hazard_.lift_due(now_)) lift_hazard();
       if (FASTMM_UNLIKELY(capacity_on_)) capacity_clock();
+      check_windows();
       call_batch_end();
       after_hooks(quoting_before);
       unlatch_clock();
@@ -3816,8 +3933,9 @@ class Engine {
     const bool checkpoint_timer = checkpoint_timer_.valid() && id == checkpoint_timer_;
     const bool sweep_timer = sweep_timer_.valid() && id == sweep_timer_;
     const bool flow_timer = flow_timer_.valid() && id == flow_timer_;
+    const bool window_timer = window_timer_.valid() && id == window_timer_;
     const bool engine_timer = ack_timer || flatten_timer || state_timer || checkpoint_timer ||
-                              sweep_timer || flow_timer ||
+                              sweep_timer || flow_timer || window_timer ||
                               (param_timer_.valid() && id == param_timer_);
     // Journal a synthetic TimerMsg so replay reproduces the strategy's timer calls.
     if (journal_.enabled()) {
@@ -3830,6 +3948,7 @@ class Engine {
                  : checkpoint_timer ? kCheckpointTimer
                  : sweep_timer      ? kSweepTimer
                  : flow_timer       ? kFlowTimer
+                 : window_timer     ? kWindowTimer
                  : engine_timer     ? 1
                                     : 0;
       t.user_data = user_data;
@@ -3849,7 +3968,12 @@ class Engine {
     if (FASTMM_UNLIKELY(cluster_on_) && cluster_.lift_due(now_)) lift_fill_cluster();
     if (FASTMM_UNLIKELY(hazard_on_) && hazard_.lift_due(now_)) lift_hazard();
     if (FASTMM_UNLIKELY(capacity_on_)) capacity_clock();
-    if (ack_timer) {
+    // A window timer re-arms itself in here: window_timer_ is the next one after this.
+    check_windows();
+    if (window_timer) {
+      if (window_timer_ == id) arm_window_timer();  // fired before the edge: wait again
+      flush_out();
+    } else if (ack_timer) {
       sweep_acks();
     } else if (flatten_timer) {
       flatten_tick();
@@ -5848,6 +5972,8 @@ class Engine {
     live.reduce_only = ro_session_ ? 1 : 0;
     live.reduce_only_venues = ro_venues_;
     live.reduce_only_instruments = ro_count_;
+    live.windows_open = windows_open_;
+    live.window_edge_s = window_edge_;
     presence_.settle(now_);
     const QuotePresenceStats presence = presence_.total();
     live.quoting_elapsed_ns = presence.elapsed_ns;
@@ -6474,9 +6600,11 @@ class Engine {
   InstrumentId flatten_scope_{};  // the flatten's instrument; invalid: every instrument
   std::int64_t flatten_bps_ = 0;
   Timestamp flatten_deadline_ = Timestamp::max();
-  // Instruments and venues an operator pulled on their own (ControlCommand::PullQuotes with a
-  // scope, a flatten); they stay pulled until a matching resume.
-  std::array<bool, kMaxInstruments> inst_pulled_{};
+  // Instruments pulled on their own, by whom: an operator (ControlCommand::PullQuotes with a
+  // scope, a flatten), until a matching resume; an open [[windows]] window, until it closes.
+  static constexpr std::uint8_t kPulledByOperator = 1;
+  static constexpr std::uint8_t kPulledByWindow = 2;
+  std::array<std::uint8_t, kMaxInstruments> inst_pulled_{};
   // The flatten slice each instrument has in flight (invalid: none).
   std::array<ClientOrderId, kMaxInstruments> flatten_order_{};
   std::uint32_t venue_pulled_ = 0;
@@ -6487,6 +6615,18 @@ class Engine {
   std::array<bool, kMaxInstruments> ro_inst_{};
   std::array<bool, kMaxInstruments> reduce_only_{};
   std::uint32_t ro_count_ = 0;
+  // [[windows]]: the open ones (bit per window), the next instant one opens or closes (max: none),
+  // each one's next edge in UTC seconds, the instruments the open reduce_only windows hold, and the
+  // one-shot timer at the next edge.
+  std::uint32_t windows_open_ = 0;
+  Timestamp windows_next_ = Timestamp::max();
+  std::array<std::int64_t, kMaxWindows> window_edge_ = [] {
+    std::array<std::int64_t, kMaxWindows> a{};
+    a.fill(kNoEdge);
+    return a;
+  }();
+  std::array<bool, kMaxInstruments> win_ro_{};
+  TimerId window_timer_{};
   // Bit per venue whose order link is not live (ConnectionStateMsg channel 1): the pool routing
   // skips such a member.
   std::uint32_t order_link_down_ = 0;

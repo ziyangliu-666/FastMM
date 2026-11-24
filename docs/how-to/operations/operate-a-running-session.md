@@ -171,7 +171,7 @@ A restart does not resume a flatten. The shutdown cancels the slice in flight, t
 
 ## Reduce-only mode
 
-`reduce-only on` keeps the strategy trading out of its positions and stops it from building new ones, for example over a market open. Orders that reduce keep working.
+`reduce-only on` keeps the strategy trading out of its positions and stops it from building new ones, for example over a market open. Orders that reduce keep working. For an event that recurs, a [scheduled window](schedule-windows.md) switches it on and off at local time.
 
 ```bash
 fastmm-ctl --name sim-local reduce-only on --instrument BTCUSDT

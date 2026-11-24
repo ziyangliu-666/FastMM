@@ -10,6 +10,7 @@
 #include "fastmm/core/quote_diag.hpp"
 #include "fastmm/core/reject_counters.hpp"
 #include "fastmm/core/underlying.hpp"
+#include "fastmm/core/windows.hpp"
 
 #include <array>
 #include <cstdint>
@@ -168,6 +169,10 @@ struct EngineLiveStats {
   std::uint64_t flatten_orders = 0;
   std::uint32_t reduce_only_venues = 0;
   std::uint32_t reduce_only_instruments = 0;
+  // [[windows]]: the open ones (bit per window) and when each next opens or closes, UTC seconds
+  // (kNoEdge: never).
+  std::uint32_t windows_open = 0;
+  std::array<std::int64_t, kMaxWindows> window_edge_s{};
   // Why each venue's flag was first set, by venue id (RiskEngine::venue_slot).
   std::array<KillReason, kKillVenueSlots> venue_kill_reasons{};
   // Time-weighted quoting presence for the session: what a market-maker programme measures.
