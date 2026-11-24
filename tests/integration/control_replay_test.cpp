@@ -187,7 +187,7 @@ TEST_CASE("sim_exchange replay: scheduled windows replay to the identical outbou
   LiveEngine live(cfg, opts);
   live.start();
   REQUIRE(fills_at_least(fx, 2, 30000));
-  REQUIRE(wait_until([&] { return live.engine().stats().window_switches >= 3; }, 20000));
+  REQUIRE(wait_until([&] { return live.live_stats().stats.window_switches >= 3; }, 20000));
   std::this_thread::sleep_for(std::chrono::milliseconds(500));
   live.stop();
   CHECK(live.engine().windows_open() == 0);
