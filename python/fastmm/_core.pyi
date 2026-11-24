@@ -665,6 +665,11 @@ class Instrument:
     def tick_raw(self) -> int:
         ...
     @property
+    def trading(self) -> bool:
+        """
+        The venue takes orders on it now; nothing is sent for it while it does not.
+        """
+    @property
     def venue(self) -> int:
         ...
 class Order:
